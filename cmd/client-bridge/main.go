@@ -24,20 +24,17 @@ func main() {
 	}
 
 	var serviceInfo peer.AddrInfo
-	var servicePeerID string
 	var err error
 	if serviceAddr != "" {
 		serviceInfo, err = p2p.AddrInfoFromString(serviceAddr)
 		if err != nil {
 			log.Fatal(err)
 		}
-		servicePeerID = serviceInfo.ID.String()
 	} else {
 		serviceInfo, err = p2p.AddrInfoFromListenAndSeed(serviceListen, serviceSeed)
 		if err != nil {
 			log.Fatal(err)
 		}
-		servicePeerID = serviceInfo.ID.String()
 	}
 
 	h, err := p2p.NewHostWithSeed(getenv("BRIDGE_P2P_LISTEN", "/ip4/127.0.0.1/tcp/0"), getenv("BRIDGE_SEED", "bridge-demo-seed"))
@@ -51,7 +48,7 @@ func main() {
 	if err := h.Connect(ctx, serviceInfo); err != nil {
 		log.Fatalf("connect service peer: %v", err)
 	}
-	log.Printf("connected to service peer %s", servicePeerID)
+	log.Printf("connected to service peer %s", serviceInfo.ID)
 	log.Printf("bridge peer_id=%s", h.ID())
 
 	mux := http.NewServeMux()
@@ -60,28 +57,6 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		reqBody, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		_ = r.Body.Close()
-
-		headers := map[string]string{}
-		for k, vals := range r.Header {
-			if len(vals) > 0 {
-				headers[k] = vals[0]
-			}
-		}
-		delete(headers, "Connection")
-		delete(headers, "Keep-Alive")
-		delete(headers, "Proxy-Authenticate")
-		delete(headers, "Proxy-Authorization")
-		delete(headers, "Te")
-		delete(headers, "Trailer")
-		delete(headers, "Transfer-Encoding")
-		delete(headers, "Upgrade")
-
 		s, err := h.NewStream(context.Background(), serviceInfo.ID, p2p.ProtocolID)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("open stream: %v", err), http.StatusBadGateway)
@@ -89,23 +64,36 @@ func main() {
 		}
 		defer s.Close()
 
-		resp, err := p2p.HandleClientRequest(s, p2p.RequestMessage{
-			Method:   r.Method,
-			Path:     r.URL.Path,
-			RawQuery: r.URL.RawQuery,
-			Headers:  headers,
-			Body:     reqBody,
-		})
+		// Build headers map — preserves multi-value headers
+		headers := make(map[string][]string, len(r.Header))
+		for k, vals := range r.Header {
+			switch k {
+			case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+				continue // skip hop-by-hop
+			default:
+				headers[k] = vals
+			}
+		}
+
+		resp, err := p2p.HandleClientRequest(s, r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
+		defer resp.Body.Close()
 
-		for k, v := range resp.Headers {
-			w.Header().Set(k, v)
+		// Write response headers — multi-value preserved
+		for k, vals := range resp.Header {
+			for _, v := range vals {
+				w.Header().Add(k, v)
+			}
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, _ = w.Write(resp.Body)
+
+		// Stream response body directly to client
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			log.Printf("streaming response body: %v", err)
+		}
 	})
 
 	log.Printf("client bridge listening on %s", listen)

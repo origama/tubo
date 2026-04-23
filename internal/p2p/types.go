@@ -1,17 +1,17 @@
 package p2p
 
-const ProtocolID = "/p2p-api-tunnel/http/1.0.0"
+import "p2p-api-tunnel/internal/protocol"
 
-type RequestMessage struct {
-	Method      string            `json:"method"`
-	Path        string            `json:"path"`
-	RawQuery    string            `json:"raw_query,omitempty"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Body        []byte            `json:"body,omitempty"`
-}
+// ProtocolID is the libp2p protocol identifier for tunnel streams.
+const ProtocolID = protocol.ProtocolID
 
-type ResponseMessage struct {
-	StatusCode  int               `json:"status_code"`
-	Headers     map[string]string `json:"headers,omitempty"`
-	Body        []byte            `json:"body,omitempty"`
-}
+// ProtocolVersion is the wire protocol version.
+const ProtocolVersion = protocol.ProtocolVersion
+
+// This file is kept for backward compatibility references only.
+// All wire protocol types have moved to the internal/protocol package:
+//   - RequestMessage → protocol.RequestHeader
+//   - ResponseMessage → protocol.ResponseHeader + BodyChunk frames
+//
+// The legacy JSON protocol had critical bugs (multi-value header truncation, no streaming).
+// New code should use the binary framing protocol in internal/protocol.

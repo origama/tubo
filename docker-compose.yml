@@ -9,33 +9,20 @@ services:
     environment:
       DUMMY_API_LISTEN: "127.0.0.1:8000"
 
-  service-agent:
-    image: p2p-api-tunnel-service-agent:dev
+  connector:
+    image: p2p-api-tunnel-connector:dev
     build:
       context: .
-      dockerfile: deploy/Dockerfile.service-agent
+      dockerfile: deploy/Dockerfile.connector
     environment:
-      SERVICE_P2P_LISTEN: "/ip4/0.0.0.0/tcp/40123"
-      SERVICE_TARGET: "http://dummy-api-server:8000"
-      NODE_SEED: "service-demo-seed"
-      SERVICE_HEALTH_LISTEN: "127.0.0.1:8091"
+      CONNECTOR_ORIGIN_ADDR: "http://dummy-api-server:8000"
+      CONNECTOR_SERVICE_ID: "myapi"
+      CONNECTOR_NODE_SEED: "connector-demo-seed"
+      CONNECTOR_PUBSUB_TOPIC: "/p2p-tunnel/discovery/v1"
+      BOOTSTRAP_PEERS: "/dns4/bootstrap/tcp/4001/p2p/${BOOTSTRAP_PEER_ID}"
     depends_on:
       - dummy-api-server
-
-  client-bridge:
-    image: p2p-api-tunnel-client-bridge:dev
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile.client-bridge
-    ports:
-      - "127.0.0.1:18081:18081"
-    environment:
-      BRIDGE_LISTEN: "127.0.0.1:18081"
-      BRIDGE_SEED: "bridge-demo-seed"
-      SERVICE_SEED: "service-demo-seed"
-      SERVICE_P2P_LISTEN: "/dns4/service-agent/tcp/40123"
-    depends_on:
-      - service-agent
+      - bootstrap
 
   edge-gateway:
     image: p2p-api-tunnel-edge-gateway:dev
@@ -46,26 +33,24 @@ services:
       - "8443:8443"
     environment:
       EDGE_LISTEN: ":8443"
-      CONTROL_PLANE_URL: "http://control-plane:8080"
-
-  control-plane:
-    image: p2p-api-tunnel-control-plane:dev
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile.control-plane
-    ports:
-      - "8080:8080"
-    environment:
-      CONTROL_PLANE_LISTEN: ":8080"
+      EDGE_NODE_SEED: "edge-demo-seed"
+      EDGE_PUBSUB_TOPIC: "/p2p-tunnel/discovery/v1"
+      BOOTSTRAP_PEERS: "/dns4/bootstrap/tcp/4001/p2p/${BOOTSTRAP_PEER_ID}"
+    depends_on:
+      - bootstrap
 
   relay:
     image: p2p-api-tunnel-relay:dev
     build:
       context: .
       dockerfile: deploy/Dockerfile.relay
+    ports:
+      - "4002:4002"
 
   bootstrap:
     image: p2p-api-tunnel-bootstrap:dev
     build:
       context: .
       dockerfile: deploy/Dockerfile.bootstrap
+    ports:
+      - "4001:4001"

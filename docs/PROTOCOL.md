@@ -1,65 +1,127 @@
-# Protocol Definition
+# Wire Protocol Specification — Binary Framing
 
-Questo documento definisce il wire protocol utilizzato per le comunicazioni all'interno della piattaforma libp2p-native API Tunnel. È la base di tutte le interazioni tra Client Peer, Connector Agent e Control Plane.
+**Version:** 1.0 | **Protocol ID:** `/p2p-tunnel/1.0`
 
-## 📜 Scope
-Il protocollario deve gestire tre tipi principali di messaggi:
-1.  **Service Registration & Discovery:** Come un servizio annuncia la sua presenza (Tenant ID, Hostname supportato, Peer ID).
-2.  **Request/Response Framing:** Come viene incapsulata una richiesta HTTP (o SOCKS5) e come vengono gestiti i dati di risposta (streaming/chunked).
-3.  **Control & State Management:** Messaggi per heartbeats, aggiornamenti di lease, errori e politiche di sicurezza.
+## Overview
 
-## 📦 Struttura del Frame Message (Proposta Iniziale)
+The wire protocol uses binary framing with varint length prefixes for efficient HTTP-over-libp2p tunneling. Replaces the legacy JSON-based protocol to fix critical issues: multi-value header truncation, no streaming support, and excessive overhead.
 
-Ogni messaggio trasmesso via libp2p sarà un frame strutturato:
+## Frame Format
 
-```protobuf
-message TunnelFrame {
-    // Header fixed size
-    uint32 message_type = 1; // Tipo di messaggio (e.g., REGISTRATION, REQUEST, RESPONSE, HEARTBEAT)
-    bytes tenant_id = 2;   // Identificatore del Tenant (per isolamento e policy)
-    bytes correlation_id = 3; // ID univoco per tracciare la richiesta end-to-end
-
-    // Payload specifici al tipo di messaggio
-    oneof payload {
-        ServiceRegistration registration = 4;
-        HttpRequest request = 5;
-        HttpResponse response = 6;
-        ControlSignal signal = 7; // Heartbeat, Lease expiry, Error Code
-    }
-}
-
-message ServiceRegistration {
-    bytes peer_id = 1;
-    string supported_hostnames = 2;
-    uint32 lease_duration_s = 3;
-    // ... altri dati di capacità e stato
-}
-
-message HttpRequest {
-    string method = 1; // GET, POST, etc.
-    string path = 2;  // Path API
-    map<string, string> headers = 3;
-    bytes body_chunk = 4; // Usato per richieste chunked o corpo binario
-}
-
-message HttpResponse {
-    uint32 status_code = 1;
-    map<string, string> response_headers = 2;
-    bytes body_chunk = 3; // Frammenti di risposta (essenziale per streaming)
-    bool is_final = 4;   // Indica la fine della risposta
-}
-
-message ControlSignal {
-    enum SignalType { HEARTBEAT, LEASE_EXPIRED, AUTH_ERROR }
-    SignalType type = 1;
-    string message = 2;
-}
+```
+┌───────────┬───────┬───────────┐
+│  Length   │ Type  │  Payload  │
+│ (varint)  │ (1B)  │ (N bytes) │
+└───────────┴───────┴───────────┘
 ```
 
-## ✅ Obiettivi del Milestone 1 (Protocollo)
-*   Implementare la codifica e decodifica base di `TunnelFrame`.
-*   Definire gli schemi per la registrazione dei servizi.
-*   Stabilire il meccanismo di *heartbeat* e gestione dell'expiry/lease.
+- **Length**: Unsigned varint encoding the byte count of `Type + Payload`
+- **Type**: Single byte identifying the frame type
+- **Payload**: Type-specific binary data
 
-## ⚠️ Note sui Rischi
-La sfida maggiore è garantire che il ciclo di vita dello streaming HTTP (chunking, backpressure) sia mappato correttamente sul ciclo di vita del libp2p stream. I frammenti (`body_chunk` in `HttpResponse`) sono critici per questo.
+## Frame Types
+
+| Byte | Name | Description |
+|------|------|-------------|
+| 0x01 | RequestHeader | HTTP request metadata |
+| 0x02 | ResponseHeader | HTTP response metadata |
+| 0x03 | BodyChunk | Request/response body data (streaming) |
+| 0x04 | Error | Error notification |
+
+## RequestHeader Payload
+
+```
+┌───────────┬───────────┬───────────┬──────────────┐
+│ Method    │ Path      │ Query     │ Headers      │
+│ (string)  │ (string)  │ (string)  │ (header_list)│
+└───────────┴───────────┴───────────┴──────────────┘
+
+┌───────────────────┐
+│ ContentLengthHint │
+│     (varint)      │
+└───────────────────┘
+```
+
+- **Method**: varint-length-prefixed string (`GET`, `POST`, etc.)
+- **Path**: varint-length-prefixed string (`/api/v1/users`)
+- **Query**: varint-length-prefixed string (query parameters)
+- **Headers**: varint count N, followed by N header entries:
+  - Each entry: varint key_count → varint key_length → key_bytes → varint value_count → varint value_length → value_bytes
+- **ContentLengthHint**: varint (-1 = unknown/streaming, ≥0 = exact byte count)
+
+## ResponseHeader Payload
+
+```
+┌───────────┬───────────┬──────────────┐
+│ Status    │ StatusText│ Headers      │
+│ (varint)  │ (string)  │(header_list) │
+└───────────┴───────────┴──────────────┘
+```
+
+- **StatusCode**: varint (HTTP status code: 200, 404, 500...)
+- **StatusText**: varint-length-prefixed string (`OK`, `Not Found`...)
+- **Headers**: same format as RequestHeader headers
+
+## BodyChunk Payload
+
+```
+┌───────────┬──────────────┐
+│ IsFinal   │ Data         │
+│ (1 byte)  │ (raw bytes)  │
+└───────────┴──────────────┘
+```
+
+- **IsFinal**: `0x01` = last chunk, `0x00` = more chunks follow
+- **Data**: raw HTTP body bytes (no encoding overhead)
+
+## Error Payload
+
+```
+┌───────────┬───────────┐
+│ Code      │ Message   │
+│ (varint)  │ (string)  │
+└───────────┴───────────┘
+```
+
+- **Code**: varint error code
+- **Message**: varint-length-prefixed string description
+
+## Streaming Protocol Flow
+
+```
+Client                          Server
+  |                               |
+  |--- RequestHeader ─────────>  |  (method, path, headers)
+  |--- BodyChunk(isFinal=0) ──>  |  (streaming body part 1)
+  |--- BodyChunk(isFinal=1) ──>  |  (streaming body part N)
+  |                               |
+  |<-- ResponseHeader ───────────|  (status, headers)
+  |<-- BodyChunk(isFinal=0) ─────|  (streaming response part 1)
+  |<-- BodyChunk(isFinal=1) ─────|  (streaming response part N)
+```
+
+## Legacy JSON Protocol (Deprecated)
+
+The legacy JSON protocol (`RequestMessage`/`ResponseMessage`) had critical issues:
+- **Multi-value headers**: `map[string]string` truncated duplicate header values
+- **No streaming**: entire body buffered in memory before sending
+- **Overhead**: JSON encoding adds ~30% overhead vs binary framing
+- **Encoding bugs**: UTF-8 bodies could corrupt during JSON serialization
+
+Migrate to the new binary protocol for all new tunnels.
+
+## Go Implementation
+
+Package: `p2p-api-tunnel/internal/protocol`
+
+Key types and functions:
+- `RequestHeader`, `ResponseHeader`, `BodyChunk`, `ErrorFrame` — frame structs
+- `EncodeFrame(w, payload)` / `DecodeFrame(r)` — raw frame encoding
+- `StreamWriter` / `StreamReader` — high-level streaming API
+- `WriteRequestHeader()`, `ReadRequestHeader()` — typed convenience methods
+
+## Varint Encoding
+
+Uses [IETF RFC 704](https://www.rfc-editor.org/rfc/rfc704.html) unsigned varint encoding (same as Protocol Buffers). Implemented via `github.com/multiformats/go-varint`.
+
+Max encoded size: 9 bytes for values up to 2^63-1.
