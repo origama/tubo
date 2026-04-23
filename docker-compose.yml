@@ -1,0 +1,71 @@
+services:
+  dummy-api-server:
+    image: p2p-api-tunnel-dummy-api-server:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.dummy-api-server
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DUMMY_API_LISTEN: "127.0.0.1:8000"
+
+  service-agent:
+    image: p2p-api-tunnel-service-agent:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.service-agent
+    environment:
+      SERVICE_P2P_LISTEN: "/ip4/0.0.0.0/tcp/40123"
+      SERVICE_TARGET: "http://dummy-api-server:8000"
+      NODE_SEED: "service-demo-seed"
+      SERVICE_HEALTH_LISTEN: "127.0.0.1:8091"
+    depends_on:
+      - dummy-api-server
+
+  client-bridge:
+    image: p2p-api-tunnel-client-bridge:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.client-bridge
+    ports:
+      - "127.0.0.1:18081:18081"
+    environment:
+      BRIDGE_LISTEN: "127.0.0.1:18081"
+      BRIDGE_SEED: "bridge-demo-seed"
+      SERVICE_SEED: "service-demo-seed"
+      SERVICE_P2P_LISTEN: "/dns4/service-agent/tcp/40123"
+    depends_on:
+      - service-agent
+
+  edge-gateway:
+    image: p2p-api-tunnel-edge-gateway:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.edge-gateway
+    ports:
+      - "8443:8443"
+    environment:
+      EDGE_LISTEN: ":8443"
+      CONTROL_PLANE_URL: "http://control-plane:8080"
+
+  control-plane:
+    image: p2p-api-tunnel-control-plane:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.control-plane
+    ports:
+      - "8080:8080"
+    environment:
+      CONTROL_PLANE_LISTEN: ":8080"
+
+  relay:
+    image: p2p-api-tunnel-relay:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.relay
+
+  bootstrap:
+    image: p2p-api-tunnel-bootstrap:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.bootstrap
