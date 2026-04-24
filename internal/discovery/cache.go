@@ -24,7 +24,7 @@ func (e *ServiceEntry) Expired() bool {
 // Cache maintains a map of service names to their current registrations.
 // It runs a background goroutine that periodically removes expired entries.
 type Cache struct {
-	mu          sync.RWMutex
+	mu          sync.Mutex
 	entries     map[string]*ServiceEntry // keyed by serviceName
 	defaultTTL  time.Duration
 	cleanupTick time.Duration
@@ -65,14 +65,18 @@ func (c *Cache) Add(pID peer.ID, serviceName string, addresses []string) error {
 // or nil and false otherwise. Expired entries are lazily removed on lookup.
 func (c *Cache) Resolve(serviceName string) (*ServiceEntry, bool) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	entry, ok := c.entries[serviceName]
-	if !ok || entry.Expired() {
-		delete(c.entries, serviceName) // lazy cleanup
-		c.mu.Unlock()
+	if !ok {
 		return nil, false
 	}
-	e := *entry // return a copy
-	c.mu.Unlock()
+	if entry.Expired() {
+		delete(c.entries, serviceName) // lazy cleanup
+		return nil, false
+	}
+	// Return a copy to prevent external mutation
+	e := *entry
 	return &e, true
 }
 
@@ -85,8 +89,8 @@ func (c *Cache) Remove(serviceName string) {
 
 // Count returns the number of active (non-expired) entries in the cache.
 func (c *Cache) Count() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	count := 0
 	for name, entry := range c.entries {
 		if entry.Expired() {

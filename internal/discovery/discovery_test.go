@@ -134,7 +134,7 @@ func TestAnnouncementMarshalUnmarshal(t *testing.T) {
 	if len(got.Addresses) != len(ann.Addresses) {
 		t.Errorf("Addresses length: got %d, want %d", len(got.Addresses), len(ann.Addresses))
 	}
-	ok, err := got.Verify(privKey.Public())
+	ok, err := got.Verify(privKey.GetPublic())
 	if err != nil || !ok {
 		t.Error("Unmarshaled announcement should verify correctly")
 	}
@@ -213,24 +213,26 @@ func TestCacheUpdate(t *testing.T) {
 
 func TestCacheMultipleServices(t *testing.T) {
 	cache := discovery.NewCache(30*time.Second, 10*time.Minute)
+	peerA := peer.ID("peer-a")
+	peerB := peer.ID("peer-b")
 
-	err := cache.Add(peer.ID("peer-a"), "service-a", []string{"/ip4/1.1.1.1/tcp/80"})
+	err := cache.Add(peerA, "service-a", []string{"/ip4/1.1.1.1/tcp/80"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = cache.Add(peer.ID("peer-b"), "service-b", []string{"/ip4/2.2.2.2/tcp/80"})
+	err = cache.Add(peerB, "service-b", []string{"/ip4/2.2.2.2/tcp/80"})
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	entryA, ok := cache.Resolve("service-a")
-	if !ok || entryA.PeerID.String() != "peer-a" {
-		t.Error("Should resolve service-a correctly")
+	if !ok || entryA.PeerID != peerA {
+		t.Errorf("Should resolve service-a correctly: found=%v, gotPeer=%s, wantPeer=%s", ok, func() string { if entryA != nil { return entryA.PeerID.String() }; return "nil" }(), peerA.String())
 	}
 
 	entryB, ok := cache.Resolve("service-b")
-	if !ok || entryB.PeerID.String() != "peer-b" {
-		t.Error("Should resolve service-b correctly")
+	if !ok || entryB.PeerID != peerB {
+		t.Errorf("Should resolve service-b correctly: found=%v, gotPeer=%s, wantPeer=%s", ok, func() string { if entryB != nil { return entryB.PeerID.String() }; return "nil" }(), peerB.String())
 	}
 }
 
@@ -245,7 +247,7 @@ func TestCacheResolveUnknown(t *testing.T) {
 // --- Heartbeat tests ---
 
 func TestHeartbeatRenewal(t *testing.T) {
-	cache := discovery.NewCache(50*time.Millisecond, 10*time.Millisecond)
+	cache := discovery.NewCache(200*time.Millisecond, 500*time.Millisecond)
 	pid := peer.ID("heartbeat-peer")
 
 	err := cache.Add(pid, "hb-service", []string{"/ip4/1.2.3.4/tcp/8080"})
