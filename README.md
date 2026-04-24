@@ -51,18 +51,25 @@ deploy/                 # Docker Compose, Dockerfiles
 docs/                   # Documentazione architettura e protocollo
 ```
 
-## 🛣️ Roadmap di Implementazione
+## 🛣️ Roadmap & Progress
+
+Tutto il lavoro di implementazione è tracciato in [TASKS.md](./TASKS.md).
+Le specifiche del progetto per agenti AI sono in [AGENTS.md](./AGENTS.md).
+
+Per una panoramica rapida:
 
 | Fase | Componente | Stato |
 |------|-----------|-------|
 | 0 | Decisione architetturale (flat-first) | ✅ Completato |
-| 1 | Protocollo wire (framing binario + streaming) | ⏳ In lavorazione |
-| 2 | Discovery via pubsub (annunci firmati, lease, heartbeat) | 🔲 Da fare |
+| 1 | Protocollo wire (framing binario + streaming) | ✅ Completato |
+| 2 | Discovery via pubsub (annunci firmati, lease, heartbeat) | ✅ Completato |
 | 3 | Edge Gateway (HTTP ingress + routing + forwarding) | 🔲 Da fare |
-| 4 | Connector Agent (pubsub announcement + stream handler + localhost forward) | 🔲 Da fare |
+| 4 | Connector Agent (pubsub announcement + stream handler + localhost forward) | ⏳ In lavorazione |
 | 5 | Relay fallback (bootstrap nodes, NAT traversal) | 🔲 Da fare |
 | 6 | Security & Auth (bearer token, peer binding, tenant isolation, replay protection) | 🔲 Da fare |
 | 7 | Testing completo (unit + integration + E2E docker-compose) | 🔲 Da fare |
+
+Consulta [TASKS.md](./TASKS.md) per i dettagli granulari di ogni fase.
 
 ## 🚀 Quick Start (Testing)
 
@@ -73,8 +80,8 @@ go build ./cmd/...
 # Avvia il servizio mock
 ./dummy-api-server --port 8081
 
-# Avvia il connector (si connette al servizio locale)
-./connector --origin-addr localhost:8081 --service-id myapi
+# Avvia il connector agent (si connette al servizio locale)
+./service-agent --origin-addr localhost:8081 --service-id myapi
 
 # Avvia l'edge gateway
 ./edge-gateway --listen :8080
@@ -82,6 +89,8 @@ go build ./cmd/...
 # Testa la connessione
 curl http://localhost:8080/myapi/health
 ```
+
+> ⚠️ L'Edge Gateway è attualmente uno stub — il forwarding completo è in fase di sviluppo. Vedi [TASKS.md](./TASKS.md) per i dettagli.
 
 ## 📄 Documentazione
 
