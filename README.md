@@ -66,7 +66,7 @@ Per una panoramica rapida:
 | 2 | Discovery via pubsub (annunci firmati, lease, heartbeat) | ✅ Completato |
 | 3 | Edge Gateway (HTTP ingress + routing + forwarding + relay fallback) | ✅ Completato |
 | 4 | Connector Agent (pubsub announcement + stream handler + localhost forward) | ✅ Completato |
-| 5 | Relay fallback (bootstrap nodes, NAT traversal) | ✅ Completato |
+| 5 | Relay fallback (bootstrap nodes, relay circuit dialing) | ⏳ Parzialmente completato |
 | 6 | Security & Auth (bearer token, peer binding, tenant isolation, replay protection) | 🔲 Da fare |
 | 7 | Testing completo (unit + integration + E2E docker-compose) | ⏳ Parzialmente completato |
 

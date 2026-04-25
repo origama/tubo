@@ -2,6 +2,10 @@
 bin/
 *.exe
 *.test
+edge-gateway
+service-agent
+client-bridge
+dummy-api-server
 
 # Go build artifacts
 *.out
