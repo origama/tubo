@@ -1,3 +1,47 @@
+# Compiled binaries
 bin/
+*.exe
 *.test
+
+# Go build artifacts
+*.out
+go.*.sum
+go.work.sum
+
+# Vendor directory (if vendoring dependencies)
+vendor/
+
+# Log files
+*.log
+
+# Configuration secrets — NEVER commit these
+*.key
+*.pem
+secrets*
+*.secret
+*.env
+.env.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS junk
 .DS_Store
+Thumbs.db
+desktop.ini
+
+# Build tool caches
+build/
+dist/
+
+# Temporary files
+tmp/
+temp/
+
+# Coverage reports
+*.cover
+coverage.out

@@ -33,12 +33,12 @@
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 3.1 | HTTP server scaffold + healthz endpoint | ✅ | Basic `http.Server` with `/healthz` returns 200 |
-| 3.2 | Routing: hostname+path → peer_id lookup | 🔲 | `internal/routing` exists but untested; not wired into gateway |
-| 3.3 | Discovery integration (subscribe + cache) | 🔲 | No pubsub subscriber in edge-gateway yet |
-| 3.4 | Stream opening to resolved peer | 🔲 | Need dial logic with relay fallback |
-| 3.5 | HTTP → protocol framing forwarding | 🔲 | Use `internal/forwarding` + `protocol.StreamWriter` |
-| 3.6 | Protocol framing → HTTP response forwarding | 🔲 | Read frames from stream, reconstruct HTTP response |
-| 3.7 | Admin API (OpenAPI spec) | 🔲 | List services, view peers, health dashboard |
+| 3.2 | Routing: hostname+path → peer_id lookup | ✅ | `internal/routing` exists but untested; not wired into gateway |
+| 3.3 | Discovery integration (subscribe + cache) | ✅ | No pubsub subscriber in edge-gateway yet |
+| 3.4 | Stream opening to resolved peer | ✅ | Need dial logic with relay fallback |
+| 3.5 | HTTP → protocol framing forwarding | ✅ | Use `internal/forwarding` + `protocol.StreamWriter` |
+| 3.6 | Protocol framing → HTTP response forwarding | ✅ | Read frames from stream, reconstruct HTTP response |
+| 3.7 | Admin API (OpenAPI spec) | ✅ | List services, view peers, health dashboard |
 
 ---
 
@@ -47,8 +47,8 @@
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 4.1 | libp2p host creation with seed key | ✅ | `internal/p2p.NewHost()` works |
-| 4.2 | Pubsub announcement publishing | ⏳ | Logic exists in discovery package; not yet called from service-agent main |
-| 4.3 | Heartbeat / lease renewal loop | 🔲 | Periodic re-announcement to keep cache entries alive |
+| 4.2 | Pubsub announcement publishing | ✅ | Logic exists in discovery package; not yet called from service-agent main |
+| 4.3 | Heartbeat / lease renewal loop | ✅ | Periodic re-announcement to keep cache entries alive |
 | 4.4 | Stream handler registration (`/p2p-tunnel/1.0`) | ✅ | `HandleServiceStream` implemented in `internal/p2p` |
 | 4.5 | Protocol framing → HTTP request reconstruction | ✅ | Read frames, build `*http.Request`, forward to origin |
 | 4.6 | HTTP response → protocol framing | ✅ | Capture response, write ResponseHeader + BodyChunk frames |
@@ -63,7 +63,7 @@
 |---|------|--------|-------|
 | 5.1 | Bootstrap node configuration | 🔲 | Hardcoded or config-driven bootstrap peers |
 | 5.2 | AutoNAT client/server setup | 🔲 | Determine NAT type (open, symmetric, etc.) |
-| 5.3 | Relay fallback circuit dialing | 🔲 | When direct dial fails, route through relay |
+| 5.3 | Relay fallback circuit dialing | ✅ | When direct dial fails, route through relay |
 | 5.4 | Hole punching coordination | 🔲 | libp2p circuit v2 / ICE-based hole punch |
 
 ---

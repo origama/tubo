@@ -9,27 +9,55 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
+// DiscoveryEvent is emitted when a service registration changes.
+type DiscoveryEvent struct {
+	Type        string // "added" or "removed"
+	ServiceName string
+	PeerID      peer.ID
+}
+
 // Resolver resolves a service name to a peer ID and its addresses.
 type Resolver interface {
 	Resolve(serviceName string) (*ServiceEntry, bool)
 }
 
 // PubSubSubscriber listens for announcements on the discovery pubsub topic,
-// verifies signatures, and updates the local cache accordingly.
+// verifies signatures, updates the local cache, and emits DiscoveryEvents.
 type PubSubSubscriber struct {
 	topic  *pubsub.Topic
 	cache  *Cache
 	pubKey map[peer.ID]crypto.PubKey // known public keys (populated by caller)
-	mu     sync.RWMutex
+	events chan DiscoveryEvent
+	mu     sync.Mutex
 }
 
 // NewPubSubSubscriber creates a subscriber that listens on the discovery topic.
 func NewPubSubSubscriber(topic *pubsub.Topic, cache *Cache) *PubSubSubscriber {
-	return &PubSubSubscriber{
+	s := &PubSubSubscriber{
 		topic:  topic,
 		cache:  cache,
 		pubKey: make(map[peer.ID]crypto.PubKey),
+		events: make(chan DiscoveryEvent, 64),
 	}
+	s.wireExpiredCallback()
+	return s
+}
+
+// OnEvents returns a receive-only channel of discovery events.
+func (s *PubSubSubscriber) OnEvents() <-chan DiscoveryEvent {
+	return s.events
+}
+
+// wireExpiredCallback registers the subscriber as the cache's expiry handler,
+// emitting "removed" events when entries expire from the cache.
+func (s *PubSubSubscriber) wireExpiredCallback() {
+	s.cache.SetExpiredCallback(func(serviceName string, peerID peer.ID) {
+		select {
+		case s.events <- DiscoveryEvent{Type: "removed", ServiceName: serviceName, PeerID: peerID}:
+		default:
+			// drop if channel is full to avoid blocking the cache goroutine
+		}
+	})
 }
 
 // AddPublicKey registers a known public key for signature verification.
@@ -76,9 +104,9 @@ func (s *PubSubSubscriber) handleMessage(msg *pubsub.Message) {
 	}
 
 	// Verify signature against known public key
-	s.mu.RLock()
+	s.mu.Lock()
 	pk, known := s.pubKey[ann.PeerID]
-	s.mu.RUnlock()
+	s.mu.Unlock()
 
 	if !known {
 		return // unknown peer, skip
@@ -89,6 +117,14 @@ func (s *PubSubSubscriber) handleMessage(msg *pubsub.Message) {
 		return // invalid signature, skip
 	}
 
-	// Valid announcement — update cache
+	// Valid announcement — update cache and emit added event
 	_ = s.cache.Add(ann.PeerID, ann.ServiceName, ann.Addresses)
+	s.events <- DiscoveryEvent{Type: "added", ServiceName: ann.ServiceName, PeerID: ann.PeerID}
+
+	// Register the peer's public key for future verification
+	s.mu.Lock()
+	if _, known := s.pubKey[ann.PeerID]; !known {
+		s.pubKey[ann.PeerID] = pk
+	}
+	s.mu.Unlock()
 }

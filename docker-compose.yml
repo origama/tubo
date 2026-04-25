@@ -13,7 +13,7 @@ services:
     image: p2p-api-tunnel-connector:dev
     build:
       context: .
-      dockerfile: deploy/Dockerfile.connector
+      dockerfile: deploy/Dockerfile.service-agent
     environment:
       CONNECTOR_ORIGIN_ADDR: "http://dummy-api-server:8000"
       CONNECTOR_SERVICE_ID: "myapi"
@@ -54,3 +54,15 @@ services:
       dockerfile: deploy/Dockerfile.bootstrap
     ports:
       - "4001:4001"
+
+  client-bridge:
+    image: p2p-api-tunnel-client-bridge:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.client-bridge
+    environment:
+      CLIENT_NODE_SEED: "client-demo-seed"
+      CLIENT_PUBSUB_TOPIC: "/p2p-tunnel/discovery/v1"
+      BOOTSTRAP_PEERS: "/dns4/bootstrap/tcp/4001/p2p/${BOOTSTRAP_PEER_ID}"
+    depends_on:
+      - bootstrap

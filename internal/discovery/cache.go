@@ -29,6 +29,7 @@ type Cache struct {
 	defaultTTL  time.Duration
 	cleanupTick time.Duration
 	stopCh      chan struct{}
+	onExpired   func(serviceName string, peerID peer.ID)
 }
 
 // NewCache creates a new discovery cache with the given default TTL and cleanup interval.
@@ -41,6 +42,13 @@ func NewCache(defaultTTL, cleanupTick time.Duration) *Cache {
 	}
 	go c.cleanupLoop()
 	return c
+}
+
+// SetExpiredCallback registers a callback invoked when an entry expires.
+func (c *Cache) SetExpiredCallback(fn func(serviceName string, peerID peer.ID)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onExpired = fn
 }
 
 // Add registers or updates a service entry. If the service already exists, it's renewed
@@ -73,6 +81,9 @@ func (c *Cache) Resolve(serviceName string) (*ServiceEntry, bool) {
 	}
 	if entry.Expired() {
 		delete(c.entries, serviceName) // lazy cleanup
+		if c.onExpired != nil {
+			go c.onExpired(serviceName, entry.PeerID)
+		}
 		return nil, false
 	}
 	// Return a copy to prevent external mutation
@@ -115,13 +126,21 @@ func (c *Cache) cleanupLoop() {
 	for {
 		select {
 		case <-ticker.C:
+			var expired []struct{ name string; pid peer.ID }
 			c.mu.Lock()
 			for name, entry := range c.entries {
 				if entry.Expired() {
 					delete(c.entries, name)
+					expired = append(expired, struct{ name string; pid peer.ID }{name, entry.PeerID})
 				}
 			}
 			c.mu.Unlock()
+
+			for _, e := range expired {
+				if c.onExpired != nil {
+					go c.onExpired(e.name, e.pid)
+				}
+			}
 		case <-c.stopCh:
 			return
 		}

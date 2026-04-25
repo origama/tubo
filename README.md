@@ -35,7 +35,8 @@ Client HTTP ──→ [Edge Gateway] ──stream libp2p──→ [Connector Age
 ```
 cmd/                    # Binari eseguibili
 ├── edge-gateway/       # HTTP ingress + routing + forwarding
-├── connector/          # Agent sidecar per servizi origin
+├── service-agent/      # Agent sidecar per servizi origin
+├── client-bridge/      # HTTP client → P2P stream bridge
 └── dummy-api-server/   # Servizio mock per testing
 
 internal/               # Librerie condivise
@@ -63,11 +64,13 @@ Per una panoramica rapida:
 | 0 | Decisione architetturale (flat-first) | ✅ Completato |
 | 1 | Protocollo wire (framing binario + streaming) | ✅ Completato |
 | 2 | Discovery via pubsub (annunci firmati, lease, heartbeat) | ✅ Completato |
-| 3 | Edge Gateway (HTTP ingress + routing + forwarding) | 🔲 Da fare |
-| 4 | Connector Agent (pubsub announcement + stream handler + localhost forward) | ⏳ In lavorazione |
-| 5 | Relay fallback (bootstrap nodes, NAT traversal) | 🔲 Da fare |
+| 3 | Edge Gateway (HTTP ingress + routing + forwarding + relay fallback) | ✅ Completato |
+| 4 | Connector Agent (pubsub announcement + stream handler + localhost forward) | ✅ Completato |
+| 5 | Relay fallback (bootstrap nodes, NAT traversal) | ✅ Completato |
 | 6 | Security & Auth (bearer token, peer binding, tenant isolation, replay protection) | 🔲 Da fare |
-| 7 | Testing completo (unit + integration + E2E docker-compose) | 🔲 Da fare |
+| 7 | Testing completo (unit + integration + E2E docker-compose) | ⏳ Parzialmente completato |
+
+Test implementati: routing (14), protocol (12), discovery (esistenti), forwarding (3).
 
 Consulta [TASKS.md](./TASKS.md) per i dettagli granulari di ogni fase.
 
@@ -80,17 +83,23 @@ go build ./cmd/...
 # Avvia il servizio mock
 ./dummy-api-server --port 8081
 
-# Avvia il connector agent (si connette al servizio locale)
-./service-agent --origin-addr localhost:8081 --service-id myapi
+# Avvia il service-agent (config via env vars)
+SERVICE_TARGET=http://localhost:8081 \
+SERVICE_NAME=myapi \
+NODE_SEED=service-demo-seed \
+BOOTSTRAP_PEERS=/ip4/127.0.0.1/tcp/4001/p2p/<EDGE_PEER_ID> \
+./service-agent
 
-# Avvia l'edge gateway
-./edge-gateway --listen :8080
+# Avvia l'edge gateway (config via env vars)
+EDGE_LISTEN=:8443 \
+EDGE_P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
+EDGE_SEED=gateway-demo-seed \
+EDGE_ADMIN_LISTEN=127.0.0.1:8444 \
+./edge-gateway
 
-# Testa la connessione
-curl http://localhost:8080/myapi/health
+# Testa la connessione (auto-discovery: il gateway risolve "myapi" via pubsub)
+curl -H "Host: myapi" http://localhost:8443/health
 ```
-
-> ⚠️ L'Edge Gateway è attualmente uno stub — il forwarding completo è in fase di sviluppo. Vedi [TASKS.md](./TASKS.md) per i dettagli.
 
 ## 📄 Documentazione
 
