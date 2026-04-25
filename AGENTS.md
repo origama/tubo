@@ -30,9 +30,9 @@ Client HTTP ──→ [Edge Gateway] ──stream libp2p──→ [Connector Age
 
 ```
 cmd/                    # Executable binaries
-├── edge-gateway/       # Public HTTP ingress (stub — needs routing/discovery integration)
+├── edge-gateway/       # Public HTTP ingress (functional: routing, discovery, relay fallback, admin API)
 ├── service-agent/      # Connector sidecar (functional: announces, handles streams, forwards to origin)
-├── client-bridge/      # Client-side proxy over p2p (most complete binary)
+├── client-bridge/      # Client-side proxy over p2p (functional: direct dial + forwarding)
 └── dummy-api-server/   # Mock API for testing
 
 internal/               # Shared libraries
@@ -41,7 +41,7 @@ internal/               # Shared libraries
 ├── discovery/          # PubSub-based service discovery with signed announcements & TTL cache
 ├── routing/            # Hostname+path → peer_id matching logic
 ├── forwarding/         # HTTP ↔ stream hop-by-hop header stripping
-├── auth/               # AuthN/AuthZ scaffolding (bearer tokens, peer binding)
+├── auth/               # AuthN/AuthZ scaffolding (bearer tokens, peer binding) — NOT WIRED IN
 └── observability/      # Logging + metrics setup
 
 deploy/                 # Dockerfiles + docker-compose.yml
@@ -97,9 +97,26 @@ All implementation progress is tracked in **[TASKS.md](./TASKS.md)**. Before sta
 2. Check TASKS.md for current status and next steps
 3. Update TASKS.md when you complete or change anything
 
-## Known Issues (as of last audit)
+## Current State (as of 2026-04-25)
 
-- `docs/README.md` references 3 non-existent files (`cli.md`, `operability.md`, `testing.md`)
-- `docker-compose.yml` references `deploy/Dockerfile.connector` — actual file is `Dockerfile.service-agent`
-- Root-level `ARCHITECTURE.md`, `PROTOCOL.md`, `SECURITY.md` duplicate the `docs/` versions
-- Edge Gateway binary is a stub (returns 501 for all requests)
+### What Works ✅
+- Edge Gateway: full HTTP ingress with routing, discovery integration, relay fallback, admin API
+- Service-Agent: announces services via pubsub, handles incoming streams, forwards to local target
+- Client-Bridge: direct proxy over p2p (single service, no discovery needed)
+- Wire Protocol: complete binary framing with 12 passing tests
+- Discovery: signed announcements, TTL cache, heartbeat renewal — 10 passing tests
+- Routing: longest-prefix hostname+path matching — 14 passing tests
+- Forwarding: HTTP ↔ stream hop-by-hop header stripping — 3 passing tests
+- CI pipeline: GitHub Actions (build + test + golangci-lint on push/PR)
+
+### What's Missing 🔲
+- AutoNAT client/server for NAT type detection
+- Hole punching (ICE-based) for direct peer connections behind symmetric NATs
+- Security/Auth: bearer token auth, peer identity binding, rate limiting, replay protection
+- Integration tests: multi-node E2E scenarios (client → edge → connector → origin)
+- Unit tests for untested packages: `internal/p2p`, `internal/auth`, `internal/observability`
+
+### Known Issues ⚠️
+- `internal/auth` scaffold exists but is not wired into any binary
+- `internal/observability` (Prometheus metrics, zap logging) not integrated yet
+- No tests for command binaries (`cmd/edge-gateway`, `cmd/service-agent`, `cmd/client-bridge`)

@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-25  
+> **Last updated:** 2026-04-25 19:30 UTC  
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -87,7 +87,7 @@
 | 7.1 | Unit tests for all packages | ✅ | protocol (12) + discovery (10) + routing (14) + forwarding (3) = 39 tests passing |
 | 7.2 | Integration tests (multi-node scenarios) | 🔲 | Test full request flow: client → edge → connector → origin |
 | 7.3 | E2E docker-compose test suite | 🔲 | Spin up all services, run curl tests, verify responses |
-| 7.4 | CI pipeline (GitHub Actions) | 🔲 | Build + test on push/PR |
+| 7.4 | CI pipeline (GitHub Actions) | ✅ | `.github/workflows/ci.yml`: build + test + golangci-lint on push/PR |
 
 ---
 
@@ -103,9 +103,23 @@
 
 ---
 
+## Packages Without Tests ⚠️
+
+The following packages have no `_test.go` files yet:
+
+- `cmd/edge-gateway` — integration tests needed (Phase 7.2)
+- `cmd/service-agent` — integration tests needed (Phase 7.2)
+- `cmd/client-bridge` — integration tests needed (Phase 7.2)
+- `internal/p2p` — host creation, seed key, stream forwarding helpers
+- `internal/auth` — scaffold only, not wired in anywhere
+- `internal/observability` — logging/metrics setup
+- `internal/bridge/proxy.go` — unclear if still used
+
+---
+
 ## Next Priority (What to work on next)
 
-1. **Phase 7 — CI pipeline**: GitHub Actions workflow for build + test on push/PR
-2. **Phase 7 — Integration tests**: Multi-node E2E test with docker-compose
-3. **Phase 5.2 — AutoNAT**: Client/server setup for NAT type detection
-4. **Phase 6 — Security**: Bearer token auth + peer identity binding
+1. **Phase 7.2 — Integration tests**: Multi-node E2E test with docker-compose (client → edge → connector → origin)
+2. **Phase 5.2 — AutoNAT**: Client/server setup for NAT type detection
+3. **Phase 6 — Security**: Bearer token auth + peer identity binding
+4. **Unit tests for untested packages**: `internal/p2p`, `internal/auth`, `internal/observability`
