@@ -29,11 +29,19 @@ func main() {
 		log.Fatalf("invalid HEARTBEAT_INTERVAL %q: %v", getenv("HEARTBEAT_INTERVAL", ""), err)
 	}
 
-	h, err := p2p.NewHostWithSeed(listen, seed)
+	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSKFromEnv()
+	if err != nil {
+		log.Fatalf("load private network key: %v", err)
+	}
+
+	h, err := p2p.NewHostWithSeedAndPSK(listen, seed, psk)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer h.Close()
+	if usingPrivateNetwork {
+		log.Printf("libp2p private network enabled")
+	}
 
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(localTarget))
 

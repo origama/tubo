@@ -37,11 +37,23 @@ func main() {
 		}
 	}
 
-	h, err := p2p.NewHostWithSeed(getenv("BRIDGE_P2P_LISTEN", "/ip4/127.0.0.1/tcp/0"), getenv("BRIDGE_SEED", "bridge-demo-seed"))
+	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSKFromEnv()
+	if err != nil {
+		log.Fatalf("load private network key: %v", err)
+	}
+
+	h, err := p2p.NewHostWithSeedAndPSK(
+		getenv("BRIDGE_P2P_LISTEN", "/ip4/127.0.0.1/tcp/0"),
+		getenv("BRIDGE_SEED", "bridge-demo-seed"),
+		psk,
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer h.Close()
+	if usingPrivateNetwork {
+		log.Printf("libp2p private network enabled")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

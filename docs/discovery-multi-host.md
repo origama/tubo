@@ -51,7 +51,7 @@ Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
 2. `Announcement.TTL` non controlla direttamente TTL cache (oggi fisso lato edge).
 3. Se gli indirizzi annunciati non sono raggiungibili, il dial diretto fallisce.
 4. Hole punching/AutoNAT non sono ancora completi nel progetto.
-5. Non esiste ancora supporto nativo PSK private swarm + allowlist PeerID applicata ovunque.
+5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge-gateway`, `service-agent` e `client-bridge`, ma mancano ancora allowlist PeerID e binding `ServiceName -> PeerID` a livello enforcement completo.
 
 ## 2) Obiettivo operativo per deployment NAT/NAT privato
 

@@ -84,9 +84,17 @@ func main() {
 }
 
 func newGateway(ctx context.Context, p2pListen, seed string) (*Gateway, error) {
-	h, err := p2p.NewHostWithSeed(p2pListen, seed)
+	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSKFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("load private network key: %w", err)
+	}
+
+	h, err := p2p.NewHostWithSeedAndPSK(p2pListen, seed, psk)
 	if err != nil {
 		return nil, fmt.Errorf("create host: %w", err)
+	}
+	if usingPrivateNetwork {
+		log.Printf("libp2p private network enabled")
 	}
 
 	ps, err := pubsub.NewGossipSub(ctx, h)

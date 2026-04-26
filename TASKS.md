@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-26 20:18 UTC  
+> **Last updated:** 2026-04-26 20:34 UTC  
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -68,7 +68,7 @@
 
 ---
 
-## Phase 6: Security & Auth 🔲 NOT STARTED
+## Phase 6: Security & Auth ⏳ PARTIAL
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
@@ -77,6 +77,7 @@
 | 6.3 | Tenant isolation | 🔲 | Multi-tenant routing with namespace separation |
 | 6.4 | Rate limiting on pubsub + HTTP | 🔲 | Per-peer and global rate limits |
 | 6.5 | Replay protection (nonce/timestamp) | 🔲 | Prevent announcement replay attacks |
+| 6.6 | Private libp2p network (PSK) support | ✅ | Added `LIBP2P_PRIVATE_NETWORK_KEY` / `_B64` loading and host initialization in edge/service/client-bridge |
 
 ---
 
@@ -112,7 +113,6 @@ The following packages have no `_test.go` files yet:
 - `cmd/edge-gateway` — integration tests needed (Phase 7.2)
 - `cmd/service-agent` — integration tests needed (Phase 7.2)
 - `cmd/client-bridge` — integration tests needed (Phase 7.2)
-- `internal/p2p` — host creation, seed key, stream forwarding helpers
 - `internal/auth` — scaffold only, not wired in anywhere
 - `internal/observability` — logging/metrics setup
 - `internal/bridge/proxy.go` — unclear if still used
@@ -124,4 +124,4 @@ The following packages have no `_test.go` files yet:
 1. **Phase 7.2 — Integration tests**: Go integration tests in `tests/integration` matching AGENTS hard-gate scenarios
 2. **Phase 7.3 — Compose E2E hardening**: Add relay/bootstrap profiles and run smoke in CI
 3. **Phase 5.2 — AutoNAT**: Client/server setup for NAT type detection
-4. **Phase 6 — Security**: Bearer token auth + peer identity binding
+4. **Phase 6 — Security**: Peer allowlist + ServiceName->PeerID authz enforcement

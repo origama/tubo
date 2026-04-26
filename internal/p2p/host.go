@@ -3,8 +3,10 @@ package p2p
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"time"
 
@@ -12,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/pnet"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -51,6 +54,10 @@ func NewHost(listenAddr string) (host.Host, error) {
 }
 
 func NewHostWithSeed(listenAddr, seed string) (host.Host, error) {
+	return NewHostWithSeedAndPSK(listenAddr, seed, nil)
+}
+
+func NewHostWithSeedAndPSK(listenAddr, seed string, psk pnet.PSK) (host.Host, error) {
 	if listenAddr == "" {
 		listenAddr = "/ip4/127.0.0.1/tcp/0"
 	}
@@ -67,10 +74,63 @@ func NewHostWithSeed(listenAddr, seed string) (host.Host, error) {
 		return nil, err
 	}
 
-	return libp2p.New(
+	opts := []libp2p.Option{
 		libp2p.ListenAddrStrings(listenAddr),
 		libp2p.Identity(priv),
-	)
+	}
+	if len(psk) > 0 {
+		opts = append(opts, libp2p.PrivateNetwork(psk))
+	}
+
+	return libp2p.New(opts...)
+}
+
+// LoadPrivateNetworkPSKFromEnv loads a libp2p private network key from env vars.
+// Supported env vars:
+// - LIBP2P_PRIVATE_NETWORK_KEY: path to swarm.key file format
+// - LIBP2P_PRIVATE_NETWORK_KEY_B64: base64-encoded raw 32-byte PSK
+func LoadPrivateNetworkPSKFromEnv() (pnet.PSK, bool, error) {
+	keyPath := os.Getenv("LIBP2P_PRIVATE_NETWORK_KEY")
+	keyB64 := os.Getenv("LIBP2P_PRIVATE_NETWORK_KEY_B64")
+
+	if keyPath != "" && keyB64 != "" {
+		return nil, false, fmt.Errorf("set either LIBP2P_PRIVATE_NETWORK_KEY or LIBP2P_PRIVATE_NETWORK_KEY_B64, not both")
+	}
+
+	if keyPath != "" {
+		f, err := os.Open(keyPath)
+		if err != nil {
+			return nil, false, fmt.Errorf("open LIBP2P_PRIVATE_NETWORK_KEY: %w", err)
+		}
+		defer f.Close()
+
+		psk, err := pnet.DecodeV1PSK(f)
+		if err != nil {
+			return nil, false, fmt.Errorf("decode LIBP2P_PRIVATE_NETWORK_KEY: %w", err)
+		}
+		if len(psk) == 0 {
+			return nil, false, fmt.Errorf("decoded empty PSK from LIBP2P_PRIVATE_NETWORK_KEY")
+		}
+		return psk, true, nil
+	}
+
+	if keyB64 != "" {
+		raw, err := base64.StdEncoding.DecodeString(keyB64)
+		if err != nil {
+			raw, err = base64.RawStdEncoding.DecodeString(keyB64)
+			if err != nil {
+				return nil, false, fmt.Errorf("decode LIBP2P_PRIVATE_NETWORK_KEY_B64: %w", err)
+			}
+		}
+		if len(raw) != 32 {
+			return nil, false, fmt.Errorf("LIBP2P_PRIVATE_NETWORK_KEY_B64 must decode to 32 bytes, got %d", len(raw))
+		}
+		psk := make([]byte, len(raw))
+		copy(psk, raw)
+		return psk, true, nil
+	}
+
+	return nil, false, nil
 }
 
 func PeerIDFromSeed(seed string) (peer.ID, error) {
