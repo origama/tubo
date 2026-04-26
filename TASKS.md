@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-26 21:08 UTC  
+> **Last updated:** 2026-04-26 21:32 UTC  
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -86,7 +86,7 @@
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 7.1 | Unit tests for all packages | ✅ | protocol (12) + discovery (10) + routing (14) + forwarding (3) = 39 tests passing |
-| 7.2 | Integration tests (multi-node scenarios) | 🔲 | Test full request flow: client → edge → connector → origin |
+| 7.2 | Integration tests (multi-node scenarios) | ⏳ | Added `tests/integration` with auto-discovery/proxy, large-body streaming, lease expiry, hop-by-hop header stripping (`RUN_INTEGRATION=1`) |
 | 7.3 | E2E docker-compose test suite | ⏳ | Added `tests/smoke-compose.sh` for minimal compose smoke (health + discovery + end-to-end request) |
 | 7.4 | CI pipeline (GitHub Actions) | ✅ | `.github/workflows/ci.yml`: build + test + golangci-lint on push/PR |
 

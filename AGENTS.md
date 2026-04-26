@@ -57,8 +57,9 @@ Un task e' `DONE` solo se passano:
 
 1. `go test ./...`
 2. `./tests/smoke-compose.sh`
+3. `RUN_INTEGRATION=1 go test -v ./tests/integration` (raccomandato prima del merge quando Docker e' stabile)
 
-Quando esisteranno test di integrazione in `tests/integration`, questi entreranno nel gate hard.
+Nota: i test in `tests/integration` saltano (`SKIP`) se il daemon Docker e' indisponibile (errore infrastrutturale).
 
 ## 5) Policy documentazione (single source)
 
