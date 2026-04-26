@@ -5,6 +5,10 @@ Questo runbook copre due piani distinti:
 1. **stato attuale (as-is)** del progetto;
 2. **target operativo consigliato** per deployment privato NAT/NAT (LM Studio su laptop + Hermes/edge su host remoto).
 
+Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare come riferimento primario:
+
+- `docs/OPERABILITY.md`
+
 ## 1) Discovery: stato attuale (as-is)
 
 ### 1.1 Pubblicazione (service-agent)

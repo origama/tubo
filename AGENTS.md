@@ -1,121 +1,92 @@
-# AGENTS.md — Project Specification & Agent Instructions
+# AGENTS.md — Entry Point For Coding Agents
 
-## What This Project Is
+Questo file e' il **punto di ingresso canonico** per tutti i coding agents (incluso Codex).
 
-**P2P API Tunnel Platform** — a self-hosted, flat-first system that lets HTTP clients reach services hidden behind NAT/firewalls via encrypted libp2p streams. No central control plane: discovery is distributed through pubsub announcements.
+## 1) Missione del progetto
 
-### Core Flow
+**P2P API Tunnel Platform**: piattaforma self-hosted che inoltra traffico HTTP verso servizi dietro NAT/firewall usando stream libp2p cifrati e discovery distribuito via pubsub firmato.
 
-```
-Client HTTP ──→ [Edge Gateway] ──stream libp2p──→ [Connector Agent] ──HTTP──→ Origin Service
-                      │                                    │
-                      │  pubsub discovery (signed)         │  localhost/unix socket
-                      ▼                                    │
-              [Discovery Cache] ◄──── announces ──────────┘
+Flusso base:
+
+```text
+Client HTTP -> Edge Gateway -> stream libp2p -> Service Agent -> Origin Service
 ```
 
-## Tech Stack
+## 2) Stato attuale implementazione (as-is)
 
-| Layer | Technology |
-|-------|-----------|
-| Language | Go 1.24+ |
-| Networking | libp2p (`go-libp2p` v0.44.0) |
-| NAT Traversal | Hole Punching (pion/ice), Relay nodes, STUN/TURN |
-| Transport | TCP, QUIC/WebTransport, WebSocket |
-| Config | YAML / TOML |
-| Admin API | OpenAPI spec |
-| Metrics | Prometheus + Uber zap logging |
+Componenti funzionanti:
 
-## Repository Structure
+- `cmd/edge-gateway`: ingress HTTP, discovery subscription, cache locale, auto-route, proxy su stream, relay fallback, admin API.
+- `cmd/service-agent`: annuncio servizio firmato, heartbeat, stream handler, forwarding verso target HTTP locale/remoto.
+- `cmd/client-bridge`: proxy HTTP client-side verso peer service.
+- `internal/protocol`: framing binario + streaming body bidirezionale.
+- `internal/discovery`: announcement signed + TTL cache + eventi add/remove.
+- `internal/p2p`: host creation da seed + supporto private swarm PSK.
 
-```
-cmd/                    # Executable binaries
-├── edge-gateway/       # Public HTTP ingress (functional: routing, discovery, relay fallback, admin API)
-├── service-agent/      # Connector sidecar (functional: announces, handles streams, forwards to origin)
-├── client-bridge/      # Client-side proxy over p2p (functional: direct dial + forwarding)
-└── dummy-api-server/   # Mock API for testing
+Gap noti:
 
-internal/               # Shared libraries
-├── p2p/                # Host creation, seed-key identity, stream forwarding helpers
-├── protocol/           # Binary wire framing (varint length + type byte + payload)
-├── discovery/          # PubSub-based service discovery with signed announcements & TTL cache
-├── routing/            # Hostname+path → peer_id matching logic
-├── forwarding/         # HTTP ↔ stream hop-by-hop header stripping
-├── auth/               # AuthN/AuthZ scaffolding (bearer tokens, peer binding) — NOT WIRED IN
-└── observability/      # Logging + metrics setup
+- allowlist PeerID enforcement non ancora completo;
+- binding `ServiceName -> PeerID` non ancora enforced end-to-end;
+- AutoNAT/hole punching non completi;
+- relay/bootstrap dedicati come binari separati sono scaffold in `deploy/`.
 
-deploy/                 # Dockerfiles + docker-compose.yml
-docs/                   # Architecture, Protocol spec, Security policy
-```
+## 3) Workflow obbligatorio per agent
 
-## Wire Protocol (Binary Framing)
+### 3.1 Prima di iniziare
 
-Every message on a libp2p stream follows this frame format:
+1. Leggere questo `AGENTS.md`.
+2. Leggere `TASKS.md`.
+3. Leggere la documentazione rilevante in `docs/`.
+4. Aggiornare `TASKS.md` segnando il task come `⏳ In progress` (o aggiungendolo se manca).
 
-```
-[ varint length ] [ 1-byte type ] [ payload... ]
-```
+### 3.2 Durante il lavoro
 
-| Type Byte | Frame | Direction | Payload Schema |
-|-----------|-------|-----------|----------------|
-| `0x01` | RequestHeader | Edge → Connector | method, path, query, headers (multi-value), contentLengthHint |
-| `0x02` | ResponseHeader | Connector → Edge | statusCode, statusText, headers (multi-value) |
-| `0x03` | BodyChunk | Both directions | data ([]byte), isFinal (bool) |
-| `0x04` | Error | Either direction | code (int), message (string) |
+1. Se cambia comportamento/config/interfaccia, aggiornare **subito** la documentazione in `docs/`.
+2. Mantenere coerenza tra codice, env vars e runbook operativi.
+3. Non lasciare TODO non tracciati fuori da `TASKS.md`.
 
-**Streaming flow:** RequestHeader → BodyChunk* → {isFinal:true} → ResponseHeader → BodyChunk* → {isFinal:true}
+### 3.3 Prima di chiudere
 
-See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the full spec.
+1. Eseguire i gate di verifica correnti.
+2. Aggiornare `TASKS.md` (stato, note, timestamp).
+3. Aggiornare docs toccate dal cambiamento.
 
-## Code Conventions
+## 4) Gate di completion correnti (obbligatori)
 
-1. **Error handling**: Always check errors explicitly. No silent ignores — log or return.
-2. **Context propagation**: Every function that can block takes `context.Context` as first arg.
-3. **Naming**: Go standard conventions. Package names lowercase, no underscores. Exported types get descriptive names.
-4. **Testing**: Every package with logic must have `_test.go` files. Table-driven tests preferred.
-5. **Mutex safety**: Prefer `sync.Mutex` over `sync.RWMutex` unless benchmarks prove RWMutex is needed. Read locks in one goroutine + write locks in another = deadlock risk.
-6. **libp2p peer IDs**: Never compare `peer.ID.String()` against seed strings — libp2p encodes IDs in base58. Always store and compare the `peer.ID` object directly.
-7. **Git commits**: Conventional Commits format: `<type>(<scope>): <description>` with body for details. Types: `fix`, `feat`, `test`, `docs`, `refactor`.
-
-## Security Principles (Zero Trust)
-
-- Every peer authenticates via Ed25519 keypair
-- Discovery announcements are cryptographically signed
-- Lease + heartbeat expiry prevents stale records
-- Rate limiting on pubsub topic
-- Replay protection via nonce/timestamp
-- Bearer token auth for HTTP ingress
-- Peer identity binding (token → specific peer ID)
-
-See [`docs/SECURITY.md`](docs/SECURITY.md) for details.
-
-## Task Tracking
-
-All implementation progress is tracked in **[TASKS.md](./TASKS.md)**. Before starting any work:
-
-1. Read this AGENTS.md to understand the project
-2. Check TASKS.md for current status and next steps
-3. Update TASKS.md when you complete or change anything
-
-## Completion Gate (Obbligatorio)
-
-Un lavoro e' **DONE** solo se tutti i test sotto passano nello stesso run:
+Un task e' `DONE` solo se passano:
 
 1. `go test ./...`
-2. `go test -count=1 ./tests/integration -run TestEdgeAutoDiscoveryAndProxy`
-3. `go test -count=1 ./tests/integration -run TestStreamingLargeBodiesNoHang`
-4. `go test -count=1 ./tests/integration -run TestLeaseExpiryRemovesServiceAndRoute`
-5. `go test -count=1 ./tests/integration -run TestHopByHopHeadersStrippedE2E`
+2. `./tests/smoke-compose.sh`
 
-Se `tests/integration` non esiste, va creato prima di chiudere il task.
+Quando esisteranno test di integrazione in `tests/integration`, questi entreranno nel gate hard.
 
-## Required Integration Assertions
+## 5) Policy documentazione (single source)
 
-- `TestEdgeAutoDiscoveryAndProxy`: con `dummy-api-server`, `edge-gateway`, `service-agent` avviati, entro 10s `GET /services` (admin edge) deve avere `count=1`, `GET /routes` deve contenere la route auto-creata (`hostname=serviceName`, `path_prefix=/`), e una richiesta `POST` con `Host: <serviceName>` deve tornare `200`.
-- `TestStreamingLargeBodiesNoHang`: request body e response body >= 128KiB devono completare entro timeout senza deadlock/hang.
-- `TestLeaseExpiryRemovesServiceAndRoute`: fermando il service-agent e aspettando `TTL + grace`, `/services` torna `0`, la route sparisce e una nuova richiesta torna `404` (non route stale).
-- `TestHopByHopHeadersStrippedE2E`: header hop-by-hop (`Connection`, `Keep-Alive`, `Transfer-Encoding`, `Upgrade`, `Proxy-Authenticate`, `Proxy-Authorization`, `Te`, `Trailer`) non devono arrivare all'origin.
+Regole:
 
-## Scope Note
+1. La documentazione tecnica vive in `docs/`.
+2. `docs/README.md` e' l'indice canonico della documentazione.
+3. I file doc in root (`ARCHITECTURE.md`, `PROTOCOL.md`, `SECURITY.md`) devono essere solo redirect sintetici verso `docs/`.
+4. Qualsiasi cambio implementativo deve riflettersi nella doc rilevante nello stesso PR/commit.
 
-AutoNAT, hole punching e Security/Auth (bearer, peer binding, replay protection, rate limiting) restano fuori dal gate MVP finche' non implementati.
+## 6) Runbook operativo canonico
+
+Per avvio componenti e creazione tunnel p2p sicuro tra 2+ servizi, riferimento unico:
+
+- `docs/OPERABILITY.md`
+
+In particolare:
+
+- quick start locale con Docker Compose;
+- setup private swarm PSK;
+- avvio multi-host (`edge-gateway` + piu' `service-agent`);
+- verifica discovery/routes/proxy end-to-end;
+- limitazioni attuali e troubleshooting.
+
+## 7) Task tracking
+
+`TASKS.md` e' la fonte unica dello stato progetto:
+
+- nessun task operativo fuori da `TASKS.md`;
+- aggiornamento obbligatorio ad ogni avanzamento rilevante;
+- se cambia priorita', aggiornare la sezione "Next Priority".
