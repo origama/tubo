@@ -100,15 +100,22 @@ func (s *StreamReader) BodyReader() io.ReadCloser {
 }
 
 type bodyReader struct {
-	reader  *StreamReader
-	chunk   []byte
-	offset  int
-	closed  bool
+	reader    *StreamReader
+	chunk     []byte
+	offset    int
+	lastChunk bool
+	closed    bool
 	exhausted bool
 }
 
 func (br *bodyReader) Read(p []byte) (int, error) {
 	if br.exhausted || br.closed {
+		return 0, io.EOF
+	}
+
+	// If we've fully consumed the final chunk, terminate cleanly.
+	if br.lastChunk && br.offset >= len(br.chunk) {
+		br.exhausted = true
 		return 0, io.EOF
 	}
 
@@ -123,13 +130,16 @@ func (br *bodyReader) Read(p []byte) (int, error) {
 		}
 		br.chunk = chunk.Data
 		br.offset = 0
+		br.lastChunk = chunk.IsFinal
 		if len(br.chunk) == 0 && chunk.IsFinal {
 			br.exhausted = true
 			return 0, io.EOF
 		}
-		if chunk.IsFinal && len(br.chunk) > 0 {
-			break // one more chunk to serve
+		// Skip empty non-final chunks, read the next one.
+		if len(br.chunk) == 0 {
+			continue
 		}
+		break
 	}
 
 	n := copy(p, br.chunk[br.offset:])

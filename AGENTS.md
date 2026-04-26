@@ -97,26 +97,25 @@ All implementation progress is tracked in **[TASKS.md](./TASKS.md)**. Before sta
 2. Check TASKS.md for current status and next steps
 3. Update TASKS.md when you complete or change anything
 
-## Current State (as of 2026-04-25)
+## Completion Gate (Obbligatorio)
 
-### What Works ✅
-- Edge Gateway: full HTTP ingress with routing, discovery integration, relay fallback, admin API
-- Service-Agent: announces services via pubsub, handles incoming streams, forwards to local target
-- Client-Bridge: direct proxy over p2p (single service, no discovery needed)
-- Wire Protocol: complete binary framing with 12 passing tests
-- Discovery: signed announcements, TTL cache, heartbeat renewal — 10 passing tests
-- Routing: longest-prefix hostname+path matching — 14 passing tests
-- Forwarding: HTTP ↔ stream hop-by-hop header stripping — 3 passing tests
-- CI pipeline: GitHub Actions (build + test + golangci-lint on push/PR)
+Un lavoro e' **DONE** solo se tutti i test sotto passano nello stesso run:
 
-### What's Missing 🔲
-- AutoNAT client/server for NAT type detection
-- Hole punching (ICE-based) for direct peer connections behind symmetric NATs
-- Security/Auth: bearer token auth, peer identity binding, rate limiting, replay protection
-- Integration tests: multi-node E2E scenarios (client → edge → connector → origin)
-- Unit tests for untested packages: `internal/p2p`, `internal/auth`, `internal/observability`
+1. `go test ./...`
+2. `go test -count=1 ./tests/integration -run TestEdgeAutoDiscoveryAndProxy`
+3. `go test -count=1 ./tests/integration -run TestStreamingLargeBodiesNoHang`
+4. `go test -count=1 ./tests/integration -run TestLeaseExpiryRemovesServiceAndRoute`
+5. `go test -count=1 ./tests/integration -run TestHopByHopHeadersStrippedE2E`
 
-### Known Issues ⚠️
-- `internal/auth` scaffold exists but is not wired into any binary
-- `internal/observability` (Prometheus metrics, zap logging) not integrated yet
-- No tests for command binaries (`cmd/edge-gateway`, `cmd/service-agent`, `cmd/client-bridge`)
+Se `tests/integration` non esiste, va creato prima di chiudere il task.
+
+## Required Integration Assertions
+
+- `TestEdgeAutoDiscoveryAndProxy`: con `dummy-api-server`, `edge-gateway`, `service-agent` avviati, entro 10s `GET /services` (admin edge) deve avere `count=1`, `GET /routes` deve contenere la route auto-creata (`hostname=serviceName`, `path_prefix=/`), e una richiesta `POST` con `Host: <serviceName>` deve tornare `200`.
+- `TestStreamingLargeBodiesNoHang`: request body e response body >= 128KiB devono completare entro timeout senza deadlock/hang.
+- `TestLeaseExpiryRemovesServiceAndRoute`: fermando il service-agent e aspettando `TTL + grace`, `/services` torna `0`, la route sparisce e una nuova richiesta torna `404` (non route stale).
+- `TestHopByHopHeadersStrippedE2E`: header hop-by-hop (`Connection`, `Keep-Alive`, `Transfer-Encoding`, `Upgrade`, `Proxy-Authenticate`, `Proxy-Authorization`, `Te`, `Trailer`) non devono arrivare all'origin.
+
+## Scope Note
+
+AutoNAT, hole punching e Security/Auth (bearer, peer binding, replay protection, rate limiting) restano fuori dal gate MVP finche' non implementati.

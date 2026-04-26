@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-25 19:30 UTC  
+> **Last updated:** 2026-04-26 20:18 UTC  
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -86,7 +86,7 @@
 |---|------|--------|-------|
 | 7.1 | Unit tests for all packages | ✅ | protocol (12) + discovery (10) + routing (14) + forwarding (3) = 39 tests passing |
 | 7.2 | Integration tests (multi-node scenarios) | 🔲 | Test full request flow: client → edge → connector → origin |
-| 7.3 | E2E docker-compose test suite | 🔲 | Spin up all services, run curl tests, verify responses |
+| 7.3 | E2E docker-compose test suite | ⏳ | Added `tests/smoke-compose.sh` for minimal compose smoke (health + discovery + end-to-end request) |
 | 7.4 | CI pipeline (GitHub Actions) | ✅ | `.github/workflows/ci.yml`: build + test + golangci-lint on push/PR |
 
 ---
@@ -100,6 +100,8 @@
 | C.3 | Deduplicate root-level docs vs `docs/` dir | ✅ | Consolidated |
 | C.4 | Update README quick-start commands | ✅ | Updated to use `service-agent` binary name |
 | C.5 | Add `.gitignore` entries | ✅ | Added: compiled binaries, `*.log`, `vendor/`, IDE files |
+| C.6 | Add multi-host discovery runbook | ✅ | Added `docs/discovery-multi-host.md` with LM Studio laptop + Hermes Linode scenario |
+| C.7 | Extend runbook for private NAT/NAT deployment | ✅ | Added PSK private swarm, PeerID allowlist, relay/bootstrap policy, 502 taxonomy, acceptance tests |
 
 ---
 
@@ -119,7 +121,7 @@ The following packages have no `_test.go` files yet:
 
 ## Next Priority (What to work on next)
 
-1. **Phase 7.2 — Integration tests**: Multi-node E2E test with docker-compose (client → edge → connector → origin)
-2. **Phase 5.2 — AutoNAT**: Client/server setup for NAT type detection
-3. **Phase 6 — Security**: Bearer token auth + peer identity binding
-4. **Unit tests for untested packages**: `internal/p2p`, `internal/auth`, `internal/observability`
+1. **Phase 7.2 — Integration tests**: Go integration tests in `tests/integration` matching AGENTS hard-gate scenarios
+2. **Phase 7.3 — Compose E2E hardening**: Add relay/bootstrap profiles and run smoke in CI
+3. **Phase 5.2 — AutoNAT**: Client/server setup for NAT type detection
+4. **Phase 6 — Security**: Bearer token auth + peer identity binding

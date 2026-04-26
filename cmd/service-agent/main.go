@@ -67,33 +67,21 @@ func main() {
 	}
 	publisher := discovery.NewPublisher(topic, privKey)
 
-	// Dial bootstrap peers before publishing.
+	// Dial bootstrap peers before publishing and keep retrying in background.
 	bootstrapPeers := getenv("BOOTSTRAP_PEERS", "")
+	bootstrapRetryInterval, err := time.ParseDuration(getenv("BOOTSTRAP_RETRY_INTERVAL", "5s"))
+	if err != nil {
+		log.Fatalf("invalid BOOTSTRAP_RETRY_INTERVAL %q: %v", getenv("BOOTSTRAP_RETRY_INTERVAL", ""), err)
+	}
 	if bootstrapPeers != "" {
-		log.Println("dialing bootstrap peers")
-		for _, raw := range strings.Split(bootstrapPeers, ",") {
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				continue
+		dialBootstrapPeers(h, bootstrapPeers)
+		go func() {
+			ticker := time.NewTicker(bootstrapRetryInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				dialBootstrapPeers(h, bootstrapPeers)
 			}
-			maddr, err := multiaddr.NewMultiaddr(raw)
-			if err != nil {
-				log.Printf("invalid bootstrap peer %q: %v", raw, err)
-				continue
-			}
-			info, err := peerInfoFromAddr(maddr)
-			if err != nil {
-				log.Printf("bootstrap peer parse error %q: %v", raw, err)
-				continue
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			if err := h.Connect(ctx, *info); err != nil {
-				log.Printf("failed to dial bootstrap peer %s: %v", info.ID, err)
-			} else {
-				log.Printf("connected to bootstrap peer %s", info.ID)
-			}
-			cancel()
-		}
+		}()
 	}
 
 	// Publish initial announcement.
@@ -127,6 +115,37 @@ func main() {
 
 func peerInfoFromAddr(maddr multiaddr.Multiaddr) (*peer.AddrInfo, error) {
 	return peer.AddrInfoFromP2pAddr(maddr)
+}
+
+func dialBootstrapPeers(h peerHost, bootstrapPeers string) {
+	log.Println("dialing bootstrap peers")
+	for _, raw := range strings.Split(bootstrapPeers, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		maddr, err := multiaddr.NewMultiaddr(raw)
+		if err != nil {
+			log.Printf("invalid bootstrap peer %q: %v", raw, err)
+			continue
+		}
+		info, err := peerInfoFromAddr(maddr)
+		if err != nil {
+			log.Printf("bootstrap peer parse error %q: %v", raw, err)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := h.Connect(ctx, *info); err != nil {
+			log.Printf("failed to dial bootstrap peer %s: %v", info.ID, err)
+		} else {
+			log.Printf("connected to bootstrap peer %s", info.ID)
+		}
+		cancel()
+	}
+}
+
+type peerHost interface {
+	Connect(context.Context, peer.AddrInfo) error
 }
 
 func serveHealth(listen, peerID string, addrs []string) {

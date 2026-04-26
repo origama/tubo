@@ -4,65 +4,60 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.dummy-api-server
+    environment:
+      DUMMY_API_LISTEN: "0.0.0.0:8000"
     ports:
-      - "127.0.0.1:8000:8000"
-    environment:
-      DUMMY_API_LISTEN: "127.0.0.1:8000"
-
-  connector:
-    image: p2p-api-tunnel-connector:dev
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile.service-agent
-    environment:
-      CONNECTOR_ORIGIN_ADDR: "http://dummy-api-server:8000"
-      CONNECTOR_SERVICE_ID: "myapi"
-      CONNECTOR_NODE_SEED: "connector-demo-seed"
-      CONNECTOR_PUBSUB_TOPIC: "/p2p-tunnel/discovery/v1"
-      BOOTSTRAP_PEERS: "/dns4/bootstrap/tcp/4001/p2p/${BOOTSTRAP_PEER_ID}"
-    depends_on:
-      - dummy-api-server
-      - bootstrap
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
 
   edge-gateway:
     image: p2p-api-tunnel-edge-gateway:dev
     build:
       context: .
       dockerfile: deploy/Dockerfile.edge-gateway
-    ports:
-      - "8443:8443"
     environment:
       EDGE_LISTEN: ":8443"
-      EDGE_NODE_SEED: "edge-demo-seed"
-      EDGE_PUBSUB_TOPIC: "/p2p-tunnel/discovery/v1"
-      BOOTSTRAP_PEERS: "/dns4/bootstrap/tcp/4001/p2p/${BOOTSTRAP_PEER_ID}"
-    depends_on:
-      - bootstrap
-
-  relay:
-    image: p2p-api-tunnel-relay:dev
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile.relay
+      EDGE_ADMIN_LISTEN: ":8444"
+      EDGE_P2P_LISTEN: "/ip4/0.0.0.0/tcp/4001"
+      EDGE_SEED: "edge-demo-seed"
     ports:
-      - "4002:4002"
-
-  bootstrap:
-    image: p2p-api-tunnel-bootstrap:dev
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile.bootstrap
-    ports:
+      - "8443:8443"
+      - "8444:8444"
       - "4001:4001"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8443/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
 
-  client-bridge:
-    image: p2p-api-tunnel-client-bridge:dev
+  service-agent:
+    image: p2p-api-tunnel-service-agent:dev
     build:
       context: .
-      dockerfile: deploy/Dockerfile.client-bridge
-    environment:
-      CLIENT_NODE_SEED: "client-demo-seed"
-      CLIENT_PUBSUB_TOPIC: "/p2p-tunnel/discovery/v1"
-      BOOTSTRAP_PEERS: "/dns4/bootstrap/tcp/4001/p2p/${BOOTSTRAP_PEER_ID}"
+      dockerfile: deploy/Dockerfile.service-agent
     depends_on:
-      - bootstrap
+      dummy-api-server:
+        condition: service_healthy
+      edge-gateway:
+        condition: service_healthy
+    environment:
+      SERVICE_P2P_LISTEN: "/ip4/0.0.0.0/tcp/40123"
+      SERVICE_TARGET: "http://dummy-api-server:8000"
+      NODE_SEED: "service-demo-seed"
+      SERVICE_NAME: "myapi"
+      HEARTBEAT_INTERVAL: "5s"
+      SERVICE_HEALTH_LISTEN: ":8091"
+      # Deterministic peer ID for EDGE_SEED=edge-demo-seed.
+      BOOTSTRAP_PEERS: "/dns4/edge-gateway/tcp/4001/p2p/12D3KooWCtTtxCJ1LLi8nJE7Q8S1h4zEuh9a9fp5Tn3mxwyFFvUR"
+    ports:
+      - "8091:8091"
+      - "40123:40123"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8091/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20

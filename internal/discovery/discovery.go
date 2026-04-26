@@ -4,9 +4,9 @@ import (
 	"context"
 	"sync"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
 )
 
 // DiscoveryEvent is emitted when a service registration changes.
@@ -103,13 +103,37 @@ func (s *PubSubSubscriber) handleMessage(msg *pubsub.Message) {
 		return // malformed message, skip
 	}
 
-	// Verify signature against known public key
+	// Reject mismatched sender/announcer identity.
+	from := msg.GetFrom()
+	if from != "" && from != ann.PeerID {
+		return
+	}
+
+	// Verify signature against known public key.
+	// If we don't already have the key, try extracting it from PeerID or pubsub message.
 	s.mu.Lock()
 	pk, known := s.pubKey[ann.PeerID]
 	s.mu.Unlock()
 
 	if !known {
-		return // unknown peer, skip
+		var err error
+
+		pk, err = ann.PeerID.ExtractPublicKey()
+		if err != nil || pk == nil {
+			keyBytes := msg.GetKey()
+			if len(keyBytes) == 0 {
+				return // unknown peer and no key material in message
+			}
+			pk, err = crypto.UnmarshalPublicKey(keyBytes)
+			if err != nil || pk == nil || !ann.PeerID.MatchesPublicKey(pk) {
+				return // key in message is invalid or does not match peer ID
+			}
+		}
+
+		// Cache for next messages.
+		s.mu.Lock()
+		s.pubKey[ann.PeerID] = pk
+		s.mu.Unlock()
 	}
 
 	ok, err := ann.Verify(pk)
@@ -121,9 +145,9 @@ func (s *PubSubSubscriber) handleMessage(msg *pubsub.Message) {
 	_ = s.cache.Add(ann.PeerID, ann.ServiceName, ann.Addresses)
 	s.events <- DiscoveryEvent{Type: "added", ServiceName: ann.ServiceName, PeerID: ann.PeerID}
 
-	// Register the peer's public key for future verification
+	// Ensure key stays cached for future verification.
 	s.mu.Lock()
-	if _, known := s.pubKey[ann.PeerID]; !known {
+	if _, ok := s.pubKey[ann.PeerID]; !ok {
 		s.pubKey[ann.PeerID] = pk
 	}
 	s.mu.Unlock()

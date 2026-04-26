@@ -1,18 +1,23 @@
 # Tests
 
-## E2E
+## Smoke E2E (Docker Compose)
 
-End-to-end tests will spin up:
-- control plane
-- client bridge
-- service agent
-- origin service
-- optional relay/bootstrap
+Esegue il percorso minimo completo:
 
-## Integration
+- `dummy-api-server`
+- `edge-gateway`
+- `service-agent`
+- request HTTP reale via edge
 
-Integration tests will cover:
-- protocol framing
-- route resolution
-- authz
-- streaming and timeout behavior
+Comando:
+
+```bash
+./tests/smoke-compose.sh
+```
+
+Il test verifica:
+
+- health endpoints up
+- discovery cache popolata (`/services`)
+- auto-route presente (`/routes`)
+- chiamata end-to-end `Host: myapi` con risposta HTTP 200 e payload coerente

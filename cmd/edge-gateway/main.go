@@ -80,7 +80,7 @@ func main() {
 	}()
 
 	// Wait forever (servers run in goroutines)
-	select{}
+	select {}
 }
 
 func newGateway(ctx context.Context, p2pListen, seed string) (*Gateway, error) {
@@ -148,10 +148,12 @@ func newGateway(ctx context.Context, p2pListen, seed string) (*Gateway, error) {
 		}
 	}()
 
-	// On shutdown, stop subscriber and close host
+	// On shutdown, stop subscriber and close host.
+	// Important: do not close immediately, or the P2P listener disappears at startup.
 	go func() {
-		defer h.Close()
+		<-ctx.Done()
 		close(stopCh)
+		_ = h.Close()
 	}()
 
 	// Parse RELAY_PEERS env var (comma-separated multiaddrs of known relay nodes)

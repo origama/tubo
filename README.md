@@ -57,52 +57,42 @@ docs/                   # Documentazione architettura e protocollo
 Tutto il lavoro di implementazione è tracciato in [TASKS.md](./TASKS.md).
 Le specifiche del progetto per agenti AI sono in [AGENTS.md](./AGENTS.md).
 
-Per una panoramica rapida:
+## 🚀 Quick Start (Docker Compose)
 
-| Fase | Componente | Stato |
-|------|-----------|-------|
-| 0 | Decisione architetturale (flat-first) | ✅ Completato |
-| 1 | Protocollo wire (framing binario + streaming) | ✅ Completato |
-| 2 | Discovery via pubsub (annunci firmati, lease, heartbeat) | ✅ Completato |
-| 3 | Edge Gateway (HTTP ingress + routing + forwarding + relay fallback) | ✅ Completato |
-| 4 | Connector Agent (pubsub announcement + stream handler + localhost forward) | ✅ Completato |
-| 5 | Relay fallback (bootstrap nodes, relay circuit dialing) | ⏳ Parzialmente completato |
-| 6 | Security & Auth (bearer token, peer binding, tenant isolation, replay protection) | 🔲 Da fare |
-| 7 | Testing completo (unit + integration + E2E docker-compose) | ⏳ Parzialmente completato |
-
-Test implementati: routing (14), protocol (12), discovery (esistenti), forwarding (3).
-
-Consulta [TASKS.md](./TASKS.md) per i dettagli granulari di ogni fase.
-
-## 🚀 Quick Start (Testing)
+Prerequisiti: Docker + Docker Compose plugin.
 
 ```bash
-# Build tutti i binari
-go build ./cmd/...
+# Avvio stack minimo (build incluso)
+docker compose up -d --build
 
-# Avvia il servizio mock
-./dummy-api-server --port 8081
+# Verifica health principali
+curl -fsS http://localhost:8443/healthz
+curl -fsS http://localhost:8444/healthz
+curl -fsS http://localhost:8091/healthz
 
-# Avvia il service-agent (config via env vars)
-SERVICE_TARGET=http://localhost:8081 \
-SERVICE_NAME=myapi \
-NODE_SEED=service-demo-seed \
-BOOTSTRAP_PEERS=/ip4/127.0.0.1/tcp/4001/p2p/<EDGE_PEER_ID> \
-./service-agent
+# Verifica discovery/route sull'admin edge
+curl -fsS http://localhost:8444/services
+curl -fsS http://localhost:8444/routes
 
-# Avvia l'edge gateway (config via env vars)
-EDGE_LISTEN=:8443 \
-EDGE_P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
-EDGE_SEED=gateway-demo-seed \
-EDGE_ADMIN_LISTEN=127.0.0.1:8444 \
-./edge-gateway
+# Chiamata end-to-end via edge gateway
+curl -i -H 'Host: myapi' -X POST --data 'hello' \
+  'http://localhost:8443/v1/dummy?from=readme'
 
-# Testa la connessione (auto-discovery: il gateway risolve "myapi" via pubsub)
-curl -H "Host: myapi" http://localhost:8443/health
+# Spegnimento
+docker compose down
 ```
+
+## 🧪 Smoke Test E2E
+
+```bash
+./tests/smoke-compose.sh
+```
+
+Lo script avvia i container, aspetta health + discovery, esegue una richiesta reale
+`client -> edge -> service-agent -> dummy-api-server` e fallisce con exit code != 0 se il flusso non e' funzionante.
 
 ## 📄 Documentazione
 
-* [Architettura](docs/ARCHITECTURE.md) — Design dettagliato dei componenti
-* [Protocollo Wire](docs/PROTOCOL.md) — Framing binario, messaggi, streaming
-* [Security](docs/SECURITY.md) — Principi di sicurezza e mitigazioni
+* [Architettura](./ARCHITECTURE.md) — Design dettagliato dei componenti
+* [Protocollo Wire](./docs/PROTOCOL.md) — Framing binario, messaggi, streaming
+* [Security](./docs/SECURITY.md) — Principi di sicurezza e mitigazioni

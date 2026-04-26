@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"testing"
+	"time"
 
 	"p2p-api-tunnel/internal/protocol"
 )
@@ -107,9 +108,9 @@ func TestResponseHeaderRoundtrip(t *testing.T) {
 		StatusCode: http.StatusCreated,
 		StatusText: "Created",
 		Headers: map[string][]string{
-			"Content-Type": {"application/json"},
-			"Location":     {"/api/v1/users/42"},
-			"Set-Cookie":   {"session=abc; Path=/; HttpOnly", "tracking=xyz; Path=/"},
+			"Content-Type":          {"application/json"},
+			"Location":              {"/api/v1/users/42"},
+			"Set-Cookie":            {"session=abc; Path=/; HttpOnly", "tracking=xyz; Path=/"},
 			"X-RateLimit-Remaining": {"95"},
 		},
 	}
@@ -155,8 +156,8 @@ func TestResponseHeaderRoundtrip(t *testing.T) {
 
 func TestBodyChunkRoundtrip(t *testing.T) {
 	chunk := protocol.BodyChunk{
-		Data:     []byte("Hello, world! This is a test body with some special chars: àéìòü"),
-		IsFinal:  false,
+		Data:    []byte("Hello, world! This is a test body with some special chars: àéìòü"),
+		IsFinal: false,
 	}
 
 	var buf bytes.Buffer
@@ -180,8 +181,8 @@ func TestBodyChunkRoundtrip(t *testing.T) {
 
 func TestBodyChunkEmpty(t *testing.T) {
 	chunk := protocol.BodyChunk{
-		Data:     []byte{},
-		IsFinal:  true,
+		Data:    []byte{},
+		IsFinal: true,
 	}
 
 	var buf bytes.Buffer
@@ -251,7 +252,7 @@ func TestStreamingRequestResponse(t *testing.T) {
 		t.Fatalf("write request header failed: %v", err)
 	}
 
-	chunks := [][]byte{[]byte(`{"name": "`), []byte(`test`), []byte(`"}\n`) }
+	chunks := [][]byte{[]byte(`{"name": "`), []byte(`test`), []byte(`"}\n`)}
 	for i, chunk := range chunks {
 		isFinal := i == len(chunks)-1
 		err := reqWriter.WriteBodyChunk(&protocol.BodyChunk{Data: chunk, IsFinal: isFinal})
@@ -459,5 +460,58 @@ func TestBodyReaderEmpty(t *testing.T) {
 	}
 	if len(got) != 0 {
 		t.Errorf("BodyReader empty: got %d bytes, want 0", len(got))
+	}
+}
+
+// BodyReader must stop at final chunk even if underlying stream stays open.
+func TestBodyReaderFinalChunkDoesNotBlock(t *testing.T) {
+	pr, pw := io.Pipe()
+	writer := protocol.NewStreamWriter(pw)
+
+	go func() {
+		_ = writer.WriteRequestHeader(&protocol.RequestHeader{
+			Method:  "POST",
+			Path:    "/data",
+			Query:   "",
+			Headers: map[string][]string{"Content-Type": {"text/plain"}},
+		})
+		_ = writer.WriteBodyChunk(&protocol.BodyChunk{
+			Data:    []byte("done"),
+			IsFinal: true,
+		})
+
+		// Keep stream open briefly to simulate real bidirectional protocol usage.
+		time.Sleep(200 * time.Millisecond)
+		_ = pw.Close()
+	}()
+
+	reader := protocol.NewStreamReader(pr)
+	if _, err := reader.ReadRequestHeader(); err != nil {
+		t.Fatalf("read request header: %v", err)
+	}
+
+	bodyReader := reader.BodyReader()
+	defer bodyReader.Close()
+
+	done := make(chan struct{})
+	var (
+		got []byte
+		err error
+	)
+	go func() {
+		got, err = io.ReadAll(bodyReader)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if string(got) != "done" {
+			t.Fatalf("body mismatch: got %q, want %q", string(got), "done")
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatalf("BodyReader blocked after final chunk")
 	}
 }
