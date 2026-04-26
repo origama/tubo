@@ -1,0 +1,39 @@
+## Problem
+The edge gateway main function has a goroutine that closes resources, but this goroutine is never awaited. The main function ends with `select{}` which blocks forever, making graceful shutdown impossible.
+
+## Root Cause
+File: `cmd/edge-gateway/main.go` (lines 152-155)
+```go
+// On shutdown, stop subscriber and close host
+go func() {
+    defer h.Close()
+    close(stopCh)
+}()
+```
+
+This goroutine starts but is never signaled to execute. When the process receives a SIGTERM/SIGINT, there's no way to trigger cleanup.
+
+## Impact
+- 🔴 **Resource leaks**: Port 8443, 8444, P2P sockets not properly released on shutdown
+- 🔴 **No graceful restart**: Can't cleanly stop and restart the gateway
+- 🔴 **Kubernetes unfriendly**: Pod termination hangs waiting for graceful shutdown
+
+## Expected Behavior
+1. Process receives SIGTERM/SIGINT
+2. Cleanup goroutine executes
+3. Resources released
+4. Process exits cleanly
+
+## Solution
+Implement signal handler with context cancellation:
+- Add `os.Signal` channel with `signal.Notify()`
+- Propagate context cancellation to all goroutines
+- Wait for subscriber and cache to stop before closing host
+
+## Files Affected
+- cmd/edge-gateway/main.go
+
+## Label Suggestions
+- bug
+- critical
+- shutdown
