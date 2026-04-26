@@ -243,6 +243,10 @@ func dockerDaemonAvailable() bool {
 func (s *integrationStack) compose(args ...string) (string, error) {
 	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
 	cmd.Dir = s.repoRoot
+	cmd.Env = append(os.Environ(),
+		"DOCKER_BUILDKIT=0",
+		"COMPOSE_DOCKER_CLI_BUILD=0",
+	)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }

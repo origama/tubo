@@ -5,6 +5,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
 COMPOSE="${COMPOSE_CMD:-docker compose}"
+# Docker Desktop BuildKit has shown intermittent crashes in this environment.
+# Default to legacy builder for stability; override by exporting DOCKER_BUILDKIT=1.
+export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
+export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 
 cleanup() {
   $COMPOSE down --remove-orphans >/dev/null 2>&1 || true
