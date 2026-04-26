@@ -1,4 +1,25 @@
 services:
+  p2p-relay:
+    image: p2p-api-tunnel-relay:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.relay
+    environment:
+      P2P_LISTEN: "/ip4/0.0.0.0/tcp/4002"
+      NODE_SEED: "relay-demo-seed"
+      RELAY_HEALTH_LISTEN: ":8092"
+      ENABLE_RELAY_SERVICE: "true"
+      ENABLE_AUTONAT_SERVICE: "true"
+      FORCE_REACHABILITY_PUBLIC: "false"
+    ports:
+      - "4002:4002"
+      - "8092:8092"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8092/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
   dummy-api-server:
     image: p2p-api-tunnel-dummy-api-server:dev
     build:
@@ -24,6 +45,7 @@ services:
       EDGE_ADMIN_LISTEN: ":8444"
       EDGE_P2P_LISTEN: "/ip4/0.0.0.0/tcp/4001"
       EDGE_SEED: "edge-demo-seed"
+      RELAY_PEERS: "/dns4/p2p-relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic"
     ports:
       - "8443:8443"
       - "8444:8444"
@@ -44,6 +66,8 @@ services:
         condition: service_healthy
       edge-gateway:
         condition: service_healthy
+      p2p-relay:
+        condition: service_healthy
     environment:
       SERVICE_P2P_LISTEN: "/ip4/0.0.0.0/tcp/40123"
       SERVICE_TARGET: "http://dummy-api-server:8000"
@@ -52,7 +76,10 @@ services:
       HEARTBEAT_INTERVAL: "5s"
       SERVICE_HEALTH_LISTEN: ":8091"
       # Deterministic peer ID for EDGE_SEED=edge-demo-seed.
-      BOOTSTRAP_PEERS: "/dns4/edge-gateway/tcp/4001/p2p/12D3KooWCtTtxCJ1LLi8nJE7Q8S1h4zEuh9a9fp5Tn3mxwyFFvUR"
+      # Deterministic peer IDs:
+      # EDGE_SEED=edge-demo-seed -> 12D3KooWCtTtxCJ1LLi8nJE7Q8S1h4zEuh9a9fp5Tn3mxwyFFvUR
+      # NODE_SEED=relay-demo-seed -> 12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      BOOTSTRAP_PEERS: "/dns4/edge-gateway/tcp/4001/p2p/12D3KooWCtTtxCJ1LLi8nJE7Q8S1h4zEuh9a9fp5Tn3mxwyFFvUR,/dns4/p2p-relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic"
     ports:
       - "8091:8091"
       - "40123:40123"

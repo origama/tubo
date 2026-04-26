@@ -19,16 +19,17 @@ Componenti funzionanti:
 - `cmd/edge-gateway`: ingress HTTP, discovery subscription, cache locale, auto-route, proxy su stream, relay fallback, admin API.
 - `cmd/service-agent`: annuncio servizio firmato, heartbeat, stream handler, forwarding verso target HTTP locale/remoto.
 - `cmd/client-bridge`: proxy HTTP client-side verso peer service.
+- `cmd/p2p-relay`: nodo pubblico bootstrap/relay v2 con health endpoint, supporto PSK e allowlist PeerID (connection gater).
 - `internal/protocol`: framing binario + streaming body bidirezionale.
 - `internal/discovery`: announcement signed + TTL cache + eventi add/remove.
-- `internal/p2p`: host creation da seed + supporto private swarm PSK.
+- `internal/p2p`: host creation da seed + supporto private swarm PSK + parser allowlist PeerID.
 
 Gap noti:
 
-- allowlist PeerID enforcement non ancora completo;
+- allowlist PeerID enforcement completo solo sul relay (non ancora esteso end-to-end a tutti i binari);
 - binding `ServiceName -> PeerID` non ancora enforced end-to-end;
 - AutoNAT/hole punching non completi;
-- relay/bootstrap dedicati come binari separati sono scaffold in `deploy/`.
+- diagnostica reachability avanzata non ancora completa.
 
 ## 3) Workflow obbligatorio per agent
 

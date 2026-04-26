@@ -15,7 +15,7 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
 
 `cmd/service-agent` oggi:
 
-1. crea host libp2p (`p2p.NewHostWithSeed`);
+1. crea host libp2p (`p2p.NewHostWithSeedAndPSK`);
 2. entra nel topic pubsub `"/discovery/v1.0"`;
 3. pubblica `Announcement` firmato con:
    - `ServiceName`
@@ -37,6 +37,7 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
    - recuperare/derivare public key del peer;
    - verificare firma;
    - aggiornare cache discovery.
+4. se configurato, tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 
 ### 1.3 Cache e auto-routing
 
@@ -55,7 +56,8 @@ Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
 2. `Announcement.TTL` non controlla direttamente TTL cache (oggi fisso lato edge).
 3. Se gli indirizzi annunciati non sono raggiungibili, il dial diretto fallisce.
 4. Hole punching/AutoNAT non sono ancora completi nel progetto.
-5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge-gateway`, `service-agent` e `client-bridge`, ma mancano ancora allowlist PeerID e binding `ServiceName -> PeerID` a livello enforcement completo.
+5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge-gateway`, `service-agent`, `client-bridge` e `p2p-relay`.
+6. `LIBP2P_ALLOWED_PEERS` + connection gater sono implementati nel `p2p-relay`, ma non ancora enforced end-to-end su tutti i binari.
 
 ## 2) Obiettivo operativo per deployment NAT/NAT privato
 
@@ -114,7 +116,7 @@ Policy chiave:
 - mai committata nel repository;
 - ruotabile in caso di compromissione.
 
-### 3.2 Allowlist PeerID (target)
+### 3.2 Allowlist PeerID (parziale: relay implementato)
 
 Configurazione desiderata:
 
@@ -127,10 +129,14 @@ Comportamento richiesto:
 3. rifiutare annunci discovery firmati da PeerID non allowlisted;
 4. rifiutare mapping `ServiceName -> PeerID` non previsto.
 
-Implementazione consigliata:
+Implementazione attuale/parziale:
 
 - `ConnectionGater` per livello connessione;
-- controlli applicativi in discovery handler e stream handler.
+- parser `LIBP2P_ALLOWED_PEERS` e enforcement connessioni sul `p2p-relay`.
+
+Implementazione ancora necessaria:
+
+- controlli applicativi in discovery handler e stream handler su gateway/agent.
 
 ### 3.3 Binding ServiceName -> PeerID (target)
 

@@ -15,6 +15,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+compose_build_serial() {
+  if $COMPOSE build --help 2>/dev/null | grep -q -- "--no-parallel"; then
+    $COMPOSE build --no-parallel
+    return
+  fi
+  COMPOSE_PARALLEL_LIMIT=1 $COMPOSE build
+}
+
 wait_http_ok() {
   local url="$1"
   local tries="${2:-60}"
@@ -33,7 +41,7 @@ if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
   echo "[smoke] forcing image rebuild (sequential)"
   build_ok=0
   for attempt in 1 2 3; do
-    if $COMPOSE build --no-parallel; then
+    if compose_build_serial; then
       build_ok=1
       break
     fi
@@ -65,6 +73,7 @@ wait_http_ok "http://127.0.0.1:8000/healthz"
 wait_http_ok "http://127.0.0.1:8443/healthz"
 wait_http_ok "http://127.0.0.1:8444/healthz"
 wait_http_ok "http://127.0.0.1:8091/healthz"
+wait_http_ok "http://127.0.0.1:8092/healthz"
 
 echo "[smoke] waiting for discovery cache and auto-route"
 for i in $(seq 1 60); do

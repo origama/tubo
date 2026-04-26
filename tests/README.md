@@ -4,6 +4,7 @@
 
 Esegue il percorso minimo completo:
 
+- `p2p-relay`
 - `dummy-api-server`
 - `edge-gateway`
 - `service-agent`

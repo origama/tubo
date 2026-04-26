@@ -36,6 +36,11 @@ func main() {
 	p2pListen := getenv("EDGE_P2P_LISTEN", "/ip4/0.0.0.0/tcp/4001")
 	seed := getenv("EDGE_SEED", "")
 	adminListen := getenv("EDGE_ADMIN_LISTEN", "127.0.0.1:8444")
+	bootstrapPeers := getenv("BOOTSTRAP_PEERS", "")
+	bootstrapRetryInterval, err := time.ParseDuration(getenv("BOOTSTRAP_RETRY_INTERVAL", "5s"))
+	if err != nil {
+		log.Fatalf("invalid BOOTSTRAP_RETRY_INTERVAL %q: %v", getenv("BOOTSTRAP_RETRY_INTERVAL", ""), err)
+	}
 
 	gw, err := newGateway(context.Background(), p2pListen, seed)
 	if err != nil {
@@ -44,6 +49,17 @@ func main() {
 
 	log.Printf("edge gateway peer_id=%s", gw.host.ID())
 	log.Printf("edge gateway addrs: %v", p2p.PeerAddrs(gw.host))
+
+	if bootstrapPeers != "" {
+		dialBootstrapPeers(gw.host, bootstrapPeers)
+		go func() {
+			ticker := time.NewTicker(bootstrapRetryInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				dialBootstrapPeers(gw.host, bootstrapPeers)
+			}
+		}()
+	}
 
 	// Start HTTP server (ingress)
 	go func() {
@@ -387,6 +403,28 @@ func (gw *Gateway) handleAddRoute(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintf(w, "route added: %s%s → %s\n", host, pathPrefix, serviceName)
+}
+
+func dialBootstrapPeers(h host.Host, bootstrapPeers string) {
+	log.Println("dialing bootstrap peers")
+	for _, raw := range strings.Split(bootstrapPeers, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			log.Printf("invalid bootstrap peer %q: %v", raw, err)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := h.Connect(ctx, info); err != nil {
+			log.Printf("failed to dial bootstrap peer %s: %v", info.ID, err)
+		} else {
+			log.Printf("connected to bootstrap peer %s", info.ID)
+		}
+		cancel()
+	}
 }
 
 func getenv(key, def string) string {

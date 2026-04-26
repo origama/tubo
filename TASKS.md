@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-26 21:37 UTC  
+> **Last updated:** 2026-04-27 00:56 UTC  
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -65,6 +65,7 @@
 | 5.2 | AutoNAT client/server setup | 🔲 | Determine NAT type (open, symmetric, etc.) |
 | 5.3 | Relay fallback circuit dialing | ✅ | When direct dial fails, route through relay peers |
 | 5.4 | Hole punching coordination | 🔲 | libp2p circuit v2 / ICE-based hole punch |
+| 5.5 | Dedicated relay/bootstrap binary | ✅ | Added `cmd/p2p-relay` with relay service v2, AutoNAT service, health API, resource limits |
 
 ---
 
@@ -78,6 +79,7 @@
 | 6.4 | Rate limiting on pubsub + HTTP | 🔲 | Per-peer and global rate limits |
 | 6.5 | Replay protection (nonce/timestamp) | 🔲 | Prevent announcement replay attacks |
 | 6.6 | Private libp2p network (PSK) support | ✅ | Added `LIBP2P_PRIVATE_NETWORK_KEY` / `_B64` loading and host initialization in edge/service/client-bridge |
+| 6.7 | PeerID allowlist (connection-level) | ⏳ | Added `LIBP2P_ALLOWED_PEERS` parser + `ConnectionGater` and enabled it in `cmd/p2p-relay`; remaining binaries pending |
 
 ---
 
@@ -107,6 +109,7 @@
 | C.9 | Consolidate docs under `docs/` | ✅ | Root `ARCHITECTURE.md`, `PROTOCOL.md`, `SECURITY.md` converted to redirect stubs |
 | C.10 | Add canonical operability runbook | ✅ | Added `docs/OPERABILITY.md` with explicit startup/secure tunnel steps for 2+ services |
 | C.11 | Improve Docker build stability defaults | ✅ | Smoke/integration paths now default to `DOCKER_BUILDKIT=0` and `COMPOSE_DOCKER_CLI_BUILD=0` |
+| C.12 | Replace relay/bootstrap scaffolds with runnable binary images | ✅ | `deploy/Dockerfile.relay` and `deploy/Dockerfile.bootstrap` now build/run `cmd/p2p-relay`; compose includes `p2p-relay` service |
 
 ---
 
@@ -125,7 +128,7 @@ The following packages have no `_test.go` files yet:
 
 ## Next Priority (What to work on next)
 
-1. **Phase 7.2 — Integration tests**: Go integration tests in `tests/integration` matching AGENTS hard-gate scenarios
-2. **Phase 7.3 — Compose E2E hardening**: Add relay/bootstrap profiles and run smoke in CI
-3. **Phase 5.2 — AutoNAT**: Client/server setup for NAT type detection
-4. **Phase 6 — Security**: Peer allowlist + ServiceName->PeerID authz enforcement
+1. **Phase 6 — Security**: estendere allowlist PeerID a edge/service/client-bridge + enforcement `ServiceName -> PeerID`
+2. **Phase 5.2 — AutoNAT**: completare diagnostica reachability + client/server setup
+3. **Phase 7.2 — Integration tests**: aggiungere acceptance test su PSK/allowlist/announcement invalidi
+4. **Phase 7.3 — Compose E2E hardening**: scenari NAT/NAT relay-first in smoke/integration

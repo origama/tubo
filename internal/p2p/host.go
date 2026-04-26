@@ -58,6 +58,10 @@ func NewHostWithSeed(listenAddr, seed string) (host.Host, error) {
 }
 
 func NewHostWithSeedAndPSK(listenAddr, seed string, psk pnet.PSK) (host.Host, error) {
+	return NewHostWithSeedAndPSKAndOptions(listenAddr, seed, psk)
+}
+
+func NewHostWithSeedAndPSKAndOptions(listenAddr, seed string, psk pnet.PSK, extraOpts ...libp2p.Option) (host.Host, error) {
 	if listenAddr == "" {
 		listenAddr = "/ip4/127.0.0.1/tcp/0"
 	}
@@ -81,6 +85,7 @@ func NewHostWithSeedAndPSK(listenAddr, seed string, psk pnet.PSK) (host.Host, er
 	if len(psk) > 0 {
 		opts = append(opts, libp2p.PrivateNetwork(psk))
 	}
+	opts = append(opts, extraOpts...)
 
 	return libp2p.New(opts...)
 }
