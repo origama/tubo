@@ -47,6 +47,7 @@ func main() {
 		log.Fatalf("create gateway: %v", err)
 	}
 
+	log.Printf("edge gateway config listen=%s admin_listen=%s p2p_listen=%s seed_configured=%t bootstrap_peers=%d relay_peers=%d bootstrap_retry_interval=%s", listen, adminListen, p2pListen, seed != "", csvCount(bootstrapPeers), len(gw.relayPeers), bootstrapRetryInterval)
 	log.Printf("edge gateway peer_id=%s", gw.host.ID())
 	log.Printf("edge gateway addrs: %v", p2p.PeerAddrs(gw.host))
 
@@ -112,6 +113,7 @@ func newGateway(ctx context.Context, p2pListen, seed string) (*Gateway, error) {
 	if usingPrivateNetwork {
 		log.Printf("libp2p private network enabled")
 	}
+	p2p.LogNetworkEvents(h, "edge")
 
 	ps, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
@@ -208,6 +210,7 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 	var lastErr error
 
 	for _, relayAddrInfo := range relayPeers {
+		log.Printf("relay fallback attempting relay=%s target=%s addrs=%v", relayAddrInfo.ID, targetPeer, relayAddrInfo.Addrs)
 		if len(relayAddrInfo.Addrs) == 0 {
 			log.Printf("relay %s has no addresses, skipping", relayAddrInfo.ID)
 			continue
@@ -237,6 +240,7 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			continue
 		}
 		fullMaddr := circuitMaddr.Encapsulate(targetMaddr)
+		log.Printf("relay fallback dialing circuit=%s", fullMaddr)
 
 		// Create AddrInfo from the full circuit multiaddr and dial through relay
 		circuitInfo, err := peer.AddrInfoFromP2pAddr(fullMaddr)
@@ -260,7 +264,7 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			continue
 		}
 
-		log.Printf("relay fallback succeeded via relay %s → target %s", relayAddrInfo.ID, targetPeer)
+		log.Printf("relay fallback succeeded via relay %s -> target %s", relayAddrInfo.ID, targetPeer)
 		return stream, nil
 	}
 
@@ -271,45 +275,52 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 }
 
 func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
 	hostname := r.Host
 	if idx := strings.Index(hostname, ":"); idx >= 0 {
 		hostname = hostname[:idx] // strip port
 	}
+	log.Printf("proxy request method=%s host=%s path=%s query=%q remote=%s", r.Method, hostname, r.URL.Path, r.URL.RawQuery, r.RemoteAddr)
 
 	// Match route by hostname + path
 	route, ok := gw.routes.Match(hostname, r.URL.Path)
 	if !ok {
+		log.Printf("proxy route missing host=%s path=%s duration=%s", hostname, r.URL.Path, time.Since(start))
 		http.Error(w, "no route for "+hostname+r.URL.Path, http.StatusNotFound)
 		return
 	}
 
-	log.Printf("route matched: %s%s → service=%q peer=%s", hostname, r.URL.Path, route.ServiceName, route.PeerID)
+	log.Printf("route matched host=%s path=%s service=%q route_peer=%s", hostname, r.URL.Path, route.ServiceName, route.PeerID)
 
 	// Resolve service via discovery cache
 	entry, ok := gw.cache.Resolve(route.ServiceName)
 	if !ok {
+		log.Printf("discovery missing service=%q host=%s path=%s duration=%s", route.ServiceName, hostname, r.URL.Path, time.Since(start))
 		http.Error(w, "service "+route.ServiceName+" not found in discovery", http.StatusBadGateway)
 		return
 	}
 
-	log.Printf("resolved %s → peer %s (addrs: %v)", route.ServiceName, entry.PeerID, entry.Addresses)
+	log.Printf("resolved service=%q peer=%s addrs=%v", route.ServiceName, entry.PeerID, entry.Addresses)
 
 	// Open stream to resolved peer (direct P2P connection)
 	stream, err := gw.host.NewStream(r.Context(), entry.PeerID, p2p.ProtocolID)
+	connectionPath := "direct"
 	if err != nil {
 		log.Printf("direct stream failed to %s: %v", entry.PeerID, err)
 
 		if len(gw.relayPeers) == 0 {
+			log.Printf("proxy failed reason=peer_not_connected peer=%s relay_peers=0 duration=%s", entry.PeerID, time.Since(start))
 			http.Error(w, "cannot reach "+entry.PeerID.String(), http.StatusBadGateway)
 			return
 		}
 
 		stream, err = tryRelayFallback(r.Context(), gw.host, entry.PeerID, gw.relayPeers)
 		if err != nil {
-			log.Printf("relay fallback failed for %s: %v", entry.PeerID, err)
+			log.Printf("proxy failed reason=relay_unavailable peer=%s err=%v duration=%s", entry.PeerID, err, time.Since(start))
 			http.Error(w, "cannot reach "+entry.PeerID.String()+" (direct and relay): "+err.Error(), http.StatusBadGateway)
 			return
 		}
+		connectionPath = "relayed"
 	}
 	defer stream.Close()
 
@@ -328,7 +339,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Forward request over P2P stream using HandleClientRequest
 	resp, err := p2p.HandleClientRequest(stream, r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
 	if err != nil {
-		log.Printf("forward failed: %v", err)
+		log.Printf("proxy failed reason=stream_forward_failed service=%q peer=%s connection_path=%s err=%v duration=%s", route.ServiceName, entry.PeerID, connectionPath, err, time.Since(start))
 		stream.Reset()
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -351,9 +362,11 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	// Stream response body to client
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	bytesWritten, err := io.Copy(w, resp.Body)
+	if err != nil {
 		log.Printf("streaming response: %v", err)
 	}
+	log.Printf("proxy completed service=%q peer=%s connection_path=%s status=%d bytes=%d duration=%s", route.ServiceName, entry.PeerID, connectionPath, resp.StatusCode, bytesWritten, time.Since(start))
 }
 
 func (gw *Gateway) handleListServices(w http.ResponseWriter, r *http.Request) {
@@ -439,4 +452,14 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func csvCount(raw string) int {
+	count := 0
+	for _, item := range strings.Split(raw, ",") {
+		if strings.TrimSpace(item) != "" {
+			count++
+		}
+	}
+	return count
 }

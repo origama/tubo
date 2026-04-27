@@ -3,8 +3,10 @@ package p2p
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"p2p-api-tunnel/internal/forwarding"
@@ -24,6 +26,10 @@ func (rc *readCloser) Close() error { return nil }
 func HandleServiceStream(localTarget string) func(network.Stream) {
 	return func(s network.Stream) {
 		defer s.Close()
+		start := time.Now()
+		remotePeer := s.Conn().RemotePeer()
+		remoteAddr := s.Conn().RemoteMultiaddr()
+		log.Printf("service stream opened peer=%s remote_addr=%s target=%s", remotePeer, remoteAddr, localTarget)
 
 		reader := protocol.NewStreamReader(s)
 		writer := protocol.NewStreamWriter(s)
@@ -31,6 +37,7 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 		// Read request header
 		reqHeader, err := reader.ReadRequestHeader()
 		if err != nil {
+			log.Printf("service stream decode request failed peer=%s err=%v duration=%s", remotePeer, err, time.Since(start))
 			_ = writer.WriteError(&protocol.Error{Code: 400, Message: "decode request header: " + err.Error()})
 			return
 		}
@@ -40,10 +47,12 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 		if reqHeader.Query != "" {
 			upURL += "?" + reqHeader.Query
 		}
+		log.Printf("service upstream request peer=%s method=%s path=%s query=%q url=%s content_length_hint=%d", remotePeer, reqHeader.Method, reqHeader.Path, reqHeader.Query, upURL, reqHeader.ContentLengthHint)
 
 		// Create upstream request — body will be streamed via BodyReader
 		upReq, err := http.NewRequest(reqHeader.Method, upURL, nil) // body set below
 		if err != nil {
+			log.Printf("service upstream build request failed peer=%s url=%s err=%v duration=%s", remotePeer, upURL, err, time.Since(start))
 			_ = writer.WriteError(&protocol.Error{Code: 500, Message: "build upstream request: " + err.Error()})
 			return
 		}
@@ -69,10 +78,12 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 		resp, err := http.DefaultClient.Do(upReq)
 		if err != nil {
 			bodyReader.Close() // drain remaining request body
+			log.Printf("service upstream failed peer=%s url=%s err=%v duration=%s", remotePeer, upURL, err, time.Since(start))
 			_ = writer.WriteError(&protocol.Error{Code: 502, Message: "upstream failed: " + err.Error()})
 			return
 		}
 		defer resp.Body.Close()
+		log.Printf("service upstream response peer=%s url=%s status=%d", remotePeer, upURL, resp.StatusCode)
 
 		// Write response header
 		respHeader := &protocol.ResponseHeader{
@@ -89,29 +100,35 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 		forwarding.StripHopByHopHeaders(respHeader.Headers)
 
 		if err := writer.WriteResponseHeader(respHeader); err != nil {
+			log.Printf("service stream write response header failed peer=%s status=%d err=%v duration=%s", remotePeer, resp.StatusCode, err, time.Since(start))
 			_ = writer.WriteError(&protocol.Error{Code: 500, Message: "write response header: " + err.Error()})
 			return
 		}
 
 		// Stream response body in chunks
 		buf := make([]byte, 32*1024) // 32KB chunks
+		var bytesWritten int64
 		for {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
 				isFinal := readErr == io.EOF
 				if err := writer.WriteBodyChunk(&protocol.BodyChunk{Data: buf[:n], IsFinal: isFinal}); err != nil {
+					log.Printf("service stream write body chunk failed peer=%s status=%d bytes=%d err=%v duration=%s", remotePeer, resp.StatusCode, bytesWritten, err, time.Since(start))
 					_ = writer.WriteError(&protocol.Error{Code: 500, Message: "write body chunk: " + err.Error()})
 					return
 				}
+				bytesWritten += int64(n)
 			}
 			if readErr != nil {
 				if readErr == io.EOF {
 					break
 				}
+				log.Printf("service upstream body read failed peer=%s status=%d bytes=%d err=%v duration=%s", remotePeer, resp.StatusCode, bytesWritten, readErr, time.Since(start))
 				_ = writer.WriteError(&protocol.Error{Code: 502, Message: "read upstream body: " + readErr.Error()})
 				return
 			}
 		}
+		log.Printf("service stream completed peer=%s method=%s path=%s status=%d bytes=%d duration=%s", remotePeer, reqHeader.Method, reqHeader.Path, resp.StatusCode, bytesWritten, time.Since(start))
 	}
 }
 
@@ -125,7 +142,7 @@ func HandleClientRequest(s network.Stream, method, path, query string, headers m
 	var contentLengthHint int64 = -1 // streaming by default
 	if lr, ok := body.(*io.LimitedReader); ok && body != nil {
 		contentLengthHint = lr.N
-	} else if body == nil {
+	} else if body == nil || body == http.NoBody {
 		contentLengthHint = 0
 	}
 
@@ -142,8 +159,9 @@ func HandleClientRequest(s network.Stream, method, path, query string, headers m
 	}
 
 	// Stream request body if present
-	if body != nil {
+	if body != nil && body != http.NoBody {
 		buf := make([]byte, 32*1024)
+		finalSent := false
 		for {
 			n, readErr := body.Read(buf)
 			if n > 0 {
@@ -151,9 +169,15 @@ func HandleClientRequest(s network.Stream, method, path, query string, headers m
 				if err := writer.WriteBodyChunk(&protocol.BodyChunk{Data: buf[:n], IsFinal: isFinal}); err != nil {
 					return nil, fmt.Errorf("write request body chunk: %w", err)
 				}
+				finalSent = isFinal
 			}
 			if readErr != nil {
 				if readErr == io.EOF {
+					if !finalSent {
+						if err := writer.WriteBodyChunk(&protocol.BodyChunk{Data: []byte{}, IsFinal: true}); err != nil {
+							return nil, fmt.Errorf("write request body final chunk: %w", err)
+						}
+					}
 					break
 				}
 				return nil, fmt.Errorf("read request body: %w", readErr)
@@ -167,14 +191,12 @@ func HandleClientRequest(s network.Stream, method, path, query string, headers m
 	}
 
 	// Read response header or error frame
-	respHeader, err := reader.ReadResponseHeader()
+	respHeader, errFrame, err := reader.ReadResponseHeaderOrError()
 	if err != nil {
-		// Check if it's an error frame instead
-		errFrame, errErr := reader.ReadError()
-		if errErr == nil && errFrame != nil {
-			return nil, fmt.Errorf("server error (code %d): %s", errFrame.Code, errFrame.Message)
-		}
 		return nil, fmt.Errorf("read response header: %w", err)
+	}
+	if errFrame != nil {
+		return nil, fmt.Errorf("server error (code %d): %s", errFrame.Code, errFrame.Message)
 	}
 
 	// Build HTTP response with streaming body

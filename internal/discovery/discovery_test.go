@@ -187,6 +187,37 @@ func TestCacheExpiry(t *testing.T) {
 	}
 }
 
+func TestCacheCountEmitsExpiredCallback(t *testing.T) {
+	cache := discovery.NewCache(50*time.Millisecond, 10*time.Minute)
+	pid := peer.ID("expiring-peer")
+	expiredCh := make(chan string, 1)
+	cache.SetExpiredCallback(func(serviceName string, expiredPeer peer.ID) {
+		if expiredPeer != pid {
+			t.Errorf("expired peer: got %s want %s", expiredPeer, pid)
+		}
+		expiredCh <- serviceName
+	})
+
+	if err := cache.Add(pid, "short-lived", []string{"/ip4/1.2.3.4/tcp/8080"}); err != nil {
+		t.Fatal(err)
+	}
+
+	time.Sleep(80 * time.Millisecond)
+
+	if got := cache.Count(); got != 0 {
+		t.Fatalf("count after expiry: got %d want 0", got)
+	}
+
+	select {
+	case got := <-expiredCh:
+		if got != "short-lived" {
+			t.Fatalf("expired service: got %q want %q", got, "short-lived")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected expired callback from Count")
+	}
+}
+
 func TestCacheUpdate(t *testing.T) {
 	cache := discovery.NewCache(30*time.Second, 10*time.Minute)
 	pid := peer.ID("test-peer")
@@ -227,12 +258,22 @@ func TestCacheMultipleServices(t *testing.T) {
 
 	entryA, ok := cache.Resolve("service-a")
 	if !ok || entryA.PeerID != peerA {
-		t.Errorf("Should resolve service-a correctly: found=%v, gotPeer=%s, wantPeer=%s", ok, func() string { if entryA != nil { return entryA.PeerID.String() }; return "nil" }(), peerA.String())
+		t.Errorf("Should resolve service-a correctly: found=%v, gotPeer=%s, wantPeer=%s", ok, func() string {
+			if entryA != nil {
+				return entryA.PeerID.String()
+			}
+			return "nil"
+		}(), peerA.String())
 	}
 
 	entryB, ok := cache.Resolve("service-b")
 	if !ok || entryB.PeerID != peerB {
-		t.Errorf("Should resolve service-b correctly: found=%v, gotPeer=%s, wantPeer=%s", ok, func() string { if entryB != nil { return entryB.PeerID.String() }; return "nil" }(), peerB.String())
+		t.Errorf("Should resolve service-b correctly: found=%v, gotPeer=%s, wantPeer=%s", ok, func() string {
+			if entryB != nil {
+				return entryB.PeerID.String()
+			}
+			return "nil"
+		}(), peerB.String())
 	}
 }
 

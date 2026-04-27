@@ -51,6 +51,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer h.Close()
+	p2p.LogNetworkEvents(h, "client-bridge")
 	if usingPrivateNetwork {
 		log.Printf("libp2p private network enabled")
 	}
@@ -62,6 +63,7 @@ func main() {
 	}
 	log.Printf("connected to service peer %s", serviceInfo.ID)
 	log.Printf("bridge peer_id=%s", h.ID())
+	log.Printf("client bridge config listen=%s service_peer=%s service_addrs=%v private_network=%t", listen, serviceInfo.ID, serviceInfo.Addrs, usingPrivateNetwork)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -69,8 +71,11 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		log.Printf("bridge request method=%s path=%s query=%q remote=%s service_peer=%s", r.Method, r.URL.Path, r.URL.RawQuery, r.RemoteAddr, serviceInfo.ID)
 		s, err := h.NewStream(context.Background(), serviceInfo.ID, p2p.ProtocolID)
 		if err != nil {
+			log.Printf("bridge open stream failed service_peer=%s err=%v duration=%s", serviceInfo.ID, err, time.Since(start))
 			http.Error(w, fmt.Sprintf("open stream: %v", err), http.StatusBadGateway)
 			return
 		}
@@ -89,6 +94,7 @@ func main() {
 
 		resp, err := p2p.HandleClientRequest(s, r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
 		if err != nil {
+			log.Printf("bridge forward failed service_peer=%s err=%v duration=%s", serviceInfo.ID, err, time.Since(start))
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
@@ -103,9 +109,11 @@ func main() {
 		w.WriteHeader(resp.StatusCode)
 
 		// Stream response body directly to client
-		if _, err := io.Copy(w, resp.Body); err != nil {
+		bytesWritten, err := io.Copy(w, resp.Body)
+		if err != nil {
 			log.Printf("streaming response body: %v", err)
 		}
+		log.Printf("bridge completed service_peer=%s status=%d bytes=%d duration=%s", serviceInfo.ID, resp.StatusCode, bytesWritten, time.Since(start))
 	})
 
 	log.Printf("client bridge listening on %s", listen)

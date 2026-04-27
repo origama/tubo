@@ -15,6 +15,7 @@ Questo documento e' il riferimento operativo canonico per:
 ## 2) Componenti runtime reali (oggi)
 
 - `p2p-relay` (bootstrap + relay v2 + health endpoint)
+- il relay partecipa anche al topic discovery `/discovery/v1.0` come router GossipSub
 - `edge-gateway` (ingress HTTP + discovery consumer)
 - `service-agent` (publisher + stream handler verso servizio origin)
 - opzionale `client-bridge` (proxy client-side)
@@ -79,12 +80,26 @@ P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
 RELAY_HEALTH_LISTEN=127.0.0.1:8092 \
 ENABLE_RELAY_SERVICE=true \
 ENABLE_AUTONAT_SERVICE=true \
+ENABLE_DISCOVERY_PUBSUB=true \
 FORCE_REACHABILITY_PUBLIC=true \
+PRINT_RUN_COMMANDS=true \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
 go run ./cmd/p2p-relay
 ```
 
-Recuperare `peer_id` relay dai log (`peer_id=...`).
+Il relay stampa nei log:
+
+1. il proprio `peer_id`;
+2. gli indirizzi libp2p disponibili;
+3. un blocco `startup command hints` con `BOOTSTRAP_PEERS` e `RELAY_PEERS` gia' valorizzati per `edge-gateway` e `service-agent`.
+
+Se l'indirizzo pubblico non viene inferito correttamente, forzarlo:
+
+```bash
+RELAY_PUBLIC_ADDR=/ip4/<RELAY_PUBLIC_IP>/tcp/4001
+```
+
+Se `RELAY_PUBLIC_ADDR` non include `/p2p/<PEER_ID>`, il relay aggiunge automaticamente il proprio PeerID nei comandi suggeriti.
 
 Porte firewall minime sul relay:
 
@@ -93,6 +108,8 @@ Porte firewall minime sul relay:
 3. `tcp/22` (SSH gestione)
 
 ### 5.2 Avvia edge-gateway
+
+Nel caso NAT/NAT, l'edge deve poter usare il relay pubblico come unico peer statico. Non e' necessario esporre l'edge come bootstrap peer per i service-agent.
 
 ```bash
 EDGE_LISTEN=:8443 \
@@ -108,6 +125,8 @@ go run ./cmd/edge-gateway
 Recuperare `peer_id` edge dai log (`edge gateway peer_id=...`).
 
 ### 5.3 Avvia service-agent sul laptop (LM Studio)
+
+Nel caso NAT/NAT, il service-agent deve usare il relay pubblico come `BOOTSTRAP_PEERS` e `RELAY_PEERS`. Non usare l'edge come bootstrap peer se l'edge e' dietro NAT.
 
 ```bash
 SERVICE_NAME=lmstudio \
@@ -179,7 +198,7 @@ Implementato oggi:
 
 - discovery announcement firmati;
 - private swarm PSK (env key path o b64).
-- binary `p2p-relay` con relay service + AutoNAT service.
+- binary `p2p-relay` con relay service + AutoNAT service + router GossipSub discovery.
 - parser allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater sul relay.
 
 Target ancora da implementare:
@@ -197,3 +216,12 @@ Se `502` da edge:
 3. verificare `BOOTSTRAP_PEERS` e `EDGE_PEER_ID` corretti;
 4. verificare che tutti i nodi usino la stessa PSK (o nessuna PSK in locale);
 5. controllare log `service-agent` per raggiungibilita' `SERVICE_TARGET`.
+
+Log utili attesi:
+
+1. `p2p-relay`: `startup command hints`, `relay_addr`, connessioni `relay p2p connected/disconnected`.
+2. `edge-gateway`: `proxy request`, `route matched`, `resolved`, `relay fallback`, `proxy completed`.
+3. `service-agent`: `service upstream request`, `service upstream response`, `service stream completed`.
+4. `client-bridge`: `bridge request`, `bridge completed`.
+
+Se un `GET` o una richiesta senza body resta appesa, verificare che il client stia usando una versione con final body chunk vuoto: il service-agent deve vedere `service stream completed`, non solo `service upstream request`.

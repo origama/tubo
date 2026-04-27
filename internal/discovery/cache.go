@@ -101,13 +101,28 @@ func (c *Cache) Remove(serviceName string) {
 // Count returns the number of active (non-expired) entries in the cache.
 func (c *Cache) Count() int {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	count := 0
+	var expired []struct {
+		name string
+		pid  peer.ID
+	}
 	for name, entry := range c.entries {
 		if entry.Expired() {
 			delete(c.entries, name) // lazy cleanup during count too
+			expired = append(expired, struct {
+				name string
+				pid  peer.ID
+			}{name, entry.PeerID})
 		} else {
 			count++
+		}
+	}
+	onExpired := c.onExpired
+	c.mu.Unlock()
+
+	if onExpired != nil {
+		for _, e := range expired {
+			go onExpired(e.name, e.pid)
 		}
 	}
 	return count
@@ -126,12 +141,18 @@ func (c *Cache) cleanupLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			var expired []struct{ name string; pid peer.ID }
+			var expired []struct {
+				name string
+				pid  peer.ID
+			}
 			c.mu.Lock()
 			for name, entry := range c.entries {
 				if entry.Expired() {
 					delete(c.entries, name)
-					expired = append(expired, struct{ name string; pid peer.ID }{name, entry.PeerID})
+					expired = append(expired, struct {
+						name string
+						pid  peer.ID
+					}{name, entry.PeerID})
 				}
 			}
 			c.mu.Unlock()

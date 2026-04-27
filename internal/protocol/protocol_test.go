@@ -231,6 +231,37 @@ func TestErrorRoundtrip(t *testing.T) {
 	}
 }
 
+func TestReadResponseHeaderOrErrorReadsErrorFrame(t *testing.T) {
+	errFrame := protocol.Error{
+		Code:    502,
+		Message: "upstream failed",
+	}
+
+	var buf bytes.Buffer
+	writer := protocol.NewStreamWriter(&buf)
+	if err := writer.WriteError(&errFrame); err != nil {
+		t.Fatalf("WriteError: %v", err)
+	}
+
+	reader := protocol.NewStreamReader(&buf)
+	resp, gotErrFrame, err := reader.ReadResponseHeaderOrError()
+	if err != nil {
+		t.Fatalf("ReadResponseHeaderOrError: %v", err)
+	}
+	if resp != nil {
+		t.Fatalf("response header = %+v, want nil", resp)
+	}
+	if gotErrFrame == nil {
+		t.Fatal("error frame = nil, want frame")
+	}
+	if gotErrFrame.Code != errFrame.Code {
+		t.Errorf("Code: got %d, want %d", gotErrFrame.Code, errFrame.Code)
+	}
+	if gotErrFrame.Message != errFrame.Message {
+		t.Errorf("Message: got %q, want %q", gotErrFrame.Message, errFrame.Message)
+	}
+}
+
 // --- Streaming integration test ---
 
 func TestStreamingRequestResponse(t *testing.T) {

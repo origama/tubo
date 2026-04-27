@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-27 05:20 UTC  
+> **Last updated:** 2026-04-27 13:45 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -67,6 +67,7 @@
 | 5.4 | Hole punching coordination | 🔲 | libp2p circuit v2 / ICE-based hole punch |
 | 5.5 | Dedicated relay/bootstrap binary | ✅ | Added `cmd/p2p-relay` with relay service v2, AutoNAT service, health API, resource limits |
 | 5.6 | Static AutoRelay support (service-agent) | ✅ | Added `RELAY_PEERS`, `ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE` handling in `cmd/service-agent` |
+| 5.7 | Discovery pubsub router on public relay | ✅ | `p2p-relay` joins `/discovery/v1.0` so NAT/NAT peers can discover services via the public node only |
 
 ---
 
@@ -113,6 +114,10 @@
 | C.12 | Replace relay/bootstrap scaffolds with runnable binary images | ✅ | `deploy/Dockerfile.relay` and `deploy/Dockerfile.bootstrap` now build/run `cmd/p2p-relay`; compose includes `p2p-relay` service |
 | C.13 | Fix relay circuit multiaddr fallback on edge | ✅ | `cmd/edge-gateway` now builds relay path as `/p2p/<relay>/p2p-circuit/p2p/<target>` |
 | C.14 | Document tested 3-host NAT/NAT runbook | ✅ | `docs/OPERABILITY.md` now includes tested flow: laptop LM Studio + edge host + public relay + extra service onboarding |
+| C.15 | Fix upstream error frame handling | ✅ | Edge now reads service `Error` frames without blocking, so unavailable targets return a 502 instead of hanging |
+| C.16 | Relay startup command hints + richer component logs | ✅ | Relay emits edge/service startup commands; runtime binaries log config, peer connections, proxy/stream lifecycle |
+| C.17 | Fix discovery expiry event on `/services` polling | ✅ | `Cache.Count()` emits expiry callbacks so auto-routes are removed when services expire |
+| C.18 | Fix empty request-body final chunk | ✅ | GET/empty-body requests send a final body chunk so service-agent streams do not hang |
 
 ---
 

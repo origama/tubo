@@ -25,6 +25,11 @@ func main() {
 	localTarget := getenv("SERVICE_TARGET", "http://127.0.0.1:8000")
 	seed := getenv("NODE_SEED", "service-demo-seed")
 	serviceName := getenv("SERVICE_NAME", "demo-service")
+	healthListen := getenv("SERVICE_HEALTH_LISTEN", "127.0.0.1:8091")
+	bootstrapPeers := getenv("BOOTSTRAP_PEERS", "")
+	autoRelayEnabled := getenvBool("ENABLE_AUTORELAY", true)
+	holePunchingEnabled := getenvBool("ENABLE_HOLE_PUNCHING", true)
+	forceReachabilityPrivate := getenvBool("FORCE_REACHABILITY_PRIVATE", false)
 
 	heartbeatInterval, err := time.ParseDuration(getenv("HEARTBEAT_INTERVAL", "15s"))
 	if err != nil {
@@ -38,13 +43,13 @@ func main() {
 
 	var hostOpts []libp2p.Option
 	relayPeers := parseAddrInfos(getenv("RELAY_PEERS", ""))
-	if len(relayPeers) > 0 && getenvBool("ENABLE_AUTORELAY", true) {
+	if len(relayPeers) > 0 && autoRelayEnabled {
 		hostOpts = append(hostOpts, libp2p.EnableAutoRelayWithStaticRelays(relayPeers))
 	}
-	if getenvBool("ENABLE_HOLE_PUNCHING", true) {
+	if holePunchingEnabled {
 		hostOpts = append(hostOpts, libp2p.EnableHolePunching())
 	}
-	if getenvBool("FORCE_REACHABILITY_PRIVATE", false) {
+	if forceReachabilityPrivate {
 		hostOpts = append(hostOpts, libp2p.ForceReachabilityPrivate())
 	}
 
@@ -53,6 +58,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer h.Close()
+	p2p.LogNetworkEvents(h, "service-agent")
 	if usingPrivateNetwork {
 		log.Printf("libp2p private network enabled")
 	}
@@ -63,14 +69,15 @@ func main() {
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(localTarget))
 
 	log.Println("service agent ready")
+	log.Printf("service agent config service=%q target=%s p2p_listen=%s health_listen=%s seed_configured=%t bootstrap_peers=%d relay_peers=%d autorelay=%t hole_punching=%t force_reachability_private=%t heartbeat_interval=%s", serviceName, localTarget, listen, healthListen, seed != "", csvCount(bootstrapPeers), len(relayPeers), autoRelayEnabled, holePunchingEnabled, forceReachabilityPrivate, heartbeatInterval)
 	log.Printf("peer_id=%s", h.ID())
 	for _, addr := range p2p.PeerAddrs(h) {
 		log.Printf("addr=%s", addr)
 	}
 	log.Printf("forwarding to %s", localTarget)
 
-	if health := getenv("SERVICE_HEALTH_LISTEN", "127.0.0.1:8091"); health != "" {
-		go serveHealth(health, h.ID().String(), p2p.PeerAddrs(h))
+	if healthListen != "" {
+		go serveHealth(healthListen, h.ID().String(), p2p.PeerAddrs(h))
 	}
 
 	// --- GossipSub discovery ---
@@ -93,7 +100,6 @@ func main() {
 	publisher := discovery.NewPublisher(topic, privKey)
 
 	// Dial bootstrap peers before publishing and keep retrying in background.
-	bootstrapPeers := getenv("BOOTSTRAP_PEERS", "")
 	bootstrapRetryInterval, err := time.ParseDuration(getenv("BOOTSTRAP_RETRY_INTERVAL", "5s"))
 	if err != nil {
 		log.Fatalf("invalid BOOTSTRAP_RETRY_INTERVAL %q: %v", getenv("BOOTSTRAP_RETRY_INTERVAL", ""), err)
@@ -209,6 +215,16 @@ func getenvBool(key string, def bool) bool {
 		log.Fatalf("invalid %s=%q: %v", key, raw, err)
 	}
 	return v
+}
+
+func csvCount(raw string) int {
+	count := 0
+	for _, item := range strings.Split(raw, ",") {
+		if strings.TrimSpace(item) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func parseAddrInfos(csv string) []peer.AddrInfo {

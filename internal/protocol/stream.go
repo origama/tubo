@@ -64,6 +64,28 @@ func (s *StreamReader) ReadResponseHeader() (*ResponseHeader, error) {
 	return decodeResponseHeader(r)
 }
 
+// ReadResponseHeaderOrError reads the next frame as either a ResponseHeader or
+// an Error frame. This avoids consuming an Error frame as a wrong response type
+// and then blocking while trying to read another frame.
+func (s *StreamReader) ReadResponseHeaderOrError() (*ResponseHeader, *Error, error) {
+	length, ft, err := s.readFrameHeader()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	r := &io.LimitedReader{R: s.r, N: int64(length)}
+	switch ft {
+	case FrameTypeResponseHeader:
+		resp, err := decodeResponseHeader(r)
+		return resp, nil, err
+	case FrameTypeError:
+		errFrame, err := decodeError(r)
+		return nil, errFrame, err
+	default:
+		return nil, nil, fmt.Errorf("expected ResponseHeader (0x%02x) or Error (0x%02x), got frame type 0x%02x", FrameTypeResponseHeader, FrameTypeError, ft)
+	}
+}
+
 // ReadBodyChunk reads a BodyChunk frame. Returns io.EOF if no more data.
 func (s *StreamReader) ReadBodyChunk() (*BodyChunk, error) {
 	length, ft, err := s.readFrameHeader()
