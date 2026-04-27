@@ -220,8 +220,15 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			continue
 		}
 
-		// Construct circuit multiaddr: relay address + /p2p-circuit + /p2p/TARGET_ID
-		relayMaddr := relayAddrInfo.Addrs[0]
+		// Construct circuit multiaddr:
+		// relay address + /p2p/<RELAY_ID> + /p2p-circuit + /p2p/<TARGET_ID>
+		relayPeerMaddr, err := multiaddr.NewMultiaddr("/p2p/" + relayAddrInfo.ID.String())
+		if err != nil {
+			log.Printf("failed to build relay peer multiaddr: %v", err)
+			lastErr = err
+			continue
+		}
+		relayMaddr := relayAddrInfo.Addrs[0].Encapsulate(relayPeerMaddr)
 		circuitMaddr := relayMaddr.Encapsulate(multiaddr.StringCast("/p2p-circuit"))
 		targetMaddr, err := multiaddr.NewMultiaddr("/p2p/" + targetPeer.String())
 		if err != nil {

@@ -24,6 +24,7 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
    - `TTL` (impostato a `30s`)
 4. avvia heartbeat (`HEARTBEAT_INTERVAL`, default `15s`) che ripubblica lo stesso annuncio;
 5. tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
+6. se configurato, abilita static AutoRelay verso `RELAY_PEERS` (`ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE`).
 
 ### 1.2 Sottoscrizione e validazione (edge-gateway)
 

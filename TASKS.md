@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-27 00:56 UTC  
+> **Last updated:** 2026-04-27 05:20 UTC  
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -66,6 +66,7 @@
 | 5.3 | Relay fallback circuit dialing | ✅ | When direct dial fails, route through relay peers |
 | 5.4 | Hole punching coordination | 🔲 | libp2p circuit v2 / ICE-based hole punch |
 | 5.5 | Dedicated relay/bootstrap binary | ✅ | Added `cmd/p2p-relay` with relay service v2, AutoNAT service, health API, resource limits |
+| 5.6 | Static AutoRelay support (service-agent) | ✅ | Added `RELAY_PEERS`, `ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE` handling in `cmd/service-agent` |
 
 ---
 
@@ -110,6 +111,8 @@
 | C.10 | Add canonical operability runbook | ✅ | Added `docs/OPERABILITY.md` with explicit startup/secure tunnel steps for 2+ services |
 | C.11 | Improve Docker build stability defaults | ✅ | Smoke/integration paths now default to `DOCKER_BUILDKIT=0` and `COMPOSE_DOCKER_CLI_BUILD=0` |
 | C.12 | Replace relay/bootstrap scaffolds with runnable binary images | ✅ | `deploy/Dockerfile.relay` and `deploy/Dockerfile.bootstrap` now build/run `cmd/p2p-relay`; compose includes `p2p-relay` service |
+| C.13 | Fix relay circuit multiaddr fallback on edge | ✅ | `cmd/edge-gateway` now builds relay path as `/p2p/<relay>/p2p-circuit/p2p/<target>` |
+| C.14 | Document tested 3-host NAT/NAT runbook | ✅ | `docs/OPERABILITY.md` now includes tested flow: laptop LM Studio + edge host + public relay + extra service onboarding |
 
 ---
 

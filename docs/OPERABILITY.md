@@ -69,7 +69,7 @@ Distribuire `swarm.key` **solo** ai nodi fidati. Non committare nel repository.
 
 Se valorizzate, host libp2p viene creato con private network PSK.
 
-## 5) Setup multi-host: relay pubblico + edge + 2 servizi
+## 5) Test reale a 3 macchine (laptop NAT + edge NAT + relay pubblico)
 
 ### 5.1 Avvia p2p-relay (host pubblico stabile)
 
@@ -86,6 +86,12 @@ go run ./cmd/p2p-relay
 
 Recuperare `peer_id` relay dai log (`peer_id=...`).
 
+Porte firewall minime sul relay:
+
+1. `tcp/4001` (obbligatoria, bootstrap + relay circuit v2)
+2. `tcp/8092` (opzionale, health check)
+3. `tcp/22` (SSH gestione)
+
 ### 5.2 Avvia edge-gateway
 
 ```bash
@@ -101,7 +107,7 @@ go run ./cmd/edge-gateway
 
 Recuperare `peer_id` edge dai log (`edge gateway peer_id=...`).
 
-### 5.3 Avvia service-agent #1 (es. lmstudio)
+### 5.3 Avvia service-agent sul laptop (LM Studio)
 
 ```bash
 SERVICE_NAME=lmstudio \
@@ -109,12 +115,48 @@ SERVICE_TARGET=http://192.168.1.28:1234 \
 SERVICE_P2P_LISTEN=/ip4/0.0.0.0/tcp/40123 \
 NODE_SEED=service-lmstudio-seed \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID>,/ip4/<EDGE_IP>/tcp/4001/p2p/<EDGE_PEER_ID> \
+BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+ENABLE_AUTORELAY=true \
+ENABLE_HOLE_PUNCHING=true \
+FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
 go run ./cmd/service-agent
 ```
 
-### 5.4 Avvia service-agent #2 (es. internal-api)
+### 5.4 Verifica discovery e route sul nodo edge
+
+```bash
+curl -fsS http://127.0.0.1:8444/services
+curl -fsS http://127.0.0.1:8444/routes
+```
+
+Atteso: `count >= 1` e route auto-creata per `lmstudio`.
+
+### 5.5 Esegui la query reale dal client sull'host edge
+
+```bash
+curl -sS \
+  -H 'Host: lmstudio' \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"google/gemma-4-e2b","system_prompt":"You answer only in rhymes.","input":"What is your favorite color?"}' \
+  http://127.0.0.1:8443/api/v1/chat
+```
+
+Atteso: `HTTP 200` e body JSON restituito da LM Studio.
+
+## 6) Aggiungere un servizio ulteriore sullo stesso tunnel
+
+Pattern:
+
+1. nuovo `service-agent` con `SERVICE_NAME` univoco;
+2. stesso `LIBP2P_PRIVATE_NETWORK_KEY` della swarm;
+3. `BOOTSTRAP_PEERS` verso relay pubblico;
+4. `RELAY_PEERS` verso relay pubblico + `ENABLE_AUTORELAY=true`;
+5. verifica comparsa route su `GET /routes`;
+6. chiamare edge con `Host: <SERVICE_NAME>`.
+
+Esempio servizio aggiuntivo:
 
 ```bash
 SERVICE_NAME=internal-api \
@@ -122,41 +164,14 @@ SERVICE_TARGET=http://127.0.0.1:9000 \
 SERVICE_P2P_LISTEN=/ip4/0.0.0.0/tcp/40124 \
 NODE_SEED=service-internal-api-seed \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID>,/ip4/<EDGE_IP>/tcp/4001/p2p/<EDGE_PEER_ID> \
+BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+ENABLE_AUTORELAY=true \
+ENABLE_HOLE_PUNCHING=true \
+FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
 go run ./cmd/service-agent
 ```
-
-### 5.5 Verifica discovery e routing
-
-Dal nodo edge:
-
-```bash
-curl -fsS http://127.0.0.1:8444/services
-curl -fsS http://127.0.0.1:8444/routes
-```
-
-Atteso: route auto-create per `lmstudio` e `internal-api`.
-
-### 5.6 Query verso i servizi attraverso edge
-
-```bash
-curl -sS -H 'Host: lmstudio' http://<EDGE_IP>:8443/v1/models
-```
-
-```bash
-curl -sS -H 'Host: internal-api' http://<EDGE_IP>:8443/healthz
-```
-
-## 6) Aggiungere un nuovo servizio al tunnel
-
-Pattern:
-
-1. nuovo `service-agent` con `SERVICE_NAME` univoco;
-2. stesso `LIBP2P_PRIVATE_NETWORK_KEY` della swarm;
-3. `BOOTSTRAP_PEERS` verso relay pubblico (e opzionalmente edge);
-4. verifica comparsa route su `GET /routes`;
-5. chiamare edge con `Host: <SERVICE_NAME>`.
 
 ## 7) Stato sicurezza: cosa e' implementato vs target
 

@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
+	libp2p "github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
@@ -34,13 +36,28 @@ func main() {
 		log.Fatalf("load private network key: %v", err)
 	}
 
-	h, err := p2p.NewHostWithSeedAndPSK(listen, seed, psk)
+	var hostOpts []libp2p.Option
+	relayPeers := parseAddrInfos(getenv("RELAY_PEERS", ""))
+	if len(relayPeers) > 0 && getenvBool("ENABLE_AUTORELAY", true) {
+		hostOpts = append(hostOpts, libp2p.EnableAutoRelayWithStaticRelays(relayPeers))
+	}
+	if getenvBool("ENABLE_HOLE_PUNCHING", true) {
+		hostOpts = append(hostOpts, libp2p.EnableHolePunching())
+	}
+	if getenvBool("FORCE_REACHABILITY_PRIVATE", false) {
+		hostOpts = append(hostOpts, libp2p.ForceReachabilityPrivate())
+	}
+
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions(listen, seed, psk, hostOpts...)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer h.Close()
 	if usingPrivateNetwork {
 		log.Printf("libp2p private network enabled")
+	}
+	if len(relayPeers) > 0 {
+		log.Printf("configured %d relay peer(s) for autorelay", len(relayPeers))
 	}
 
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(localTarget))
@@ -180,4 +197,36 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func getenvBool(key string, def bool) bool {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		log.Fatalf("invalid %s=%q: %v", key, raw, err)
+	}
+	return v
+}
+
+func parseAddrInfos(csv string) []peer.AddrInfo {
+	if csv == "" {
+		return nil
+	}
+	var infos []peer.AddrInfo
+	for _, raw := range strings.Split(csv, ",") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			log.Printf("invalid relay peer %q: %v", raw, err)
+			continue
+		}
+		infos = append(infos, info)
+	}
+	return infos
 }
