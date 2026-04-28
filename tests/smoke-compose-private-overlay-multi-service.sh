@@ -102,7 +102,12 @@ for host in svc-one svc-two svc-three; do
   response="$(request_from_edge "$host" "$payload" "from=private-multi&service=$host")"
   assert_contains '"method":"POST"' "$response" "expected POST response for $host"
   assert_contains '"path":"/v1/dummy"' "$response" "expected /v1/dummy path for $host"
-  assert_contains "\"raw_query\":\"from=private-multi&service=$host\"" "$response" "expected query echo for $host"
+  if [[ "$response" != *"\"raw_query\":\"from=private-multi&service=$host\""* && \
+        "$response" != *"\"raw_query\":\"from=private-multi\\u0026service=$host\""* ]]; then
+    echo "[smoke-private-multi] expected query echo for $host"
+    echo "$response"
+    exit 1
+  fi
   assert_contains "\"instance\":\"$host\"" "$response" "expected backend instance $host"
   assert_contains "\"body_b64\":\"$payload_b64\"" "$response" "expected payload echo for $host"
 done
