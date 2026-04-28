@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-28 13:16 UTC
+> **Last updated:** 2026-04-28 13:42 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -91,7 +91,7 @@
 |---|------|--------|-------|
 | 7.1 | Unit tests for all packages | ✅ | protocol (12) + discovery (10) + routing (14) + forwarding (3) = 39 tests passing |
 | 7.2 | Integration tests (multi-node scenarios) | ⏳ | Added `tests/integration` with auto-discovery/proxy, large-body streaming, lease expiry, hop-by-hop header stripping, isolated-network relay fallback coverage (`TestRelayFallbackAcrossIsolatedNetworks`, `RUN_INTEGRATION=1`), plus NAT/relay stress scenarios (`TestRelayNATMixedTrafficStress`, `TestRelayNATTrafficDuringServiceRestart`) |
-| 7.3 | E2E docker-compose test suite | ⏳ | Added `tests/smoke-compose.sh` plus `tests/smoke-compose-relay-nat.sh` for isolated-network relay coverage; NAT-like smoke now passes and is ready to be promoted into CI once large-body relay streaming under load is fixed |
+| 7.3 | E2E docker-compose test suite | ⏳ | Added `tests/smoke-compose.sh`, `tests/smoke-compose-relay-nat.sh`, and `tests/smoke-compose-private-overlay-multi-service.sh`; coverage now includes isolated-network relay traffic plus a 3-service private-overlay Host-routing scenario |
 | 7.4 | CI pipeline (GitHub Actions) | ✅ | `.github/workflows/ci.yml`: build + test + golangci-lint on push/PR |
 
 ---
@@ -125,6 +125,7 @@
 | C.23 | Fix NAT/relay direct-first latency tax | ✅ | Edge direct stream attempts now use a short configurable timeout (`EDGE_DIRECT_STREAM_TIMEOUT`, default `750ms`) before relay fallback; isolated-network relay requests dropped from ~10s to sub-second latency |
 | C.24 | Investigate relayed large-body stream resets under load | ❌ | NAT/relay stress testing shows small traffic is stable, but mixed and `512KiB` uploads still fail with `502` / `stream reset (remote)` / `unexpected EOF`; likely in request/response streaming, framing, or stream reset/close semantics across relayed libp2p streams |
 | C.25 | Promote NAT/relay stress scenarios into stable acceptance coverage | ⏳ | Keep `TestRelayNATMixedTrafficStress` and `TestRelayNATTrafficDuringServiceRestart`; enable CI gating only after C.24 is fixed so relay streaming load tests become trustworthy regression coverage |
+| C.26 | Add private-overlay multi-service acceptance scenario | ✅ | Added `docker-compose.private-overlay-multi-service.yml` plus `tests/smoke-compose-private-overlay-multi-service.sh` to validate one relay, one edge + curl client, and three isolated service nodes on the same private libp2p overlay with Host-based routing over a single edge endpoint |
 
 ---
 

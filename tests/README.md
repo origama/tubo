@@ -48,6 +48,40 @@ Comando:
 
 Il test verifica anche nei log dell'edge che il percorso usato sia `connection_path=relayed`.
 
+## Smoke E2E Private Overlay Multi-Service (Docker Compose con 3 service nodes)
+
+Simula una overlay libp2p privata condivisa da:
+
+- `p2p-relay`
+- `edge-gateway`
+- `curl-client` sulla stessa rete privata dell'edge
+- tre nodi service isolati, ciascuno con:
+  - `service-agent-*`
+  - `dummy-api-server-*`
+
+Topologia Docker:
+
+- `edge-gateway` e `curl-client` su `edge-private`
+- ogni service node su una propria rete privata dedicata
+- `p2p-relay` collegato a tutte le reti private
+- tutti i peer libp2p usano la stessa private swarm PSK (`LIBP2P_PRIVATE_NETWORK_KEY_B64`)
+
+Il `curl-client` richiama sempre lo **stesso endpoint** dell'edge gateway (`http://edge-gateway:8443/v1/dummy`), cambiando solo l'header `Host` tra `svc-one`, `svc-two` e `svc-three`.
+
+Comando:
+
+```bash
+./tests/smoke-compose-private-overlay-multi-service.sh
+```
+
+Il test verifica:
+
+- healthcheck di relay, edge e 3 service nodes
+- discovery cache con `count=3`
+- auto-route per `svc-one`, `svc-two`, `svc-three`
+- routing host-based verso i tre backend tramite un solo endpoint edge
+- risposta coerente dal backend atteso (`instance`)
+
 ## Integration Tests (Go)
 
 Package: `tests/integration`

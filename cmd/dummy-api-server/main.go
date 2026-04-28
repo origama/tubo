@@ -10,6 +10,7 @@ import (
 )
 
 type dummyResponse struct {
+	Instance   string            `json:"instance,omitempty"`
 	Method     string            `json:"method"`
 	Path       string            `json:"path"`
 	RawQuery   string            `json:"raw_query"`
@@ -19,6 +20,7 @@ type dummyResponse struct {
 
 func main() {
 	listen := getenv("DUMMY_API_LISTEN", "127.0.0.1:8000")
+	instance := getenv("DUMMY_API_INSTANCE", "")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -34,6 +36,7 @@ func main() {
 		}
 		body, _ := ioReadAll(r)
 		resp := dummyResponse{
+			Instance: instance,
 			Method:   r.Method,
 			Path:     r.URL.Path,
 			RawQuery: r.URL.RawQuery,
