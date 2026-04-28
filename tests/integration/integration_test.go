@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -17,7 +19,8 @@ import (
 const integrationEnvVar = "RUN_INTEGRATION"
 
 type integrationStack struct {
-	repoRoot string
+	repoRoot     string
+	composeFiles []string
 }
 
 type servicesResponse struct {
@@ -177,7 +180,231 @@ func TestHopByHopHeadersStrippedE2E(t *testing.T) {
 	}
 }
 
+func TestRelayFallbackAcrossIsolatedNetworks(t *testing.T) {
+	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack.waitBaseReady(t)
+
+	status, body := edgeRequest(t, "GET", "/v1/dummy?from=relay-nat", "myapi", nil, nil, 45*time.Second)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", status, body)
+	}
+
+	var resp dummyResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatalf("unmarshal response: %v body=%s", err, body)
+	}
+	if resp.RawQuery != "from=relay-nat" {
+		t.Fatalf("expected raw_query relay-nat, got %q", resp.RawQuery)
+	}
+
+	waitUntil(t, 20*time.Second, func() bool {
+		logs, err := stack.logs("edge-gateway")
+		if err != nil {
+			return false
+		}
+		return strings.Contains(logs, "connection_path=relayed")
+	}, "relay fallback edge log")
+}
+
+type stressCase struct {
+	name     string
+	method   string
+	path     string
+	headers  map[string]string
+	body     []byte
+	timeout  time.Duration
+	validate func(path string, body []byte) error
+}
+
+type stressResult struct {
+	name    string
+	status  int
+	latency time.Duration
+	err     error
+	body    []byte
+}
+
+type stressSummary struct {
+	total            int
+	ok               int
+	transportErrors  int
+	badStatus        int
+	validationErrors int
+	p50              time.Duration
+	p95              time.Duration
+	max              time.Duration
+	failureSamples   []string
+}
+
+func (s stressSummary) describeFailures() string {
+	if len(s.failureSamples) == 0 {
+		return "none"
+	}
+	return strings.Join(s.failureSamples, " | ")
+}
+
+func TestRelayNATMixedTrafficStress(t *testing.T) {
+	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack.waitBaseReady(t)
+
+	largeBody := bytes.Repeat([]byte("L"), 512*1024)
+	jsonBody := []byte(`{"kind":"stress","items":[1,2,3,4],"ok":true}`)
+	textBody := []byte("relay-stress-text")
+
+	cases := []stressCase{
+		{
+			name:    "get-query",
+			method:  "GET",
+			path:    "/v1/dummy?case=get-query&n=1",
+			timeout: 30 * time.Second,
+			validate: func(path string, body []byte) error {
+				return validateDummyResponse(path, body, "GET", nil)
+			},
+		},
+		{
+			name:    "post-text",
+			method:  "POST",
+			path:    "/v1/dummy?case=post-text",
+			headers: map[string]string{"Content-Type": "text/plain", "X-Stress-Case": "post-text"},
+			body:    textBody,
+			timeout: 30 * time.Second,
+			validate: func(path string, body []byte) error {
+				return validateDummyResponse(path, body, "POST", textBody)
+			},
+		},
+		{
+			name:    "put-json",
+			method:  "PUT",
+			path:    "/v1/dummy?case=put-json",
+			headers: map[string]string{"Content-Type": "application/json", "X-Stress-Case": "put-json"},
+			body:    jsonBody,
+			timeout: 30 * time.Second,
+			validate: func(path string, body []byte) error {
+				return validateDummyResponse(path, body, "PUT", jsonBody)
+			},
+		},
+		{
+			name:    "post-large-binary",
+			method:  "POST",
+			path:    "/v1/dummy?case=post-large-binary",
+			headers: map[string]string{"Content-Type": "application/octet-stream", "X-Stress-Case": "post-large-binary"},
+			body:    largeBody,
+			timeout: 60 * time.Second,
+			validate: func(path string, body []byte) error {
+				return validateDummyResponse(path, body, "POST", largeBody)
+			},
+		},
+	}
+
+	const concurrency = 12
+	const roundsPerWorker = 8
+
+	results := make(chan stressResult, concurrency*roundsPerWorker)
+	var wg sync.WaitGroup
+	for worker := 0; worker < concurrency; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			for round := 0; round < roundsPerWorker; round++ {
+				c := cases[(worker+round)%len(cases)]
+				path := fmt.Sprintf("%s&worker=%d&round=%d", c.path, worker, round)
+				started := time.Now()
+				status, body, err := edgeRequestRaw(c.method, path, "myapi", c.headers, c.body, c.timeout)
+				res := stressResult{name: c.name, status: status, latency: time.Since(started), err: err, body: body}
+				if err == nil && status == http.StatusOK {
+					res.err = c.validate(path, body)
+				}
+				results <- res
+			}
+		}(worker)
+	}
+
+	wg.Wait()
+	close(results)
+
+	summary := summarizeStressResults(results)
+	t.Logf("relay NAT mixed stress summary: total=%d ok=%d transport_errors=%d bad_status=%d validation_errors=%d p50=%s p95=%s max=%s",
+		summary.total, summary.ok, summary.transportErrors, summary.badStatus, summary.validationErrors, summary.p50, summary.p95, summary.max)
+
+	if summary.total != concurrency*roundsPerWorker {
+		t.Fatalf("unexpected result count: got %d want %d", summary.total, concurrency*roundsPerWorker)
+	}
+	if summary.transportErrors > 0 || summary.badStatus > 0 || summary.validationErrors > 0 {
+		t.Fatalf("mixed relay stress detected failures: %s", summary.describeFailures())
+	}
+
+	waitUntil(t, 20*time.Second, func() bool {
+		logs, err := stack.logs("edge-gateway")
+		if err != nil {
+			return false
+		}
+		return strings.Contains(logs, "connection_path=relayed")
+	}, "relay fallback edge log after stress")
+}
+
+func TestRelayNATTrafficDuringServiceRestart(t *testing.T) {
+	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack.waitBaseReady(t)
+
+	stopAt := time.Now().Add(25 * time.Second)
+	results := make(chan stressResult, 512)
+	var wg sync.WaitGroup
+
+	for worker := 0; worker < 6; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			round := 0
+			for time.Now().Before(stopAt) {
+				body := []byte(fmt.Sprintf("restart-worker-%d-round-%d", worker, round))
+				path := fmt.Sprintf("/v1/dummy?case=restart&worker=%d&round=%d", worker, round)
+				started := time.Now()
+				status, respBody, err := edgeRequestRaw("POST", path, "myapi", map[string]string{"Content-Type": "text/plain"}, body, 20*time.Second)
+				res := stressResult{name: "restart-traffic", status: status, latency: time.Since(started), err: err, body: respBody}
+				if err == nil && status == http.StatusOK {
+					res.err = validateDummyResponse(path, respBody, "POST", body)
+				}
+				results <- res
+				round++
+			}
+		}(worker)
+	}
+
+	time.Sleep(4 * time.Second)
+	if out, err := stack.compose("restart", "service-agent"); err != nil {
+		t.Fatalf("compose restart service-agent failed: %v\n%s", err, out)
+	}
+
+	wg.Wait()
+	close(results)
+
+	summary := summarizeStressResults(results)
+	t.Logf("relay NAT restart stress summary: total=%d ok=%d transport_errors=%d bad_status=%d validation_errors=%d p50=%s p95=%s max=%s failures=%s",
+		summary.total, summary.ok, summary.transportErrors, summary.badStatus, summary.validationErrors, summary.p50, summary.p95, summary.max, summary.describeFailures())
+
+	if summary.total < 12 {
+		t.Fatalf("restart stress too small, got only %d requests", summary.total)
+	}
+	if summary.ok == 0 {
+		t.Fatalf("restart stress had zero successful requests: %s", summary.describeFailures())
+	}
+
+	stack.waitBaseReady(t)
+	status, body := edgeRequest(t, "GET", "/v1/dummy?from=post-restart-recovery", "myapi", nil, nil, 30*time.Second)
+	if status != http.StatusOK {
+		t.Fatalf("expected recovery request to succeed, got %d body=%s", status, body)
+	}
+
+	if summary.transportErrors > 0 || summary.badStatus > 0 || summary.validationErrors > 0 {
+		t.Fatalf("restart stress exposed failures: %s", summary.describeFailures())
+	}
+}
+
 func newIntegrationStack(t *testing.T) *integrationStack {
+	return newIntegrationStackWithFiles(t, "docker-compose.yml")
+}
+
+func newIntegrationStackWithFiles(t *testing.T, composeFiles ...string) *integrationStack {
 	t.Helper()
 	requireIntegration(t)
 	if !dockerDaemonAvailable() {
@@ -189,7 +416,7 @@ func newIntegrationStack(t *testing.T) *integrationStack {
 		t.Fatalf("getwd: %v", err)
 	}
 	repoRoot := filepath.Clean(filepath.Join(wd, "../.."))
-	stack := &integrationStack{repoRoot: repoRoot}
+	stack := &integrationStack{repoRoot: repoRoot, composeFiles: composeFiles}
 
 	_, _ = stack.compose("down", "--remove-orphans")
 
@@ -241,7 +468,12 @@ func dockerDaemonAvailable() bool {
 }
 
 func (s *integrationStack) compose(args ...string) (string, error) {
-	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
+	composeArgs := []string{"compose"}
+	for _, file := range s.composeFiles {
+		composeArgs = append(composeArgs, "-f", file)
+	}
+	composeArgs = append(composeArgs, args...)
+	cmd := exec.Command("docker", composeArgs...)
 	cmd.Dir = s.repoRoot
 	cmd.Env = append(os.Environ(),
 		"DOCKER_BUILDKIT=0",
@@ -283,6 +515,16 @@ func (s *integrationStack) waitBaseReady(t *testing.T) {
 		}
 		return false
 	}, "discovery+route readiness")
+
+	if s.usesComposeFile("docker-compose.nat.yml") {
+		waitUntil(t, 60*time.Second, func() bool {
+			debugPeer, err := s.serviceDebugPeer()
+			if err != nil {
+				return false
+			}
+			return strings.Contains(debugPeer, "/p2p-circuit")
+		}, "service-agent relay reservation / p2p-circuit address")
+	}
 }
 
 func (s *integrationStack) servicesCount() (int, error) {
@@ -313,14 +555,48 @@ func (s *integrationStack) routes() ([]route, error) {
 	return payload, nil
 }
 
+func (s *integrationStack) logs(service string) (string, error) {
+	return s.compose("logs", service, "--no-color")
+}
+
+func (s *integrationStack) usesComposeFile(name string) bool {
+	for _, file := range s.composeFiles {
+		if file == name || strings.HasSuffix(file, "/"+name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *integrationStack) serviceDebugPeer() (string, error) {
+	resp, err := http.Get("http://127.0.0.1:8091/debug/peer")
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	buf := new(bytes.Buffer)
+	if _, err := buf.ReadFrom(resp.Body); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
 func edgeRequest(t *testing.T, method, path, host string, headers map[string]string, body []byte, timeout time.Duration) (int, []byte) {
 	t.Helper()
 
+	status, respBody, err := edgeRequestRaw(method, path, host, headers, body, timeout)
+	if err != nil {
+		t.Fatalf("edge request failed: %v", err)
+	}
+	return status, respBody
+}
+
+func edgeRequestRaw(method, path, host string, headers map[string]string, body []byte, timeout time.Duration) (int, []byte, error) {
 	client := &http.Client{Timeout: timeout}
 	url := "http://127.0.0.1:8443" + path
 	req, err := http.NewRequest(method, url, bytes.NewReader(body))
 	if err != nil {
-		t.Fatalf("new request: %v", err)
+		return 0, nil, err
 	}
 	req.Host = host
 	for k, v := range headers {
@@ -329,15 +605,78 @@ func edgeRequest(t *testing.T, method, path, host string, headers map[string]str
 
 	resp, err := client.Do(req)
 	if err != nil {
-		t.Fatalf("edge request failed: %v", err)
+		return 0, nil, err
 	}
 	defer resp.Body.Close()
 
 	respBody := new(bytes.Buffer)
 	if _, err := respBody.ReadFrom(resp.Body); err != nil {
-		t.Fatalf("read response: %v", err)
+		return 0, nil, err
 	}
-	return resp.StatusCode, respBody.Bytes()
+	return resp.StatusCode, respBody.Bytes(), nil
+}
+
+func validateDummyResponse(requestPath string, body []byte, expectedMethod string, expectedBody []byte) error {
+	var resp dummyResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return fmt.Errorf("unmarshal response: %w body=%s", err, body)
+	}
+	if resp.Method != expectedMethod {
+		return fmt.Errorf("unexpected method: got %q want %q", resp.Method, expectedMethod)
+	}
+	if resp.Path != "/v1/dummy" {
+		return fmt.Errorf("unexpected path: got %q", resp.Path)
+	}
+	expectedQuery := ""
+	if parts := strings.SplitN(requestPath, "?", 2); len(parts) == 2 {
+		expectedQuery = parts[1]
+	}
+	if resp.RawQuery != expectedQuery {
+		return fmt.Errorf("unexpected raw query: got %q want %q", resp.RawQuery, expectedQuery)
+	}
+	expectedBodyB64 := base64.StdEncoding.EncodeToString(expectedBody)
+	if resp.BodyB64 != expectedBodyB64 {
+		return fmt.Errorf("unexpected body_b64 len: got=%d want=%d", len(resp.BodyB64), len(expectedBodyB64))
+	}
+	return nil
+}
+
+func summarizeStressResults(results <-chan stressResult) stressSummary {
+	summary := stressSummary{}
+	latencies := make([]time.Duration, 0, 128)
+	for res := range results {
+		summary.total++
+		latencies = append(latencies, res.latency)
+		switch {
+		case res.err != nil:
+			if res.status == http.StatusOK {
+				summary.validationErrors++
+			} else if res.status == 0 {
+				summary.transportErrors++
+			} else {
+				summary.badStatus++
+			}
+			if len(summary.failureSamples) < 8 {
+				summary.failureSamples = append(summary.failureSamples, fmt.Sprintf("%s status=%d err=%v", res.name, res.status, res.err))
+			}
+		case res.status != http.StatusOK:
+			summary.badStatus++
+			if len(summary.failureSamples) < 8 {
+				summary.failureSamples = append(summary.failureSamples, fmt.Sprintf("%s unexpected_status=%d body=%s", res.name, res.status, strings.TrimSpace(string(res.body))))
+			}
+		default:
+			summary.ok++
+		}
+	}
+	if len(latencies) == 0 {
+		return summary
+	}
+	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
+	summary.p50 = latencies[len(latencies)/2]
+	p95idx := int(float64(len(latencies)-1) * 0.95)
+	summary.p95 = latencies[p95idx]
+	summary.max = latencies[len(latencies)-1]
+	return summary
 }
 
 func httpOK(url string) bool {

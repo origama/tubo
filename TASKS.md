@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-27 13:45 UTC
+> **Last updated:** 2026-04-28 13:16 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -35,7 +35,7 @@
 | 3.1 | HTTP server scaffold + healthz endpoint | ✅ | `http.Server` with `/healthz` returns 200 |
 | 3.2 | Routing: hostname+path → peer_id lookup | ✅ | Wired into gateway via `internal/routing` (longest-prefix match) |
 | 3.3 | Discovery integration (subscribe + cache) | ✅ | Pubsub subscriber wired in, auto-discovery→route goroutine |
-| 3.4 | Stream opening to resolved peer | ✅ | Direct dial with relay fallback (`tryRelayFallback`) |
+| 3.4 | Stream opening to resolved peer | ✅ | Direct dial with relay fallback (`tryRelayFallback`); direct attempt now uses short configurable timeout (`EDGE_DIRECT_STREAM_TIMEOUT`, default `750ms`) so NAT/relay requests do not stall ~10s before fallback |
 | 3.5 | HTTP → protocol framing forwarding | ✅ | Uses `p2p.HandleClientRequest()` (hop-by-hop header stripping) |
 | 3.6 | Protocol framing → HTTP response forwarding | ✅ | Read frames from stream, reconstruct HTTP response to client |
 | 3.7 | Admin API | ✅ | `/services`, `/routes`, `POST /add_route` on admin port |
@@ -63,7 +63,7 @@
 |---|------|--------|-------|
 | 5.1 | Bootstrap node configuration | ✅ | `BOOTSTRAP_PEERS` env var in service-agent, `RELAY_PEERS` in edge-gateway |
 | 5.2 | AutoNAT client/server setup | 🔲 | Determine NAT type (open, symmetric, etc.) |
-| 5.3 | Relay fallback circuit dialing | ✅ | When direct dial fails, route through relay peers |
+| 5.3 | Relay fallback circuit dialing | ✅ | Verified end-to-end in isolated-network NAT-like Docker scenario after fixing relay public reachability config and opening tunnel streams with `network.WithAllowLimitedConn(...)` on relayed connections |
 | 5.4 | Hole punching coordination | 🔲 | libp2p circuit v2 / ICE-based hole punch |
 | 5.5 | Dedicated relay/bootstrap binary | ✅ | Added `cmd/p2p-relay` with relay service v2, AutoNAT service, health API, resource limits |
 | 5.6 | Static AutoRelay support (service-agent) | ✅ | Added `RELAY_PEERS`, `ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE` handling in `cmd/service-agent` |
@@ -90,8 +90,8 @@
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | 7.1 | Unit tests for all packages | ✅ | protocol (12) + discovery (10) + routing (14) + forwarding (3) = 39 tests passing |
-| 7.2 | Integration tests (multi-node scenarios) | ⏳ | Added `tests/integration` with auto-discovery/proxy, large-body streaming, lease expiry, hop-by-hop header stripping (`RUN_INTEGRATION=1`) |
-| 7.3 | E2E docker-compose test suite | ⏳ | Added `tests/smoke-compose.sh` and wired smoke run in `.github/workflows/ci.yml` (`smoke-compose` job) |
+| 7.2 | Integration tests (multi-node scenarios) | ⏳ | Added `tests/integration` with auto-discovery/proxy, large-body streaming, lease expiry, hop-by-hop header stripping, isolated-network relay fallback coverage (`TestRelayFallbackAcrossIsolatedNetworks`, `RUN_INTEGRATION=1`), plus NAT/relay stress scenarios (`TestRelayNATMixedTrafficStress`, `TestRelayNATTrafficDuringServiceRestart`) |
+| 7.3 | E2E docker-compose test suite | ⏳ | Added `tests/smoke-compose.sh` plus `tests/smoke-compose-relay-nat.sh` for isolated-network relay coverage; NAT-like smoke now passes and is ready to be promoted into CI once large-body relay streaming under load is fixed |
 | 7.4 | CI pipeline (GitHub Actions) | ✅ | `.github/workflows/ci.yml`: build + test + golangci-lint on push/PR |
 
 ---
@@ -118,6 +118,13 @@
 | C.16 | Relay startup command hints + richer component logs | ✅ | Relay emits edge/service startup commands; runtime binaries log config, peer connections, proxy/stream lifecycle |
 | C.17 | Fix discovery expiry event on `/services` polling | ✅ | `Cache.Count()` emits expiry callbacks so auto-routes are removed when services expire |
 | C.18 | Fix empty request-body final chunk | ✅ | GET/empty-body requests send a final body chunk so service-agent streams do not hang |
+| C.19 | Extract edge-gateway runtime from `main.go` | ⏳ | Introduced `internal/app/edge` and thin `cmd/edge-gateway` entrypoint with initial tests; relay-first base path is now verified again after direct-fallback latency fix, so refactoring can continue once relay large-body streaming is stabilized |
+| C.20 | Add NAT-like isolated Docker repro for relay-first traffic | ✅ | Added `docker-compose.nat.yml`, `tests/smoke-compose-relay-nat.sh`, and integration coverage to simulate edge/service on separate private networks with a public relay |
+| C.21 | Reproduce relay v2 negotiation failure under NAT-like isolation | ✅ | Reproduced and fixed in two steps: (1) relay must run with public reachability so circuit v2 hop is actually enabled, (2) relayed tunnel streams must be opened with `network.WithAllowLimitedConn(...)`; isolated-network smoke now passes end-to-end |
+| C.22 | Simplify CLI/runtime startup interface | 🔲 | Reduce env-var sprawl for launching edge/service/relay/client components (e.g. config file, subcommands, or grouped flags) now that relay-first transport behavior is verified |
+| C.23 | Fix NAT/relay direct-first latency tax | ✅ | Edge direct stream attempts now use a short configurable timeout (`EDGE_DIRECT_STREAM_TIMEOUT`, default `750ms`) before relay fallback; isolated-network relay requests dropped from ~10s to sub-second latency |
+| C.24 | Investigate relayed large-body stream resets under load | ❌ | NAT/relay stress testing shows small traffic is stable, but mixed and `512KiB` uploads still fail with `502` / `stream reset (remote)` / `unexpected EOF`; likely in request/response streaming, framing, or stream reset/close semantics across relayed libp2p streams |
+| C.25 | Promote NAT/relay stress scenarios into stable acceptance coverage | ⏳ | Keep `TestRelayNATMixedTrafficStress` and `TestRelayNATTrafficDuringServiceRestart`; enable CI gating only after C.24 is fixed so relay streaming load tests become trustworthy regression coverage |
 
 ---
 
@@ -136,7 +143,10 @@ The following packages have no `_test.go` files yet:
 
 ## Next Priority (What to work on next)
 
-1. **Phase 6 — Security**: estendere allowlist PeerID a edge/service/client-bridge + enforcement `ServiceName -> PeerID`
-2. **Phase 5.2 — AutoNAT**: completare diagnostica reachability + client/server setup
-3. **Phase 7.2 — Integration tests**: aggiungere acceptance test su PSK/allowlist/announcement invalidi
-4. **Phase 7.3 — Compose E2E hardening**: scenari NAT/NAT relay-first in smoke/integration
+1. **C.24 — Relay large-body streaming fix**: correggere i `502` / `stream reset (remote)` / `unexpected EOF` osservati sotto stress NAT/relay su payload grandi e traffico misto
+2. **Phase 7.3 — Compose E2E hardening**: promuovere lo scenario NAT/NAT relay-first in CI dopo avere stabilizzato anche gli stress test NAT/relay
+3. **Cross-cutting — Architecture**: riprendere il deepening di `internal/app/edge` e completare il refactor del runtime, ora che la latenza relay-first non paga piu' il timeout direct da ~10s
+4. **Cross-cutting — CLI UX**: progettare una superficie CLI/config piu' semplice per avvio componenti, riducendo il numero di env vars richieste
+5. **Phase 6 — Security**: estendere allowlist PeerID a edge/service/client-bridge + enforcement `ServiceName -> PeerID`
+6. **Phase 5.2 — AutoNAT**: completare diagnostica reachability + client/server setup
+7. **Phase 7.2 — Integration tests**: aggiungere acceptance test su PSK/allowlist/announcement invalidi
