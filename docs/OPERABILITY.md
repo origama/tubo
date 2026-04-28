@@ -12,7 +12,18 @@ Questo documento e' il riferimento operativo canonico per:
 - Docker + Docker Compose plugin
 - rete raggiungibile tra nodi (almeno outbound dai nodi service verso il nodo edge/bootstrap)
 
-## 2) Componenti runtime reali (oggi)
+## 2) Componenti runtime reali
+
+Nuova UX consigliata: `tubo` con subcommand espliciti:
+
+```bash
+tubo relay run --config relay.yaml
+tubo edge run --config edge.yaml
+tubo service run --config service.yaml
+tubo bridge run --config bridge.yaml
+```
+
+I binari legacy restano supportati e usano lo stesso runtime interno:
 
 - `p2p-relay` (bootstrap + relay v2 + health endpoint)
 - il relay partecipa anche al topic discovery `/discovery/v1.0` come router GossipSub
@@ -52,6 +63,11 @@ Test end-to-end consigliato:
 Genera `swarm.key` (formato libp2p pnet):
 
 ```bash
+# nuovo metodo consigliato
+tubo keygen swarm --out swarm.key
+chmod 600 swarm.key
+
+# equivalente manuale legacy
 KEY_HEX="$(openssl rand -hex 32)"
 cat > swarm.key <<EOF_KEY
 /key/swarm/psk/1.0.0/
@@ -62,6 +78,12 @@ chmod 600 swarm.key
 ```
 
 Distribuire `swarm.key` **solo** ai nodi fidati. Non committare nel repository.
+
+Per esempi YAML completi (relay, edge, service, bridge), topology e `docker-compose.tubo.yml`, vedi [`cli.md`](./cli.md). La precedenza della configurazione e':
+
+```text
+flag CLI > env var > config file > default > interactive
+```
 
 ### 4.2 Variabili supportate (implementate)
 

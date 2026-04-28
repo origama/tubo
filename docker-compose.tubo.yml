@@ -1,0 +1,33 @@
+services:
+  relay:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    command: ["relay", "run", "--config", "/etc/tubo/relay.yaml"]
+    volumes:
+      - ./generated/relay.yaml:/etc/tubo/relay.yaml:ro
+      - ./swarm.key:/etc/p2p/swarm.key:ro
+    ports:
+      - "4001:4001"
+      - "8092:8092"
+
+  edge:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    command: ["edge", "run", "--config", "/etc/tubo/edge.yaml"]
+    volumes:
+      - ./generated/edge.yaml:/etc/tubo/edge.yaml:ro
+      - ./swarm.key:/etc/p2p/swarm.key:ro
+    ports:
+      - "8443:8443"
+      - "8444:8444"
+
+  service:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    command: ["service", "run", "--config", "/etc/tubo/service.yaml"]
+    volumes:
+      - ./generated/service.yaml:/etc/tubo/service.yaml:ro
+      - ./swarm.key:/etc/p2p/swarm.key:ro
