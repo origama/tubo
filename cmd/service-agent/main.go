@@ -13,6 +13,7 @@ import (
 
 	libp2p "github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 
@@ -77,7 +78,7 @@ func main() {
 	log.Printf("forwarding to %s", localTarget)
 
 	if healthListen != "" {
-		go serveHealth(healthListen, h.ID().String(), p2p.PeerAddrs(h))
+		go serveHealth(healthListen, h)
 	}
 
 	// --- GossipSub discovery ---
@@ -179,7 +180,7 @@ type peerHost interface {
 	Connect(context.Context, peer.AddrInfo) error
 }
 
-func serveHealth(listen, peerID string, addrs []string) {
+func serveHealth(listen string, h host.Host) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -187,8 +188,8 @@ func serveHealth(listen, peerID string, addrs []string) {
 	})
 	mux.HandleFunc("/debug/peer", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write([]byte("peer_id=" + peerID + "\n"))
-		for _, addr := range addrs {
+		_, _ = w.Write([]byte("peer_id=" + h.ID().String() + "\n"))
+		for _, addr := range p2p.PeerAddrs(h) {
 			_, _ = w.Write([]byte("addr=" + addr + "\n"))
 		}
 	})

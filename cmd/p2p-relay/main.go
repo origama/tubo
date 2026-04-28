@@ -53,11 +53,11 @@ func main() {
 		MaxReservations:       getenvInt("RELAY_MAX_RESERVATIONS", 256),
 		MaxReservationsPerIP:  getenvInt("RELAY_MAX_RESERVATIONS_PER_IP", 16),
 		MaxReservationsPerASN: getenvInt("RELAY_MAX_RESERVATIONS_PER_ASN", 64),
-		MaxCircuitsPerPeer:    getenvInt("RELAY_MAX_CIRCUITS", 16),
+		MaxCircuitsPerPeer:    getenvInt("RELAY_MAX_CIRCUITS", 64),
 		BufferSize:            getenvInt("RELAY_BUFFER_SIZE", 4096),
 		ReservationTTL:        getenvDuration("RELAY_RESERVATION_TTL", time.Hour),
 		RelayLimitDuration:    getenvDuration("RELAY_LIMIT_DURATION", 5*time.Minute),
-		RelayLimitData:        getenvInt64("RELAY_LIMIT_DATA_BYTES", 1<<20),
+		RelayLimitData:        getenvInt64("RELAY_LIMIT_DATA_BYTES", 16<<20),
 		RelayPublicAddr:       getenv("RELAY_PUBLIC_ADDR", ""),
 		PrintRunCommands:      getenvBool("PRINT_RUN_COMMANDS", true),
 	}
