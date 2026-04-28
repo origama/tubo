@@ -44,7 +44,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	p2p.LogNetworkEvents(h, "client-bridge")
+	p2p.LogNetworkEvents(h, "bridge")
 	if using {
 		log.Printf("libp2p private network enabled")
 	}

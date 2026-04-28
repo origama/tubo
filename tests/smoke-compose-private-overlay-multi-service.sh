@@ -48,12 +48,12 @@ request_from_edge() {
   local query="$3"
 
   $COMPOSE exec -T curl-client sh -lc \
-    "curl --fail-with-body -sS -H 'Host: $host' -H 'Content-Type: text/plain' --data '$payload' 'http://edge-gateway:8443/v1/dummy?$query'"
+    "curl --fail-with-body -sS -H 'Host: $host' -H 'Content-Type: text/plain' --data '$payload' 'http://edge:8443/v1/dummy?$query'"
 }
 
 edge_admin_get() {
   local path="$1"
-  $COMPOSE exec -T curl-client sh -lc "curl --fail-with-body -sS 'http://edge-gateway:8444$path'"
+  $COMPOSE exec -T curl-client sh -lc "curl --fail-with-body -sS 'http://edge:8444$path'"
 }
 
 compose_build_serial() {
@@ -72,11 +72,11 @@ $COMPOSE up -d --remove-orphans
 
 echo "[smoke-private-multi] waiting for healthy services"
 for service in \
-  p2p-relay \
-  edge-gateway \
-  dummy-api-server-one service-agent-one \
-  dummy-api-server-two service-agent-two \
-  dummy-api-server-three service-agent-three; do
+  relay \
+  edge \
+  dummy-api-server-one service-one \
+  dummy-api-server-two service-two \
+  dummy-api-server-three service-three; do
   wait_healthy "$service" || {
     echo "[smoke-private-multi] service not healthy: $service"
     $COMPOSE ps
@@ -105,7 +105,7 @@ for i in $(seq 1 90); do
   sleep 1
 done
 
-echo "[smoke-private-multi] running curl client from edge network against a single edge endpoint"
+echo "[smoke-private-multi] running curl client from edge network against the tubo edge endpoint"
 payload="hello-private-overlay"
 payload_b64="$(printf '%s' "$payload" | base64 | tr -d '\n')"
 

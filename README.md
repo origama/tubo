@@ -14,14 +14,14 @@ Tracking obbligatorio del lavoro:
 
 ## Quick Start locale
 
-Legacy (ancora supportato):
+Con Docker Compose:
 
 ```bash
 docker compose up -d --build
 ./tests/smoke-compose.sh
 ```
 
-Nuova UX con `tubo`:
+Con `tubo` locale:
 
 ```bash
 go build ./cmd/tubo

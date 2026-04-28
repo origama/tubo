@@ -63,7 +63,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	p2p.LogNetworkEvents(h, "service-agent")
+	p2p.LogNetworkEvents(h, "service")
 	if using {
 		log.Printf("libp2p private network enabled")
 	}

@@ -26,8 +26,19 @@ wait_http_ok() {
   return 1
 }
 
+compose_build_serial() {
+  if $COMPOSE build --help 2>/dev/null | grep -q -- "--no-parallel"; then
+    $COMPOSE build --no-parallel
+    return
+  fi
+  COMPOSE_PARALLEL_LIMIT=1 $COMPOSE build
+}
+
+echo "[smoke-nat] docker compose build"
+compose_build_serial
+
 echo "[smoke-nat] docker compose up -d"
-$COMPOSE up -d --build
+$COMPOSE up -d --remove-orphans
 
 echo "[smoke-nat] waiting for health endpoints"
 wait_http_ok "http://127.0.0.1:8443/healthz"
@@ -54,7 +65,7 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "[smoke-nat] running end-to-end request through edge gateway"
+echo "[smoke-nat] running end-to-end request through tubo edge"
 payload="hello-relay-nat"
 payload_b64="$(printf '%s' "$payload" | base64)"
 resp_body="$(mktemp)"
@@ -92,9 +103,9 @@ if ! grep -q "\"body_b64\":\"$payload_b64\"" "$resp_body"; then
 fi
 
 echo "[smoke-nat] verifying relay fallback path from edge logs"
-if ! $COMPOSE logs edge-gateway --no-color 2>/dev/null | grep -q 'connection_path=relayed'; then
+if ! $COMPOSE logs edge --no-color 2>/dev/null | grep -q 'connection_path=relayed'; then
   echo "[smoke-nat] expected relayed connection path in edge logs"
-  $COMPOSE logs edge-gateway --no-color || true
+  $COMPOSE logs edge --no-color || true
   exit 1
 fi
 

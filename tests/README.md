@@ -4,10 +4,10 @@
 
 Esegue il percorso minimo completo:
 
-- `p2p-relay`
+- `relay`
 - `dummy-api-server`
-- `edge-gateway`
-- `service-agent`
+- `edge`
+- `service`
 - request HTTP reale via edge
 
 Comando:
@@ -50,11 +50,11 @@ Lo script genera `generated/tubo-smoke/*.yaml`, avvia `docker-compose.tubo.yml`,
 
 Simula tre macchine logiche:
 
-- `edge-gateway` su una rete privata dedicata
-- `service-agent` + `dummy-api-server` su un'altra rete privata dedicata
-- `p2p-relay` collegato ad entrambe le reti
+- `edge` su una rete privata dedicata
+- `service` + `dummy-api-server` su un'altra rete privata dedicata
+- `relay` collegato ad entrambe le reti
 
-In questo scenario `edge-gateway` e `service-agent` **non condividono una rete Docker**, quindi il direct dial non e' disponibile e il traffico deve passare via relay.
+In questo scenario `edge` e `service` **non condividono una rete Docker**, quindi il direct dial non e' disponibile e il traffico deve passare via relay.
 
 Comando:
 
@@ -68,21 +68,21 @@ Il test verifica anche nei log dell'edge che il percorso usato sia `connection_p
 
 Simula una overlay libp2p privata condivisa da:
 
-- `p2p-relay`
-- `edge-gateway`
+- `relay`
+- `edge`
 - `curl-client` sulla stessa rete privata dell'edge
 - tre nodi service isolati, ciascuno con:
-  - `service-agent-*`
+  - `service-*`
   - `dummy-api-server-*`
 
 Topologia Docker:
 
-- `edge-gateway` e `curl-client` su `edge-private`
+- `edge` e `curl-client` su `edge-private`
 - ogni service node su una propria rete privata dedicata
-- `p2p-relay` collegato a tutte le reti private
+- `relay` collegato a tutte le reti private
 - tutti i peer libp2p usano la stessa private swarm PSK (`LIBP2P_PRIVATE_NETWORK_KEY_B64`)
 
-Il `curl-client` richiama sempre lo **stesso endpoint** dell'edge gateway (`http://edge-gateway:8443/v1/dummy`), cambiando solo l'header `Host` tra `svc-one`, `svc-two` e `svc-three`.
+Il `curl-client` richiama sempre lo **stesso endpoint** dell'edge gateway (`http://edge:8443/v1/dummy`), cambiando solo l'header `Host` tra `svc-one`, `svc-two` e `svc-three`.
 
 Comando:
 

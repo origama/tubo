@@ -61,13 +61,13 @@
 
 | # | Task | Status | Notes |
 |---|------|--------|-------|
-| 5.1 | Bootstrap node configuration | ✅ | `BOOTSTRAP_PEERS` env var in service-agent, `RELAY_PEERS` in edge-gateway |
+| 5.1 | Bootstrap node configuration | ✅ | `BOOTSTRAP_PEERS` env var in service, `RELAY_PEERS` in edge |
 | 5.2 | AutoNAT client/server setup | 🔲 | Determine NAT type (open, symmetric, etc.) |
 | 5.3 | Relay fallback circuit dialing | ✅ | Verified end-to-end in isolated-network NAT-like Docker scenario after fixing relay public reachability config and opening tunnel streams with `network.WithAllowLimitedConn(...)` on relayed connections |
 | 5.4 | Hole punching coordination | 🔲 | libp2p circuit v2 / ICE-based hole punch |
-| 5.5 | Dedicated relay/bootstrap binary | ✅ | Added `cmd/p2p-relay` with relay service v2, AutoNAT service, health API, resource limits |
-| 5.6 | Static AutoRelay support (service-agent) | ✅ | Added `RELAY_PEERS`, `ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE` handling in `cmd/service-agent` |
-| 5.7 | Discovery pubsub router on public relay | ✅ | `p2p-relay` joins `/discovery/v1.0` so NAT/NAT peers can discover services via the public node only |
+| 5.5 | Dedicated relay/bootstrap binary | ✅ | Added `tubo relay run` with relay service v2, AutoNAT service, health API, resource limits |
+| 5.6 | Static AutoRelay support (service) | ✅ | Added `RELAY_PEERS`, `ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE` handling in `tubo service run` |
+| 5.7 | Discovery pubsub router on public relay | ✅ | `relay` joins `/discovery/v1.0` so NAT/NAT peers can discover services via the public node only |
 
 ---
 
@@ -80,8 +80,8 @@
 | 6.3 | Tenant isolation | 🔲 | Multi-tenant routing with namespace separation |
 | 6.4 | Rate limiting on pubsub + HTTP | 🔲 | Per-peer and global rate limits |
 | 6.5 | Replay protection (nonce/timestamp) | 🔲 | Prevent announcement replay attacks |
-| 6.6 | Private libp2p network (PSK) support | ✅ | Added `LIBP2P_PRIVATE_NETWORK_KEY` / `_B64` loading and host initialization in edge/service/client-bridge |
-| 6.7 | PeerID allowlist (connection-level) | ⏳ | Added `LIBP2P_ALLOWED_PEERS` parser + `ConnectionGater` and enabled it in `cmd/p2p-relay`; remaining binaries pending |
+| 6.6 | Private libp2p network (PSK) support | ✅ | Added `LIBP2P_PRIVATE_NETWORK_KEY` / `_B64` loading and host initialization in edge/service/bridge |
+| 6.7 | PeerID allowlist (connection-level) | ⏳ | Added `LIBP2P_ALLOWED_PEERS` parser + `ConnectionGater` and enabled it in `tubo relay run`; remaining binaries pending |
 
 ---
 
@@ -101,9 +101,9 @@
 | # | Task | Status | Notes |
 |---|------|--------|-------|
 | C.1 | Fix `docs/README.md` broken links | ✅ | Fixed in README.md update |
-| C.2 | Fix `docker-compose.yml` wrong Dockerfile ref | ✅ | References corrected to `Dockerfile.service-agent` |
+| C.2 | Fix `docker-compose.yml` wrong Dockerfile ref | ✅ | Superseded by unified `deploy/Dockerfile.tubo` compose setup |
 | C.3 | Deduplicate root-level docs vs `docs/` dir | ✅ | Consolidated |
-| C.4 | Update README quick-start commands | ✅ | Updated to use `service-agent` binary name |
+| C.4 | Update README quick-start commands | ✅ | Updated to use `service` binary name |
 | C.5 | Add `.gitignore` entries | ✅ | Added: compiled binaries, `*.log`, `vendor/`, IDE files |
 | C.6 | Add multi-host discovery runbook | ✅ | Added `docs/discovery-multi-host.md` with LM Studio laptop + Hermes Linode scenario |
 | C.7 | Extend runbook for private NAT/NAT deployment | ✅ | Added PSK private swarm, PeerID allowlist, relay/bootstrap policy, 502 taxonomy, acceptance tests |
@@ -111,17 +111,17 @@
 | C.9 | Consolidate docs under `docs/` | ✅ | Root `ARCHITECTURE.md`, `PROTOCOL.md`, `SECURITY.md` converted to redirect stubs |
 | C.10 | Add canonical operability runbook | ✅ | Added `docs/OPERABILITY.md` with explicit startup/secure tunnel steps for 2+ services |
 | C.11 | Improve Docker build stability defaults | ✅ | Smoke/integration paths now default to `DOCKER_BUILDKIT=0` and `COMPOSE_DOCKER_CLI_BUILD=0` |
-| C.12 | Replace relay/bootstrap scaffolds with runnable binary images | ✅ | `deploy/Dockerfile.relay` and `deploy/Dockerfile.bootstrap` now build/run `cmd/p2p-relay`; compose includes `p2p-relay` service |
-| C.13 | Fix relay circuit multiaddr fallback on edge | ✅ | `cmd/edge-gateway` now builds relay path as `/p2p/<relay>/p2p-circuit/p2p/<target>` |
+| C.12 | Replace relay/bootstrap scaffolds with runnable binary images | ✅ | Superseded by unified `deploy/Dockerfile.tubo`; compose includes `relay` via `tubo relay run` |
+| C.13 | Fix relay circuit multiaddr fallback on edge | ✅ | `tubo edge run` now builds relay path as `/p2p/<relay>/p2p-circuit/p2p/<target>` |
 | C.14 | Document tested 3-host NAT/NAT runbook | ✅ | `docs/OPERABILITY.md` now includes tested flow: laptop LM Studio + edge host + public relay + extra service onboarding |
 | C.15 | Fix upstream error frame handling | ✅ | Edge now reads service `Error` frames without blocking, so unavailable targets return a 502 instead of hanging |
 | C.16 | Relay startup command hints + richer component logs | ✅ | Relay emits edge/service startup commands; runtime binaries log config, peer connections, proxy/stream lifecycle |
 | C.17 | Fix discovery expiry event on `/services` polling | ✅ | `Cache.Count()` emits expiry callbacks so auto-routes are removed when services expire |
-| C.18 | Fix empty request-body final chunk | ✅ | GET/empty-body requests send a final body chunk so service-agent streams do not hang |
-| C.19 | Extract edge-gateway runtime from `main.go` | ⏳ | Introduced `internal/app/edge` and thin `cmd/edge-gateway` entrypoint with initial tests; relay-first base path is now verified again after direct-fallback latency fix, so refactoring can continue once relay large-body streaming is stabilized |
+| C.18 | Fix empty request-body final chunk | ✅ | GET/empty-body requests send a final body chunk so service streams do not hang |
+| C.19 | Extract edge runtime from `main.go` | ⏳ | Introduced `internal/app/edge` and thin `tubo edge run` entrypoint with initial tests; relay-first base path is now verified again after direct-fallback latency fix, so refactoring can continue once relay large-body streaming is stabilized |
 | C.20 | Add NAT-like isolated Docker repro for relay-first traffic | ✅ | Added `docker-compose.nat.yml`, `tests/smoke-compose-relay-nat.sh`, and integration coverage to simulate edge/service on separate private networks with a public relay |
 | C.21 | Reproduce relay v2 negotiation failure under NAT-like isolation | ✅ | Reproduced and fixed in two steps: (1) relay must run with public reachability so circuit v2 hop is actually enabled, (2) relayed tunnel streams must be opened with `network.WithAllowLimitedConn(...)`; isolated-network smoke now passes end-to-end |
-| C.22 | Simplify CLI/runtime startup interface | ✅ | Added `tubo` unified CLI with role subcommands, YAML config/env/flag merge, keygen/id/config/doctor/init/topology commands, shared service/relay/bridge runtime packages, thin legacy wrappers, docs, Dockerfile, and unit coverage |
+| C.22 | Simplify CLI/runtime startup interface | ✅ | Added `tubo` unified CLI with role subcommands, YAML config/env/flag merge, keygen/id/config/doctor/init/topology commands, shared service/relay/bridge runtime packages, docs, Dockerfile, compose updates, and unit/smoke coverage |
 | C.23 | Fix NAT/relay direct-first latency tax | ✅ | Edge direct stream attempts now use a short configurable timeout (`EDGE_DIRECT_STREAM_TIMEOUT`, default `750ms`) before relay fallback; isolated-network relay requests dropped from ~10s to sub-second latency |
 | C.24 | Investigate relayed large-body stream resets under load | ❌ | NAT/relay stress testing shows small traffic is stable, but mixed and `512KiB` uploads still fail with `502` / `stream reset (remote)` / `unexpected EOF`; likely in request/response streaming, framing, or stream reset/close semantics across relayed libp2p streams |
 | C.25 | Promote NAT/relay stress scenarios into stable acceptance coverage | ⏳ | Keep `TestRelayNATMixedTrafficStress` and `TestRelayNATTrafficDuringServiceRestart`; enable CI gating only after C.24 is fixed so relay streaming load tests become trustworthy regression coverage |
@@ -133,9 +133,9 @@
 
 The following packages have no `_test.go` files yet:
 
-- `cmd/edge-gateway` — integration tests needed (Phase 7.2)
-- `cmd/service-agent` — integration tests needed (Phase 7.2)
-- `cmd/client-bridge` — integration tests needed (Phase 7.2)
+- `tubo edge run` — integration tests needed (Phase 7.2)
+- `tubo service run` — integration tests needed (Phase 7.2)
+- `cmd/tubo` — integration tests needed (Phase 7.2)
 - `internal/auth` — scaffold only, not wired in anywhere
 - `internal/observability` — logging/metrics setup
 - `internal/bridge/proxy.go` — unclear if still used
@@ -148,6 +148,6 @@ The following packages have no `_test.go` files yet:
 2. **Phase 7.3 — Compose E2E hardening**: promuovere lo scenario NAT/NAT relay-first in CI dopo avere stabilizzato anche gli stress test NAT/relay
 3. **Cross-cutting — Architecture**: riprendere il deepening di `internal/app/edge` e completare il refactor del runtime, ora che la latenza relay-first non paga piu' il timeout direct da ~10s
 4. **Cross-cutting — CLI UX**: progettare una superficie CLI/config piu' semplice per avvio componenti, riducendo il numero di env vars richieste
-5. **Phase 6 — Security**: estendere allowlist PeerID a edge/service/client-bridge + enforcement `ServiceName -> PeerID`
+5. **Phase 6 — Security**: estendere allowlist PeerID a edge/service/bridge + enforcement `ServiceName -> PeerID`
 6. **Phase 5.2 — AutoNAT**: completare diagnostica reachability + client/server setup
 7. **Phase 7.2 — Integration tests**: aggiungere acceptance test su PSK/allowlist/announcement invalidi

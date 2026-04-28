@@ -1,6 +1,6 @@
 # tubo CLI
 
-`tubo` e' l'eseguibile principale per avviare i ruoli runtime senza ricordare molte variabili d'ambiente. I binari legacy (`edge-gateway`, `service-agent`, `p2p-relay`, `client-bridge`) restano supportati e continuano ad accettare le env esistenti.
+`tubo` e' l'eseguibile principale per avviare i ruoli runtime senza ricordare molte variabili d'ambiente.
 
 ## Precedenza configurazione
 

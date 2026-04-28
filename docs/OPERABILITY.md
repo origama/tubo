@@ -23,13 +23,13 @@ tubo service run --config service.yaml
 tubo bridge run --config bridge.yaml
 ```
 
-I binari legacy restano supportati e usano lo stesso runtime interno:
+Ruoli disponibili tramite `tubo`:
 
-- `p2p-relay` (bootstrap + relay v2 + health endpoint)
+- `relay` (bootstrap + relay v2 + health endpoint)
 - il relay partecipa anche al topic discovery `/discovery/v1.0` come router GossipSub
-- `edge-gateway` (ingress HTTP + discovery consumer)
-- `service-agent` (publisher + stream handler verso servizio origin)
-- opzionale `client-bridge` (proxy client-side)
+- `edge` (ingress HTTP + discovery consumer)
+- `service` (publisher + stream handler verso servizio origin)
+- opzionale `bridge` (proxy client-side)
 
 ## 3) Quick Start locale (Docker Compose)
 
@@ -67,7 +67,7 @@ Genera `swarm.key` (formato libp2p pnet):
 tubo keygen swarm --out swarm.key
 chmod 600 swarm.key
 
-# equivalente manuale legacy
+# equivalente manuale
 KEY_HEX="$(openssl rand -hex 32)"
 cat > swarm.key <<EOF_KEY
 /key/swarm/psk/1.0.0/
@@ -94,7 +94,7 @@ Se valorizzate, host libp2p viene creato con private network PSK.
 
 ## 5) Test reale a 3 macchine (laptop NAT + edge NAT + relay pubblico)
 
-### 5.1 Avvia p2p-relay (host pubblico stabile)
+### 5.1 Avvia relay (host pubblico stabile)
 
 ```bash
 NODE_SEED=public-relay-seed \
@@ -106,14 +106,14 @@ ENABLE_DISCOVERY_PUBSUB=true \
 FORCE_REACHABILITY_PUBLIC=true \
 PRINT_RUN_COMMANDS=true \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-go run ./cmd/p2p-relay
+go run ./cmd/tubo relay run
 ```
 
 Il relay stampa nei log:
 
 1. il proprio `peer_id`;
 2. gli indirizzi libp2p disponibili;
-3. un blocco `startup command hints` con `BOOTSTRAP_PEERS` e `RELAY_PEERS` gia' valorizzati per `edge-gateway` e `service-agent`.
+3. un blocco `startup command hints` con `BOOTSTRAP_PEERS` e `RELAY_PEERS` gia' valorizzati per `edge` e `service`.
 
 Se l'indirizzo pubblico non viene inferito correttamente, forzarlo:
 
@@ -129,9 +129,9 @@ Porte firewall minime sul relay:
 2. `tcp/8092` (opzionale, health check)
 3. `tcp/22` (SSH gestione)
 
-### 5.2 Avvia edge-gateway
+### 5.2 Avvia edge
 
-Nel caso NAT/NAT, l'edge deve poter usare il relay pubblico come unico peer statico. Non e' necessario esporre l'edge come bootstrap peer per i service-agent.
+Nel caso NAT/NAT, l'edge deve poter usare il relay pubblico come unico peer statico. Non e' necessario esporre l'edge come bootstrap peer per i service.
 
 ```bash
 EDGE_LISTEN=:8443 \
@@ -141,14 +141,14 @@ EDGE_SEED=edge-seed \
 BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-go run ./cmd/edge-gateway
+go run ./cmd/tubo edge run
 ```
 
 Recuperare `peer_id` edge dai log (`edge gateway peer_id=...`).
 
-### 5.3 Avvia service-agent sul laptop (LM Studio)
+### 5.3 Avvia service sul laptop (LM Studio)
 
-Nel caso NAT/NAT, il service-agent deve usare il relay pubblico come `BOOTSTRAP_PEERS` e `RELAY_PEERS`. Non usare l'edge come bootstrap peer se l'edge e' dietro NAT.
+Nel caso NAT/NAT, il service deve usare il relay pubblico come `BOOTSTRAP_PEERS` e `RELAY_PEERS`. Non usare l'edge come bootstrap peer se l'edge e' dietro NAT.
 
 ```bash
 SERVICE_NAME=lmstudio \
@@ -162,7 +162,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/service-agent
+go run ./cmd/tubo service run
 ```
 
 ### 5.4 Verifica discovery e route sul nodo edge
@@ -190,7 +190,7 @@ Atteso: `HTTP 200` e body JSON restituito da LM Studio.
 
 Pattern:
 
-1. nuovo `service-agent` con `SERVICE_NAME` univoco;
+1. nuovo `service` con `SERVICE_NAME` univoco;
 2. stesso `LIBP2P_PRIVATE_NETWORK_KEY` della swarm;
 3. `BOOTSTRAP_PEERS` verso relay pubblico;
 4. `RELAY_PEERS` verso relay pubblico + `ENABLE_AUTORELAY=true`;
@@ -211,7 +211,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/service-agent
+go run ./cmd/tubo service run
 ```
 
 ## 7) Stato sicurezza: cosa e' implementato vs target
@@ -220,12 +220,12 @@ Implementato oggi:
 
 - discovery announcement firmati;
 - private swarm PSK (env key path o b64).
-- binary `p2p-relay` con relay service + AutoNAT service + router GossipSub discovery.
+- binary `relay` con relay service + AutoNAT service + router GossipSub discovery.
 - parser allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater sul relay.
 
 Target ancora da implementare:
 
-- allowlist PeerID enforcement completo su edge-gateway/service-agent/client-bridge;
+- allowlist PeerID enforcement completo su edge/service/bridge;
 - binding `ServiceName -> PeerID` enforcement;
 - diagnostica reachability/AutoNAT completa.
 
@@ -237,13 +237,13 @@ Se `502` da edge:
 2. controllare route in `GET /routes`;
 3. verificare `BOOTSTRAP_PEERS` e `EDGE_PEER_ID` corretti;
 4. verificare che tutti i nodi usino la stessa PSK (o nessuna PSK in locale);
-5. controllare log `service-agent` per raggiungibilita' `SERVICE_TARGET`.
+5. controllare log `service` per raggiungibilita' `SERVICE_TARGET`.
 
 Log utili attesi:
 
-1. `p2p-relay`: `startup command hints`, `relay_addr`, connessioni `relay p2p connected/disconnected`.
-2. `edge-gateway`: `proxy request`, `route matched`, `resolved`, `relay fallback`, `proxy completed`.
-3. `service-agent`: `service upstream request`, `service upstream response`, `service stream completed`.
-4. `client-bridge`: `bridge request`, `bridge completed`.
+1. `relay`: `startup command hints`, `relay_addr`, connessioni `relay p2p connected/disconnected`.
+2. `edge`: `proxy request`, `route matched`, `resolved`, `relay fallback`, `proxy completed`.
+3. `service`: `service upstream request`, `service upstream response`, `service stream completed`.
+4. `bridge`: `bridge request`, `bridge completed`.
 
-Se un `GET` o una richiesta senza body resta appesa, verificare che il client stia usando una versione con final body chunk vuoto: il service-agent deve vedere `service stream completed`, non solo `service upstream request`.
+Se un `GET` o una richiesta senza body resta appesa, verificare che il client stia usando una versione con final body chunk vuoto: il service deve vedere `service stream completed`, non solo `service upstream request`.

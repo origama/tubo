@@ -11,9 +11,9 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
 
 ## 1) Discovery: stato attuale (as-is)
 
-### 1.1 Pubblicazione (service-agent)
+### 1.1 Pubblicazione (service)
 
-`cmd/service-agent` oggi:
+`tubo service run` oggi:
 
 1. crea host libp2p (`p2p.NewHostWithSeedAndPSK`);
 2. entra nel topic pubsub `"/discovery/v1.0"`;
@@ -26,9 +26,9 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
 5. tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 6. se configurato, abilita static AutoRelay verso `RELAY_PEERS` (`ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE`).
 
-### 1.2 Sottoscrizione e validazione (edge-gateway)
+### 1.2 Sottoscrizione e validazione (edge)
 
-`cmd/edge-gateway` oggi:
+`tubo edge run` oggi:
 
 1. crea host libp2p;
 2. entra nello stesso topic pubsub;
@@ -57,8 +57,8 @@ Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
 2. `Announcement.TTL` non controlla direttamente TTL cache (oggi fisso lato edge).
 3. Se gli indirizzi annunciati non sono raggiungibili, il dial diretto fallisce.
 4. Hole punching/AutoNAT non sono ancora completi nel progetto.
-5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge-gateway`, `service-agent`, `client-bridge` e `p2p-relay`.
-6. `LIBP2P_ALLOWED_PEERS` + connection gater sono implementati nel `p2p-relay`, ma non ancora enforced end-to-end su tutti i binari.
+5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge`, `service`, `bridge` e `relay`.
+6. `LIBP2P_ALLOWED_PEERS` + connection gater sono implementati nel `relay`, ma non ancora enforced end-to-end su tutti i binari.
 
 ## 2) Obiettivo operativo per deployment NAT/NAT privato
 
@@ -84,7 +84,7 @@ public-node:
 - bootstrap peer
 - circuit relay v2
 - opzionale: AutoNAT service
-- opzionale: edge-gateway HTTP ingress
+- opzionale: edge HTTP ingress
 ```
 
 ### 2.2 Separazione bootstrap vs relay
@@ -133,7 +133,7 @@ Comportamento richiesto:
 Implementazione attuale/parziale:
 
 - `ConnectionGater` per livello connessione;
-- parser `LIBP2P_ALLOWED_PEERS` e enforcement connessioni sul `p2p-relay`.
+- parser `LIBP2P_ALLOWED_PEERS` e enforcement connessioni sul `relay`.
 
 Implementazione ancora necessaria:
 
@@ -227,7 +227,7 @@ Output minimo utile:
 
 ## 7) Error taxonomy per HTTP 502 (target)
 
-Quando il gateway non riesce a forwardare verso service-agent scoperto, distinguere almeno:
+Quando il gateway non riesce a forwardare verso service scoperto, distinguere almeno:
 
 1. `discovery_missing`
 2. `peer_not_allowed`
@@ -266,19 +266,19 @@ Topologia di riferimento:
                 |            |
 +-------------------+    +-------------------+
 | laptop LM Studio  |    | Hermes / gateway  |
-| service-agent NAT |    | edge NAT          |
+| service NAT |    | edge NAT          |
 +-------------------+    +-------------------+
 ```
 
 Flusso:
 
-1. service-agent connette outbound al public node;
-2. edge-gateway connette outbound al public node;
-3. service-agent pubblica announcement firmato;
-4. edge-gateway riceve e valida;
-5. edge-gateway crea route `Host=lmstudio`;
-6. Hermes chiama edge-gateway;
-7. edge-gateway apre stream verso service-agent;
+1. service connette outbound al public node;
+2. edge connette outbound al public node;
+3. service pubblica announcement firmato;
+4. edge riceve e valida;
+5. edge crea route `Host=lmstudio`;
+6. Hermes chiama edge;
+7. edge apre stream verso service;
 8. se direct dial fallisce, usa relay;
 9. se hole punching riesce, stream successivi possono andare diretti.
 
@@ -293,7 +293,7 @@ LIBP2P_ALLOWED_PEERS=<EDGE_PEER_ID>,<SERVICE_AGENT_PEER_ID>,<PUBLIC_NODE_PEER_ID
 P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
 ENABLE_RELAY_SERVICE=true \
 ENABLE_AUTONAT_SERVICE=true \
-go run ./cmd/p2p-relay
+go run ./cmd/tubo relay run
 ```
 
 ### 9.2 Edge gateway dietro NAT
@@ -310,7 +310,7 @@ RELAY_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID> \
 ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
-go run ./cmd/edge-gateway
+go run ./cmd/tubo edge run
 ```
 
 ### 9.3 Service-agent laptop (LM Studio)
@@ -328,7 +328,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/service-agent
+go run ./cmd/tubo service run
 ```
 
 ## 10) Test di accettazione richiesti (target)
@@ -337,8 +337,8 @@ go run ./cmd/service-agent
 2. peer con PSK ma PeerID non allowlisted e rifiutato;
 3. peer allowlisted ma `ServiceName` non autorizzato e rifiutato;
 4. announcement con firma non valida e rifiutato;
-5. service-agent dietro NAT scoperto via relay;
-6. edge-gateway apre stream via relay;
+5. service dietro NAT scoperto via relay;
+6. edge apre stream via relay;
 7. route `Host=lmstudio` creata dopo discovery valido;
 8. route `Host=lmstudio` rimossa dopo expiry;
 9. `502` include/logga motivo corretto quando relay non disponibile;
@@ -373,7 +373,7 @@ EDGE_LISTEN=:8443 \
 EDGE_ADMIN_LISTEN=127.0.0.1:8444 \
 EDGE_P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
 EDGE_SEED=edge-linode-seed \
-go run ./cmd/edge-gateway
+go run ./cmd/tubo edge run
 ```
 
 ### 12.2 Service-agent su laptop
@@ -385,7 +385,7 @@ NODE_SEED=laptop-lmstudio-seed \
 SERVICE_NAME=lmstudio \
 HEARTBEAT_INTERVAL=5s \
 BOOTSTRAP_PEERS=/ip4/<LINODE_PUBLIC_IP>/tcp/4001/p2p/<EDGE_PEER_ID> \
-go run ./cmd/service-agent
+go run ./cmd/tubo service run
 ```
 
 ### 12.3 Query da Hermes
