@@ -2,7 +2,7 @@
 The edge gateway main function has a goroutine that closes resources, but this goroutine is never awaited. The main function ends with `select{}` which blocks forever, making graceful shutdown impossible.
 
 ## Root Cause
-File: `cmd/edge-gateway/main.go` (lines 152-155)
+File: `cmd/tubo/main.go` (lines 152-155)
 ```go
 // On shutdown, stop subscriber and close host
 go func() {
@@ -31,7 +31,7 @@ Implement signal handler with context cancellation:
 - Wait for subscriber and cache to stop before closing host
 
 ## Files Affected
-- cmd/edge-gateway/main.go
+- cmd/tubo/main.go
 
 ## Label Suggestions
 - bug

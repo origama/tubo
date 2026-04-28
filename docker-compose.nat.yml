@@ -1,12 +1,11 @@
 services:
-  p2p-relay:
-    image: p2p-api-tunnel-relay:nat
+  relay:
+    image: p2p-api-tunnel-tubo:nat
     build:
       context: .
-      dockerfile: deploy/Dockerfile.relay
+      dockerfile: deploy/Dockerfile.tubo
+    command: ["relay", "run", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
     environment:
-      P2P_LISTEN: "/ip4/0.0.0.0/tcp/4002"
-      NODE_SEED: "relay-demo-seed"
       RELAY_HEALTH_LISTEN: ":8092"
       ENABLE_RELAY_SERVICE: "true"
       ENABLE_AUTONAT_SERVICE: "true"
@@ -14,16 +13,12 @@ services:
       FORCE_REACHABILITY_PUBLIC: "true"
       RELAY_LIMIT_DATA_BYTES: "16777216"
       RELAY_MAX_CIRCUITS: "64"
+      PRINT_RUN_COMMANDS: "false"
     ports:
       - "8092:8092"
     networks:
       - edge-private
       - service-private
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8092/healthz >/dev/null 2>&1"]
-      interval: 3s
-      timeout: 2s
-      retries: 20
 
   dummy-api-server:
     image: p2p-api-tunnel-dummy-api-server:nat
@@ -42,53 +37,62 @@ services:
       timeout: 2s
       retries: 20
 
-  edge-gateway:
-    image: p2p-api-tunnel-edge-gateway:nat
+  edge:
+    image: p2p-api-tunnel-tubo:nat
     build:
       context: .
-      dockerfile: deploy/Dockerfile.edge-gateway
+      dockerfile: deploy/Dockerfile.tubo
     depends_on:
-      p2p-relay:
-        condition: service_healthy
-    environment:
-      EDGE_LISTEN: ":8443"
-      EDGE_ADMIN_LISTEN: ":8444"
-      EDGE_P2P_LISTEN: "/ip4/0.0.0.0/tcp/4001"
-      EDGE_SEED: "edge-demo-seed"
-      BOOTSTRAP_PEERS: "/dns4/p2p-relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic"
-      RELAY_PEERS: "/dns4/p2p-relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic"
+      - relay
+    command:
+      - edge
+      - run
+      - --listen
+      - :8443
+      - --admin-listen
+      - :8444
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/4001
+      - --seed
+      - edge-demo-seed
+      - --bootstrap
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --relay
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
     ports:
       - "8443:8443"
       - "8444:8444"
     networks:
       - edge-private
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8443/healthz >/dev/null 2>&1"]
-      interval: 3s
-      timeout: 2s
-      retries: 20
 
-  service-agent:
-    image: p2p-api-tunnel-service-agent:nat
+  service:
+    image: p2p-api-tunnel-tubo:nat
     build:
       context: .
-      dockerfile: deploy/Dockerfile.service-agent
+      dockerfile: deploy/Dockerfile.tubo
     depends_on:
-      dummy-api-server:
-        condition: service_healthy
-      edge-gateway:
-        condition: service_healthy
-      p2p-relay:
-        condition: service_healthy
+      - dummy-api-server
+      - edge
+      - relay
+    command:
+      - service
+      - run
+      - --name
+      - myapi
+      - --target
+      - http://dummy-api-server:8000
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/40123
+      - --seed
+      - service-demo-seed
+      - --heartbeat-interval
+      - 5s
+      - --bootstrap
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --relay
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
     environment:
-      SERVICE_P2P_LISTEN: "/ip4/0.0.0.0/tcp/40123"
-      SERVICE_TARGET: "http://dummy-api-server:8000"
-      NODE_SEED: "service-demo-seed"
-      SERVICE_NAME: "myapi"
-      HEARTBEAT_INTERVAL: "5s"
       SERVICE_HEALTH_LISTEN: ":8091"
-      BOOTSTRAP_PEERS: "/dns4/p2p-relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic"
-      RELAY_PEERS: "/dns4/p2p-relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic"
       ENABLE_AUTORELAY: "true"
       ENABLE_HOLE_PUNCHING: "true"
       FORCE_REACHABILITY_PRIVATE: "true"
@@ -96,11 +100,6 @@ services:
       - "8091:8091"
     networks:
       - service-private
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8091/healthz >/dev/null 2>&1"]
-      interval: 3s
-      timeout: 2s
-      retries: 20
 
 networks:
   edge-private:

@@ -95,9 +95,11 @@ func NewHostWithSeedAndPSKAndOptions(listenAddr, seed string, psk pnet.PSK, extr
 // - LIBP2P_PRIVATE_NETWORK_KEY: path to swarm.key file format
 // - LIBP2P_PRIVATE_NETWORK_KEY_B64: base64-encoded raw 32-byte PSK
 func LoadPrivateNetworkPSKFromEnv() (pnet.PSK, bool, error) {
-	keyPath := os.Getenv("LIBP2P_PRIVATE_NETWORK_KEY")
-	keyB64 := os.Getenv("LIBP2P_PRIVATE_NETWORK_KEY_B64")
+	return LoadPrivateNetworkPSK(os.Getenv("LIBP2P_PRIVATE_NETWORK_KEY"), os.Getenv("LIBP2P_PRIVATE_NETWORK_KEY_B64"))
+}
 
+// LoadPrivateNetworkPSK loads a libp2p private network key from a swarm.key file or base64 raw 32-byte key.
+func LoadPrivateNetworkPSK(keyPath, keyB64 string) (pnet.PSK, bool, error) {
 	if keyPath != "" && keyB64 != "" {
 		return nil, false, fmt.Errorf("set either LIBP2P_PRIVATE_NETWORK_KEY or LIBP2P_PRIVATE_NETWORK_KEY_B64, not both")
 	}

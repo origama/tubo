@@ -16,10 +16,10 @@ Client HTTP -> Edge Gateway -> stream libp2p -> Service Agent -> Origin Service
 
 Componenti funzionanti:
 
-- `cmd/edge-gateway`: ingress HTTP, discovery subscription, cache locale, auto-route, proxy su stream, relay fallback, admin API.
-- `cmd/service-agent`: annuncio servizio firmato, heartbeat, stream handler, forwarding verso target HTTP locale/remoto.
-- `cmd/client-bridge`: proxy HTTP client-side verso peer service.
-- `cmd/p2p-relay`: nodo pubblico bootstrap/relay v2 con health endpoint, supporto PSK e allowlist PeerID (connection gater).
+- `cmd/tubo` (`tubo edge run`): ingress HTTP, discovery subscription, cache locale, auto-route, proxy su stream, relay fallback, admin API.
+- `cmd/tubo` (`tubo service run`): annuncio servizio firmato, heartbeat, stream handler, forwarding verso target HTTP locale/remoto.
+- `cmd/tubo` (`tubo bridge run`): proxy HTTP client-side verso peer service.
+- `cmd/tubo` (`tubo relay run`): nodo pubblico bootstrap/relay v2 con health endpoint, supporto PSK e allowlist PeerID (connection gater).
 - `internal/protocol`: framing binario + streaming body bidirezionale.
 - `internal/discovery`: announcement signed + TTL cache + eventi add/remove.
 - `internal/p2p`: host creation da seed + supporto private swarm PSK + parser allowlist PeerID.
@@ -81,7 +81,7 @@ In particolare:
 
 - quick start locale con Docker Compose;
 - setup private swarm PSK;
-- avvio multi-host (`edge-gateway` + piu' `service-agent`);
+- avvio multi-host (`edge` + piu' `service`);
 - verifica discovery/routes/proxy end-to-end;
 - limitazioni attuali e troubleshooting.
 

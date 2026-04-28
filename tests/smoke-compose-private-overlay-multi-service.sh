@@ -48,24 +48,35 @@ request_from_edge() {
   local query="$3"
 
   $COMPOSE exec -T curl-client sh -lc \
-    "curl --fail-with-body -sS -H 'Host: $host' -H 'Content-Type: text/plain' --data '$payload' 'http://edge-gateway:8443/v1/dummy?$query'"
+    "curl --fail-with-body -sS -H 'Host: $host' -H 'Content-Type: text/plain' --data '$payload' 'http://edge:8443/v1/dummy?$query'"
 }
 
 edge_admin_get() {
   local path="$1"
-  $COMPOSE exec -T curl-client sh -lc "curl --fail-with-body -sS 'http://edge-gateway:8444$path'"
+  $COMPOSE exec -T curl-client sh -lc "curl --fail-with-body -sS 'http://edge:8444$path'"
 }
 
+compose_build_serial() {
+  if $COMPOSE build --help 2>/dev/null | grep -q -- "--no-parallel"; then
+    $COMPOSE build --no-parallel
+    return
+  fi
+  COMPOSE_PARALLEL_LIMIT=1 $COMPOSE build
+}
+
+echo "[smoke-private-multi] docker compose build"
+compose_build_serial
+
 echo "[smoke-private-multi] docker compose up -d"
-$COMPOSE up -d --build
+$COMPOSE up -d --remove-orphans
 
 echo "[smoke-private-multi] waiting for healthy services"
 for service in \
-  p2p-relay \
-  edge-gateway \
-  dummy-api-server-one service-agent-one \
-  dummy-api-server-two service-agent-two \
-  dummy-api-server-three service-agent-three; do
+  relay \
+  edge \
+  dummy-api-server-one service-one \
+  dummy-api-server-two service-two \
+  dummy-api-server-three service-three; do
   wait_healthy "$service" || {
     echo "[smoke-private-multi] service not healthy: $service"
     $COMPOSE ps
@@ -94,7 +105,7 @@ for i in $(seq 1 90); do
   sleep 1
 done
 
-echo "[smoke-private-multi] running curl client from edge network against a single edge endpoint"
+echo "[smoke-private-multi] running curl client from edge network against the tubo edge endpoint"
 payload="hello-private-overlay"
 payload_b64="$(printf '%s' "$payload" | base64 | tr -d '\n')"
 
@@ -102,7 +113,12 @@ for host in svc-one svc-two svc-three; do
   response="$(request_from_edge "$host" "$payload" "from=private-multi&service=$host")"
   assert_contains '"method":"POST"' "$response" "expected POST response for $host"
   assert_contains '"path":"/v1/dummy"' "$response" "expected /v1/dummy path for $host"
-  assert_contains "\"raw_query\":\"from=private-multi&service=$host\"" "$response" "expected query echo for $host"
+  if [[ "$response" != *"\"raw_query\":\"from=private-multi&service=$host\""* && \
+        "$response" != *"\"raw_query\":\"from=private-multi\\u0026service=$host\""* ]]; then
+    echo "[smoke-private-multi] expected query echo for $host"
+    echo "$response"
+    exit 1
+  fi
   assert_contains "\"instance\":\"$host\"" "$response" "expected backend instance $host"
   assert_contains "\"body_b64\":\"$payload_b64\"" "$response" "expected payload echo for $host"
 done

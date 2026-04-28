@@ -30,6 +30,8 @@ type Config struct {
 	RelayPeers             []string
 	BootstrapRetryInterval time.Duration
 	DirectStreamTimeout    time.Duration
+	PrivateKeyFile         string
+	PrivateKeyB64          string
 }
 
 // LoadConfigFromEnv loads edge configuration from environment variables.
@@ -41,6 +43,8 @@ func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
 		AdminListen:    firstNonEmpty(getenv("EDGE_ADMIN_LISTEN"), "127.0.0.1:8444"),
 		BootstrapPeers: splitCSV(getenv("BOOTSTRAP_PEERS")),
 		RelayPeers:     splitCSV(getenv("RELAY_PEERS")),
+		PrivateKeyFile: getenv("LIBP2P_PRIVATE_NETWORK_KEY"),
+		PrivateKeyB64:  getenv("LIBP2P_PRIVATE_NETWORK_KEY_B64"),
 	}
 
 	bootstrapRetryIntervalRaw := firstNonEmpty(getenv("BOOTSTRAP_RETRY_INTERVAL"), "5s")
@@ -82,7 +86,7 @@ type Gateway struct {
 
 // New constructs a new edge runtime.
 func New(ctx context.Context, cfg Config) (*App, error) {
-	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout)
+	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64)
 	if err != nil {
 		return nil, err
 	}
@@ -188,8 +192,8 @@ func adminMux(gw *Gateway) *http.ServeMux {
 	return mux
 }
 
-func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration) (*Gateway, chan struct{}, error) {
-	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSKFromEnv()
+func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64 string) (*Gateway, chan struct{}, error) {
+	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSK(privateKeyFile, privateKeyB64)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load private network key: %w", err)
 	}

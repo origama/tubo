@@ -1,5 +1,0 @@
-FROM golang:1.24-alpine
-WORKDIR /app
-COPY . .
-RUN go build -o /usr/local/bin/p2p-relay ./cmd/p2p-relay
-CMD ["/usr/local/bin/p2p-relay"]

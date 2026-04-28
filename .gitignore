@@ -2,9 +2,7 @@
 bin/
 *.exe
 *.test
-edge-gateway
-service-agent
-client-bridge
+tubo
 dummy-api-server
 
 # Go build artifacts
@@ -42,9 +40,10 @@ desktop.ini
 build/
 dist/
 
-# Temporary files
+# Temporary/generated files
 tmp/
 temp/
+generated/
 
 # Coverage reports
 *.cover

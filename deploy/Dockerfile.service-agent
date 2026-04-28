@@ -1,5 +1,0 @@
-FROM golang:1.24-alpine
-WORKDIR /app
-COPY . .
-RUN go build -o /usr/local/bin/service-agent ./cmd/service-agent
-CMD ["/usr/local/bin/service-agent"]

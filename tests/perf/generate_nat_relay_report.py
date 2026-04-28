@@ -332,15 +332,15 @@ def run_restart_resilience():
     for t in threads:
         t.start()
     time.sleep(5)
-    compose("restart", "service-agent")
+    compose("restart", "service")
     wait_stack_ready()
     for t in threads:
         t.join()
 
     return {
-        "name": "Traffic during service-agent restart",
+        "name": "Traffic during service restart",
         "id": "restart_resilience",
-        "description": "Traffico continuo mentre `service-agent` viene riavviato una volta.",
+        "description": "Traffico continuo mentre `service` viene riavviato una volta.",
         "results": results,
         "config": {"workers": 12, "duration_s": 20, "restart_at_s": 5},
     }
@@ -370,7 +370,7 @@ def derive_strengths_weaknesses(scenarios):
 
     restart = by_id["restart_resilience"]["summary"]
     if restart["success_rate"] >= 99:
-        strengths.append(f"Buona resilienza al riavvio di service-agent: {restart['success_rate']:.1f}% di successo durante restart attivo.")
+        strengths.append(f"Buona resilienza al riavvio di service: {restart['success_rate']:.1f}% di successo durante restart attivo.")
 
     mixed = by_id["mixed_with_large"]["summary"]
     if mixed["failure_count"] > 0:
@@ -384,7 +384,7 @@ def derive_strengths_weaknesses(scenarios):
     if large_once["success_rate"] < 100:
         weaknesses.append(f"Anche il burst singolo da 512 KiB non è ancora impeccabile: success rate {large_once['success_rate']:.1f}%.")
     if restart["failure_count"] > 0:
-        weaknesses.append(f"Durante restart di service-agent il sistema mostra degrado misurabile: {restart['failure_count']} errori su {restart['count']} richieste (success rate {restart['success_rate']:.1f}%).")
+        weaknesses.append(f"Durante restart di service il sistema mostra degrado misurabile: {restart['failure_count']} errori su {restart['count']} richieste (success rate {restart['success_rate']:.1f}%).")
 
     weaknesses.append("Il relay testbed richiede readiness forte (reservation `/p2p-circuit`); avviare lo stress troppo presto produce risultati fuorvianti.")
     return strengths, weaknesses

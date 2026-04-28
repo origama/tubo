@@ -14,9 +14,31 @@ Tracking obbligatorio del lavoro:
 
 ## Quick Start locale
 
+Con Docker Compose:
+
 ```bash
 docker compose up -d --build
 ./tests/smoke-compose.sh
+```
+
+Con `tubo` locale:
+
+```bash
+go build ./cmd/tubo
+tubo keygen swarm --out swarm.key
+tubo init topology --out topology.yaml
+tubo topology render --config topology.yaml --out generated
+tubo relay run --config generated/relay.yaml
+tubo edge run --config generated/edge.yaml
+tubo service run --config generated/lmstudio.yaml
+```
+
+Per un service tipico:
+
+```bash
+tubo service run --config service.yaml
+# oppure
+tubo service run --name lmstudio --target http://192.168.1.28:1234 --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 ```
 
 ## Punto unico per runbook operativo

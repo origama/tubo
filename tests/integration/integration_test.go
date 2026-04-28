@@ -103,8 +103,8 @@ func TestLeaseExpiryRemovesServiceAndRoute(t *testing.T) {
 	stack := newIntegrationStack(t)
 	stack.waitBaseReady(t)
 
-	if out, err := stack.compose("stop", "service-agent"); err != nil {
-		t.Fatalf("compose stop service-agent failed: %v\n%s", err, out)
+	if out, err := stack.compose("stop", "service"); err != nil {
+		t.Fatalf("compose stop service failed: %v\n%s", err, out)
 	}
 
 	waitUntil(t, 75*time.Second, func() bool {
@@ -198,7 +198,7 @@ func TestRelayFallbackAcrossIsolatedNetworks(t *testing.T) {
 	}
 
 	waitUntil(t, 20*time.Second, func() bool {
-		logs, err := stack.logs("edge-gateway")
+		logs, err := stack.logs("edge")
 		if err != nil {
 			return false
 		}
@@ -334,7 +334,7 @@ func TestRelayNATMixedTrafficStress(t *testing.T) {
 	}
 
 	waitUntil(t, 20*time.Second, func() bool {
-		logs, err := stack.logs("edge-gateway")
+		logs, err := stack.logs("edge")
 		if err != nil {
 			return false
 		}
@@ -371,8 +371,8 @@ func TestRelayNATTrafficDuringServiceRestart(t *testing.T) {
 	}
 
 	time.Sleep(4 * time.Second)
-	if out, err := stack.compose("restart", "service-agent"); err != nil {
-		t.Fatalf("compose restart service-agent failed: %v\n%s", err, out)
+	if out, err := stack.compose("restart", "service"); err != nil {
+		t.Fatalf("compose restart service failed: %v\n%s", err, out)
 	}
 
 	wg.Wait()
@@ -423,14 +423,17 @@ func newIntegrationStackWithFiles(t *testing.T, composeFiles ...string) *integra
 	var lastErr error
 	var lastOut string
 	for attempt := 1; attempt <= 3; attempt++ {
-		out, err := stack.compose("up", "-d", "--build")
+		out, err := stack.composeBuild()
+		if err == nil {
+			out, err = stack.compose("up", "-d", "--remove-orphans")
+		}
 		if err == nil {
 			lastErr = nil
 			break
 		}
 		lastErr = err
 		lastOut = out
-		t.Logf("compose up attempt %d failed: %v", attempt, err)
+		t.Logf("compose setup attempt %d failed: %v", attempt, err)
 		time.Sleep(2 * time.Second)
 	}
 	if lastErr != nil {
@@ -467,6 +470,14 @@ func dockerDaemonAvailable() bool {
 	return true
 }
 
+func (s *integrationStack) composeBuild() (string, error) {
+	out, err := s.compose("build", "--no-parallel")
+	if err == nil || !strings.Contains(out, "unknown flag") {
+		return out, err
+	}
+	return s.compose("build")
+}
+
 func (s *integrationStack) compose(args ...string) (string, error) {
 	composeArgs := []string{"compose"}
 	for _, file := range s.composeFiles {
@@ -494,7 +505,7 @@ func (s *integrationStack) waitBaseReady(t *testing.T) {
 	}, "edge admin health")
 	waitUntil(t, 60*time.Second, func() bool {
 		return httpOK("http://127.0.0.1:8091/healthz")
-	}, "service-agent health")
+	}, "service health")
 
 	waitUntil(t, 60*time.Second, func() bool {
 		count, err := s.servicesCount()
@@ -523,7 +534,7 @@ func (s *integrationStack) waitBaseReady(t *testing.T) {
 				return false
 			}
 			return strings.Contains(debugPeer, "/p2p-circuit")
-		}, "service-agent relay reservation / p2p-circuit address")
+		}, "service relay reservation / p2p-circuit address")
 	}
 }
 

@@ -1,0 +1,51 @@
+services:
+  tubo-relay:
+    image: p2p-api-tunnel-tubo:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    command: ["relay", "run", "--config", "/etc/tubo/relay.yaml"]
+    volumes:
+      - ./generated/tubo-smoke/relay.yaml:/etc/tubo/relay.yaml:ro
+    ports:
+      - "4002:4002"
+      - "8092:8092"
+
+  tubo-dummy-api-server:
+    image: p2p-api-tunnel-dummy-api-server:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.dummy-api-server
+    environment:
+      DUMMY_API_LISTEN: "0.0.0.0:8000"
+    ports:
+      - "8000:8000"
+
+  tubo-edge:
+    image: p2p-api-tunnel-tubo:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    command: ["edge", "run", "--config", "/etc/tubo/edge.yaml"]
+    volumes:
+      - ./generated/tubo-smoke/edge.yaml:/etc/tubo/edge.yaml:ro
+    ports:
+      - "8443:8443"
+      - "8444:8444"
+      - "4001:4001"
+
+  tubo-service:
+    image: p2p-api-tunnel-tubo:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    depends_on:
+      - tubo-dummy-api-server
+      - tubo-edge
+      - tubo-relay
+    command: ["service", "run", "--config", "/etc/tubo/service.yaml"]
+    volumes:
+      - ./generated/tubo-smoke/service.yaml:/etc/tubo/service.yaml:ro
+    ports:
+      - "8091:8091"
+      - "40123:40123"

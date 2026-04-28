@@ -94,7 +94,7 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "[smoke] running end-to-end request through edge gateway"
+echo "[smoke] running end-to-end request through tubo edge"
 payload="hello-compose"
 payload_b64="$(printf '%s' "$payload" | base64)"
 resp_headers="$(mktemp)"
