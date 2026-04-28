@@ -110,8 +110,25 @@ func startDiscovery(ctx context.Context, h host.Host) error {
 	if err != nil {
 		return err
 	}
-	_, err = ps.Join(discovery.DiscoveryTopic)
-	return err
+	topic, err := ps.Join(discovery.DiscoveryTopic)
+	if err != nil {
+		return err
+	}
+	sub, err := topic.Subscribe()
+	if err != nil {
+		return err
+	}
+	log.Printf("discovery pubsub router joined topic %s", discovery.DiscoveryTopic)
+	go func() {
+		defer sub.Cancel()
+		for {
+			if _, err := sub.Next(ctx); err != nil {
+				log.Printf("discovery pubsub router stopped: %v", err)
+				return
+			}
+		}
+	}()
+	return nil
 }
 func PrintStartupCommandHints(h host.Host, addr string) {
 	ra := RelayAdvertiseAddr(h, addr)
