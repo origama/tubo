@@ -56,8 +56,19 @@ edge_admin_get() {
   $COMPOSE exec -T curl-client sh -lc "curl --fail-with-body -sS 'http://edge-gateway:8444$path'"
 }
 
+compose_build_serial() {
+  if $COMPOSE build --help 2>/dev/null | grep -q -- "--no-parallel"; then
+    $COMPOSE build --no-parallel
+    return
+  fi
+  COMPOSE_PARALLEL_LIMIT=1 $COMPOSE build
+}
+
+echo "[smoke-private-multi] docker compose build"
+compose_build_serial
+
 echo "[smoke-private-multi] docker compose up -d"
-$COMPOSE up -d --build
+$COMPOSE up -d --remove-orphans
 
 echo "[smoke-private-multi] waiting for healthy services"
 for service in \
