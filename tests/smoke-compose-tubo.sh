@@ -95,7 +95,7 @@ if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
 fi
 
 echo "[smoke-tubo] docker compose up -d"
-$COMPOSE up -d
+$COMPOSE up -d --remove-orphans
 
 echo "[smoke-tubo] waiting for health endpoints"
 wait_http_ok "http://127.0.0.1:8000/healthz"

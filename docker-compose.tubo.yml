@@ -10,11 +10,6 @@ services:
     ports:
       - "4002:4002"
       - "8092:8092"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8092/healthz >/dev/null 2>&1"]
-      interval: 3s
-      timeout: 2s
-      retries: 20
 
   tubo-dummy-api-server:
     image: p2p-api-tunnel-dummy-api-server:dev
@@ -25,11 +20,6 @@ services:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
     ports:
       - "8000:8000"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/healthz >/dev/null 2>&1"]
-      interval: 3s
-      timeout: 2s
-      retries: 20
 
   tubo-edge:
     image: p2p-api-tunnel-tubo:dev
@@ -43,11 +33,6 @@ services:
       - "8443:8443"
       - "8444:8444"
       - "4001:4001"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8443/healthz >/dev/null 2>&1"]
-      interval: 3s
-      timeout: 2s
-      retries: 20
 
   tubo-service:
     image: p2p-api-tunnel-tubo:dev
@@ -55,20 +40,12 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
-      tubo-dummy-api-server:
-        condition: service_healthy
-      tubo-edge:
-        condition: service_healthy
-      tubo-relay:
-        condition: service_healthy
+      - tubo-dummy-api-server
+      - tubo-edge
+      - tubo-relay
     command: ["service", "run", "--config", "/etc/tubo/service.yaml"]
     volumes:
       - ./generated/tubo-smoke/service.yaml:/etc/tubo/service.yaml:ro
     ports:
       - "8091:8091"
       - "40123:40123"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8091/healthz >/dev/null 2>&1"]
-      interval: 3s
-      timeout: 2s
-      retries: 20

@@ -42,9 +42,10 @@ desktop.ini
 build/
 dist/
 
-# Temporary files
+# Temporary/generated files
 tmp/
 temp/
+generated/
 
 # Coverage reports
 *.cover
