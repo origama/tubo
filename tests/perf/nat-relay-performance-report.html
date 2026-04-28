@@ -262,11 +262,7 @@ function renderScenario(id) {
   drawTimeline(s.results);
   drawStatus(sum);
   drawHistogram(s.results);
-  el('errorBox').textContent = sum.sample_errors.length ? sum.sample_errors.join('
-
----
-
-') : 'No error samples.';
+  el('errorBox').textContent = sum.sample_errors.length ? sum.sample_errors.join('\n---\n') : 'No error samples.';
 
   const burstBox = el('burstBreakdown');
   if (s.burst_summaries) {
