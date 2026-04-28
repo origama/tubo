@@ -23,10 +23,12 @@ type Config struct {
 	HeartbeatInterval, BootstrapRetryInterval                                                         time.Duration
 }
 type App struct {
-	cfg    Config
-	host   host.Host
-	hb     *discovery.HeartbeatLoop
-	health *http.Server
+	cfg       Config
+	host      host.Host
+	publisher *discovery.Publisher
+	ann       discovery.Announcement
+	hb        *discovery.HeartbeatLoop
+	health    *http.Server
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -84,13 +86,27 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	pub := discovery.NewPublisher(topic, pk)
 	ann := discovery.Announcement{ServiceName: cfg.ServiceName, PeerID: h.ID(), Addresses: p2p.PeerAddrs(h), TTL: 30 * time.Second}
 	hb := discovery.NewHeartbeatLoop(pub, ann, cfg.HeartbeatInterval)
-	return &App{cfg: cfg, host: h, hb: hb}, nil
+	return &App{cfg: cfg, host: h, publisher: pub, ann: ann, hb: hb}, nil
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
 	log.Printf("service agent config service=%q target=%s p2p_listen=%s health_listen=%s", a.cfg.ServiceName, a.cfg.Target, a.cfg.Listen, a.cfg.HealthListen)
 	log.Printf("peer_id=%s", a.host.ID())
 	dialBootstrapPeers(a.host, a.cfg.BootstrapPeers)
+	if len(a.cfg.BootstrapPeers) > 0 && a.cfg.BootstrapRetryInterval > 0 {
+		go func() {
+			ticker := time.NewTicker(a.cfg.BootstrapRetryInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					dialBootstrapPeers(a.host, a.cfg.BootstrapPeers)
+				}
+			}
+		}()
+	}
 	if a.cfg.HealthListen != "" {
 		a.health = &http.Server{Addr: a.cfg.HealthListen, Handler: healthMux(a.host)}
 		go func() {
@@ -99,6 +115,11 @@ func (a *App) Start(ctx context.Context) error {
 				log.Printf("health: %v", err)
 			}
 		}()
+	}
+	if err := a.publisher.Publish(ctx, a.ann); err != nil {
+		log.Printf("publish announcement failed: %v", err)
+	} else {
+		log.Printf("announced service %q (peer=%s)", a.ann.ServiceName, a.ann.PeerID)
 	}
 	a.hb.Start(ctx)
 	<-ctx.Done()
