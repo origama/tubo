@@ -30,6 +30,22 @@ Il test verifica:
 - auto-route presente (`/routes`)
 - chiamata end-to-end `Host: myapi` con risposta HTTP 200 e payload coerente
 
+## Smoke E2E tubo UX (Docker Compose)
+
+Verifica la nuova UX con immagine unica `tubo` e config YAML:
+
+- `tubo relay run --config /etc/tubo/relay.yaml`
+- `tubo edge run --config /etc/tubo/edge.yaml`
+- `tubo service run --config /etc/tubo/service.yaml`
+
+Comando:
+
+```bash
+./tests/smoke-compose-tubo.sh
+```
+
+Lo script genera `generated/tubo-smoke/*.yaml`, avvia `docker-compose.tubo.yml`, attende health/discovery/route e fa una richiesta end-to-end via edge.
+
 ## Smoke E2E Relay/NAT-like (Docker Compose con reti isolate)
 
 Simula tre macchine logiche:
