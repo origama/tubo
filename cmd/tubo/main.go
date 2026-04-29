@@ -269,11 +269,50 @@ func topology(args []string) error {
 	if err := os.MkdirAll(*out, 0755); err != nil {
 		return err
 	}
+	peerIDs := make(map[string]string, len(t.Nodes))
+	for name, n := range t.Nodes {
+		seed := str(n, "seed", "")
+		if seed == "" {
+			continue
+		}
+		peerID, err := p2p.PeerIDFromSeed(seed)
+		if err != nil {
+			return fmt.Errorf("topology %s peer id: %w", name, err)
+		}
+		peerIDs[name] = peerID.String()
+	}
+	resolveRelayAddr := func(relayName string) (string, error) {
+		relayNode, ok := t.Nodes[relayName]
+		if !ok {
+			return "", fmt.Errorf("unknown relay %q", relayName)
+		}
+		publicAddr := str(relayNode, "public_addr", "")
+		if publicAddr == "" {
+			return "", fmt.Errorf("relay %q is missing public_addr", relayName)
+		}
+		peerID := peerIDs[relayName]
+		if peerID == "" {
+			return "", fmt.Errorf("relay %q is missing seed", relayName)
+		}
+		if strings.Contains(publicAddr, "/p2p/") {
+			return publicAddr, nil
+		}
+		return fmt.Sprintf("%s/p2p/%s", publicAddr, peerID), nil
+	}
 	for name, n := range t.Nodes {
 		role := fmt.Sprint(n["role"])
 		c := cfgpkg.Defaults(role)
 		c.Network.PrivateKeyFile = t.Swarm.KeyFile
 		c.Node.Seed = str(n, "seed", c.Node.Seed)
+		relayRef := str(n, "relay", "")
+		if relayRef != "" {
+			relayAddr, err := resolveRelayAddr(relayRef)
+			if err != nil {
+				return err
+			}
+			c.Network.BootstrapPeers = []string{relayAddr}
+			c.Network.RelayPeers = []string{relayAddr}
+		}
 		switch role {
 		case "relay":
 			c.Relay.PublicAddr = str(n, "public_addr", "")
@@ -284,7 +323,9 @@ func topology(args []string) error {
 			c.Service.Name = str(n, "service_name", name)
 			c.Service.Target = str(n, "target", "")
 		}
-		_ = cfgpkg.WriteFile(filepath.Join(*out, name+".yaml"), c, true)
+		if err := cfgpkg.WriteFile(filepath.Join(*out, name+".yaml"), c, true); err != nil {
+			return err
+		}
 	}
 	return os.WriteFile(filepath.Join(*out, "docker-compose.generated.yaml"), []byte("services: {}\n"), 0644)
 }

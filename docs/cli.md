@@ -165,6 +165,8 @@ nodes:
     relay: relay
 ```
 
+Se un nodo dichiara `relay: relay`, il render risolve il relay in `/p2p/<peer_id>` e popola automaticamente `network.bootstrap_peers` e `network.relay_peers` per edge/service.
+
 Generazione:
 
 ```bash
