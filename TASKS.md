@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-28 13:42 UTC
+> **Last updated:** 2026-04-28 14:10 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -126,6 +126,7 @@
 | C.24 | Investigate relayed large-body stream resets under load | ❌ | NAT/relay stress testing shows small traffic is stable, but mixed and `512KiB` uploads still fail with `502` / `stream reset (remote)` / `unexpected EOF`; likely in request/response streaming, framing, or stream reset/close semantics across relayed libp2p streams |
 | C.25 | Promote NAT/relay stress scenarios into stable acceptance coverage | ⏳ | Keep `TestRelayNATMixedTrafficStress` and `TestRelayNATTrafficDuringServiceRestart`; enable CI gating only after C.24 is fixed so relay streaming load tests become trustworthy regression coverage |
 | C.26 | Add private-overlay multi-service acceptance scenario | ✅ | Added `docker-compose.private-overlay-multi-service.yml` plus `tests/smoke-compose-private-overlay-multi-service.sh` to validate one relay, one edge + curl client, and three isolated service nodes on the same private libp2p overlay with Host-based routing over a single edge endpoint |
+| C.27 | Document future protocol/reverse-proxy planning | ✅ | Added planning notes for HTTPS/TCP/UDP support, comparison with similar tunneling projects, and edge reverse-proxy route control |
 
 ---
 
