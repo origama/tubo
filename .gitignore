@@ -44,6 +44,7 @@ dist/
 tmp/
 temp/
 generated/
+tests/security/artifacts/
 
 # Coverage reports
 *.cover

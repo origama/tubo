@@ -1,0 +1,248 @@
+x-service-env: &service-env
+  SERVICE_HEALTH_LISTEN: ":8091"
+  ENABLE_AUTORELAY: "true"
+  ENABLE_HOLE_PUNCHING: "true"
+  FORCE_REACHABILITY_PRIVATE: "true"
+  LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
+x-service-command-base: &service-command-base
+  - service
+  - run
+  - --p2p-listen
+  - /ip4/0.0.0.0/tcp/40123
+  - --heartbeat-interval
+  - 3s
+  - --bootstrap
+  - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+  - --relay
+  - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+
+services:
+  relay:
+    image: p2p-api-tunnel-tubo:security-multihost
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.tubo
+    command: ["relay", "run", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
+    environment:
+      RELAY_HEALTH_LISTEN: ":8092"
+      ENABLE_RELAY_SERVICE: "true"
+      ENABLE_AUTONAT_SERVICE: "true"
+      ENABLE_DISCOVERY_PUBSUB: "true"
+      FORCE_REACHABILITY_PUBLIC: "true"
+      PRINT_RUN_COMMANDS: "false"
+      LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    networks:
+      - edge-net
+      - svc-one-net
+      - svc-two-net
+      - attacker-net
+      - rogue-net
+
+  edge:
+    image: p2p-api-tunnel-tubo:security-multihost
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.tubo
+    depends_on:
+      - relay
+    command:
+      - edge
+      - run
+      - --listen
+      - :8080
+      - --admin-listen
+      - :8444
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/4001
+      - --seed
+      - edge-security-seed
+      - --bootstrap
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --relay
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+    environment:
+      LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    ports:
+      - "18080:8080"
+      - "18444:8444"
+    networks:
+      - edge-net
+
+  curl-client:
+    image: curlimages/curl:8.16.0
+    depends_on:
+      - edge
+    command: ["sh", "-c", "sleep infinity"]
+    networks:
+      - edge-net
+
+  dummy-api-server-one:
+    image: p2p-api-tunnel-dummy-api-server:security-multihost
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.dummy-api-server
+    environment:
+      DUMMY_API_LISTEN: "0.0.0.0:8000"
+      DUMMY_API_INSTANCE: "svc-one-legit"
+    networks:
+      - svc-one-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  service-one:
+    image: p2p-api-tunnel-tubo:security-multihost
+    depends_on:
+      - dummy-api-server-one
+      - relay
+    command:
+      - service
+      - run
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/40123
+      - --heartbeat-interval
+      - 3s
+      - --bootstrap
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --relay
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --name
+      - svc-one
+      - --target
+      - http://dummy-api-server-one:8000
+      - --seed
+      - service-one-demo-seed
+    environment: *service-env
+    networks:
+      - svc-one-net
+
+  dummy-api-server-two:
+    image: p2p-api-tunnel-dummy-api-server:security-multihost
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.dummy-api-server
+    environment:
+      DUMMY_API_LISTEN: "0.0.0.0:8000"
+      DUMMY_API_INSTANCE: "svc-two-legit"
+    networks:
+      - svc-two-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  service-two:
+    image: p2p-api-tunnel-tubo:security-multihost
+    depends_on:
+      - dummy-api-server-two
+      - relay
+    command:
+      - service
+      - run
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/40123
+      - --heartbeat-interval
+      - 3s
+      - --bootstrap
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --relay
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --name
+      - svc-two
+      - --target
+      - http://dummy-api-server-two:8000
+      - --seed
+      - service-two-demo-seed
+    environment: *service-env
+    networks:
+      - svc-two-net
+
+  dummy-api-server-attacker:
+    image: p2p-api-tunnel-dummy-api-server:security-multihost
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile.dummy-api-server
+    environment:
+      DUMMY_API_LISTEN: "0.0.0.0:8000"
+      DUMMY_API_INSTANCE: "attacker-controlled"
+    networks:
+      - attacker-net
+      - rogue-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  attacker-service:
+    image: p2p-api-tunnel-tubo:security-multihost
+    depends_on:
+      - dummy-api-server-attacker
+      - relay
+    command:
+      - service
+      - run
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/40123
+      - --heartbeat-interval
+      - 3s
+      - --bootstrap
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --relay
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --name
+      - attacker
+      - --target
+      - http://dummy-api-server-attacker:8000
+      - --seed
+      - attacker-service-seed
+    environment: *service-env
+    networks:
+      - attacker-net
+
+  rogue-svc-one:
+    profiles: ["rogue"]
+    image: p2p-api-tunnel-tubo:security-multihost
+    depends_on:
+      - dummy-api-server-attacker
+      - relay
+    command:
+      - service
+      - run
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/40123
+      - --heartbeat-interval
+      - 1s
+      - --bootstrap
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --relay
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+      - --name
+      - svc-one
+      - --target
+      - http://dummy-api-server-attacker:8000
+      - --seed
+      - rogue-svc-one-seed
+    environment: *service-env
+    networks:
+      - rogue-net
+
+networks:
+  edge-net:
+    driver: bridge
+  svc-one-net:
+    driver: bridge
+    internal: true
+  svc-two-net:
+    driver: bridge
+    internal: true
+  attacker-net:
+    driver: bridge
+    internal: true
+  rogue-net:
+    driver: bridge
+    internal: true
