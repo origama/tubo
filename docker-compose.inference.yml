@@ -1,0 +1,89 @@
+services:
+  relay:
+    image: p2p-api-tunnel-tubo:inference
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    command: ["relay", "run", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
+    environment:
+      RELAY_HEALTH_LISTEN: ":8092"
+      ENABLE_RELAY_SERVICE: "true"
+      ENABLE_AUTONAT_SERVICE: "true"
+      ENABLE_DISCOVERY_PUBSUB: "true"
+      FORCE_REACHABILITY_PUBLIC: "true"
+      PRINT_RUN_COMMANDS: "false"
+    ports:
+      - "8092:8092"
+
+  test-inference-server:
+    image: p2p-api-tunnel-test-inference-server:inference
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.test-inference-server
+    environment:
+      TEST_INFERENCE_LISTEN: "0.0.0.0:9443"
+      TEST_INFERENCE_TLS_CERT_FILE: "/certs/server.crt"
+      TEST_INFERENCE_TLS_KEY_FILE: "/certs/server.key"
+    volumes:
+      - ./generated/inference-certs:/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-check-certificate -q -O - https://127.0.0.1:9443/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  edge:
+    image: p2p-api-tunnel-tubo:inference
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    command:
+      - edge
+      - run
+      - --listen
+      - :8443
+      - --admin-listen
+      - :8444
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/4001
+      - --seed
+      - edge-demo-seed
+      - --relay
+      - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+    depends_on:
+      - relay
+    ports:
+      - "8443:8443"
+      - "8444:8444"
+
+  service:
+    image: p2p-api-tunnel-tubo:inference
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    depends_on:
+      - test-inference-server
+      - edge
+      - relay
+    command:
+      - service
+      - run
+      - --name
+      - inference
+      - --target
+      - https://test-inference-server:9443
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/40123
+      - --seed
+      - service-inference-seed
+      - --heartbeat-interval
+      - 5s
+      - --bootstrap
+      - /dns4/edge/tcp/4001/p2p/12D3KooWCtTtxCJ1LLi8nJE7Q8S1h4zEuh9a9fp5Tn3mxwyFFvUR,/dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
+    environment:
+      SERVICE_HEALTH_LISTEN: ":8091"
+      SSL_CERT_FILE: "/certs/ca.crt"
+    volumes:
+      - ./generated/inference-certs:/certs:ro
+    ports:
+      - "8091:8091"

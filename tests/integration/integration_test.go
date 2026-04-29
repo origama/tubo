@@ -1,10 +1,17 @@
 package integration_test
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"net/http"
 	"os"
 	"os/exec"
@@ -177,6 +184,84 @@ func TestHopByHopHeadersStrippedE2E(t *testing.T) {
 
 	if got := resp.Headers["X-Integration-Request"]; got != "hop-by-hop" {
 		t.Fatalf("expected custom header to pass through, got %q", got)
+	}
+}
+
+func TestInferenceHTTPSUpstreamThroughTubo(t *testing.T) {
+	stack := newInferenceIntegrationStack(t)
+	stack.waitInferenceReady(t)
+
+	status, body := edgeRequest(t, "GET", "/v1/models", "inference", nil, nil, 30*time.Second)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", status, body)
+	}
+	if !bytes.Contains(body, []byte("test-local-model")) {
+		t.Fatalf("expected model list from HTTPS upstream, got %s", body)
+	}
+}
+
+func TestInferenceSSEStreamingThroughTubo(t *testing.T) {
+	stack := newInferenceIntegrationStack(t)
+	stack.waitInferenceReady(t)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	req, err := http.NewRequest("POST", "http://127.0.0.1:8443/v1/chat/completions", strings.NewReader(`{"stream":true}`))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Host = "inference"
+	req.Header.Set("Content-Type", "application/json")
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("SSE request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		buf := new(bytes.Buffer)
+		_, _ = buf.ReadFrom(resp.Body)
+		t.Fatalf("expected 200, got %d body=%s", resp.StatusCode, buf.String())
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		t.Fatalf("content-type: got %q want text/event-stream", got)
+	}
+
+	reader := bufio.NewReader(resp.Body)
+	first, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read first SSE line: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 750*time.Millisecond {
+		t.Fatalf("first SSE line looked buffered; elapsed=%s line=%q", elapsed, first)
+	}
+	if !strings.Contains(first, "hel") {
+		t.Fatalf("first SSE line missing first delta: %q", first)
+	}
+
+	rest := new(bytes.Buffer)
+	if _, err := rest.ReadFrom(reader); err != nil {
+		t.Fatalf("read rest of SSE body: %v", err)
+	}
+	full := first + rest.String()
+	for _, want := range []string{"hel", "lo", "[DONE]"} {
+		if !strings.Contains(full, want) {
+			t.Fatalf("SSE body missing %q: %q", want, full)
+		}
+	}
+}
+
+func TestInferenceGRPCLikeHTTP2UpstreamThroughTubo(t *testing.T) {
+	stack := newInferenceIntegrationStack(t)
+	stack.waitInferenceReady(t)
+
+	frame := []byte{0, 0, 0, 0, 0}
+	status, body := edgeRequest(t, "POST", "/inference.Model/Chat", "inference", map[string]string{"Content-Type": "application/grpc"}, frame, 30*time.Second)
+	if status != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%x", status, body)
+	}
+	if !bytes.Equal(body, frame) {
+		t.Fatalf("gRPC-like frame mismatch: got %x want %x", body, frame)
 	}
 }
 
@@ -404,6 +489,17 @@ func newIntegrationStack(t *testing.T) *integrationStack {
 	return newIntegrationStackWithFiles(t, "docker-compose.yml")
 }
 
+func newInferenceIntegrationStack(t *testing.T) *integrationStack {
+	t.Helper()
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	repoRoot := filepath.Clean(filepath.Join(wd, "../.."))
+	writeInferenceTLSFixture(t, filepath.Join(repoRoot, "generated", "inference-certs"))
+	return newIntegrationStackWithFiles(t, "docker-compose.inference.yml")
+}
+
 func newIntegrationStackWithFiles(t *testing.T, composeFiles ...string) *integrationStack {
 	t.Helper()
 	requireIntegration(t)
@@ -494,6 +590,58 @@ func (s *integrationStack) compose(args ...string) (string, error) {
 	return string(out), err
 }
 
+func writeInferenceTLSFixture(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create cert dir: %v", err)
+	}
+
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate CA key: %v", err)
+	}
+	caTpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "tubo integration CA"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTpl, caTpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create CA cert: %v", err)
+	}
+
+	serverKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate server key: %v", err)
+	}
+	serverTpl := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject:      pkix.Name{CommonName: "test-inference-server"},
+		DNSNames:     []string{"test-inference-server", "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	serverDER, err := x509.CreateCertificate(rand.Reader, serverTpl, caTpl, &serverKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create server cert: %v", err)
+	}
+
+	writePEM := func(name, typ string, der []byte, mode os.FileMode) {
+		if err := os.WriteFile(filepath.Join(dir, name), pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), mode); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	writePEM("ca.crt", "CERTIFICATE", caDER, 0o644)
+	writePEM("server.crt", "CERTIFICATE", serverDER, 0o644)
+	writePEM("server.key", "RSA PRIVATE KEY", x509.MarshalPKCS1PrivateKey(serverKey), 0o600)
+}
+
 func (s *integrationStack) waitBaseReady(t *testing.T) {
 	t.Helper()
 
@@ -536,6 +684,29 @@ func (s *integrationStack) waitBaseReady(t *testing.T) {
 			return strings.Contains(debugPeer, "/p2p-circuit")
 		}, "service relay reservation / p2p-circuit address")
 	}
+}
+
+func (s *integrationStack) waitInferenceReady(t *testing.T) {
+	t.Helper()
+	waitUntil(t, 60*time.Second, func() bool { return httpOK("http://127.0.0.1:8443/healthz") }, "edge health")
+	waitUntil(t, 60*time.Second, func() bool { return httpOK("http://127.0.0.1:8444/healthz") }, "edge admin health")
+	waitUntil(t, 60*time.Second, func() bool { return httpOK("http://127.0.0.1:8091/healthz") }, "service health")
+	waitUntil(t, 60*time.Second, func() bool {
+		count, err := s.servicesCount()
+		if err != nil || count != 1 {
+			return false
+		}
+		routes, err := s.routes()
+		if err != nil {
+			return false
+		}
+		for _, rt := range routes {
+			if rt.Hostname == "inference" && rt.PathPrefix == "/" {
+				return true
+			}
+		}
+		return false
+	}, "inference discovery+route readiness")
 }
 
 func (s *integrationStack) servicesCount() (int, error) {
