@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-29 05:05 UTC
+> **Last updated:** 2026-04-29 05:20 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -129,6 +129,7 @@
 | C.27 | Document future protocol/reverse-proxy planning | ✅ | Added planning notes for HTTPS/TCP/UDP support, comparison with similar tunneling projects, and edge reverse-proxy route control |
 | C.28 | Add multi-host security audit testbench | ⏳ | Added Docker Compose security bench and script covering admin route injection, duplicate service-name takeover, anonymous ingress, and service identity policy gaps; findings tracked in `issues/SECURITY-AUDIT-MULTIHOST.md` |
 | C.29 | Validate inference transport capabilities | ✅ | Added forwarding and integration coverage for HTTPS upstream targets, SSE/token streaming, and HTTP/2 upstream access for gRPC-like `application/grpc` responses; full client-side gRPC remains a known limitation because edge ingress is HTTP/1.x and trailers are not propagated |
+| C.30 | Make topology rendering multi-host first | ✅ | `topology render` now generates per-node YAML plus `RUNBOOK.md`, resolves relay/bootstrap references to `/p2p/...` multiaddrs, and no longer emits a placeholder Docker Compose file |
 
 ---
 

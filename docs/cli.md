@@ -143,23 +143,28 @@ bridge:
 
 ## Topology
 
+`topology.yaml` descrive una rete logica i cui nodi normalmente girano su macchine separate. Non assume Docker Compose: `tubo topology render` genera un file YAML per ogni nodo e un `RUNBOOK.md` con indirizzi peer e comandi da eseguire/copiare sulle singole macchine.
+
 ```yaml
 swarm:
-  key_file: ./swarm.key
+  key_file: /etc/tubo/swarm.key
 nodes:
   relay:
     role: relay
     seed: public-relay-seed
+    p2p_listen: /ip4/0.0.0.0/tcp/4001
     public_addr: /ip4/1.2.3.4/tcp/4001
   edge:
     role: edge
     seed: edge-seed
+    p2p_listen: /ip4/0.0.0.0/tcp/4001
     listen: :8443
     admin_listen: 127.0.0.1:8444
     relay: relay
   lmstudio:
     role: service
     seed: service-lmstudio-seed
+    p2p_listen: /ip4/0.0.0.0/tcp/40123
     service_name: lmstudio
     target: http://192.168.1.28:1234
     relay: relay
@@ -169,5 +174,16 @@ Generazione:
 
 ```bash
 tubo topology render --config topology.yaml --out generated
-tubo topology commands --config topology.yaml
+tubo topology commands --config topology.yaml --out generated
 ```
+
+Output tipico:
+
+```text
+generated/relay.yaml
+generated/edge.yaml
+generated/lmstudio.yaml
+generated/RUNBOOK.md
+```
+
+I riferimenti come `relay: relay` vengono risolti in multiaddr `/p2p/...` usando `public_addr` e il PeerID deterministico derivato dal seed del nodo relay.

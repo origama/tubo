@@ -61,4 +61,17 @@ func TestTopologyRenderMinimal(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, "lmstudio.yaml")); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := os.Stat(filepath.Join(out, "RUNBOOK.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "docker-compose.generated.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("topology render should not assume Docker Compose; stat err=%v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(out, "lmstudio.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "/ip4/1.2.3.4/tcp/4001/p2p/") {
+		t.Fatalf("service config should include resolved relay peer addr, got:\n%s", b)
+	}
 }

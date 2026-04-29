@@ -17,6 +17,7 @@ import (
 	cfgpkg "p2p-api-tunnel/internal/config"
 	"p2p-api-tunnel/internal/p2p"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -258,38 +259,189 @@ func topology(args []string) error {
 		return err
 	}
 	if args[0] == "commands" {
-		for name, n := range t.Nodes {
-			fmt.Printf("tubo %s run --config generated/%s.yaml\n", n["role"], name)
-		}
-		return nil
+		return printTopologyCommands(t, *out)
 	}
 	if args[0] != "render" {
 		return usage()
 	}
-	if err := os.MkdirAll(*out, 0755); err != nil {
+	return renderTopology(t, *out)
+}
+
+func renderTopology(t Topology, out string) error {
+	if err := os.MkdirAll(out, 0755); err != nil {
 		return err
 	}
-	for name, n := range t.Nodes {
-		role := fmt.Sprint(n["role"])
+	refs, err := topologyPeerAddrs(t)
+	if err != nil {
+		return err
+	}
+	var names []string
+	for name := range t.Nodes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		n := t.Nodes[name]
+		role := str(n, "role", "")
+		if role == "" {
+			return fmt.Errorf("topology node %q missing role", name)
+		}
 		c := cfgpkg.Defaults(role)
 		c.Network.PrivateKeyFile = t.Swarm.KeyFile
 		c.Node.Seed = str(n, "seed", c.Node.Seed)
+		c.Node.P2PListen = str(n, "p2p_listen", c.Node.P2PListen)
+		c.Network.BootstrapPeers = resolveTopologyRefs(t, refs, n, "bootstrap", "bootstraps")
+		c.Network.RelayPeers = resolveTopologyRefs(t, refs, n, "relay", "relays")
+		if len(c.Network.RelayPeers) > 0 && len(c.Network.BootstrapPeers) == 0 {
+			c.Network.BootstrapPeers = append([]string(nil), c.Network.RelayPeers...)
+		}
 		switch role {
 		case "relay":
-			c.Relay.PublicAddr = str(n, "public_addr", "")
+			c.Relay.PublicAddr = str(n, "public_addr", c.Relay.PublicAddr)
 		case "edge":
 			c.Edge.Listen = str(n, "listen", c.Edge.Listen)
 			c.Edge.AdminListen = str(n, "admin_listen", c.Edge.AdminListen)
 		case "service":
 			c.Service.Name = str(n, "service_name", name)
-			c.Service.Target = str(n, "target", "")
+			c.Service.Target = str(n, "target", c.Service.Target)
+			if c.HealthListen == "127.0.0.1:8091" {
+				c.HealthListen = str(n, "health_listen", c.HealthListen)
+			}
+		case "bridge":
+			c.Bridge.Listen = str(n, "listen", c.Bridge.Listen)
+		default:
+			return fmt.Errorf("topology node %q has unsupported role %q", name, role)
 		}
-		_ = cfgpkg.WriteFile(filepath.Join(*out, name+".yaml"), c, true)
+		if err := cfgpkg.WriteFile(filepath.Join(out, name+".yaml"), c, true); err != nil {
+			return err
+		}
 	}
-	return os.WriteFile(filepath.Join(*out, "docker-compose.generated.yaml"), []byte("services: {}\n"), 0644)
+	return os.WriteFile(filepath.Join(out, "RUNBOOK.md"), []byte(topologyRunbook(t, out, refs)), 0644)
 }
+func topologyPeerAddrs(t Topology) (map[string]string, error) {
+	refs := map[string]string{}
+	for name, n := range t.Nodes {
+		seed := str(n, "seed", "")
+		if seed == "" {
+			continue
+		}
+		addr := str(n, "public_addr", "")
+		if addr == "" {
+			addr = str(n, "advertise_addr", "")
+		}
+		if addr == "" {
+			addr = str(n, "p2p_listen", "")
+		}
+		if addr == "" {
+			addr = cfgpkg.Defaults(str(n, "role", "")).Node.P2PListen
+		}
+		if addr == "" {
+			continue
+		}
+		peerID, err := p2p.PeerIDFromSeed(seed)
+		if err != nil {
+			return nil, fmt.Errorf("topology node %q peer id from seed: %w", name, err)
+		}
+		if !strings.Contains(addr, "/p2p/") {
+			addr = strings.TrimRight(addr, "/") + "/p2p/" + peerID.String()
+		}
+		refs[name] = addr
+	}
+	return refs, nil
+}
+
+func resolveTopologyRefs(t Topology, refs map[string]string, n map[string]any, keys ...string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, key := range keys {
+		for _, raw := range stringList(n, key) {
+			resolved := raw
+			if v, ok := refs[raw]; ok {
+				resolved = v
+			}
+			if resolved == "" {
+				continue
+			}
+			if _, ok := seen[resolved]; ok {
+				continue
+			}
+			seen[resolved] = struct{}{}
+			out = append(out, resolved)
+		}
+	}
+	return out
+}
+
+func stringList(m map[string]any, key string) []string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case string:
+		if x == "" {
+			return nil
+		}
+		return []string{x}
+	case []any:
+		out := make([]string, 0, len(x))
+		for _, item := range x {
+			if s := fmt.Sprint(item); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return x
+	default:
+		return []string{fmt.Sprint(x)}
+	}
+}
+
+func printTopologyCommands(t Topology, out string) error {
+	var names []string
+	for name := range t.Nodes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		n := t.Nodes[name]
+		role := str(n, "role", "")
+		if role == "" {
+			return fmt.Errorf("topology node %q missing role", name)
+		}
+		fmt.Printf("# %s (%s)\n", name, role)
+		fmt.Printf("tubo %s run --config %s/%s.yaml\n\n", role, out, name)
+	}
+	return nil
+}
+
+func topologyRunbook(t Topology, out string, refs map[string]string) string {
+	var b strings.Builder
+	b.WriteString("# Generated tubo topology runbook\n\n")
+	b.WriteString("This directory is intended for a multi-host deployment. Copy each YAML file to the machine that will run that node.\n\n")
+	var names []string
+	for name := range t.Nodes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	b.WriteString("## Peer addresses\n\n")
+	for _, name := range names {
+		if addr := refs[name]; addr != "" {
+			fmt.Fprintf(&b, "- `%s`: `%s`\n", name, addr)
+		}
+	}
+	b.WriteString("\n## Commands\n\n")
+	for _, name := range names {
+		role := str(t.Nodes[name], "role", "")
+		fmt.Fprintf(&b, "### %s\n\n```bash\ntubo %s run --config %s.yaml\n```\n\n", name, role, name)
+	}
+	b.WriteString("If you run commands from the repository root instead, use `--config " + out + "/<node>.yaml`.\n")
+	return b.String()
+}
+
 func str(m map[string]any, k, d string) string {
-	if v, ok := m[k]; ok {
+	if v, ok := m[k]; ok && v != nil {
 		return fmt.Sprint(v)
 	}
 	return d
@@ -303,7 +455,7 @@ func write(path, s string, force bool) error {
 	return os.WriteFile(path, []byte(s), 0600)
 }
 func topoExample() string {
-	return "swarm:\n  key_file: ./swarm.key\nnodes:\n  relay:\n    role: relay\n    seed: public-relay-seed\n    public_addr: /ip4/1.2.3.4/tcp/4001\n  edge:\n    role: edge\n    seed: edge-seed\n    listen: :8443\n    admin_listen: 127.0.0.1:8444\n    relay: relay\n  lmstudio:\n    role: service\n    seed: service-lmstudio-seed\n    service_name: lmstudio\n    target: http://127.0.0.1:1234\n    relay: relay\n"
+	return "# topology.yaml describes nodes that usually run on separate machines.\n# `tubo topology render` produces one YAML per node plus a generated RUNBOOK.md;\n# it does not assume Docker Compose as the deployment target.\nswarm:\n  key_file: /etc/tubo/swarm.key\nnodes:\n  relay:\n    role: relay\n    seed: public-relay-seed\n    p2p_listen: /ip4/0.0.0.0/tcp/4001\n    public_addr: /ip4/1.2.3.4/tcp/4001\n  edge:\n    role: edge\n    seed: edge-seed\n    p2p_listen: /ip4/0.0.0.0/tcp/4001\n    listen: :8443\n    admin_listen: 127.0.0.1:8444\n    relay: relay\n  lmstudio:\n    role: service\n    seed: service-lmstudio-seed\n    p2p_listen: /ip4/0.0.0.0/tcp/40123\n    service_name: lmstudio\n    target: http://127.0.0.1:1234\n    relay: relay\n"
 }
 
 type csvFlag struct{ p *[]string }
