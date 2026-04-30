@@ -53,15 +53,19 @@ func (c *Cache) SetExpiredCallback(fn func(serviceName string, peerID peer.ID)) 
 
 // Add registers or updates a service entry. If the service already exists, it's renewed
 // with fresh TTL and updated addresses. Returns nil on success.
-func (c *Cache) Add(pID peer.ID, serviceName string, addresses []string) error {
+func (c *Cache) Add(pID peer.ID, serviceName string, addresses []string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if ttl <= 0 {
+		ttl = c.defaultTTL
+	}
 
 	entry := &ServiceEntry{
 		ServiceName: serviceName,
 		PeerID:      pID,
 		Addresses:   append([]string(nil), addresses...), // copy to prevent mutation
-		TTL:         c.defaultTTL,
+		TTL:         ttl,
 		Registered:  time.Now(),
 	}
 

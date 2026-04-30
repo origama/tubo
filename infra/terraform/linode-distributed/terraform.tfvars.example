@@ -1,0 +1,24 @@
+# Prefer exporting TF_VAR_linode_token from ~/.token instead of committing secrets here.
+linode_token         = "paste-linode-pat-here"
+root_pass            = "change-me-now-use-a-strong-password"
+ssh_public_key       = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@example"
+# Use an absolute path here: Terraform's file() does not reliably expand ~
+ssh_private_key_path = "/root/.ssh/id_ed25519"
+
+project     = "p2p-api-tunnel"
+environment = "linode-dist"
+
+# choose 3 different regions
+relay_region   = "eu-central"
+edge_region    = "us-east"
+service_region = "ap-south"
+
+instance_type = "g6-nanode-1"
+
+# lock SSH down before apply if possible
+ssh_allowed_cidrs = ["0.0.0.0/0"]
+
+# public relay listener
+relay_allowed_cidrs = ["0.0.0.0/0"]
+
+extra_tags = ["manual"]

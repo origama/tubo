@@ -219,7 +219,7 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		return nil, nil, fmt.Errorf("join discovery topic: %w", err)
 	}
 
-	cache := discovery.NewCache(30*time.Second, 15*time.Second)
+	cache := discovery.NewCache(30*time.Second, 1*time.Second)
 	sub := discovery.NewPubSubSubscriber(topic, cache)
 
 	pubKey := h.Peerstore().PubKey(h.ID())
@@ -297,6 +297,8 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			log.Printf("relay fallback reusing existing limited connection target=%s", targetPeer)
 			return stream, nil
 		}
+		log.Printf("relay fallback reuse failed target=%s err=%v; dropping stale limited conns", targetPeer, err)
+		closeLimitedConnsToPeer(h, targetPeer)
 		lastErr = err
 	}
 
@@ -371,6 +373,70 @@ func hasLimitedConnToPeer(h host.Host, targetPeer peer.ID) bool {
 	return false
 }
 
+func closeLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
+	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
+		if !conn.Stat().Limited {
+			continue
+		}
+		if err := conn.Close(); err != nil {
+			log.Printf("close stale limited conn target=%s err=%v", targetPeer, err)
+		}
+	}
+}
+
+func (gw *Gateway) openStreamOnce(ctx context.Context, targetPeer peer.ID) (network.Stream, string, error) {
+	directCtx, cancelDirect := context.WithTimeout(ctx, gw.directStreamTimeout)
+	stream, err := gw.host.NewStream(directCtx, targetPeer, p2p.ProtocolID)
+	cancelDirect()
+	if err == nil {
+		return stream, "direct", nil
+	}
+	log.Printf("direct stream failed to %s: %v", targetPeer, err)
+
+	if len(gw.relayPeers) == 0 {
+		return nil, "direct", fmt.Errorf("cannot reach %s", targetPeer.String())
+	}
+
+	stream, err = tryRelayFallback(ctx, gw.host, targetPeer, gw.relayPeers)
+	if err != nil {
+		return nil, "relayed", fmt.Errorf("cannot reach %s (direct and relay): %w", targetPeer.String(), err)
+	}
+	return stream, "relayed", nil
+}
+
+func retryableOpenStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "NO_RESERVATION") ||
+		strings.Contains(msg, "dial backoff") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "connection reset by peer")
+}
+
+func (gw *Gateway) openStreamWithRetry(ctx context.Context, targetPeer peer.ID) (network.Stream, string, error) {
+	deadline := time.Now().Add(8 * time.Second)
+	var lastErr error
+	var path string
+	for attempt := 1; ; attempt++ {
+		stream, connectionPath, err := gw.openStreamOnce(ctx, targetPeer)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("stream open recovered target=%s attempts=%d path=%s", targetPeer, attempt, connectionPath)
+			}
+			return stream, connectionPath, nil
+		}
+		lastErr = err
+		path = connectionPath
+		if !retryableOpenStreamError(err) || time.Now().After(deadline) || ctx.Err() != nil {
+			return nil, path, lastErr
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
 func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	hostname := r.Host
@@ -397,26 +463,11 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("resolved service=%q peer=%s addrs=%v", route.ServiceName, entry.PeerID, entry.Addresses)
 
-	directCtx, cancelDirect := context.WithTimeout(r.Context(), gw.directStreamTimeout)
-	stream, err := gw.host.NewStream(directCtx, entry.PeerID, p2p.ProtocolID)
-	cancelDirect()
-	connectionPath := "direct"
+	stream, connectionPath, err := gw.openStreamWithRetry(r.Context(), entry.PeerID)
 	if err != nil {
-		log.Printf("direct stream failed to %s: %v", entry.PeerID, err)
-
-		if len(gw.relayPeers) == 0 {
-			log.Printf("proxy failed reason=peer_not_connected peer=%s relay_peers=0 duration=%s", entry.PeerID, time.Since(start))
-			http.Error(w, "cannot reach "+entry.PeerID.String(), http.StatusBadGateway)
-			return
-		}
-
-		stream, err = tryRelayFallback(r.Context(), gw.host, entry.PeerID, gw.relayPeers)
-		if err != nil {
-			log.Printf("proxy failed reason=relay_unavailable peer=%s err=%v duration=%s", entry.PeerID, err, time.Since(start))
-			http.Error(w, "cannot reach "+entry.PeerID.String()+" (direct and relay): "+err.Error(), http.StatusBadGateway)
-			return
-		}
-		connectionPath = "relayed"
+		log.Printf("proxy failed reason=relay_unavailable peer=%s path=%s err=%v duration=%s", entry.PeerID, connectionPath, err, time.Since(start))
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
 	}
 	defer stream.Close()
 

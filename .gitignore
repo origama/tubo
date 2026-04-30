@@ -48,3 +48,21 @@ generated/
 # Coverage reports
 *.cover
 coverage.out
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+*.tfvars
+*.tfvars.json
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Python caches / scratch benchmark outputs
+__pycache__/
+*.pyc
+tests/perf/results/*/.tmp-running/

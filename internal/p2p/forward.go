@@ -129,6 +129,12 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 			}
 		}
 		log.Printf("service stream completed peer=%s method=%s path=%s status=%d bytes=%d duration=%s", remotePeer, reqHeader.Method, reqHeader.Path, resp.StatusCode, bytesWritten, time.Since(start))
+		if err := s.CloseWrite(); err != nil {
+			log.Printf("service stream close-write failed peer=%s err=%v", remotePeer, err)
+			return
+		}
+		_ = s.SetReadDeadline(time.Now().Add(5 * time.Second))
+		_, _ = io.Copy(io.Discard, s)
 	}
 }
 

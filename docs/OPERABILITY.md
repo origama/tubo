@@ -186,6 +186,41 @@ curl -sS \
 
 Atteso: `HTTP 200` e body JSON restituito da LM Studio.
 
+### 5.6 Smoke distribuito con Terraform su 3 Linode multi-region
+
+Per un bench distribuito repeatable su cloud, e' disponibile anche uno stack Terraform + smoke harness:
+
+- Terraform: `infra/terraform/linode-distributed/`
+- doc: `docs/LINODE_TERRAFORM_TESTBENCH.md`
+- smoke: `./tests/smoke-terraform-linode.sh`
+
+La topologia usa:
+
+- `relay` pubblico
+- `edge` NAT-like (SSH-only, ingress chiuso)
+- `service` NAT-like (SSH-only, ingress chiuso)
+
+Poiche' edge e service sono volutamente chiusi in ingresso, la verifica HTTP viene eseguita dall'interno dell'host edge via SSH.
+
+### 5.7 Smoke distribuito con sole 2 macchine
+
+Se hai solo 2 macchine reali disponibili, il compromesso operativo consigliato e':
+
+- `edge` sulla macchina A;
+- `relay` sulla macchina B (pubblica, obbligatoria);
+- `service` + servizio di esempio sulla stessa macchina B;
+- `service` bindato su loopback (`/ip4/127.0.0.1/tcp/40123`) con `force_reachability: private` per impedire il direct dial pubblico.
+
+Questo produce comunque un bench **relay-first distribuito** utile, anche se non e' un 3-host puro.
+
+Smoke script dedicato:
+
+```bash
+./tests/smoke-distributed-two-host.sh
+```
+
+Dettagli: `tests/distributed-two-host.md`
+
 ## 6) Aggiungere un servizio ulteriore sullo stesso tunnel
 
 Pattern:
