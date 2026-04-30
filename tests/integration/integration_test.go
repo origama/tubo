@@ -347,7 +347,7 @@ func TestRelayNATTrafficDuringServiceRestart(t *testing.T) {
 	stack.waitBaseReady(t)
 
 	stopAt := time.Now().Add(25 * time.Second)
-	results := make(chan stressResult, 512)
+	results := make(chan stressResult, 8192)
 	var wg sync.WaitGroup
 
 	for worker := 0; worker < 6; worker++ {
@@ -375,10 +375,15 @@ func TestRelayNATTrafficDuringServiceRestart(t *testing.T) {
 		t.Fatalf("compose restart service failed: %v\n%s", err, out)
 	}
 
-	wg.Wait()
-	close(results)
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(results)
+		close(done)
+	}()
 
 	summary := summarizeStressResults(results)
+	<-done
 	t.Logf("relay NAT restart stress summary: total=%d ok=%d transport_errors=%d bad_status=%d validation_errors=%d p50=%s p95=%s max=%s failures=%s",
 		summary.total, summary.ok, summary.transportErrors, summary.badStatus, summary.validationErrors, summary.p50, summary.p95, summary.max, summary.describeFailures())
 
