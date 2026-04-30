@@ -1,0 +1,128 @@
+[security-multihost] starting security multihost testbench
+[security-multihost] compose file: /root/p2p-api-tunnel/tests/security/docker-compose.security-multihost.yml
+[security-multihost] building images serially to avoid parallel tag races
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  16.83MB
+Step 1/10 : FROM golang:1.24 AS build
+ ---> d2d2bc1c84f7
+Step 2/10 : WORKDIR /src
+ ---> Using cache
+ ---> 6cc4a98e27c7
+Step 3/10 : COPY go.mod go.sum ./
+ ---> Using cache
+ ---> dc7d024893f5
+Step 4/10 : RUN go mod download
+ ---> Using cache
+ ---> 02ede06f96b4
+Step 5/10 : COPY . .
+ ---> a3e747adc205
+Step 6/10 : RUN CGO_ENABLED=0 GOOS=linux go build -o /out/tubo ./cmd/tubo
+ ---> Running in 1355e0659bd0
+ ---> Removed intermediate container 1355e0659bd0
+ ---> a26646e55867
+Step 7/10 : FROM gcr.io/distroless/static-debian12:nonroot
+ ---> a9329520abc4
+Step 8/10 : COPY --from=build /out/tubo /usr/local/bin/tubo
+ ---> Using cache
+ ---> 279f6e7cc63a
+Step 9/10 : USER nonroot:nonroot
+ ---> Using cache
+ ---> 8d463d86364e
+Step 10/10 : ENTRYPOINT ["/usr/local/bin/tubo"]
+ ---> Using cache
+ ---> 6806e8235afb
+Successfully built 6806e8235afb
+Successfully tagged p2p-api-tunnel-tubo:security-multihost
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  16.83MB
+Step 1/5 : FROM golang:1.24-alpine
+ ---> 8bee1901f1e5
+Step 2/5 : WORKDIR /app
+ ---> Using cache
+ ---> fbe762465525
+Step 3/5 : COPY . .
+ ---> 340f7cff5c4d
+Step 4/5 : RUN go build -o /usr/local/bin/dummy-api-server ./cmd/dummy-api-server
+ ---> Running in 583e89a8d95a
+ ---> Removed intermediate container 583e89a8d95a
+ ---> e022375be2e9
+Step 5/5 : CMD ["/usr/local/bin/dummy-api-server"]
+ ---> Running in f8dcc5d59032
+ ---> Removed intermediate container f8dcc5d59032
+ ---> f7c8badf4d2b
+Successfully built f7c8badf4d2b
+Successfully tagged p2p-api-tunnel-dummy-api-server:security-multihost
+ Network security_rogue-net  Creating
+ Network security_rogue-net  Created
+ Network security_edge-net  Creating
+ Network security_edge-net  Created
+ Network security_svc-one-net  Creating
+ Network security_svc-one-net  Created
+ Network security_svc-two-net  Creating
+ Network security_svc-two-net  Created
+ Network security_attacker-net  Creating
+ Network security_attacker-net  Created
+ Container security-dummy-api-server-attacker-1  Creating
+ Container security-relay-1  Creating
+ Container security-dummy-api-server-one-1  Creating
+ Container security-dummy-api-server-two-1  Creating
+ Container security-dummy-api-server-two-1  Created
+ Container security-dummy-api-server-one-1  Created
+ Container security-relay-1  Created
+ Container security-edge-1  Creating
+ Container security-dummy-api-server-attacker-1  Created
+ Container security-attacker-service-1  Creating
+ Container security-service-two-1  Creating
+ Container security-service-one-1  Creating
+ Container security-edge-1  Created
+ Container security-curl-client-1  Creating
+ Container security-service-one-1  Created
+ Container security-service-two-1  Created
+ Container security-attacker-service-1  Created
+ Container security-curl-client-1  Created
+ Container security-dummy-api-server-two-1  Starting
+ Container security-relay-1  Starting
+ Container security-dummy-api-server-attacker-1  Starting
+ Container security-dummy-api-server-one-1  Starting
+ Container security-dummy-api-server-one-1  Started
+ Container security-dummy-api-server-two-1  Started
+ Container security-dummy-api-server-attacker-1  Started
+ Container security-relay-1  Started
+ Container security-service-two-1  Starting
+ Container security-service-one-1  Starting
+ Container security-edge-1  Starting
+ Container security-attacker-service-1  Starting
+ Container security-attacker-service-1  Started
+ Container security-service-one-1  Started
+ Container security-service-two-1  Started
+ Container security-edge-1  Started
+ Container security-curl-client-1  Starting
+ Container security-curl-client-1  Started
+[security-multihost] ready: edge admin
+[security-multihost] ready: routes for svc-one, svc-two and attacker
+[security-multihost] baseline routing checks
+SEC-BENCH-000 | info | pass | baseline multi-service routing works
+[security-multihost] SEC-001: unauthenticated admin API route injection
+SEC-001 | high | vulnerable | edge admin API accepts unauthenticated POST /add_route and exposes attacker service under arbitrary Host
+[security-multihost] SEC-002: admin API exposed on host port
+SEC-002 | high | vulnerable | admin API is reachable from Docker host on 127.0.0.1:18444 without auth
+[security-multihost] SEC-003: duplicate service-name takeover by swarm insider
+ Container security-relay-1  Running
+ Container security-dummy-api-server-attacker-1  Running
+ Container security-rogue-svc-one-1  Creating
+ Container security-rogue-svc-one-1  Created
+ Container security-rogue-svc-one-1  Starting
+ Container security-rogue-svc-one-1  Started
+SEC-003 | high | vulnerable | a peer with the private swarm key can announce an existing service name and take over traffic for that service
+[security-multihost] SEC-004: ingress has no client authentication
+SEC-004 | medium | vulnerable | public edge ingress accepts unauthenticated HTTP requests for published services
+[security-multihost] SEC-005: no enforced ServiceName -> PeerID binding
+SEC-005 | high | observed-design-gap | routes and discovery are keyed by service name; cache keeps one mutable registration per name and does not enforce a pinned peer identity
+[security-multihost] report written to /root/p2p-api-tunnel/tests/security/artifacts/security-multihost-report.txt
+[security-multihost] done

@@ -3,17 +3,20 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
 	libp2p "github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	circuitclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	"github.com/multiformats/go-multiaddr"
-	"log"
-	"net/http"
+
 	"p2p-api-tunnel/internal/discovery"
 	"p2p-api-tunnel/internal/p2p"
-	"strings"
-	"time"
 )
 
 type Config struct {
@@ -23,12 +26,14 @@ type Config struct {
 	HeartbeatInterval, BootstrapRetryInterval                                                         time.Duration
 }
 type App struct {
-	cfg       Config
-	host      host.Host
-	publisher *discovery.Publisher
-	ann       discovery.Announcement
-	hb        *discovery.HeartbeatLoop
-	health    *http.Server
+	cfg                  Config
+	host                 host.Host
+	publisher            *discovery.Publisher
+	hb                   *discovery.HeartbeatLoop
+	health               *http.Server
+	relayInfos           []peer.AddrInfo
+	announcementTTL      time.Duration
+	requireRelayReadyAnn bool
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -84,9 +89,16 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		return nil, fmt.Errorf("no private key for peer")
 	}
 	pub := discovery.NewPublisher(topic, pk)
-	ann := discovery.Announcement{ServiceName: cfg.ServiceName, PeerID: h.ID(), Addresses: p2p.PeerAddrs(h), TTL: 30 * time.Second}
-	hb := discovery.NewHeartbeatLoop(pub, ann, cfg.HeartbeatInterval)
-	return &App{cfg: cfg, host: h, publisher: pub, ann: ann, hb: hb}, nil
+	app := &App{
+		cfg:                  cfg,
+		host:                 h,
+		publisher:            pub,
+		relayInfos:           relays,
+		announcementTTL:      computeAnnouncementTTL(cfg.HeartbeatInterval),
+		requireRelayReadyAnn: len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
+	}
+	app.hb = discovery.NewHeartbeatLoopFunc(pub, cfg.HeartbeatInterval, app.currentAnnouncement)
+	return app, nil
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
@@ -116,10 +128,9 @@ func (a *App) Start(ctx context.Context) error {
 			}
 		}()
 	}
-	if err := a.publisher.Publish(ctx, a.ann); err != nil {
-		log.Printf("publish announcement failed: %v", err)
-	} else {
-		log.Printf("announced service %q (peer=%s)", a.ann.ServiceName, a.ann.PeerID)
+	go a.maintainRelayReservations(ctx)
+	if !a.hb.PublishNow(ctx) {
+		log.Printf("initial announcement deferred: relay reservation not ready yet")
 	}
 	a.hb.Start(ctx)
 	<-ctx.Done()
@@ -131,6 +142,92 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	return nil
 }
+func computeAnnouncementTTL(interval time.Duration) time.Duration {
+	ttl := interval * 2
+	if ttl < 10*time.Second {
+		ttl = 10 * time.Second
+	}
+	if ttl > 30*time.Second {
+		ttl = 30 * time.Second
+	}
+	return ttl
+}
+
+func (a *App) hasRelayReservation() bool {
+	for _, addr := range p2p.PeerAddrs(a.host) {
+		if strings.Contains(addr, "/p2p-circuit") {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) currentAnnouncement() (discovery.Announcement, bool) {
+	addrs := p2p.PeerAddrs(a.host)
+	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) {
+		return discovery.Announcement{}, false
+	}
+	return discovery.Announcement{
+		ServiceName: a.cfg.ServiceName,
+		PeerID:      a.host.ID(),
+		Addresses:   addrs,
+		TTL:         a.announcementTTL,
+	}, true
+}
+
+func hasCircuitAddr(addrs []string) bool {
+	for _, addr := range addrs {
+		if strings.Contains(addr, "/p2p-circuit") {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) maintainRelayReservations(ctx context.Context) {
+	if !a.requireRelayReadyAnn || len(a.relayInfos) == 0 {
+		return
+	}
+
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	lastReady := false
+
+	for {
+		ready := a.hasRelayReservation()
+		if ready && !lastReady {
+			log.Printf("relay reservation observed in host addrs; publishing refreshed announcement")
+			a.hb.PublishNow(ctx)
+		}
+		lastReady = ready
+
+		if !ready {
+			for _, relayInfo := range a.relayInfos {
+				reserveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				if err := a.host.Connect(reserveCtx, relayInfo); err != nil {
+					cancel()
+					log.Printf("relay reservation connect failed relay=%s err=%v", relayInfo.ID, err)
+					continue
+				}
+				reservation, err := circuitclient.Reserve(reserveCtx, a.host, relayInfo)
+				cancel()
+				if err != nil {
+					log.Printf("relay reservation failed relay=%s err=%v", relayInfo.ID, err)
+					continue
+				}
+				log.Printf("relay reservation ready relay=%s expires=%s addrs=%d", relayInfo.ID, reservation.Expiration.Format(time.RFC3339), len(reservation.Addrs))
+				break
+			}
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
 func healthMux(h host.Host) *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })

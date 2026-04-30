@@ -146,7 +146,7 @@ func TestCacheAddAndResolve(t *testing.T) {
 	cache := discovery.NewCache(30*time.Second, 10*time.Minute)
 	pid := peer.ID("test-peer-123")
 
-	err := cache.Add(pid, "my-api", []string{"/ip4/1.2.3.4/tcp/8080"})
+	err := cache.Add(pid, "my-api", []string{"/ip4/1.2.3.4/tcp/8080"}, 0)
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestCacheExpiry(t *testing.T) {
 	cache := discovery.NewCache(50*time.Millisecond, 1*time.Second)
 	pid := peer.ID("expiring-peer")
 
-	err := cache.Add(pid, "short-lived", []string{"/ip4/1.2.3.4/tcp/8080"})
+	err := cache.Add(pid, "short-lived", []string{"/ip4/1.2.3.4/tcp/8080"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestCacheCountEmitsExpiredCallback(t *testing.T) {
 		expiredCh <- serviceName
 	})
 
-	if err := cache.Add(pid, "short-lived", []string{"/ip4/1.2.3.4/tcp/8080"}); err != nil {
+	if err := cache.Add(pid, "short-lived", []string{"/ip4/1.2.3.4/tcp/8080"}, 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -222,13 +222,13 @@ func TestCacheUpdate(t *testing.T) {
 	cache := discovery.NewCache(30*time.Second, 10*time.Minute)
 	pid := peer.ID("test-peer")
 
-	err := cache.Add(pid, "my-api", []string{"/ip4/1.2.3.4/tcp/8080"})
+	err := cache.Add(pid, "my-api", []string{"/ip4/1.2.3.4/tcp/8080"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Update with new address
-	err = cache.Add(pid, "my-api", []string{"/ip4/5.6.7.8/tcp/9090"})
+	err = cache.Add(pid, "my-api", []string{"/ip4/5.6.7.8/tcp/9090"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,11 +247,11 @@ func TestCacheMultipleServices(t *testing.T) {
 	peerA := peer.ID("peer-a")
 	peerB := peer.ID("peer-b")
 
-	err := cache.Add(peerA, "service-a", []string{"/ip4/1.1.1.1/tcp/80"})
+	err := cache.Add(peerA, "service-a", []string{"/ip4/1.1.1.1/tcp/80"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = cache.Add(peerB, "service-b", []string{"/ip4/2.2.2.2/tcp/80"})
+	err = cache.Add(peerB, "service-b", []string{"/ip4/2.2.2.2/tcp/80"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,14 +291,14 @@ func TestHeartbeatRenewal(t *testing.T) {
 	cache := discovery.NewCache(200*time.Millisecond, 500*time.Millisecond)
 	pid := peer.ID("heartbeat-peer")
 
-	err := cache.Add(pid, "hb-service", []string{"/ip4/1.2.3.4/tcp/8080"})
+	err := cache.Add(pid, "hb-service", []string{"/ip4/1.2.3.4/tcp/8080"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	// Wait a bit, then renew (simulating heartbeat)
 	time.Sleep(60 * time.Millisecond)
-	err = cache.Add(pid, "hb-service", []string{"/ip4/1.2.3.4/tcp/8080"})
+	err = cache.Add(pid, "hb-service", []string{"/ip4/1.2.3.4/tcp/8080"}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

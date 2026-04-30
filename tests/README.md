@@ -98,6 +98,59 @@ Il test verifica:
 - routing host-based verso i tre backend tramite un solo endpoint edge
 - risposta coerente dal backend atteso (`instance`)
 
+## Smoke E2E Distributed 2-host (edge locale + relay remoto)
+
+Smoke reale su 2 macchine:
+
+- `edge` sulla macchina locale (`172.236.202.99` di default)
+- `relay` sulla macchina remota (`172.232.189.160`)
+- `service` + `dummy-api-server` co-hosted sulla macchina remota
+
+Comando:
+
+```bash
+./tests/smoke-distributed-two-host.sh
+```
+
+Il `service` remoto viene forzato a usare `p2p_listen=/ip4/127.0.0.1/tcp/40123` e `force_reachability: private`, cosi' l'edge non puo' fare direct dial pubblico e deve passare via relay.
+
+Dettagli operativi: `tests/distributed-two-host.md`
+
+## Smoke E2E Linode/Terraform (3 host multi-region)
+
+Provisioning distribuito tramite Terraform:
+
+- `relay` pubblico su Linode
+- `edge` su Linode con ingress chiuso (SSH-only, NAT-like)
+- `service` su Linode con ingress chiuso (SSH-only, NAT-like)
+
+Terraform stack:
+
+- `infra/terraform/linode-distributed/`
+
+Smoke harness:
+
+```bash
+./tests/smoke-terraform-linode.sh
+```
+
+Lo smoke legge gli IP da `terraform output`, carica binari + config sui nodi e verifica il percorso relay-first controllando `connection_path=relayed` nei log edge.
+
+## Performance benchmark persistente su Linode/Terraform
+
+Usa il testbed multi-region creato da Terraform, lascia i processi remoti attivi per la durata del benchmark e salva risultati storici confrontabili in:
+
+- `tests/perf/results/linode-terraform/<timestamp>/report.json`
+- `tests/perf/results/linode-terraform/<timestamp>/summary.md`
+- `tests/perf/results/linode-terraform/latest.json`
+- `tests/perf/results/linode-terraform/latest.md`
+
+Comando:
+
+```bash
+python3 ./tests/perf/run_linode_terraform_perf.py
+```
+
 ## Integration Tests (Go)
 
 Package: `tests/integration`

@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-04-29 13:30 UTC
+> **Last updated:** 2026-04-29 22:45 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -128,6 +128,14 @@
 | C.26 | Add private-overlay multi-service acceptance scenario | ✅ | Added `docker-compose.private-overlay-multi-service.yml` plus `tests/smoke-compose-private-overlay-multi-service.sh` to validate one relay, one edge + curl client, and three isolated service nodes on the same private libp2p overlay with Host-based routing over a single edge endpoint |
 | C.27 | Document future protocol/reverse-proxy planning | ✅ | Added planning notes for HTTPS/TCP/UDP support, comparison with similar tunneling projects, and edge reverse-proxy route control |
 | C.28 | Fix topology render missing bootstrap/relay peers | ✅ | `tubo topology render` now resolves `relay: <name>` into `/p2p/<peer_id>` and populates `network.bootstrap_peers` + `network.relay_peers` for edge/service configs; added regression test in `cmd/tubo/main_test.go` |
+| C.29 | Add 2-host distributed smoke testbench | ✅ | Added `tests/smoke-distributed-two-host.sh` + docs; verified end-to-end with edge on `172.236.202.99`, relay on `172.232.189.160`, service + dummy origin co-hosted remotely but loopback-bound to force `connection_path=relayed` |
+| C.30 | Scaffold Terraform Linode multi-region distributed testbench | ⏳ | In progress: create 3-node Linode bench (public relay, edge + service NAT-like/ingress-closed) plus deploy/smoke harness; real apply pending Linode PAT |
+| C.31 | Run distributed failure campaign on 2-host bench | ✅ | Ran real failure campaign on the 2-host bench and documented results in `docs/FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md`; key findings: relay restart can wedge relay-first traffic, edge restart alone does not recover it, service restart recovery can take ~2 minutes, and dead services remain routable for ~30s |
+| C.32 | Fix relay restart wedge on relay-first traffic | ⏳ | Partial progress: edge now drops stale limited conns and retries stream open for transient relay errors; service now maintains explicit circuit-v2 reservations and republishes once relay-ready, but full relay-restart failure-campaign revalidation is still pending because the distributed bench harness remains flaky |
+| C.33 | Reduce slow service restart recovery on relay-first path | ✅ | Fixed enough to make `RUN_INTEGRATION=1 go test -count=1 -run TestRelayNATTrafficDuringServiceRestart -v ./tests/integration` pass: service now republishes dynamic announcements only when relay reservation is ready, and edge retries transient `NO_RESERVATION` / dial-backoff stream-open failures |
+| C.34 | Reduce stale-route window after service loss | ⏳ | Implemented: edge discovery cache now honors per-announcement TTL and runs cleanup every 1s instead of 15s; still need explicit post-fix distributed-bench revalidation of the observed stale-route window |
+| C.35 | Harden distributed bench pid/process management | ⏳ | Partial progress: remote uploads now go through temp files and cleanup kills matching binaries before overwrite, but the 2-host harness still shows stale wrapper-process behavior during repeated restart injection and needs another cleanup pass |
+| C.36 | Preserve repeatable NAT/relay performance baselines | ⏳ | In progress: add saved per-run performance reports for both compose and distributed 2-host benches so regressions/improvements can be compared over time |
 
 ---
 
@@ -146,10 +154,13 @@ The following packages have no `_test.go` files yet:
 
 ## Next Priority (What to work on next)
 
-1. **C.24 — Relay large-body streaming fix**: correggere i `502` / `stream reset (remote)` / `unexpected EOF` osservati sotto stress NAT/relay su payload grandi e traffico misto
-2. **Phase 7.3 — Compose E2E hardening**: promuovere lo scenario NAT/NAT relay-first in CI dopo avere stabilizzato anche gli stress test NAT/relay
-3. **Cross-cutting — Architecture**: riprendere il deepening di `internal/app/edge` e completare il refactor del runtime, ora che la latenza relay-first non paga piu' il timeout direct da ~10s
-4. **Cross-cutting — CLI UX**: progettare una superficie CLI/config piu' semplice per avvio componenti, riducendo il numero di env vars richieste
-5. **Phase 6 — Security**: estendere allowlist PeerID a edge/service/bridge + enforcement `ServiceName -> PeerID`
-6. **Phase 5.2 — AutoNAT**: completare diagnostica reachability + client/server setup
-7. **Phase 7.2 — Integration tests**: aggiungere acceptance test su PSK/allowlist/announcement invalidi
+1. **C.24 — Relay large-body streaming fix**: correggere i `502` / `stream reset (remote)` / `unexpected EOF` osservati sotto stress NAT/relay su payload grandi e traffico misto (`TestRelayNATMixedTrafficStress` e' ancora rosso)
+2. **C.36 — Preserve repeatable NAT/relay performance baselines**: eseguire e salvare report confrontabili per compose e bench distribuito ad ogni nuova build rilevante
+3. **C.35 — Harden distributed bench pid/process management**: finire cleanup/startup robusto del bench 2-host cosi' la failure campaign si puo' rilanciare in modo affidabile dopo i fix runtime
+4. **C.30 — Terraform Linode multi-region testbench**: completare scaffold + apply reale con 3 Linode (relay pubblico, edge/service NAT-like) e verificare smoke end-to-end
+5. **Phase 7.3 — Compose E2E hardening**: promuovere lo scenario NAT/NAT relay-first in CI dopo avere stabilizzato anche gli stress test NAT/relay
+6. **Cross-cutting — Architecture**: riprendere il deepening di `internal/app/edge` e completare il refactor del runtime, ora che la latenza relay-first non paga piu' il timeout direct da ~10s
+7. **Cross-cutting — CLI UX**: progettare una superficie CLI/config piu' semplice per avvio componenti, riducendo il numero di env vars richieste
+8. **Phase 6 — Security**: estendere allowlist PeerID a edge/service/bridge + enforcement `ServiceName -> PeerID`
+9. **Phase 5.2 — AutoNAT**: completare diagnostica reachability + client/server setup
+10. **Phase 7.2 — Integration tests**: aggiungere acceptance test su PSK/allowlist/announcement invalidi
