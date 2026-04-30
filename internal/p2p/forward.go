@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,8 @@ import (
 	"p2p-api-tunnel/internal/forwarding"
 	"p2p-api-tunnel/internal/protocol"
 )
+
+const streamChunkSize = 32 * 1024
 
 // readCloser wraps an io.Reader to satisfy io.ReadCloser.
 type readCloser struct {
@@ -106,8 +109,9 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 		}
 
 		// Stream response body in chunks
-		buf := make([]byte, 32*1024) // 32KB chunks
+		buf := make([]byte, streamChunkSize)
 		var bytesWritten int64
+		finalSent := false
 		for {
 			n, readErr := resp.Body.Read(buf)
 			if n > 0 {
@@ -118,9 +122,17 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 					return
 				}
 				bytesWritten += int64(n)
+				finalSent = isFinal
 			}
 			if readErr != nil {
 				if readErr == io.EOF {
+					if !finalSent {
+						if err := writer.WriteBodyChunk(&protocol.BodyChunk{Data: []byte{}, IsFinal: true}); err != nil {
+							log.Printf("service stream write final empty chunk failed peer=%s status=%d bytes=%d err=%v duration=%s", remotePeer, resp.StatusCode, bytesWritten, err, time.Since(start))
+							_ = writer.WriteError(&protocol.Error{Code: 500, Message: "write final body chunk: " + err.Error()})
+							return
+						}
+					}
 					break
 				}
 				log.Printf("service upstream body read failed peer=%s status=%d bytes=%d err=%v duration=%s", remotePeer, resp.StatusCode, bytesWritten, readErr, time.Since(start))
@@ -150,6 +162,10 @@ func HandleClientRequest(s network.Stream, method, path, query string, headers m
 		contentLengthHint = lr.N
 	} else if body == nil || body == http.NoBody {
 		contentLengthHint = 0
+	} else if vals, ok := headers["Content-Length"]; ok && len(vals) > 0 {
+		if n, err := strconv.ParseInt(vals[0], 10, 64); err == nil && n >= 0 {
+			contentLengthHint = n
+		}
 	}
 
 	// Write request header
@@ -166,7 +182,7 @@ func HandleClientRequest(s network.Stream, method, path, query string, headers m
 
 	// Stream request body if present
 	if body != nil && body != http.NoBody {
-		buf := make([]byte, 32*1024)
+		buf := make([]byte, streamChunkSize)
 		finalSent := false
 		for {
 			n, readErr := body.Read(buf)

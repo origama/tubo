@@ -208,7 +208,7 @@ relay:
   buffer_size: 4096
   reservation_ttl: 1h0m0s
   limit_duration: 5m0s
-  limit_data_bytes: 16777216
+  limit_data_bytes: 268435456
   print_run_commands: true
 bridge:
   listen: ""

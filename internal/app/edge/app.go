@@ -298,8 +298,7 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			log.Printf("relay fallback reusing existing limited connection target=%s", targetPeer)
 			return stream, nil
 		}
-		log.Printf("relay fallback reuse failed target=%s err=%v; dropping stale limited conns", targetPeer, err)
-		closeLimitedConnsToPeer(h, targetPeer)
+		log.Printf("relay fallback reuse failed target=%s err=%v; leaving existing limited conn in place", targetPeer, err)
 		lastErr = err
 	}
 
@@ -374,18 +373,29 @@ func hasLimitedConnToPeer(h host.Host, targetPeer peer.ID) bool {
 	return false
 }
 
-func closeLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
+func closeIdleLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
 	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
 		if !conn.Stat().Limited {
 			continue
 		}
+		if len(conn.GetStreams()) > 0 {
+			continue
+		}
 		if err := conn.Close(); err != nil {
-			log.Printf("close stale limited conn target=%s err=%v", targetPeer, err)
+			log.Printf("close idle limited conn target=%s err=%v", targetPeer, err)
 		}
 	}
 }
 
 func (gw *Gateway) openStreamOnce(ctx context.Context, targetPeer peer.ID) (network.Stream, string, error) {
+	if hasLimitedConnToPeer(gw.host, targetPeer) {
+		stream, err := tryRelayFallback(ctx, gw.host, targetPeer, gw.relayPeers)
+		if err != nil {
+			return nil, "relayed", fmt.Errorf("cannot reach %s (relay only): %w", targetPeer.String(), err)
+		}
+		return stream, "relayed", nil
+	}
+
 	directCtx, cancelDirect := context.WithTimeout(ctx, gw.directStreamTimeout)
 	stream, err := gw.host.NewStream(directCtx, targetPeer, p2p.ProtocolID)
 	cancelDirect()
