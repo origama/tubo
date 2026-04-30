@@ -82,6 +82,7 @@ type Gateway struct {
 	routes              *routing.RouteTable
 	relayPeers          []peer.AddrInfo
 	directStreamTimeout time.Duration
+	openStream          func(context.Context, peer.ID) (network.Stream, string, error)
 }
 
 // New constructs a new edge runtime.
@@ -416,12 +417,33 @@ func retryableOpenStreamError(err error) bool {
 		strings.Contains(msg, "connection reset by peer")
 }
 
+func shouldEvictDiscoveryEntryAfterOpenStreamFailure(entry *discovery.ServiceEntry, err error) bool {
+	if entry == nil || err == nil || entry.TTL <= 0 {
+		return false
+	}
+	if !retryableOpenStreamError(err) {
+		return false
+	}
+	return time.Since(entry.Registered) >= entry.TTL/2
+}
+
+func (gw *Gateway) evictDiscoveryRoute(serviceName string, peerID peer.ID, reason string) {
+	gw.cache.Remove(serviceName)
+	if gw.routes.Remove(serviceName, "/") {
+		log.Printf("auto-discovery route removed early: %s peer=%s reason=%s", serviceName, peerID, reason)
+	}
+}
+
 func (gw *Gateway) openStreamWithRetry(ctx context.Context, targetPeer peer.ID) (network.Stream, string, error) {
 	deadline := time.Now().Add(8 * time.Second)
 	var lastErr error
 	var path string
 	for attempt := 1; ; attempt++ {
-		stream, connectionPath, err := gw.openStreamOnce(ctx, targetPeer)
+		openFn := gw.openStream
+		if openFn == nil {
+			openFn = gw.openStreamOnce
+		}
+		stream, connectionPath, err := openFn(ctx, targetPeer)
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("stream open recovered target=%s attempts=%d path=%s", targetPeer, attempt, connectionPath)
@@ -465,6 +487,9 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	stream, connectionPath, err := gw.openStreamWithRetry(r.Context(), entry.PeerID)
 	if err != nil {
+		if shouldEvictDiscoveryEntryAfterOpenStreamFailure(entry, err) {
+			gw.evictDiscoveryRoute(route.ServiceName, entry.PeerID, "stale-open-stream-failure")
+		}
 		log.Printf("proxy failed reason=relay_unavailable peer=%s path=%s err=%v duration=%s", entry.PeerID, connectionPath, err, time.Since(start))
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
