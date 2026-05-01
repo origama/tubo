@@ -18,6 +18,8 @@ REMOTE_SERVICE_HEALTH="${REMOTE_SERVICE_HEALTH:-127.0.0.1:18091}"
 REMOTE_RELAY_HEALTH="${REMOTE_RELAY_HEALTH:-127.0.0.1:18092}"
 KEEP_RUNNING="${KEEP_RUNNING:-0}"
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+LOCAL_LISTENER_PORTS=(18443 18444 4001)
+REMOTE_LISTENER_PORTS=(18000 18091 18092 4001 40123)
 
 mkdir -p "$RUN_DIR"
 
@@ -30,22 +32,44 @@ cleanup_local() {
     kill "$(cat "$RUN_DIR/edge.pid")" >/dev/null 2>&1 || true
     rm -f "$RUN_DIR/edge.pid"
   fi
+  for port in "${LOCAL_LISTENER_PORTS[@]}"; do
+    for pid in $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u); do
+      kill "$pid" >/dev/null 2>&1 || true
+    done
+  done
+  sleep 1
+  for port in "${LOCAL_LISTENER_PORTS[@]}"; do
+    for pid in $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u); do
+      kill -9 "$pid" >/dev/null 2>&1 || true
+    done
+  done
 }
 
 cleanup_remote() {
   ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "
     set -e
     cd '$REMOTE_BASE_DIR' 2>/dev/null || exit 0
-    for name in edge relay service dummy-api-server; do
-      if [ -f \"\$name.pid\" ]; then
-        kill \"\$(cat \"\$name.pid\")\" >/dev/null 2>&1 || true
-        rm -f \"\$name.pid\"
-      fi
+    rm -f ./*.pid
+    for port in ${REMOTE_LISTENER_PORTS[*]}; do
+      for pid in \$(lsof -tiTCP:\"\$port\" -sTCP:LISTEN 2>/dev/null | sort -u); do
+        kill \"\$pid\" >/dev/null 2>&1 || true
+      done
     done
-    pkill -f '$REMOTE_BASE_DIR/tubo .*run --config' >/dev/null 2>&1 || true
-    pkill -f '$REMOTE_BASE_DIR/dummy-api-server' >/dev/null 2>&1 || true
+    sleep 1
+    for port in ${REMOTE_LISTENER_PORTS[*]}; do
+      for pid in \$(lsof -tiTCP:\"\$port\" -sTCP:LISTEN 2>/dev/null | sort -u); do
+        kill -9 \"\$pid\" >/dev/null 2>&1 || true
+      done
+    done
     for _ in 1 2 3 4 5; do
-      if ! lsof '$REMOTE_BASE_DIR/tubo' >/dev/null 2>&1 && ! lsof '$REMOTE_BASE_DIR/dummy-api-server' >/dev/null 2>&1; then
+      busy=0
+      for port in ${REMOTE_LISTENER_PORTS[*]}; do
+        if lsof -tiTCP:\"\$port\" -sTCP:LISTEN >/dev/null 2>&1; then
+          busy=1
+          break
+        fi
+      done
+      if [ \"\$busy\" -eq 0 ]; then
         break
       fi
       sleep 1
@@ -104,6 +128,18 @@ assert_remote_process_started() {
   sleep 1
   if ! ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "kill -0 \$(cat '$REMOTE_BASE_DIR/$name.pid') >/dev/null 2>&1"; then
     info "remote $name failed to stay up"
+    return 1
+  fi
+}
+
+assert_remote_single_listener() {
+  local port="$1"
+  local name="$2"
+  local count
+  count="$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u | wc -l | tr -d ' '")"
+  if [[ "$count" != "1" ]]; then
+    info "expected exactly one remote listener for $name on :$port, got $count"
+    ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "ss -ltnp '( sport = :$port )' || true"
     return 1
   fi
 }
@@ -292,12 +328,17 @@ upload_remote() {
 start_remote() {
   info "starting relay + dummy origin + service on remote host"
   cleanup_remote
-  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && nohup env DUMMY_API_LISTEN='$REMOTE_DUMMY_LISTEN' DUMMY_API_INSTANCE='distributed-remote' ./dummy-api-server > dummy-api-server.log 2>&1 < /dev/null & echo \$! > dummy-api-server.pid"
-  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && nohup ./tubo relay run --config relay.yaml > relay.log 2>&1 < /dev/null & echo \$! > relay.pid"
-  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && nohup ./tubo service run --config service.yaml > service.log 2>&1 < /dev/null & echo \$! > service.pid"
+  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && python3 -c \"import os, subprocess; f=open('dummy-api-server.log','ab',0); p=subprocess.Popen(['./dummy-api-server'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True, env=dict(os.environ, DUMMY_API_LISTEN='$REMOTE_DUMMY_LISTEN', DUMMY_API_INSTANCE='distributed-remote')); open('dummy-api-server.pid','w').write(str(p.pid))\""
+  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && python3 -c \"import subprocess; f=open('relay.log','ab',0); p=subprocess.Popen(['./tubo','relay','run','--config','relay.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('relay.pid','w').write(str(p.pid))\""
+  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && python3 -c \"import subprocess; f=open('service.log','ab',0); p=subprocess.Popen(['./tubo','service','run','--config','service.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('service.pid','w').write(str(p.pid))\""
   assert_remote_process_started dummy-api-server
   assert_remote_process_started relay
   assert_remote_process_started service
+  assert_remote_single_listener 18000 dummy-api-server
+  assert_remote_single_listener 18091 service-health
+  assert_remote_single_listener 18092 relay-health
+  assert_remote_single_listener 4001 relay-p2p
+  assert_remote_single_listener 40123 service-p2p
 }
 
 start_local_edge() {
