@@ -97,3 +97,54 @@ In particolare:
 - nessun task operativo fuori da `TASKS.md`;
 - aggiornamento obbligatorio ad ogni avanzamento rilevante;
 - se cambia priorita', aggiornare la sezione "Next Priority".
+
+## 8) GitHub issue / PR labels
+
+Per triage e priorita', issue e PR devono usare label GitHub coerenti.
+
+### 8.1 Tipo
+
+- `bug`
+- `performance`
+- `security`
+- `docs`
+- `test`
+- `infra`
+- `release`
+- `planning`
+- `enhancement`
+
+### 8.2 Area
+
+- `area:edge`
+- `area:service`
+- `area:relay`
+- `area:protocol`
+- `area:testbench`
+- `area:cli`
+- `area:docs`
+- `area:linode`
+
+### 8.3 Priorita'
+
+- `prio:high`
+- `prio:medium`
+- `prio:low`
+
+### 8.4 Stato / rischio
+
+- `needs-triage`
+- `investigation`
+- `blocked`
+- `breaking-compat`
+- `good-first-release-candidate`
+
+### 8.5 Regola pratica
+
+Ogni issue/PR dovrebbe avere almeno:
+
+1. una label di **tipo**;
+2. una label di **area** (una o piu' se serve);
+3. una label di **priorita'** quando la priorita' e' nota.
+
+Usare anche `investigation`, `blocked` o `breaking-compat` quando servono a chiarire il rischio o lo stato del lavoro.

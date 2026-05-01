@@ -8,12 +8,15 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/peerstore"
+	swarm "github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/multiformats/go-multiaddr"
 
 	"p2p-api-tunnel/internal/discovery"
@@ -85,6 +88,8 @@ type Gateway struct {
 	relayPeers          []peer.AddrInfo
 	directStreamTimeout time.Duration
 	openStream          func(context.Context, peer.ID) (network.Stream, string, error)
+	relayRecoveryMu     sync.Mutex
+	relayRecoveryAfter  map[string]time.Time
 }
 
 const maxRetryableProxyBodyBytes = 2 << 20
@@ -250,6 +255,7 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		routes:              routing.NewRouteTable(),
 		relayPeers:          parsedRelayPeers,
 		directStreamTimeout: directStreamTimeout,
+		relayRecoveryAfter:  make(map[string]time.Time),
 	}
 	if len(gw.relayPeers) > 0 {
 		log.Printf("configured %d relay peer(s)", len(gw.relayPeers))
@@ -269,9 +275,89 @@ func (gw *Gateway) syncDiscoveryRoutes(ctx context.Context) {
 	}
 }
 
+func (gw *Gateway) clearRelayRecoveryGate(serviceName string) {
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	delete(gw.relayRecoveryAfter, serviceName)
+}
+
+func (gw *Gateway) noteRelayRecoveryWait(serviceName string) {
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	if gw.relayRecoveryAfter == nil {
+		gw.relayRecoveryAfter = make(map[string]time.Time)
+	}
+	gw.relayRecoveryAfter[serviceName] = time.Now()
+}
+
+func (gw *Gateway) waitingForFreshRelayAnnouncement(entry *discovery.ServiceEntry) bool {
+	if entry == nil {
+		return false
+	}
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	after, ok := gw.relayRecoveryAfter[entry.ServiceName]
+	if !ok {
+		return false
+	}
+	if entry.Registered.After(after) {
+		delete(gw.relayRecoveryAfter, entry.ServiceName)
+		return false
+	}
+	return true
+}
+
+func hasAnnouncedRelayedAddr(addresses []string) bool {
+	for _, addr := range addresses {
+		if strings.Contains(addr, "/p2p-circuit/") {
+			return true
+		}
+	}
+	return false
+}
+
+func preferredDiscoveryDialAddrs(addresses []string) []string {
+	if len(addresses) == 0 {
+		return nil
+	}
+	relayed := make([]string, 0, len(addresses))
+	for _, addr := range addresses {
+		if strings.Contains(addr, "/p2p-circuit/") {
+			relayed = append(relayed, addr)
+		}
+	}
+	if len(relayed) > 0 {
+		return relayed
+	}
+	return addresses
+}
+
+func (gw *Gateway) seedPeerstoreFromDiscoveryEntry(entry *discovery.ServiceEntry) {
+	if gw.host == nil || entry == nil {
+		return
+	}
+	gw.host.Peerstore().ClearAddrs(entry.PeerID)
+	for _, raw := range preferredDiscoveryDialAddrs(entry.Addresses) {
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			continue
+		}
+		if info.ID != entry.PeerID {
+			continue
+		}
+		gw.host.Peerstore().AddAddrs(info.ID, info.Addrs, peerstore.TempAddrTTL)
+	}
+}
+
 func (gw *Gateway) handleDiscoveryEvent(event discovery.DiscoveryEvent) {
 	switch event.Type {
 	case "added":
+		gw.clearRelayRecoveryGate(event.ServiceName)
+		if gw.cache != nil {
+			if entry, ok := gw.cache.Resolve(event.ServiceName); ok {
+				gw.seedPeerstoreFromDiscoveryEntry(entry)
+			}
+		}
 		rt := routing.Route{
 			Hostname:    event.ServiceName,
 			PathPrefix:  "/",
@@ -284,6 +370,7 @@ func (gw *Gateway) handleDiscoveryEvent(event discovery.DiscoveryEvent) {
 			log.Printf("auto-discovery route added: %s → service=%q peer=%s", rt.Hostname, rt.ServiceName, rt.PeerID)
 		}
 	case "removed":
+		gw.clearRelayRecoveryGate(event.ServiceName)
 		if gw.routes.Remove(event.ServiceName, "/") {
 			log.Printf("auto-discovery route removed: %s (service expired)", event.ServiceName)
 		}
@@ -294,6 +381,41 @@ func (gw *Gateway) handleDiscoveryEvent(event discovery.DiscoveryEvent) {
 
 // tryRelayFallback attempts to connect to targetPeer through each relay peer in sequence.
 // It returns the first successful stream or the last error encountered.
+func tryAnnouncedRelayedAddrs(ctx context.Context, h host.Host, targetPeer peer.ID, addresses []string) (network.Stream, error) {
+	relayed := preferredDiscoveryDialAddrs(addresses)
+	if len(relayed) == 0 || relayed[0] == addresses[0] && !strings.Contains(relayed[0], "/p2p-circuit/") {
+		return nil, fmt.Errorf("no announced relayed addresses")
+	}
+	var lastErr error
+	for _, raw := range relayed {
+		if !strings.Contains(raw, "/p2p-circuit/") {
+			continue
+		}
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if info.ID != targetPeer {
+			continue
+		}
+		log.Printf("relay fallback trying announced relayed addr target=%s addr=%s", targetPeer, raw)
+		if err := h.Connect(ctx, info); err != nil {
+			lastErr = err
+			continue
+		}
+		stream, err := h.NewStream(network.WithAllowLimitedConn(ctx, "announced relayed tunnel stream"), targetPeer, p2p.SupportedProtocolIDs()...)
+		if err == nil {
+			return stream, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("no usable announced relayed addresses")
+}
+
 func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, relayPeers []peer.AddrInfo) (network.Stream, error) {
 	var lastErr error
 
@@ -303,7 +425,8 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			log.Printf("relay fallback reusing existing limited connection target=%s", targetPeer)
 			return stream, nil
 		}
-		log.Printf("relay fallback reuse failed target=%s err=%v; leaving existing limited conn in place", targetPeer, err)
+		log.Printf("relay fallback reuse failed target=%s err=%v; closing stale limited conn", targetPeer, err)
+		closeIdleLimitedConnsToPeer(h, targetPeer)
 		lastErr = err
 	}
 
@@ -379,6 +502,9 @@ func hasLimitedConnToPeer(h host.Host, targetPeer peer.ID) bool {
 }
 
 func closeIdleLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
+	if h == nil {
+		return
+	}
 	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
 		if !conn.Stat().Limited {
 			continue
@@ -392,7 +518,47 @@ func closeIdleLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
 	}
 }
 
-func (gw *Gateway) openStreamOnce(ctx context.Context, targetPeer peer.ID) (network.Stream, string, error) {
+func closeIdleConnsToPeer(h host.Host, targetPeer peer.ID) {
+	if h == nil {
+		return
+	}
+	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
+		if len(conn.GetStreams()) > 0 {
+			continue
+		}
+		if err := conn.Close(); err != nil {
+			log.Printf("close idle conn target=%s limited=%t err=%v", targetPeer, conn.Stat().Limited, err)
+		}
+	}
+}
+
+func clearDialBackoff(h host.Host, targetPeer peer.ID) {
+	if h == nil {
+		return
+	}
+	sw, ok := h.Network().(*swarm.Swarm)
+	if !ok {
+		return
+	}
+	sw.Backoff().Clear(targetPeer)
+}
+
+func (gw *Gateway) clearRelayRetryState(targetPeer peer.ID) {
+	if gw.host == nil {
+		return
+	}
+	closeIdleLimitedConnsToPeer(gw.host, targetPeer)
+	_ = gw.host.Network().ClosePeer(targetPeer)
+	clearDialBackoff(gw.host, targetPeer)
+	for _, relayPeer := range gw.relayPeers {
+		clearDialBackoff(gw.host, relayPeer.ID)
+	}
+}
+
+func (gw *Gateway) openStreamToEntryOnce(ctx context.Context, entry *discovery.ServiceEntry) (network.Stream, string, error) {
+	targetPeer := entry.PeerID
+	var stream network.Stream
+	var err error
 	if hasLimitedConnToPeer(gw.host, targetPeer) {
 		stream, err := tryRelayFallback(ctx, gw.host, targetPeer, gw.relayPeers)
 		if err != nil {
@@ -401,13 +567,25 @@ func (gw *Gateway) openStreamOnce(ctx context.Context, targetPeer peer.ID) (netw
 		return stream, "relayed", nil
 	}
 
-	directCtx, cancelDirect := context.WithTimeout(ctx, gw.directStreamTimeout)
-	stream, err := gw.host.NewStream(directCtx, targetPeer, p2p.SupportedProtocolIDs()...)
-	cancelDirect()
-	if err == nil {
-		return stream, "direct", nil
+	preferRelayedOnly := entry != nil && hasAnnouncedRelayedAddr(entry.Addresses)
+	if preferRelayedOnly {
+		if stream, err := tryAnnouncedRelayedAddrs(ctx, gw.host, targetPeer, entry.Addresses); err == nil {
+			return stream, "relayed", nil
+		} else {
+			log.Printf("announced relayed dial failed target=%s err=%v", targetPeer, err)
+		}
+	} else {
+		directCtx, cancelDirect := context.WithTimeout(ctx, gw.directStreamTimeout)
+		stream, err := gw.host.NewStream(directCtx, targetPeer, p2p.SupportedProtocolIDs()...)
+		cancelDirect()
+		if err == nil {
+			if stream.Conn() != nil && stream.Conn().Stat().Limited {
+				return stream, "relayed", nil
+			}
+			return stream, "direct", nil
+		}
+		log.Printf("direct stream failed to %s: %v", targetPeer, err)
 	}
-	log.Printf("direct stream failed to %s: %v", targetPeer, err)
 
 	if len(gw.relayPeers) == 0 {
 		return nil, "direct", fmt.Errorf("cannot reach %s", targetPeer.String())
@@ -427,9 +605,20 @@ func retryableOpenStreamError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "NO_RESERVATION") ||
 		strings.Contains(msg, "dial backoff") ||
+		strings.Contains(msg, "rate limit exceeded") ||
 		strings.Contains(msg, "i/o timeout") ||
 		strings.Contains(msg, "connection refused") ||
 		strings.Contains(msg, "connection reset by peer")
+}
+
+func relayRecoveryWaitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "NO_RESERVATION") ||
+		strings.Contains(msg, "dial backoff") ||
+		strings.Contains(msg, "rate limit exceeded")
 }
 
 func shouldEvictDiscoveryEntryAfterOpenStreamFailure(entry *discovery.ServiceEntry, err error) bool {
@@ -474,16 +663,26 @@ func buildReplayableRequestBody(r *http.Request) ([]byte, bool, error) {
 	return body, true, nil
 }
 
-func (gw *Gateway) openStreamWithRetry(ctx context.Context, targetPeer peer.ID) (network.Stream, string, error) {
+func (gw *Gateway) openStreamWithRetry(ctx context.Context, entry *discovery.ServiceEntry) (network.Stream, string, error) {
+	if entry == nil {
+		return nil, "", fmt.Errorf("missing discovery entry")
+	}
+	targetPeer := entry.PeerID
 	deadline := time.Now().Add(8 * time.Second)
 	var lastErr error
 	var path string
 	for attempt := 1; ; attempt++ {
+		var (
+			stream         network.Stream
+			connectionPath string
+			err            error
+		)
 		openFn := gw.openStream
-		if openFn == nil {
-			openFn = gw.openStreamOnce
+		if openFn != nil {
+			stream, connectionPath, err = openFn(ctx, targetPeer)
+		} else {
+			stream, connectionPath, err = gw.openStreamToEntryOnce(ctx, entry)
 		}
-		stream, connectionPath, err := openFn(ctx, targetPeer)
 		if err == nil {
 			if attempt > 1 {
 				log.Printf("stream open recovered target=%s attempts=%d path=%s", targetPeer, attempt, connectionPath)
@@ -495,6 +694,7 @@ func (gw *Gateway) openStreamWithRetry(ctx context.Context, targetPeer peer.ID) 
 		if !retryableOpenStreamError(err) || time.Now().After(deadline) || ctx.Err() != nil {
 			return nil, path, lastErr
 		}
+		gw.clearRelayRetryState(targetPeer)
 		time.Sleep(250 * time.Millisecond)
 	}
 }
@@ -524,6 +724,12 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("resolved service=%q peer=%s addrs=%v", route.ServiceName, entry.PeerID, entry.Addresses)
+	gw.seedPeerstoreFromDiscoveryEntry(entry)
+	if gw.waitingForFreshRelayAnnouncement(entry) {
+		log.Printf("proxy waiting for fresh relay announcement service=%q peer=%s registered=%s", route.ServiceName, entry.PeerID, entry.Registered.Format(time.RFC3339Nano))
+		http.Error(w, "waiting for relay recovery announcement", http.StatusBadGateway)
+		return
+	}
 
 	replayBody, canRetry, err := buildReplayableRequestBody(r)
 	if err != nil {
@@ -551,8 +757,11 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	var connectionPath string
 	var stream network.Stream
 	for attempt := 1; attempt <= attempts; attempt++ {
-		stream, connectionPath, err = gw.openStreamWithRetry(r.Context(), entry.PeerID)
+		stream, connectionPath, err = gw.openStreamWithRetry(r.Context(), entry)
 		if err != nil {
+			if relayRecoveryWaitError(err) {
+				gw.noteRelayRecoveryWait(route.ServiceName)
+			}
 			if shouldEvictDiscoveryEntryAfterOpenStreamFailure(entry, err) {
 				gw.evictDiscoveryRoute(route.ServiceName, entry.PeerID, "stale-open-stream-failure")
 			}
