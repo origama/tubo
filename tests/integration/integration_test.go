@@ -388,6 +388,60 @@ func TestRelayNATTrafficRecoversAfterRelayRestart(t *testing.T) {
 	}
 }
 
+func TestRelayNATTrafficRecoversAfterEdgeRestartFollowingRelayDisruption(t *testing.T) {
+	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack.waitBaseReady(t)
+
+	status, _ := edgeRequest(t, "GET", "/v1/dummy?from=pre-edge-restart", "myapi", nil, nil, 20*time.Second)
+	if status != http.StatusOK {
+		t.Fatalf("expected pre-restart request to succeed, got %d", status)
+	}
+
+	if out, err := stack.compose("stop", "relay"); err != nil {
+		t.Fatalf("compose stop relay failed: %v\n%s", err, out)
+	}
+	if out, err := stack.compose("restart", "edge"); err != nil {
+		t.Fatalf("compose restart edge failed: %v\n%s", err, out)
+	}
+	waitUntil(t, 60*time.Second, func() bool {
+		return httpOK("http://127.0.0.1:8443/healthz") && httpOK("http://127.0.0.1:8444/healthz")
+	}, "edge health after restart")
+	if out, err := stack.compose("start", "relay"); err != nil {
+		t.Fatalf("compose start relay failed: %v\n%s", err, out)
+	}
+	waitUntil(t, 60*time.Second, func() bool {
+		return httpOK("http://127.0.0.1:8092/healthz")
+	}, "relay health after restart")
+	waitUntil(t, 60*time.Second, func() bool {
+		count, err := stack.servicesCount()
+		if err != nil || count != 1 {
+			return false
+		}
+		routes, err := stack.routes()
+		if err != nil {
+			return false
+		}
+		for _, rt := range routes {
+			if rt.Hostname == "myapi" && rt.PathPrefix == "/" {
+				return true
+			}
+		}
+		return false
+	}, "route after edge restart following relay disruption")
+	waitUntil(t, 45*time.Second, func() bool {
+		status, _, err := edgeRequestRaw("POST", "/v1/dummy?from=post-edge-restart", "myapi", map[string]string{"Content-Type": "text/plain"}, []byte("edge-restart-relay-recovery"), 20*time.Second)
+		return err == nil && status == http.StatusOK
+	}, "relay-first data recovery after edge restart following relay disruption")
+
+	logs, err := stack.logs("edge")
+	if err != nil {
+		t.Fatalf("edge logs: %v", err)
+	}
+	if !strings.Contains(logs, "connection_path=relayed") {
+		t.Fatalf("expected relayed path in edge logs after edge restart recovery")
+	}
+}
+
 func TestRelayNATTrafficDuringServiceRestart(t *testing.T) {
 	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
 	stack.waitBaseReady(t)
