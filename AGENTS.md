@@ -38,7 +38,8 @@ Gap noti:
 1. Leggere questo `AGENTS.md`.
 2. Leggere `TASKS.md`.
 3. Leggere la documentazione rilevante in `docs/`.
-4. Aggiornare `TASKS.md` segnando il task come `⏳ In progress` (o aggiungendolo se manca).
+4. Se il lavoro tocca release, compatibilita' o protocollo, leggere `docs/VERSIONING.md`.
+5. Aggiornare `TASKS.md` segnando il task come `⏳ In progress` (o aggiungendolo se manca).
 
 ### 3.2 Durante il lavoro
 
@@ -76,6 +77,10 @@ Regole:
 Per avvio componenti e creazione tunnel p2p sicuro tra 2+ servizi, riferimento unico:
 
 - `docs/OPERABILITY.md`
+
+Per policy di versioning e compatibilita' tra ruoli/nodi:
+
+- `docs/VERSIONING.md`
 
 In particolare:
 
