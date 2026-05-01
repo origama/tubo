@@ -29,6 +29,9 @@ func EncodeFrame(w io.Writer, msg any) error {
 	var err error
 
 	switch m := msg.(type) {
+	case *Hello:
+		ft = FrameTypeHello
+		payload, err = encodeHello(m)
 	case *RequestHeader:
 		ft = FrameTypeRequestHeader
 		payload, err = encodeRequestHeader(m)
@@ -165,6 +168,51 @@ func decodeHeaders(r io.Reader) (map[string][]string, error) {
 }
 
 // --- Frame type encoders ---
+
+func encodeHello(m *Hello) ([]byte, error) {
+	result := make([]byte, 0, 64)
+	majorBytes := make([]byte, 2)
+	minorBytes := make([]byte, 2)
+	binary.BigEndian.PutUint16(majorBytes, m.ProtocolMajor)
+	binary.BigEndian.PutUint16(minorBytes, m.ProtocolMinor)
+	result = append(result, majorBytes...)
+	result = append(result, minorBytes...)
+	result = append(result, encodeString(m.Role)...)
+	capCount := varint.ToUvarint(uint64(len(m.Capabilities)))
+	result = append(result, capCount...)
+	for _, cap := range m.Capabilities {
+		result = append(result, encodeString(cap)...)
+	}
+	return result, nil
+}
+
+func decodeHello(r io.Reader) (*Hello, error) {
+	majorBytes := make([]byte, 2)
+	minorBytes := make([]byte, 2)
+	if _, err := io.ReadFull(r, majorBytes); err != nil {
+		return nil, fmt.Errorf("decode protocol_major: %w", err)
+	}
+	if _, err := io.ReadFull(r, minorBytes); err != nil {
+		return nil, fmt.Errorf("decode protocol_minor: %w", err)
+	}
+	role, err := decodeString(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode role: %w", err)
+	}
+	capCount, err := readVarint(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode capabilities count: %w", err)
+	}
+	caps := make([]string, 0, capCount)
+	for i := uint64(0); i < capCount; i++ {
+		cap, err := decodeString(r)
+		if err != nil {
+			return nil, fmt.Errorf("decode capability: %w", err)
+		}
+		caps = append(caps, cap)
+	}
+	return &Hello{ProtocolMajor: binary.BigEndian.Uint16(majorBytes), ProtocolMinor: binary.BigEndian.Uint16(minorBytes), Role: role, Capabilities: caps}, nil
+}
 
 func encodeRequestHeader(m *RequestHeader) ([]byte, error) {
 	result := make([]byte, 0, 128)

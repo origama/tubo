@@ -75,7 +75,7 @@ func (a *App) mux() *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		s, err := a.host.NewStream(context.Background(), a.service.ID, p2p.ProtocolID)
+		s, err := a.host.NewStream(context.Background(), a.service.ID, p2p.SupportedProtocolIDs()...)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return
@@ -85,7 +85,7 @@ func (a *App) mux() *http.ServeMux {
 		for k, v := range r.Header {
 			headers[k] = v
 		}
-		resp, err := p2p.HandleClientRequest(s, r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
+		resp, err := p2p.HandleClientRequest(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return

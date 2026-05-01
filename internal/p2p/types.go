@@ -1,12 +1,22 @@
 package p2p
 
-import "p2p-api-tunnel/internal/protocol"
+import (
+	libprotocol "github.com/libp2p/go-libp2p/core/protocol"
+	"p2p-api-tunnel/internal/protocol"
+)
 
-// ProtocolID is the libp2p protocol identifier for tunnel streams.
+// ProtocolID is the preferred libp2p protocol identifier for tunnel streams.
 const ProtocolID = protocol.ProtocolID
+
+// LegacyProtocolID is the previous stream protocol identifier kept for backward compatibility.
+const LegacyProtocolID = protocol.LegacyProtocolID
 
 // ProtocolVersion is the wire protocol version.
 const ProtocolVersion = protocol.ProtocolVersion
+
+func SupportedProtocolIDs() []libprotocol.ID {
+	return []libprotocol.ID{libprotocol.ID(ProtocolID), libprotocol.ID(LegacyProtocolID)}
+}
 
 // This file is kept for backward compatibility references only.
 // All wire protocol types have moved to the internal/protocol package:

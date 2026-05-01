@@ -65,7 +65,7 @@ func TestVersionCommand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tubo v9.9.9", "protocol 1.0", "commit abc123", "build_date 2026-05-01T00:00:00Z"} {
+	for _, want := range []string{"tubo v9.9.9", "protocol 1.1", "commit abc123", "build_date 2026-05-01T00:00:00Z"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("version output missing %q: %s", want, out)
 		}

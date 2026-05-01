@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-01 00:38 UTC
+> **Last updated:** 2026-05-01 03:33 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -139,6 +139,7 @@
 | C.37 | Define versioning and compatibility policy | ✅ | Added `docs/VERSIONING.md` and linked it from `README.md`, `AGENTS.md`, and `docs/README.md`; policy uses one product version for the whole `tubo` binary plus separate `protocol major.minor` compatibility version |
 | C.38 | Add basic release artifacts and manual release flow | ⏳ | In progress: added root `VERSION`, `CHANGELOG.md`, and `docs/RELEASING.md`; still need to settle the first tagged release process and connect it to GitHub Releases |
 | C.39 | Expose product/protocol version metadata in `tubo` | ⏳ | In progress: added `internal/version` and `tubo version`; still need build-time injection in release/CI artifacts and broader surfacing in runtime logs/debug output |
+| C.40 | Add protocol 1.1 hello handshake with legacy fallback | ⏳ | In progress: added protocol 1.1 hello frame carrying `major.minor`, role, and capabilities; edge/bridge now prefer `/p2p-tunnel/1.1` and fall back to `/p2p-tunnel/1.0`, service accepts both, and real Linode multi-host smoke validated the new handshake logs |
 
 ---
 

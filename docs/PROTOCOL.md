@@ -1,6 +1,9 @@
 # Wire Protocol Specification — Binary Framing
 
-**Version:** 1.0 | **Protocol ID:** `/p2p-tunnel/1.0`
+**Current Version:** 1.1 | **Current Protocol ID:** `/p2p-tunnel/1.1`
+
+Backward-compatible legacy stream protocol still accepted:
+- `1.0` via `/p2p-tunnel/1.0`
 
 ## Overview
 
@@ -23,10 +26,30 @@ The wire protocol uses binary framing with varint length prefixes for efficient 
 
 | Byte | Name | Description |
 |------|------|-------------|
+| 0x00 | Hello | Protocol version, role, and capabilities |
 | 0x01 | RequestHeader | HTTP request metadata |
 | 0x02 | ResponseHeader | HTTP response metadata |
 | 0x03 | BodyChunk | Request/response body data (streaming) |
 | 0x04 | Error | Error notification |
+
+## Hello Payload (protocol 1.1+)
+
+```
+┌───────────────┬───────────────┬───────────┬─────────────────┐
+│ ProtocolMajor │ ProtocolMinor │ Role      │ Capabilities    │
+│   (uint16)    │   (uint16)    │ (string)  │ (string list)   │
+└───────────────┴───────────────┴───────────┴─────────────────┘
+```
+
+- `ProtocolMajor`: breaking compatibility line
+- `ProtocolMinor`: backward-compatible extension level
+- `Role`: caller identity (`edge`, `bridge`, `service`, ...)
+- `Capabilities`: optional features supported by the sender
+
+Rules:
+- if protocol major differs, the stream must be rejected
+- if protocol minor differs but major matches, peers must use the shared behavior subset
+- optional features should be capability-gated
 
 ## RequestHeader Payload
 
@@ -91,6 +114,8 @@ The wire protocol uses binary framing with varint length prefixes for efficient 
 ```
 Client                          Server
   |                               |
+  |--- Hello (1.1+) ──────────>  |  (major.minor, role, capabilities)
+  |<-- Hello (1.1+) ───────────  |  (major.minor, role, capabilities)
   |--- RequestHeader ─────────>  |  (method, path, headers)
   |--- BodyChunk(isFinal=0) ──>  |  (streaming body part 1)
   |--- BodyChunk(isFinal=1) ──>  |  (streaming body part N)

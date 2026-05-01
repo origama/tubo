@@ -16,7 +16,7 @@ var (
 
 const (
 	ProtocolMajor = 1
-	ProtocolMinor = 0
+	ProtocolMinor = 1
 )
 
 func ProtocolVersion() string {

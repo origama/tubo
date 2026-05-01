@@ -36,6 +36,19 @@ func (s *StreamReader) readFrameHeader() (uint64, byte, error) {
 	return length, typeBuf[0], nil
 }
 
+func (s *StreamReader) ReadHello() (*Hello, error) {
+	length, ft, err := s.readFrameHeader()
+	if err != nil {
+		return nil, err
+	}
+	if ft != FrameTypeHello {
+		return nil, fmt.Errorf("expected Hello (0x%02x), got frame type 0x%02x", FrameTypeHello, ft)
+	}
+
+	r := &io.LimitedReader{R: s.r, N: int64(length)}
+	return decodeHello(r)
+}
+
 // ReadRequestHeader reads a RequestHeader frame. Returns io.EOF if no more data.
 func (s *StreamReader) ReadRequestHeader() (*RequestHeader, error) {
 	length, ft, err := s.readFrameHeader()
@@ -185,6 +198,10 @@ type StreamWriter struct {
 // NewStreamWriter creates a new StreamWriter.
 func NewStreamWriter(w io.Writer) *StreamWriter {
 	return &StreamWriter{w: w}
+}
+
+func (s *StreamWriter) WriteHello(m *Hello) error {
+	return EncodeFrame(s.w, m)
 }
 
 // WriteRequestHeader encodes and writes a RequestHeader frame.
