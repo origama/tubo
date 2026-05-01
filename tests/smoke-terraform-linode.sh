@@ -228,19 +228,36 @@ EOF
 
 remote_prepare_dir() {
   local host="$1"
-  ssh "${SSH_OPTS[@]}" "$host" "mkdir -p '$REMOTE_BASE_DIR/bin' /etc/tubo /var/log/tubo /var/run/p2p-api-tunnel"
+  ssh "${SSH_OPTS[@]}" "$host" "mkdir -p '$REMOTE_BASE_DIR/.upload' '$REMOTE_BASE_DIR/bin' /etc/tubo /var/log/tubo /var/run/p2p-api-tunnel"
 }
 
 upload_artifacts() {
   info "uploading binaries and configs"
   for host in "$RELAY_HOST" "$EDGE_HOST" "$SERVICE_HOST"; do
     remote_prepare_dir "$host"
-    scp "${SSH_OPTS[@]}" "$RUN_DIR/tubo" "$RUN_DIR/swarm.key" "$host:$REMOTE_BASE_DIR/" >/dev/null
+    scp "${SSH_OPTS[@]}" "$RUN_DIR/tubo" "$RUN_DIR/swarm.key" "$host:$REMOTE_BASE_DIR/.upload/" >/dev/null
+    ssh "${SSH_OPTS[@]}" "$host" "mv -f '$REMOTE_BASE_DIR/.upload/tubo' '$REMOTE_BASE_DIR/tubo' && mv -f '$REMOTE_BASE_DIR/.upload/swarm.key' '$REMOTE_BASE_DIR/swarm.key'"
   done
-  scp "${SSH_OPTS[@]}" "$RUN_DIR/dummy-api-server" "$SERVICE_HOST:$REMOTE_BASE_DIR/" >/dev/null
-  scp "${SSH_OPTS[@]}" "$RUN_DIR/relay.yaml" "$RELAY_HOST:/etc/tubo/relay.yaml" >/dev/null
-  scp "${SSH_OPTS[@]}" "$RUN_DIR/edge.yaml" "$EDGE_HOST:/etc/tubo/edge.yaml" >/dev/null
-  scp "${SSH_OPTS[@]}" "$RUN_DIR/service.yaml" "$SERVICE_HOST:/etc/tubo/service.yaml" >/dev/null
+  scp "${SSH_OPTS[@]}" "$RUN_DIR/dummy-api-server" "$SERVICE_HOST:$REMOTE_BASE_DIR/.upload/" >/dev/null
+  ssh "${SSH_OPTS[@]}" "$SERVICE_HOST" "mv -f '$REMOTE_BASE_DIR/.upload/dummy-api-server' '$REMOTE_BASE_DIR/dummy-api-server'"
+  scp "${SSH_OPTS[@]}" "$RUN_DIR/relay.yaml" "$RELAY_HOST:$REMOTE_BASE_DIR/.upload/relay.yaml" >/dev/null
+  ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "mv -f '$REMOTE_BASE_DIR/.upload/relay.yaml' /etc/tubo/relay.yaml"
+  scp "${SSH_OPTS[@]}" "$RUN_DIR/edge.yaml" "$EDGE_HOST:$REMOTE_BASE_DIR/.upload/edge.yaml" >/dev/null
+  ssh "${SSH_OPTS[@]}" "$EDGE_HOST" "mv -f '$REMOTE_BASE_DIR/.upload/edge.yaml' /etc/tubo/edge.yaml"
+  scp "${SSH_OPTS[@]}" "$RUN_DIR/service.yaml" "$SERVICE_HOST:$REMOTE_BASE_DIR/.upload/service.yaml" >/dev/null
+  ssh "${SSH_OPTS[@]}" "$SERVICE_HOST" "mv -f '$REMOTE_BASE_DIR/.upload/service.yaml' /etc/tubo/service.yaml"
+}
+
+verify_swarm_key_sync() {
+  info "verifying uploaded swarm.key checksum on all hosts"
+  local expected actual host
+  expected="$(sha256sum "$RUN_DIR/swarm.key" | awk '{print $1}')"
+  for host in "$RELAY_HOST" "$EDGE_HOST" "$SERVICE_HOST"; do
+    actual="$(ssh "${SSH_OPTS[@]}" "$host" "sha256sum '$REMOTE_BASE_DIR/swarm.key' | cut -d' ' -f1")"
+    if [[ "$actual" != "$expected" ]]; then
+      die "swarm.key checksum mismatch on $host: expected $expected got $actual"
+    fi
+  done
 }
 
 remote_stop() {
@@ -356,6 +373,7 @@ generate_swarm_key
 fetch_hosts
 generate_configs
 upload_artifacts
+verify_swarm_key_sync
 start_remote_processes
 wait_readiness
 run_request
