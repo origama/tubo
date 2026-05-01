@@ -342,6 +342,52 @@ func TestRelayNATMixedTrafficStress(t *testing.T) {
 	}, "relay fallback edge log after stress")
 }
 
+func TestRelayNATTrafficRecoversAfterRelayRestart(t *testing.T) {
+	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack.waitBaseReady(t)
+
+	status, _ := edgeRequest(t, "GET", "/v1/dummy?from=pre-relay-restart", "myapi", nil, nil, 20*time.Second)
+	if status != http.StatusOK {
+		t.Fatalf("expected pre-restart request to succeed, got %d", status)
+	}
+
+	if out, err := stack.compose("restart", "relay"); err != nil {
+		t.Fatalf("compose restart relay failed: %v\n%s", err, out)
+	}
+
+	waitUntil(t, 60*time.Second, func() bool {
+		return httpOK("http://127.0.0.1:8092/healthz")
+	}, "relay health after restart")
+	waitUntil(t, 60*time.Second, func() bool {
+		count, err := stack.servicesCount()
+		if err != nil || count != 1 {
+			return false
+		}
+		routes, err := stack.routes()
+		if err != nil {
+			return false
+		}
+		for _, rt := range routes {
+			if rt.Hostname == "myapi" && rt.PathPrefix == "/" {
+				return true
+			}
+		}
+		return false
+	}, "route after relay restart")
+	waitUntil(t, 45*time.Second, func() bool {
+		status, _, err := edgeRequestRaw("POST", "/v1/dummy?from=post-relay-restart", "myapi", map[string]string{"Content-Type": "text/plain"}, []byte("relay-restart-recovery"), 20*time.Second)
+		return err == nil && status == http.StatusOK
+	}, "relay-first data recovery after relay restart")
+
+	logs, err := stack.logs("edge")
+	if err != nil {
+		t.Fatalf("edge logs: %v", err)
+	}
+	if !strings.Contains(logs, "connection_path=relayed") {
+		t.Fatalf("expected relayed path in edge logs after relay restart recovery")
+	}
+}
+
 func TestRelayNATTrafficDuringServiceRestart(t *testing.T) {
 	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
 	stack.waitBaseReady(t)

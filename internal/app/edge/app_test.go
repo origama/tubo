@@ -125,6 +125,54 @@ func TestShouldEvictDiscoveryEntryAfterOpenStreamFailure(t *testing.T) {
 	}
 }
 
+func TestWaitingForFreshRelayAnnouncementClearsOnNewRegistration(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Hour)
+	defer cache.Stop()
+	pid := peer.ID("12D3KooWTestPeer")
+	if err := cache.Add(pid, "myapi", []string{"/ip4/127.0.0.1/tcp/4001"}, 30*time.Second); err != nil {
+		t.Fatalf("cache add: %v", err)
+	}
+	entry, ok := cache.Resolve("myapi")
+	if !ok {
+		t.Fatal("expected cache entry")
+	}
+	gw := &Gateway{cache: cache, relayRecoveryAfter: map[string]time.Time{"myapi": time.Now()}}
+	if !gw.waitingForFreshRelayAnnouncement(entry) {
+		t.Fatal("expected old registration to be gated")
+	}
+	time.Sleep(2 * time.Millisecond)
+	if err := cache.Add(pid, "myapi", []string{"/ip4/127.0.0.1/tcp/4001"}, 30*time.Second); err != nil {
+		t.Fatalf("cache renew: %v", err)
+	}
+	entry, ok = cache.Resolve("myapi")
+	if !ok {
+		t.Fatal("expected renewed cache entry")
+	}
+	if gw.waitingForFreshRelayAnnouncement(entry) {
+		t.Fatal("expected fresh registration to clear gate")
+	}
+}
+
+func TestHandleProxyReturnsBadGatewayWhileWaitingForFreshRelayAnnouncement(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Hour)
+	defer cache.Stop()
+	pid := peer.ID("12D3KooWTestPeer")
+	if err := cache.Add(pid, "myapi", []string{"/ip4/127.0.0.1/tcp/4001"}, 30*time.Second); err != nil {
+		t.Fatalf("cache add: %v", err)
+	}
+	gw := &Gateway{cache: cache, routes: routing.NewRouteTable(), relayRecoveryAfter: map[string]time.Time{"myapi": time.Now()}}
+	if err := gw.routes.Add(routing.Route{Hostname: "myapi", PathPrefix: "/", ServiceName: "myapi", PeerID: pid.String()}); err != nil {
+		t.Fatalf("add route: %v", err)
+	}
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://myapi/v1/dummy", nil)
+	req.Host = "myapi"
+	gw.handleProxy(w, req)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
+	}
+}
+
 func TestHandleProxyEvictsStaleRouteAfterHardOpenStreamFailure(t *testing.T) {
 	cache := discovery.NewCache(30*time.Second, time.Hour)
 	defer cache.Stop()

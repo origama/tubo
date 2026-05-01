@@ -12,6 +12,7 @@ import (
 	libp2p "github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	circuitclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	"github.com/multiformats/go-multiaddr"
@@ -38,6 +39,8 @@ type App struct {
 	requireRelayReadyAnn  bool
 	reservationMu         sync.RWMutex
 	reservationReadyUntil time.Time
+	relayConnMu           sync.RWMutex
+	relayConnected        map[peer.ID]bool
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -101,8 +104,10 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		relayInfos:           relays,
 		announcementTTL:      computeAnnouncementTTL(cfg.HeartbeatInterval),
 		requireRelayReadyAnn: len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
+		relayConnected:       make(map[peer.ID]bool),
 	}
 	app.hb = discovery.NewHeartbeatLoopFunc(pub, cfg.HeartbeatInterval, app.currentAnnouncement)
+	app.registerRelayNotifiee()
 	return app, nil
 }
 func (a *App) Start(ctx context.Context) error {
@@ -158,7 +163,21 @@ func computeAnnouncementTTL(interval time.Duration) time.Duration {
 	return ttl
 }
 
+func (a *App) hasConnectedRelay() bool {
+	a.relayConnMu.RLock()
+	defer a.relayConnMu.RUnlock()
+	for _, connected := range a.relayConnected {
+		if connected {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) hasRelayReservation() bool {
+	if len(a.relayInfos) > 0 && !a.hasConnectedRelay() {
+		return false
+	}
 	if a.host != nil {
 		for _, addr := range p2p.PeerAddrs(a.host) {
 			if strings.Contains(addr, "/p2p-circuit") {
@@ -218,6 +237,38 @@ func hasCircuitAddr(addrs []string) bool {
 		}
 	}
 	return false
+}
+
+func (a *App) registerRelayNotifiee() {
+	if a.host == nil || len(a.relayInfos) == 0 {
+		return
+	}
+	relaySet := make(map[peer.ID]struct{}, len(a.relayInfos))
+	for _, relayInfo := range a.relayInfos {
+		relaySet[relayInfo.ID] = struct{}{}
+	}
+	a.host.Network().Notify(&network.NotifyBundle{
+		ConnectedF: func(_ network.Network, conn network.Conn) {
+			if _, ok := relaySet[conn.RemotePeer()]; !ok {
+				return
+			}
+			a.relayConnMu.Lock()
+			a.relayConnected[conn.RemotePeer()] = true
+			a.relayConnMu.Unlock()
+		},
+		DisconnectedF: func(_ network.Network, conn network.Conn) {
+			if _, ok := relaySet[conn.RemotePeer()]; !ok {
+				return
+			}
+			a.relayConnMu.Lock()
+			delete(a.relayConnected, conn.RemotePeer())
+			a.relayConnMu.Unlock()
+			a.reservationMu.Lock()
+			a.reservationReadyUntil = time.Time{}
+			a.reservationMu.Unlock()
+			log.Printf("relay peer disconnected relay=%s; forcing reservation refresh", conn.RemotePeer())
+		},
+	})
 }
 
 func (a *App) maintainRelayReservations(ctx context.Context) {

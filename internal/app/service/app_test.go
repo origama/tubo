@@ -47,9 +47,13 @@ func TestMergeRelayCircuitAddrsAddsRelayPath(t *testing.T) {
 }
 
 func TestHasRelayReservationUsesTrackedExpiry(t *testing.T) {
-	app := &App{reservationReadyUntil: time.Now().Add(30 * time.Second)}
+	app := &App{reservationReadyUntil: time.Now().Add(30 * time.Second), relayConnected: map[peer.ID]bool{}, relayInfos: []peer.AddrInfo{{ID: peer.ID("12D3KooWRelay")}}}
+	if app.hasRelayReservation() {
+		t.Fatal("expected no connected relay to suppress tracked reservation")
+	}
+	app.relayConnected[peer.ID("12D3KooWRelay")] = true
 	if !app.hasRelayReservation() {
-		t.Fatal("expected tracked reservation to count as ready")
+		t.Fatal("expected tracked reservation to count as ready once relay is connected")
 	}
 	app.reservationReadyUntil = time.Now().Add(-time.Second)
 	if app.hasRelayReservation() {
