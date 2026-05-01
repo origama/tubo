@@ -31,6 +31,7 @@ Terraform stack:
 Smoke harness:
 
 - `tests/smoke-terraform-linode.sh`
+- `tests/smoke-terraform-linode-mixed-version.sh`
 
 ## Workflow atteso
 
@@ -43,7 +44,7 @@ Smoke harness:
 
 ## Cosa fa lo smoke
 
-Lo smoke:
+Lo smoke base:
 
 1. compila `tubo` e `dummy-api-server` in locale;
 2. genera una PSK effimera;
@@ -61,6 +62,20 @@ Lo smoke:
 Poiche' l'edge e' volutamente chiuso in ingresso, la richiesta di test viene eseguita **dall'interno dell'host edge via SSH**, non da Internet pubblica.
 
 Questo e' coerente con l'obiettivo del bench: testare il piano dati distribuito relay-first, non l'esposizione pubblica dell'ingress edge.
+
+## Smoke mixed-version
+
+Per la compatibilita' cross-version esiste anche:
+
+- `tests/smoke-terraform-linode-mixed-version.sh`
+
+Lo script costruisce un binario corrente e un binario legacy (ref configurabile via `LEGACY_REF`) e valida almeno questi casi sul bench reale:
+
+1. edge corrente -> service legacy (`/p2p-tunnel/1.0` fallback)
+2. edge legacy -> service corrente (service corrente accetta legacy)
+3. edge corrente -> service corrente (`/p2p-tunnel/1.1` con hello handshake)
+
+Quando i nodi correnti sono in uso, lo script interroga anche gli endpoint di debug/admin del protocollo per raccogliere evidenza della negoziazione corrente.
 
 ## File da toccare quando avremo il PAT
 
