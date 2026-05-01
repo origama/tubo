@@ -55,7 +55,7 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 		start := time.Now()
 		remotePeer := s.Conn().RemotePeer()
 		remoteAddr := s.Conn().RemoteMultiaddr()
-		log.Printf("service stream opened peer=%s remote_addr=%s target=%s", remotePeer, remoteAddr, localTarget)
+		log.Printf("service stream opened peer=%s remote_addr=%s stream_protocol_id=%s target=%s", remotePeer, remoteAddr, s.Protocol(), localTarget)
 
 		reader := protocol.NewStreamReader(s)
 		writer := protocol.NewStreamWriter(s)

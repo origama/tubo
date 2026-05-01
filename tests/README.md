@@ -136,6 +136,29 @@ Smoke harness:
 
 Lo smoke legge gli IP da `terraform output`, carica binari + config sui nodi e verifica il percorso relay-first controllando `connection_path=relayed` nei log edge.
 
+## Smoke mixed-version su Linode/Terraform
+
+Valida compatibilita' tra binari `tubo` di versioni diverse sul bench multi-host reale.
+
+Comando:
+
+```bash
+./tests/smoke-terraform-linode-mixed-version.sh
+```
+
+Di default lo script costruisce:
+
+- il binario corrente da `main`
+- un binario legacy dal ref `c9bbb1f` (pre-protocol 1.1 hello handshake)
+
+Scenari coperti:
+
+- edge corrente -> service legacy (fallback `/p2p-tunnel/1.0`)
+- edge legacy -> service corrente (service corrente accetta legacy)
+- edge corrente -> service corrente (negoziazione `/p2p-tunnel/1.1`)
+
+Lo script usa anche gli endpoint di debug/admin del protocollo quando disponibili per salvare evidenza operativa della compatibilita'.
+
 ## Performance benchmark persistente su Linode/Terraform
 
 Usa il testbed multi-region creato da Terraform, lascia i processi remoti attivi per la durata del benchmark e salva risultati storici confrontabili in:

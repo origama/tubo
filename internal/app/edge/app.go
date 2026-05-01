@@ -604,7 +604,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("streaming response: %v", err)
 	}
-	log.Printf("proxy completed service=%q peer=%s connection_path=%s status=%d bytes=%d duration=%s", route.ServiceName, entry.PeerID, connectionPath, resp.StatusCode, bytesWritten, time.Since(start))
+	log.Printf("proxy completed service=%q peer=%s connection_path=%s stream_protocol_id=%s status=%d bytes=%d duration=%s", route.ServiceName, entry.PeerID, connectionPath, stream.Protocol(), resp.StatusCode, bytesWritten, time.Since(start))
 }
 
 func (gw *Gateway) handleListServices(w http.ResponseWriter, r *http.Request) {
