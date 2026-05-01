@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-01 00:25 UTC
+> **Last updated:** 2026-05-01 00:38 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -137,6 +137,8 @@
 | C.35 | Harden distributed bench pid/process management | ⏳ | Partial progress: remote uploads now go through temp files and cleanup kills matching binaries before overwrite, but the 2-host harness still shows stale wrapper-process behavior during repeated restart injection and needs another cleanup pass |
 | C.36 | Preserve repeatable NAT/relay performance baselines | ⏳ | In progress: add saved per-run performance reports for both compose and distributed 2-host benches so regressions/improvements can be compared over time |
 | C.37 | Define versioning and compatibility policy | ✅ | Added `docs/VERSIONING.md` and linked it from `README.md`, `AGENTS.md`, and `docs/README.md`; policy uses one product version for the whole `tubo` binary plus separate `protocol major.minor` compatibility version |
+| C.38 | Add basic release artifacts and manual release flow | ⏳ | In progress: added root `VERSION`, `CHANGELOG.md`, and `docs/RELEASING.md`; still need to settle the first tagged release process and connect it to GitHub Releases |
+| C.39 | Expose product/protocol version metadata in `tubo` | ⏳ | In progress: added `internal/version` and `tubo version`; still need build-time injection in release/CI artifacts and broader surfacing in runtime logs/debug output |
 
 ---
 

@@ -16,6 +16,7 @@ import (
 	"p2p-api-tunnel/internal/app/service"
 	cfgpkg "p2p-api-tunnel/internal/config"
 	"p2p-api-tunnel/internal/p2p"
+	iversion "p2p-api-tunnel/internal/version"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -50,12 +51,14 @@ func run(args []string) error {
 		return initCmd(args[1:])
 	case "topology":
 		return topology(args[1:])
+	case "version":
+		return versionCmd(args[1:])
 	default:
 		return usage()
 	}
 }
 func usage() error {
-	return errors.New("usage: tubo <relay|edge|service|bridge> run | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands>")
+	return errors.New("usage: tubo <relay|edge|service|bridge> run | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
@@ -214,6 +217,22 @@ func doctor(args []string) error {
 	}
 	c = cfgpkg.Merge(cfgpkg.Defaults(c.Role), c)
 	return cfgpkg.Doctor(c)
+}
+func versionCmd(args []string) error {
+	fs := flag.NewFlagSet("version", flag.ContinueOnError)
+	short := fs.Bool("short", false, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *short {
+		fmt.Println(iversion.ProductVersion)
+		return nil
+	}
+	fmt.Printf("tubo %s\n", iversion.ProductVersion)
+	fmt.Printf("protocol %s\n", iversion.ProtocolVersion())
+	fmt.Printf("commit %s\n", iversion.Commit)
+	fmt.Printf("build_date %s\n", iversion.BuildDate)
+	return nil
 }
 func initCmd(args []string) error {
 	if len(args) == 0 {

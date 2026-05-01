@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"p2p-api-tunnel/internal/p2p"
+	iversion "p2p-api-tunnel/internal/version"
 )
 
 func capture(f func() error) (string, error) {
@@ -47,6 +48,38 @@ func TestKeygenSwarm(t *testing.T) {
 		t.Fatal("expected no overwrite")
 	}
 }
+func TestVersionCommand(t *testing.T) {
+	oldProduct := iversion.ProductVersion
+	oldCommit := iversion.Commit
+	oldBuildDate := iversion.BuildDate
+	iversion.ProductVersion = "v9.9.9"
+	iversion.Commit = "abc123"
+	iversion.BuildDate = "2026-05-01T00:00:00Z"
+	defer func() {
+		iversion.ProductVersion = oldProduct
+		iversion.Commit = oldCommit
+		iversion.BuildDate = oldBuildDate
+	}()
+
+	out, err := capture(func() error { return run([]string{"version"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tubo v9.9.9", "protocol 1.0", "commit abc123", "build_date 2026-05-01T00:00:00Z"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("version output missing %q: %s", want, out)
+		}
+	}
+
+	shortOut, err := capture(func() error { return run([]string{"version", "--short"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(shortOut) != "v9.9.9" {
+		t.Fatalf("short version=%q", shortOut)
+	}
+}
+
 func TestTopologyRenderMinimal(t *testing.T) {
 	d := t.TempDir()
 	topo := filepath.Join(d, "topology.yaml")
