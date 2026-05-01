@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
@@ -27,14 +28,16 @@ type Config struct {
 	HeartbeatInterval, BootstrapRetryInterval                                                         time.Duration
 }
 type App struct {
-	cfg                  Config
-	host                 host.Host
-	publisher            *discovery.Publisher
-	hb                   *discovery.HeartbeatLoop
-	health               *http.Server
-	relayInfos           []peer.AddrInfo
-	announcementTTL      time.Duration
-	requireRelayReadyAnn bool
+	cfg                   Config
+	host                  host.Host
+	publisher             *discovery.Publisher
+	hb                    *discovery.HeartbeatLoop
+	health                *http.Server
+	relayInfos            []peer.AddrInfo
+	announcementTTL       time.Duration
+	requireRelayReadyAnn  bool
+	reservationMu         sync.RWMutex
+	reservationReadyUntil time.Time
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -156,18 +159,49 @@ func computeAnnouncementTTL(interval time.Duration) time.Duration {
 }
 
 func (a *App) hasRelayReservation() bool {
-	for _, addr := range p2p.PeerAddrs(a.host) {
-		if strings.Contains(addr, "/p2p-circuit") {
-			return true
+	if a.host != nil {
+		for _, addr := range p2p.PeerAddrs(a.host) {
+			if strings.Contains(addr, "/p2p-circuit") {
+				return true
+			}
 		}
 	}
-	return false
+	a.reservationMu.RLock()
+	readyUntil := a.reservationReadyUntil
+	a.reservationMu.RUnlock()
+	return !readyUntil.IsZero() && time.Now().Before(readyUntil)
+}
+
+func mergeRelayCircuitAddrs(base []string, relayInfos []peer.AddrInfo, self peer.ID) []string {
+	seen := make(map[string]struct{}, len(base)+len(relayInfos))
+	out := make([]string, 0, len(base)+len(relayInfos))
+	for _, addr := range base {
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	for _, relayInfo := range relayInfos {
+		for _, addr := range relayInfo.Addrs {
+			relayCircuit := fmt.Sprintf("%s/p2p/%s/p2p-circuit/p2p/%s", addr.String(), relayInfo.ID, self)
+			if _, ok := seen[relayCircuit]; ok {
+				continue
+			}
+			seen[relayCircuit] = struct{}{}
+			out = append(out, relayCircuit)
+		}
+	}
+	return out
 }
 
 func (a *App) currentAnnouncement() (discovery.Announcement, bool) {
 	addrs := p2p.PeerAddrs(a.host)
-	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) {
+	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) && !a.hasRelayReservation() {
 		return discovery.Announcement{}, false
+	}
+	if a.requireRelayReadyAnn {
+		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
 	}
 	return discovery.Announcement{
 		ServiceName: a.cfg.ServiceName,
@@ -217,7 +251,14 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 					log.Printf("relay reservation failed relay=%s err=%v", relayInfo.ID, err)
 					continue
 				}
+				a.reservationMu.Lock()
+				a.reservationReadyUntil = reservation.Expiration
+				a.reservationMu.Unlock()
 				log.Printf("relay reservation ready relay=%s expires=%s addrs=%d", relayInfo.ID, reservation.Expiration.Format(time.RFC3339), len(reservation.Addrs))
+				if !lastReady {
+					log.Printf("relay reservation refreshed; publishing announcement using reserved relay path")
+					a.hb.PublishNow(ctx)
+				}
 				break
 			}
 		}

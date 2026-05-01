@@ -14,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	swarm "github.com/libp2p/go-libp2p/p2p/net/swarm"
 	"github.com/multiformats/go-multiaddr"
 
 	"p2p-api-tunnel/internal/discovery"
@@ -303,7 +304,8 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			log.Printf("relay fallback reusing existing limited connection target=%s", targetPeer)
 			return stream, nil
 		}
-		log.Printf("relay fallback reuse failed target=%s err=%v; leaving existing limited conn in place", targetPeer, err)
+		log.Printf("relay fallback reuse failed target=%s err=%v; closing stale limited conn", targetPeer, err)
+		closeIdleLimitedConnsToPeer(h, targetPeer)
 		lastErr = err
 	}
 
@@ -379,6 +381,9 @@ func hasLimitedConnToPeer(h host.Host, targetPeer peer.ID) bool {
 }
 
 func closeIdleLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
+	if h == nil {
+		return
+	}
 	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
 		if !conn.Stat().Limited {
 			continue
@@ -389,6 +394,43 @@ func closeIdleLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
 		if err := conn.Close(); err != nil {
 			log.Printf("close idle limited conn target=%s err=%v", targetPeer, err)
 		}
+	}
+}
+
+func closeIdleConnsToPeer(h host.Host, targetPeer peer.ID) {
+	if h == nil {
+		return
+	}
+	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
+		if len(conn.GetStreams()) > 0 {
+			continue
+		}
+		if err := conn.Close(); err != nil {
+			log.Printf("close idle conn target=%s limited=%t err=%v", targetPeer, conn.Stat().Limited, err)
+		}
+	}
+}
+
+func clearDialBackoff(h host.Host, targetPeer peer.ID) {
+	if h == nil {
+		return
+	}
+	sw, ok := h.Network().(*swarm.Swarm)
+	if !ok {
+		return
+	}
+	sw.Backoff().Clear(targetPeer)
+}
+
+func (gw *Gateway) clearRelayRetryState(targetPeer peer.ID) {
+	if gw.host == nil {
+		return
+	}
+	closeIdleLimitedConnsToPeer(gw.host, targetPeer)
+	_ = gw.host.Network().ClosePeer(targetPeer)
+	clearDialBackoff(gw.host, targetPeer)
+	for _, relayPeer := range gw.relayPeers {
+		clearDialBackoff(gw.host, relayPeer.ID)
 	}
 }
 
@@ -495,6 +537,7 @@ func (gw *Gateway) openStreamWithRetry(ctx context.Context, targetPeer peer.ID) 
 		if !retryableOpenStreamError(err) || time.Now().After(deadline) || ctx.Err() != nil {
 			return nil, path, lastErr
 		}
+		gw.clearRelayRetryState(targetPeer)
 		time.Sleep(250 * time.Millisecond)
 	}
 }
