@@ -22,6 +22,35 @@ func (w *partialWriter) Write(p []byte) (int, error) {
 	return w.buf.Write(p[:w.maxWrite])
 }
 
+func TestHelloRoundtrip(t *testing.T) {
+	original := protocol.Hello{
+		ProtocolMajor: uint16(protocol.ProtocolMajor),
+		ProtocolMinor: uint16(protocol.ProtocolMinor),
+		Role:          "edge",
+		Capabilities:  []string{protocol.CapabilityHelloV1},
+	}
+
+	var buf bytes.Buffer
+	if err := protocol.EncodeFrame(&buf, &original); err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+
+	reader := protocol.NewStreamReader(&buf)
+	decoded, err := reader.ReadHello()
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if decoded.ProtocolMajor != original.ProtocolMajor || decoded.ProtocolMinor != original.ProtocolMinor {
+		t.Fatalf("protocol version mismatch: got=%d.%d want=%d.%d", decoded.ProtocolMajor, decoded.ProtocolMinor, original.ProtocolMajor, original.ProtocolMinor)
+	}
+	if decoded.Role != original.Role {
+		t.Fatalf("role: got %q want %q", decoded.Role, original.Role)
+	}
+	if len(decoded.Capabilities) != 1 || decoded.Capabilities[0] != protocol.CapabilityHelloV1 {
+		t.Fatalf("capabilities=%v", decoded.Capabilities)
+	}
+}
+
 // --- RequestHeader tests ---
 
 func TestRequestHeaderRoundtrip(t *testing.T) {

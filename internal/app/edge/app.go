@@ -296,7 +296,7 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 	var lastErr error
 
 	if hasLimitedConnToPeer(h, targetPeer) {
-		stream, err := h.NewStream(network.WithAllowLimitedConn(ctx, "reuse existing relayed tunnel stream"), targetPeer, p2p.ProtocolID)
+		stream, err := h.NewStream(network.WithAllowLimitedConn(ctx, "reuse existing relayed tunnel stream"), targetPeer, p2p.SupportedProtocolIDs()...)
 		if err == nil {
 			log.Printf("relay fallback reusing existing limited connection target=%s", targetPeer)
 			return stream, nil
@@ -350,7 +350,7 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			}
 		}
 
-		stream, err := h.NewStream(network.WithAllowLimitedConn(ctx, "relay fallback tunnel stream"), targetPeer, p2p.ProtocolID)
+		stream, err := h.NewStream(network.WithAllowLimitedConn(ctx, "relay fallback tunnel stream"), targetPeer, p2p.SupportedProtocolIDs()...)
 		if err != nil {
 			log.Printf("relay stream failed via relay %s: %v", relayAddrInfo.ID, err)
 			lastErr = err
@@ -400,7 +400,7 @@ func (gw *Gateway) openStreamOnce(ctx context.Context, targetPeer peer.ID) (netw
 	}
 
 	directCtx, cancelDirect := context.WithTimeout(ctx, gw.directStreamTimeout)
-	stream, err := gw.host.NewStream(directCtx, targetPeer, p2p.ProtocolID)
+	stream, err := gw.host.NewStream(directCtx, targetPeer, p2p.SupportedProtocolIDs()...)
 	cancelDirect()
 	if err == nil {
 		return stream, "direct", nil
@@ -568,7 +568,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		resp, err = p2p.HandleClientRequest(stream, r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader)
+		resp, err = p2p.HandleClientRequest(stream, "edge", r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader)
 		if err == nil {
 			defer stream.Close()
 			break

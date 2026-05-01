@@ -8,18 +8,20 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 
 ### Added
 - Release/versioning policy in `docs/VERSIONING.md`.
+- `tubo version` command with product version, protocol version, commit, and build date output.
+- Protocol 1.1 hello handshake carrying `protocol major.minor`, role, and capabilities.
 
 ### Changed
-- None.
+- Stream negotiation now prefers `/p2p-tunnel/1.1` and falls back to legacy `/p2p-tunnel/1.0`.
 
 ### Fixed
-- None.
+- Mixed-version same-major stream setup now has an explicit fast-fail path for incompatible protocol-major peers.
 
 ### Compatibility
 - Product version: pending next release
-- Protocol version: 1.0
-- Protocol compatibility change: none
-- Operator action required: none
+- Protocol version: 1.1
+- Protocol compatibility change: backward-compatible addition; legacy `/p2p-tunnel/1.0` remains accepted
+- Operator action required: none for same-major upgrades; old/new nodes can mix during rollout through the legacy fallback path
 
 ## [v0.1.0] - 2026-05-01
 

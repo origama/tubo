@@ -73,6 +73,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		log.Printf("libp2p private network enabled")
 	}
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target))
+	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target))
 	gs, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
 		_ = h.Close()

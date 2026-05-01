@@ -16,6 +16,29 @@ import (
 
 const streamChunkSize = 32 * 1024
 
+func streamUsesHello(s network.Stream) bool {
+	return string(s.Protocol()) == protocol.ProtocolID
+}
+
+func localHello(role string) *protocol.Hello {
+	return &protocol.Hello{
+		ProtocolMajor: uint16(protocol.ProtocolMajor),
+		ProtocolMinor: uint16(protocol.ProtocolMinor),
+		Role:          role,
+		Capabilities:  protocol.SupportedCapabilities(),
+	}
+}
+
+func validatePeerHello(peerHello *protocol.Hello) error {
+	if peerHello == nil {
+		return fmt.Errorf("missing hello")
+	}
+	if int(peerHello.ProtocolMajor) != protocol.ProtocolMajor {
+		return fmt.Errorf("incompatible protocol major: local=%d remote=%d", protocol.ProtocolMajor, peerHello.ProtocolMajor)
+	}
+	return nil
+}
+
 // readCloser wraps an io.Reader to satisfy io.ReadCloser.
 type readCloser struct {
 	io.Reader
@@ -36,6 +59,26 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 
 		reader := protocol.NewStreamReader(s)
 		writer := protocol.NewStreamWriter(s)
+
+		if streamUsesHello(s) {
+			peerHello, err := reader.ReadHello()
+			if err != nil {
+				log.Printf("service stream read hello failed peer=%s err=%v duration=%s", remotePeer, err, time.Since(start))
+				_ = writer.WriteError(&protocol.Error{Code: 400, Message: "decode hello: " + err.Error()})
+				return
+			}
+			if err := validatePeerHello(peerHello); err != nil {
+				log.Printf("service stream incompatible hello peer=%s role=%s err=%v duration=%s", remotePeer, peerHello.Role, err, time.Since(start))
+				_ = writer.WriteError(&protocol.Error{Code: 426, Message: err.Error()})
+				return
+			}
+			negotiated := protocol.NegotiateCapabilities(peerHello.Capabilities)
+			if err := writer.WriteHello(localHello("service")); err != nil {
+				log.Printf("service stream write hello failed peer=%s err=%v duration=%s", remotePeer, err, time.Since(start))
+				return
+			}
+			log.Printf("service protocol negotiated peer=%s remote_role=%s local_role=service protocol=%s peer_protocol=%d.%d capabilities=%v", remotePeer, peerHello.Role, protocol.ProtocolVersion, peerHello.ProtocolMajor, peerHello.ProtocolMinor, negotiated)
+		}
 
 		// Read request header
 		reqHeader, err := reader.ReadRequestHeader()
@@ -152,9 +195,24 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 
 // HandleClientRequest sends an HTTP request over a libp2p stream and reads the response.
 // Supports streaming bodies for both request and response.
-func HandleClientRequest(s network.Stream, method, path, query string, headers map[string][]string, body io.Reader) (*http.Response, error) {
+func HandleClientRequest(s network.Stream, role, method, path, query string, headers map[string][]string, body io.Reader) (*http.Response, error) {
 	writer := protocol.NewStreamWriter(s)
 	reader := protocol.NewStreamReader(s)
+
+	if streamUsesHello(s) {
+		if err := writer.WriteHello(localHello(role)); err != nil {
+			return nil, fmt.Errorf("write hello: %w", err)
+		}
+		peerHello, err := reader.ReadHello()
+		if err != nil {
+			return nil, fmt.Errorf("read hello: %w", err)
+		}
+		if err := validatePeerHello(peerHello); err != nil {
+			return nil, err
+		}
+		negotiated := protocol.NegotiateCapabilities(peerHello.Capabilities)
+		log.Printf("client protocol negotiated remote_role=%s local_role=%s protocol=%s peer_protocol=%d.%d capabilities=%v", peerHello.Role, role, protocol.ProtocolVersion, peerHello.ProtocolMajor, peerHello.ProtocolMinor, negotiated)
+	}
 
 	// Determine content length hint
 	var contentLengthHint int64 = -1 // streaming by default
