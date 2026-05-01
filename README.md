@@ -2,6 +2,8 @@
 
 Piattaforma self-hosted per esporre API HTTP dietro NAT/firewall tramite stream libp2p.
 
+Nota sicurezza: il canale libp2p tra `edge` e `service` e' gia' cifrato e autenticato anche quando il traffico passa via relay. La private swarm PSK, quando usata, aggiunge isolamento della rete oltre alla cifratura del trasporto. Vedi anche `docs/SECURITY.md`.
+
 ## Per coding agents
 
 Entry point obbligatorio:

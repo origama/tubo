@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-01 04:05 UTC
+> **Last updated:** 2026-05-01 04:45 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -123,13 +123,13 @@
 | C.21 | Reproduce relay v2 negotiation failure under NAT-like isolation | ✅ | Reproduced and fixed in two steps: (1) relay must run with public reachability so circuit v2 hop is actually enabled, (2) relayed tunnel streams must be opened with `network.WithAllowLimitedConn(...)`; isolated-network smoke now passes end-to-end |
 | C.22 | Simplify CLI/runtime startup interface | ✅ | Added `tubo` unified CLI with role subcommands, YAML config/env/flag merge, keygen/id/config/doctor/init/topology commands, shared service/relay/bridge runtime packages, docs, Dockerfile, compose updates, and unit/smoke coverage |
 | C.23 | Fix NAT/relay direct-first latency tax | ✅ | Edge direct stream attempts now use a short configurable timeout (`EDGE_DIRECT_STREAM_TIMEOUT`, default `750ms`) before relay fallback; isolated-network relay requests dropped from ~10s to sub-second latency |
-| C.24 | Investigate relayed large-body stream resets under load | ❌ | NAT/relay stress testing shows small traffic is stable, but mixed and `512KiB` uploads still fail with `502` / `stream reset (remote)` / `unexpected EOF`; likely in request/response streaming, framing, or stream reset/close semantics across relayed libp2p streams |
+| C.24 | Investigate relayed large-body stream resets under load | ✅ | Fixed via merged issue #4 work: partial frame writes now flush fully, relay limits were raised, edge retries bounded transient pre-response failures, and compose + real Linode mixed/large-payload validation are green |
 | C.25 | Promote NAT/relay stress scenarios into stable acceptance coverage | ⏳ | Keep `TestRelayNATMixedTrafficStress` and `TestRelayNATTrafficDuringServiceRestart`; enable CI gating only after C.24 is fixed so relay streaming load tests become trustworthy regression coverage |
 | C.26 | Add private-overlay multi-service acceptance scenario | ✅ | Added `docker-compose.private-overlay-multi-service.yml` plus `tests/smoke-compose-private-overlay-multi-service.sh` to validate one relay, one edge + curl client, and three isolated service nodes on the same private libp2p overlay with Host-based routing over a single edge endpoint |
 | C.27 | Document future protocol/reverse-proxy planning | ✅ | Added planning notes for HTTPS/TCP/UDP support, comparison with similar tunneling projects, and edge reverse-proxy route control |
 | C.28 | Fix topology render missing bootstrap/relay peers | ✅ | `tubo topology render` now resolves `relay: <name>` into `/p2p/<peer_id>` and populates `network.bootstrap_peers` + `network.relay_peers` for edge/service configs; added regression test in `cmd/tubo/main_test.go` |
 | C.29 | Add 2-host distributed smoke testbench | ✅ | Added `tests/smoke-distributed-two-host.sh` + docs; verified end-to-end with edge on `172.236.202.99`, relay on `172.232.189.160`, service + dummy origin co-hosted remotely but loopback-bound to force `connection_path=relayed` |
-| C.30 | Scaffold Terraform Linode multi-region distributed testbench | ⏳ | In progress: create 3-node Linode bench (public relay, edge + service NAT-like/ingress-closed) plus deploy/smoke harness; real apply pending Linode PAT |
+| C.30 | Scaffold Terraform Linode multi-region distributed testbench | ✅ | 3-node Linode bench is live and validated: Terraform stack, smoke harness, runbook, perf runner, and saved benchmark artifacts are all in place |
 | C.31 | Run distributed failure campaign on 2-host bench | ✅ | Ran real failure campaign on the 2-host bench and documented results in `docs/FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md`; key findings: relay restart can wedge relay-first traffic, edge restart alone does not recover it, service restart recovery can take ~2 minutes, and dead services remain routable for ~30s |
 | C.32 | Fix relay restart wedge on relay-first traffic | ⏳ | Partial progress: edge now drops stale limited conns and retries stream open for transient relay errors; service now maintains explicit circuit-v2 reservations and republishes once relay-ready, but full relay-restart failure-campaign revalidation is still pending because the distributed bench harness remains flaky |
 | C.33 | Reduce slow service restart recovery on relay-first path | ✅ | Fixed enough to make `RUN_INTEGRATION=1 go test -count=1 -run TestRelayNATTrafficDuringServiceRestart -v ./tests/integration` pass: service now republishes dynamic announcements only when relay reservation is ready, and edge retries transient `NO_RESERVATION` / dial-backoff stream-open failures |
@@ -137,8 +137,8 @@
 | C.35 | Harden distributed bench pid/process management | ⏳ | Partial progress: remote uploads now go through temp files and cleanup kills matching binaries before overwrite, but the 2-host harness still shows stale wrapper-process behavior during repeated restart injection and needs another cleanup pass |
 | C.36 | Preserve repeatable NAT/relay performance baselines | ⏳ | In progress: add saved per-run performance reports for both compose and distributed 2-host benches so regressions/improvements can be compared over time |
 | C.37 | Define versioning and compatibility policy | ✅ | Added `docs/VERSIONING.md` and linked it from `README.md`, `AGENTS.md`, and `docs/README.md`; policy uses one product version for the whole `tubo` binary plus separate `protocol major.minor` compatibility version |
-| C.38 | Add basic release artifacts and manual release flow | ⏳ | In progress: added root `VERSION`, `CHANGELOG.md`, and `docs/RELEASING.md`; still need to settle the first tagged release process and connect it to GitHub Releases |
-| C.39 | Expose product/protocol version metadata in `tubo` | ⏳ | In progress: added `internal/version` and `tubo version`; still need build-time injection in release/CI artifacts and broader surfacing in runtime logs/debug output |
+| C.38 | Add basic release artifacts and manual release flow | ✅ | Added root `VERSION`, `CHANGELOG.md`, and `docs/RELEASING.md`, then exercised the flow by cutting and publishing release `v0.1.1` |
+| C.39 | Expose product/protocol version metadata in `tubo` | ⏳ | Added `internal/version`, `tubo version`, protocol debug endpoints, and negotiation visibility; remaining work is mainly build-time injection in release/CI artifacts and any residual cleanup from issue #16 |
 | C.40 | Add protocol 1.1 hello handshake with legacy fallback | ✅ | Added protocol 1.1 hello frame carrying `major.minor`, role, and capabilities; edge/bridge now prefer `/p2p-tunnel/1.1` and fall back to `/p2p-tunnel/1.0`, service accepts both, and real Linode multi-host smoke validated both the handshake logs and protocol debug endpoints |
 | C.41 | Add real Linode mixed-version compatibility harness | ✅ | Added `tests/smoke-terraform-linode-mixed-version.sh` and validated it on the real Linode multi-host bench against legacy ref `c9bbb1f`: current edge -> legacy service (`/p2p-tunnel/1.0` fallback), legacy edge -> current service (current service accepts legacy), and current edge -> current service (`/p2p-tunnel/1.1` hello negotiation) |
 
@@ -157,15 +157,31 @@ The following packages have no `_test.go` files yet:
 
 ---
 
-## Next Priority (What to work on next)
+## Next Priority (simplified)
 
-1. **C.24 — Relay large-body streaming fix**: correggere i `502` / `stream reset (remote)` / `unexpected EOF` osservati sotto stress NAT/relay su payload grandi e traffico misto (`TestRelayNATMixedTrafficStress` e' ancora rosso)
-2. **C.36 — Preserve repeatable NAT/relay performance baselines**: eseguire e salvare report confrontabili per compose e bench distribuito ad ogni nuova build rilevante
-3. **C.35 — Harden distributed bench pid/process management**: finire cleanup/startup robusto del bench 2-host cosi' la failure campaign si puo' rilanciare in modo affidabile dopo i fix runtime
-4. **C.30 — Terraform Linode multi-region testbench**: completare scaffold + apply reale con 3 Linode (relay pubblico, edge/service NAT-like) e verificare smoke end-to-end
-5. **Phase 7.3 — Compose E2E hardening**: promuovere lo scenario NAT/NAT relay-first in CI dopo avere stabilizzato anche gli stress test NAT/relay
-6. **Cross-cutting — Architecture**: riprendere il deepening di `internal/app/edge` e completare il refactor del runtime, ora che la latenza relay-first non paga piu' il timeout direct da ~10s
-7. **Cross-cutting — CLI UX**: progettare una superficie CLI/config piu' semplice per avvio componenti, riducendo il numero di env vars richieste
-8. **Phase 6 — Security**: estendere allowlist PeerID a edge/service/bridge + enforcement `ServiceName -> PeerID`
-9. **Phase 5.2 — AutoNAT**: completare diagnostica reachability + client/server setup
-10. **Phase 7.2 — Integration tests**: aggiungere acceptance test su PSK/allowlist/announcement invalidi
+### Now
+
+1. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)
+2. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
+3. **Issue #9 — malformed security handshake after restarts**: capire e correggere gli errori intermittenti post-restart (`bug`, `security`, `area:protocol`, `investigation`, `prio:high`)
+4. **Issue #7 / C.33 follow-up — recovery latency after service restart**: completare l'hardening del recovery sui path relayed (`bug`, `area:edge`, `area:service`, `prio:medium`)
+
+### Next
+
+5. **Issue #10 / C.35 — distributed bench process hardening**: rendere affidabile failure injection / restart testing sul bench distribuito (`test`, `infra`, `area:testbench`)
+6. **Issue #12 / C.36 — repeatable performance baselines**: continuare a salvare benchmark confrontabili, soprattutto sul bench Linode (`performance`, `area:testbench`, `area:linode`)
+7. **Issue #11 / C.25 — stable CI coverage for NAT/relay stress**: promuovere gli stress test a coverage stabile dopo gli ultimi fix runtime (`test`, `area:testbench`)
+
+### Later
+
+8. **Issue #23 — release workflow v1 automation**: script di bump/tag/release per rendere meccaniche le prossime release (`release`, `planning`)
+9. **Issue #24 — shared public relay security/capacity model**: documentare bene security, abuse resistance e sizing per relay pubblici su swarm condivisa (`docs`, `security`, `area:relay`)
+10. **Issue #15 / C.38** and **Issue #16 / C.39**: fare triage finale e chiudere cio' che e' ormai coperto dal lavoro gia' mergeato sul versioning/release flow
+
+### Keep on radar (not yet mapped to an issue here)
+
+- **Cross-cutting — Architecture**: riprendere il deepening di `internal/app/edge` e completare il refactor del runtime
+- **Cross-cutting — CLI UX**: semplificare la superficie CLI/config di avvio componenti
+- **Phase 6 — Security**: estendere allowlist PeerID a edge/service/bridge + enforcement `ServiceName -> PeerID`
+- **Phase 5.2 — AutoNAT**: completare diagnostica reachability + client/server setup
+- **Phase 7.2 — Integration tests**: aggiungere acceptance test su PSK/allowlist/announcement invalidi
