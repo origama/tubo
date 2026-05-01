@@ -77,7 +77,9 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 				log.Printf("service stream write hello failed peer=%s err=%v duration=%s", remotePeer, err, time.Since(start))
 				return
 			}
-			log.Printf("service protocol negotiated peer=%s remote_role=%s local_role=service protocol=%s peer_protocol=%d.%d capabilities=%v", remotePeer, peerHello.Role, protocol.ProtocolVersion, peerHello.ProtocolMajor, peerHello.ProtocolMinor, negotiated)
+			remoteProtocolVersion := fmt.Sprintf("%d.%d", peerHello.ProtocolMajor, peerHello.ProtocolMinor)
+			RecordNegotiation("service", peerHello.Role, string(s.Protocol()), remoteProtocolVersion, negotiated)
+			log.Printf("service protocol negotiated peer=%s remote_role=%s local_role=service stream_protocol_id=%s protocol=%s peer_protocol=%s capabilities=%v", remotePeer, peerHello.Role, s.Protocol(), protocol.ProtocolVersion, remoteProtocolVersion, negotiated)
 		}
 
 		// Read request header
@@ -211,7 +213,9 @@ func HandleClientRequest(s network.Stream, role, method, path, query string, hea
 			return nil, err
 		}
 		negotiated := protocol.NegotiateCapabilities(peerHello.Capabilities)
-		log.Printf("client protocol negotiated remote_role=%s local_role=%s protocol=%s peer_protocol=%d.%d capabilities=%v", peerHello.Role, role, protocol.ProtocolVersion, peerHello.ProtocolMajor, peerHello.ProtocolMinor, negotiated)
+		remoteProtocolVersion := fmt.Sprintf("%d.%d", peerHello.ProtocolMajor, peerHello.ProtocolMinor)
+		RecordNegotiation(role, peerHello.Role, string(s.Protocol()), remoteProtocolVersion, negotiated)
+		log.Printf("client protocol negotiated remote_role=%s local_role=%s stream_protocol_id=%s protocol=%s peer_protocol=%s capabilities=%v", peerHello.Role, role, s.Protocol(), protocol.ProtocolVersion, remoteProtocolVersion, negotiated)
 	}
 
 	// Determine content length hint

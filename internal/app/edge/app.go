@@ -18,6 +18,7 @@ import (
 
 	"p2p-api-tunnel/internal/discovery"
 	"p2p-api-tunnel/internal/p2p"
+	"p2p-api-tunnel/internal/protocol"
 	"p2p-api-tunnel/internal/routing"
 )
 
@@ -192,6 +193,7 @@ func adminMux(gw *Gateway) *http.ServeMux {
 	})
 	mux.HandleFunc("/services", gw.handleListServices)
 	mux.HandleFunc("/routes", gw.handleListRoutes)
+	mux.HandleFunc("/protocol", gw.handleProtocolStatus)
 	mux.HandleFunc("/add_route", gw.handleAddRoute)
 	return mux
 }
@@ -622,6 +624,35 @@ func (gw *Gateway) handleListRoutes(w http.ResponseWriter, r *http.Request) {
 			rt.Hostname, rt.PathPrefix, rt.ServiceName, rt.PeerID)
 	}
 	fmt.Fprint(w, "]\n")
+}
+
+func (gw *Gateway) handleProtocolStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	events := p2p.RecentNegotiations()
+	fmt.Fprintf(w, `{"preferred_stream_protocol_id":%q,"legacy_stream_protocol_id":%q,"protocol_version":%q,"protocol_major":%d,"protocol_minor":%d,"supported_capabilities":[`,
+		p2p.ProtocolID, p2p.LegacyProtocolID, p2p.ProtocolVersion, protocol.ProtocolMajor, protocol.ProtocolMinor)
+	for i, cap := range protocol.SupportedCapabilities() {
+		if i > 0 {
+			fmt.Fprint(w, ",")
+		}
+		fmt.Fprintf(w, "%q", cap)
+	}
+	fmt.Fprint(w, `],"recent_negotiations":[`)
+	for i, ev := range events {
+		if i > 0 {
+			fmt.Fprint(w, ",")
+		}
+		fmt.Fprintf(w, `{"timestamp":%q,"local_role":%q,"remote_role":%q,"stream_protocol_id":%q,"local_protocol_version":%q,"remote_protocol_version":%q,"capabilities":[`,
+			ev.Timestamp.Format(time.RFC3339), ev.LocalRole, ev.RemoteRole, ev.StreamProtocolID, ev.LocalProtocolVersion, ev.RemoteProtocolVersion)
+		for j, cap := range ev.Capabilities {
+			if j > 0 {
+				fmt.Fprint(w, ",")
+			}
+			fmt.Fprintf(w, "%q", cap)
+		}
+		fmt.Fprint(w, "]}")
+	}
+	fmt.Fprint(w, "]}\n")
 }
 
 func (gw *Gateway) handleAddRoute(w http.ResponseWriter, r *http.Request) {
