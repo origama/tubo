@@ -1,17 +1,21 @@
 package protocol
 
+import iversion "p2p-api-tunnel/internal/version"
+
 // Protocol version identifier
 const (
 	ProtocolVersion = "1.0"
 	ProtocolID      = "/p2p-tunnel/1.0"
+	ProtocolMajor   = iversion.ProtocolMajor
+	ProtocolMinor   = iversion.ProtocolMinor
 )
 
 // Frame types
 const (
-	FrameTypeRequestHeader byte = 0x01
+	FrameTypeRequestHeader  byte = 0x01
 	FrameTypeResponseHeader byte = 0x02
-	FrameTypeBodyChunk     byte = 0x03
-	FrameTypeError         byte = 0x04
+	FrameTypeBodyChunk      byte = 0x03
+	FrameTypeError          byte = 0x04
 )
 
 // RequestHeader carries HTTP request metadata from Edge Gateway to Connector.
