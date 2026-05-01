@@ -21,6 +21,31 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.1.2] - 2026-05-01
+
+Relay-first recovery release focused on making traffic recover cleanly after relay restarts in both NAT compose tests and the real Linode multi-host bench.
+
+### Added
+- NAT integration regression test: `TestRelayNATTrafficRecoversAfterRelayRestart`.
+- Service regression tests for synthesized relay-circuit announcements and tracked reservation readiness.
+- Edge regression tests for relay-recovery gating behavior.
+
+### Changed
+- Service now clears tracked reservation state when the relay peer disconnects and forces a fresh reservation on reconnect.
+- Service republishes usable relay-circuit announcement addresses immediately after reservation refresh, even when host-reported `/p2p-circuit` addresses lag.
+- Edge now seeds its peerstore from discovery announcements and prefers explicitly announced relayed addresses when the service is operating on a relay-first path.
+- Edge no longer treats stale direct addresses as first-class recovery candidates when the service is clearly advertising a relay-only recovery path.
+
+### Fixed
+- Relay-first traffic now recovers after relay process restart instead of remaining wedged in repeated `502`, `dial backoff`, and `NO_RESERVATION` failures.
+- Relay restart no longer causes the service announcement to drift into stale reservation state after the relay disconnects and reconnects.
+
+### Compatibility
+- Product version: v0.1.2
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none; this is a backward-compatible reliability fix on top of the existing `1.1` + legacy fallback behavior
+
 ## [v0.1.1] - 2026-05-01
 
 First clean versioned release with explicit product/protocol versioning, protocol negotiation, and real mixed-version compatibility evidence on the Linode multi-host bench.
