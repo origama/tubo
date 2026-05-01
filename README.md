@@ -12,6 +12,10 @@ Tracking obbligatorio del lavoro:
 
 - [TASKS.md](./TASKS.md)
 
+Policy di versioning:
+
+- [docs/VERSIONING.md](./docs/VERSIONING.md)
+
 ## Quick Start locale
 
 Con Docker Compose:
