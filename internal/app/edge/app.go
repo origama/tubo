@@ -1,6 +1,7 @@
 package edge
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -84,6 +85,8 @@ type Gateway struct {
 	directStreamTimeout time.Duration
 	openStream          func(context.Context, peer.ID) (network.Stream, string, error)
 }
+
+const maxRetryableProxyBodyBytes = 2 << 20
 
 // New constructs a new edge runtime.
 func New(ctx context.Context, cfg Config) (*App, error) {
@@ -298,8 +301,7 @@ func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, rela
 			log.Printf("relay fallback reusing existing limited connection target=%s", targetPeer)
 			return stream, nil
 		}
-		log.Printf("relay fallback reuse failed target=%s err=%v; dropping stale limited conns", targetPeer, err)
-		closeLimitedConnsToPeer(h, targetPeer)
+		log.Printf("relay fallback reuse failed target=%s err=%v; leaving existing limited conn in place", targetPeer, err)
 		lastErr = err
 	}
 
@@ -374,18 +376,29 @@ func hasLimitedConnToPeer(h host.Host, targetPeer peer.ID) bool {
 	return false
 }
 
-func closeLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
+func closeIdleLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
 	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
 		if !conn.Stat().Limited {
 			continue
 		}
+		if len(conn.GetStreams()) > 0 {
+			continue
+		}
 		if err := conn.Close(); err != nil {
-			log.Printf("close stale limited conn target=%s err=%v", targetPeer, err)
+			log.Printf("close idle limited conn target=%s err=%v", targetPeer, err)
 		}
 	}
 }
 
 func (gw *Gateway) openStreamOnce(ctx context.Context, targetPeer peer.ID) (network.Stream, string, error) {
+	if hasLimitedConnToPeer(gw.host, targetPeer) {
+		stream, err := tryRelayFallback(ctx, gw.host, targetPeer, gw.relayPeers)
+		if err != nil {
+			return nil, "relayed", fmt.Errorf("cannot reach %s (relay only): %w", targetPeer.String(), err)
+		}
+		return stream, "relayed", nil
+	}
+
 	directCtx, cancelDirect := context.WithTimeout(ctx, gw.directStreamTimeout)
 	stream, err := gw.host.NewStream(directCtx, targetPeer, p2p.ProtocolID)
 	cancelDirect()
@@ -432,6 +445,31 @@ func (gw *Gateway) evictDiscoveryRoute(serviceName string, peerID peer.ID, reaso
 	if gw.routes.Remove(serviceName, "/") {
 		log.Printf("auto-discovery route removed early: %s peer=%s reason=%s", serviceName, peerID, reason)
 	}
+}
+
+func retryableExchangeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "read response header") ||
+		strings.Contains(msg, "write request body chunk") ||
+		strings.Contains(msg, "stream reset") ||
+		strings.Contains(msg, "unexpected EOF")
+}
+
+func buildReplayableRequestBody(r *http.Request) ([]byte, bool, error) {
+	if r.Body == nil || r.Body == http.NoBody {
+		return nil, true, nil
+	}
+	if r.ContentLength < 0 || r.ContentLength > maxRetryableProxyBodyBytes {
+		return nil, false, nil
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return nil, false, err
+	}
+	return body, true, nil
 }
 
 func (gw *Gateway) openStreamWithRetry(ctx context.Context, targetPeer peer.ID) (network.Stream, string, error) {
@@ -485,16 +523,11 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("resolved service=%q peer=%s addrs=%v", route.ServiceName, entry.PeerID, entry.Addresses)
 
-	stream, connectionPath, err := gw.openStreamWithRetry(r.Context(), entry.PeerID)
+	replayBody, canRetry, err := buildReplayableRequestBody(r)
 	if err != nil {
-		if shouldEvictDiscoveryEntryAfterOpenStreamFailure(entry, err) {
-			gw.evictDiscoveryRoute(route.ServiceName, entry.PeerID, "stale-open-stream-failure")
-		}
-		log.Printf("proxy failed reason=relay_unavailable peer=%s path=%s err=%v duration=%s", entry.PeerID, connectionPath, err, time.Since(start))
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, "read request body", http.StatusBadRequest)
 		return
 	}
-	defer stream.Close()
 
 	headers := make(map[string][]string, len(r.Header))
 	for k, vals := range r.Header {
@@ -507,12 +540,47 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := p2p.HandleClientRequest(stream, r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
-	if err != nil {
-		log.Printf("proxy failed reason=stream_forward_failed service=%q peer=%s connection_path=%s err=%v duration=%s", route.ServiceName, entry.PeerID, connectionPath, err, time.Since(start))
+	attempts := 1
+	if canRetry {
+		attempts = 2
+	}
+
+	var resp *http.Response
+	var connectionPath string
+	var stream network.Stream
+	for attempt := 1; attempt <= attempts; attempt++ {
+		stream, connectionPath, err = gw.openStreamWithRetry(r.Context(), entry.PeerID)
+		if err != nil {
+			if shouldEvictDiscoveryEntryAfterOpenStreamFailure(entry, err) {
+				gw.evictDiscoveryRoute(route.ServiceName, entry.PeerID, "stale-open-stream-failure")
+			}
+			log.Printf("proxy failed reason=relay_unavailable peer=%s path=%s err=%v duration=%s", entry.PeerID, connectionPath, err, time.Since(start))
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+
+		var bodyReader io.Reader = r.Body
+		if canRetry {
+			if len(replayBody) == 0 {
+				bodyReader = http.NoBody
+			} else {
+				bodyReader = bytes.NewReader(replayBody)
+			}
+		}
+
+		resp, err = p2p.HandleClientRequest(stream, r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader)
+		if err == nil {
+			defer stream.Close()
+			break
+		}
+
 		stream.Reset()
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
+		if attempt == attempts || !retryableExchangeError(err) {
+			log.Printf("proxy failed reason=stream_forward_failed service=%q peer=%s connection_path=%s err=%v duration=%s", route.ServiceName, entry.PeerID, connectionPath, err, time.Since(start))
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		log.Printf("proxy retrying after transient exchange failure service=%q peer=%s connection_path=%s attempt=%d err=%v", route.ServiceName, entry.PeerID, connectionPath, attempt, err)
 	}
 	defer resp.Body.Close()
 

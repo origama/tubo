@@ -10,6 +10,18 @@ import (
 	"p2p-api-tunnel/internal/protocol"
 )
 
+type partialWriter struct {
+	buf      bytes.Buffer
+	maxWrite int
+}
+
+func (w *partialWriter) Write(p []byte) (int, error) {
+	if w.maxWrite <= 0 || len(p) <= w.maxWrite {
+		return w.buf.Write(p)
+	}
+	return w.buf.Write(p[:w.maxWrite])
+}
+
 // --- RequestHeader tests ---
 
 func TestRequestHeaderRoundtrip(t *testing.T) {
@@ -68,6 +80,25 @@ func TestRequestHeaderRoundtrip(t *testing.T) {
 				t.Errorf("Header %q[%d]: got %q, want %q", key, i, got[i], v)
 			}
 		}
+	}
+}
+
+func TestEncodeFrameHandlesPartialWrites(t *testing.T) {
+	original := protocol.BodyChunk{Data: bytes.Repeat([]byte("Z"), 70*1024), IsFinal: true}
+	pw := &partialWriter{maxWrite: 1024}
+	if err := protocol.EncodeFrame(pw, &original); err != nil {
+		t.Fatalf("encode failed: %v", err)
+	}
+	reader := protocol.NewStreamReader(bytes.NewReader(pw.buf.Bytes()))
+	decoded, err := reader.ReadBodyChunk()
+	if err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if !decoded.IsFinal {
+		t.Fatal("decoded final flag = false, want true")
+	}
+	if !bytes.Equal(decoded.Data, original.Data) {
+		t.Fatalf("decoded payload mismatch: got=%d want=%d", len(decoded.Data), len(original.Data))
 	}
 }
 

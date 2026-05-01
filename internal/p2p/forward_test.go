@@ -1,6 +1,8 @@
 package p2p
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -11,6 +13,64 @@ import (
 
 	"p2p-api-tunnel/internal/protocol"
 )
+
+func TestHandleClientRequestUsesContentLengthHeaderAsHint(t *testing.T) {
+	reqReader, reqWriter := io.Pipe()
+	respReader, respWriter := io.Pipe()
+	stream := &memoryClientStream{reader: respReader, writer: reqWriter}
+
+	serverDone := make(chan error, 1)
+	go func() {
+		defer reqReader.Close()
+		defer respWriter.Close()
+
+		reader := protocol.NewStreamReader(reqReader)
+		req, err := reader.ReadRequestHeader()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		if req.ContentLengthHint != 3 {
+			serverDone <- fmt.Errorf("content length hint: got %d want 3", req.ContentLengthHint)
+			return
+		}
+		var got []byte
+		final := false
+		for !final {
+			chunk, err := reader.ReadBodyChunk()
+			if err != nil {
+				serverDone <- err
+				return
+			}
+			got = append(got, chunk.Data...)
+			final = chunk.IsFinal
+		}
+		if string(got) != "abc" {
+			serverDone <- fmt.Errorf("body bytes = %q, want abc", string(got))
+			return
+		}
+		writer := protocol.NewStreamWriter(respWriter)
+		_ = writer.WriteResponseHeader(&protocol.ResponseHeader{StatusCode: 204, StatusText: "No Content"})
+		_ = writer.WriteBodyChunk(&protocol.BodyChunk{Data: []byte{}, IsFinal: true})
+		serverDone <- nil
+	}()
+
+	resp, err := HandleClientRequest(stream, "POST", "/v1/dummy", "", map[string][]string{"Content-Length": {"3"}}, strings.NewReader("abc"))
+	if err != nil {
+		t.Fatalf("HandleClientRequest: %v", err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.ReadAll(resp.Body)
+
+	select {
+	case err := <-serverDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server side timed out waiting for request header")
+	}
+}
 
 func TestHandleClientRequestSendsFinalChunkForEmptyBodyReader(t *testing.T) {
 	reqReader, reqWriter := io.Pipe()
@@ -75,6 +135,72 @@ func TestHandleClientRequestSendsFinalChunkForEmptyBodyReader(t *testing.T) {
 type memoryClientStream struct {
 	reader *io.PipeReader
 	writer *io.PipeWriter
+}
+
+func TestServiceResponseStreamingSendsFinalChunkWhenReaderEndsOnEmptyEOF(t *testing.T) {
+	body := &scriptedReader{reads: []scriptedRead{
+		{data: []byte("hello"), err: nil},
+		{data: nil, err: io.EOF},
+	}}
+	chunks, err := collectBodyChunksFromReader(body)
+	if err != nil {
+		t.Fatalf("collectBodyChunksFromReader: %v", err)
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("chunk count = %d, want 2", len(chunks))
+	}
+	if string(chunks[0].Data) != "hello" || chunks[0].IsFinal {
+		t.Fatalf("first chunk = %+v, want data=hello final=false", chunks[0])
+	}
+	if len(chunks[1].Data) != 0 || !chunks[1].IsFinal {
+		t.Fatalf("final chunk = %+v, want empty final chunk", chunks[1])
+	}
+}
+
+func collectBodyChunksFromReader(body io.Reader) ([]protocol.BodyChunk, error) {
+	buf := make([]byte, 32)
+	var chunks []protocol.BodyChunk
+	finalSent := false
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			isFinal := readErr == io.EOF
+			chunks = append(chunks, protocol.BodyChunk{Data: append([]byte(nil), buf[:n]...), IsFinal: isFinal})
+			finalSent = isFinal
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				if !finalSent {
+					chunks = append(chunks, protocol.BodyChunk{Data: []byte{}, IsFinal: true})
+				}
+				return chunks, nil
+			}
+			return nil, readErr
+		}
+	}
+}
+
+type scriptedRead struct {
+	data []byte
+	err  error
+}
+
+type scriptedReader struct {
+	reads []scriptedRead
+	idx   int
+}
+
+func (r *scriptedReader) Read(p []byte) (int, error) {
+	if r.idx >= len(r.reads) {
+		return 0, io.EOF
+	}
+	cur := r.reads[r.idx]
+	r.idx++
+	copy(p, cur.data)
+	if cur.err != nil && !errors.Is(cur.err, io.EOF) {
+		return len(cur.data), cur.err
+	}
+	return len(cur.data), cur.err
 }
 
 func (s *memoryClientStream) Read(p []byte) (int, error)                   { return s.reader.Read(p) }

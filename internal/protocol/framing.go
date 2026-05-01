@@ -8,6 +8,20 @@ import (
 	"github.com/multiformats/go-varint"
 )
 
+func writeFull(w io.Writer, p []byte) error {
+	for len(p) > 0 {
+		n, err := w.Write(p)
+		if err != nil {
+			return err
+		}
+		if n <= 0 {
+			return io.ErrShortWrite
+		}
+		p = p[n:]
+	}
+	return nil
+}
+
 // EncodeFrame writes a frame to w with varint length prefix + type byte + payload.
 func EncodeFrame(w io.Writer, msg any) error {
 	var ft byte
@@ -36,14 +50,16 @@ func EncodeFrame(w io.Writer, msg any) error {
 
 	// Write varint length prefix + type byte + payload
 	lenBytes := varint.ToUvarint(uint64(len(payload)))
-	if _, err := w.Write(lenBytes); err != nil {
+	if err := writeFull(w, lenBytes); err != nil {
 		return fmt.Errorf("write length: %w", err)
 	}
 	if err := binary.Write(w, binary.BigEndian, ft); err != nil {
 		return fmt.Errorf("write type: %w", err)
 	}
-	_, err = w.Write(payload)
-	return err
+	if err := writeFull(w, payload); err != nil {
+		return fmt.Errorf("write payload: %w", err)
+	}
+	return nil
 }
 
 // readVarint reads a varint from any io.Reader (works with io.LimitedReader).
