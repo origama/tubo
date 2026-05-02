@@ -357,7 +357,7 @@ func (gw *Gateway) beginRelayRecovery(serviceName string) (bool, chan struct{}) 
 	return true, state.waitCh
 }
 
-func (gw *Gateway) endRelayRecovery(serviceName string, waitCh chan struct{}) {
+func (gw *Gateway) endRelayRecovery(serviceName string, waitCh chan struct{}, recovered bool) {
 	gw.relayRecoveryMu.Lock()
 	state, ok := gw.relayRecoveryActive[serviceName]
 	if !ok || state.waitCh != waitCh {
@@ -368,6 +368,9 @@ func (gw *Gateway) endRelayRecovery(serviceName string, waitCh chan struct{}) {
 	close(state.waitCh)
 	gw.relayRecoveryMu.Unlock()
 
+	if recovered {
+		return
+	}
 	if gw.cache != nil {
 		if _, ok := gw.cache.Resolve(serviceName); ok {
 			return
@@ -716,20 +719,6 @@ func closeIdleLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
 	}
 }
 
-func closeIdleConnsToPeer(h host.Host, targetPeer peer.ID) {
-	if h == nil {
-		return
-	}
-	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
-		if len(conn.GetStreams()) > 0 {
-			continue
-		}
-		if err := conn.Close(); err != nil {
-			log.Printf("close idle conn target=%s limited=%t err=%v", targetPeer, conn.Stat().Limited, err)
-		}
-	}
-}
-
 func clearDialBackoff(h host.Host, targetPeer peer.ID) {
 	if h == nil {
 		return
@@ -870,10 +859,11 @@ func (gw *Gateway) openStreamWithRetry(ctx context.Context, serviceName string) 
 	var path string
 	var entry *discovery.ServiceEntry
 	var recoveryLeader bool
+	var recoveryRecovered bool
 	var recoveryWaitCh chan struct{}
 	defer func() {
 		if recoveryLeader {
-			gw.endRelayRecovery(serviceName, recoveryWaitCh)
+			gw.endRelayRecovery(serviceName, recoveryWaitCh, recoveryRecovered)
 		}
 	}()
 
@@ -902,6 +892,7 @@ func (gw *Gateway) openStreamWithRetry(ctx context.Context, serviceName string) 
 		}
 		if err == nil {
 			if attempt > 1 {
+				recoveryRecovered = recoveryLeader
 				gw.clearRelayRecoveryGate(serviceName)
 				log.Printf("stream open recovered service=%s target=%s attempts=%d path=%s", serviceName, targetPeer, attempt, connectionPath)
 			}
@@ -1024,7 +1015,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		stream.Reset()
+		_ = stream.Reset()
 		if attempt == attempts || !retryableExchangeError(err) {
 			log.Printf("proxy failed reason=stream_forward_failed service=%q peer=%s connection_path=%s err=%v duration=%s", route.ServiceName, entry.PeerID, connectionPath, err, time.Since(start))
 			http.Error(w, err.Error(), http.StatusBadGateway)

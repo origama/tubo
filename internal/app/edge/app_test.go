@@ -272,7 +272,7 @@ func TestRelayRecoverySingleFlight(t *testing.T) {
 		waitForRelayRecovery(context.Background(), ch2, time.Second)
 		close(done)
 	}()
-	gw.endRelayRecovery("myapi", ch1)
+	gw.endRelayRecovery("myapi", ch1, false)
 
 	select {
 	case <-done:
@@ -313,10 +313,41 @@ func TestHandleDiscoveryEventDefersExpiryOnlyDuringActiveRecovery(t *testing.T) 
 	if _, ok := gw.routes.Match("myapi", "/v1/dummy"); !ok {
 		t.Fatal("expected route expiry to be deferred while recovery is active")
 	}
-	gw.endRelayRecovery("myapi", waitCh)
+	gw.endRelayRecovery("myapi", waitCh, false)
 	gw.handleDiscoveryEvent(discovery.DiscoveryEvent{Type: "removed", ServiceName: "myapi", PeerID: pid})
 	if _, ok := gw.routes.Match("myapi", "/v1/dummy"); ok {
 		t.Fatal("expected route removal once recovery is no longer active")
+	}
+}
+
+func TestEndRelayRecoveryDoesNotRemoveRouteAfterSuccessfulRecovery(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Hour)
+	defer cache.Stop()
+	pid := peer.ID("12D3KooWTestPeer")
+	gw := &Gateway{
+		cache:               cache,
+		routes:              routing.NewRouteTable(),
+		relayRecoveryAfter:  map[string]time.Time{"myapi": time.Now()},
+		relayRecoveryActive: make(map[string]*relayRecoveryState),
+		lastKnownEntries: map[string]*discovery.ServiceEntry{"myapi": {
+			ServiceName: "myapi",
+			PeerID:      pid,
+			Addresses:   []string{"/ip4/127.0.0.1/tcp/4001"},
+			TTL:         30 * time.Second,
+			Registered:  time.Now(),
+		}},
+	}
+	if err := gw.routes.Add(routing.Route{Hostname: "myapi", PathPrefix: "/", ServiceName: "myapi", PeerID: pid.String()}); err != nil {
+		t.Fatalf("add route: %v", err)
+	}
+	leader, waitCh := gw.beginRelayRecovery("myapi")
+	if !leader {
+		t.Fatal("expected recovery leader")
+	}
+	gw.clearRelayRecoveryGate("myapi")
+	gw.endRelayRecovery("myapi", waitCh, true)
+	if _, ok := gw.routes.Match("myapi", "/v1/dummy"); !ok {
+		t.Fatal("expected route to remain after successful recovery")
 	}
 }
 
@@ -337,7 +368,7 @@ func TestEndRelayRecoveryRemovesRouteIfServiceDoesNotReturn(t *testing.T) {
 	if !leader {
 		t.Fatal("expected recovery leader")
 	}
-	gw.endRelayRecovery("myapi", waitCh)
+	gw.endRelayRecovery("myapi", waitCh, false)
 	if _, ok := gw.routes.Match("myapi", "/v1/dummy"); ok {
 		t.Fatal("expected route removal when recovery ends without a fresh service entry")
 	}
