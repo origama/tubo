@@ -48,6 +48,62 @@ func TestKeygenSwarm(t *testing.T) {
 		t.Fatal("expected no overwrite")
 	}
 }
+func TestResolveRuntimeRoleAliases(t *testing.T) {
+	cases := []struct {
+		name     string
+		in       []string
+		wantRole string
+		wantArgs []string
+	}{
+		{name: "legacy relay run", in: []string{"relay", "run", "--config", "relay.yaml"}, wantRole: "relay", wantArgs: []string{"--config", "relay.yaml"}},
+		{name: "short relay", in: []string{"relay", "--config", "relay.yaml"}, wantRole: "relay", wantArgs: []string{"--config", "relay.yaml"}},
+		{name: "gateway alias", in: []string{"gateway", "--listen", ":8443"}, wantRole: "edge", wantArgs: []string{"--listen", ":8443"}},
+		{name: "attach positional target", in: []string{"attach", "http://127.0.0.1:1234", "--name", "lmstudio"}, wantRole: "service", wantArgs: []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}},
+		{name: "attach explicit target flag", in: []string{"attach", "--target", "http://127.0.0.1:1234", "--name", "lmstudio"}, wantRole: "service", wantArgs: []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotRole, gotArgs, ok, err := resolveRuntimeRole(tc.in)
+			if err != nil {
+				t.Fatalf("resolveRuntimeRole(%v) err = %v", tc.in, err)
+			}
+			if !ok {
+				t.Fatalf("resolveRuntimeRole(%v) did not resolve a runtime role", tc.in)
+			}
+			if gotRole != tc.wantRole {
+				t.Fatalf("role = %q, want %q", gotRole, tc.wantRole)
+			}
+			if strings.Join(gotArgs, "\x00") != strings.Join(tc.wantArgs, "\x00") {
+				t.Fatalf("args = %#v, want %#v", gotArgs, tc.wantArgs)
+			}
+		})
+	}
+}
+
+func TestResolveRuntimeRoleRejectsLegacyRoleWithoutRun(t *testing.T) {
+	if _, _, _, err := resolveRuntimeRole([]string{"service", "--name", "lmstudio"}); err == nil {
+		t.Fatal("expected error for legacy service command without run")
+	}
+}
+
+func TestResolveRuntimeRoleRejectsDuplicateAttachTarget(t *testing.T) {
+	if _, _, _, err := resolveRuntimeRole([]string{"attach", "http://127.0.0.1:1234", "--target", "http://127.0.0.1:11434", "--name", "lmstudio"}); err == nil {
+		t.Fatal("expected duplicate attach target error")
+	}
+}
+
+func TestUsageMentionsIntentCommands(t *testing.T) {
+	err := usage()
+	if err == nil {
+		t.Fatal("expected usage error")
+	}
+	for _, want := range []string{"attach", "gateway", "relay", "service|bridge"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("usage missing %q: %s", want, err)
+		}
+	}
+}
+
 func TestVersionCommand(t *testing.T) {
 	oldProduct := iversion.ProductVersion
 	oldCommit := iversion.Commit

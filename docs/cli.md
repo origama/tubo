@@ -14,6 +14,22 @@ Il prompt interattivo e' riservato ai casi TTY, senza `--non-interactive`, e con
 
 ## Comandi principali
 
+La UX base espone comandi orientati all'intento:
+
+```bash
+tubo relay --config relay.yaml
+tubo gateway --config edge.yaml
+tubo attach http://127.0.0.1:1234 --name lmstudio
+```
+
+Equivalentemente, `attach` supporta anche la forma esplicita con flag:
+
+```bash
+tubo attach --target http://127.0.0.1:1234 --name lmstudio
+```
+
+I role commands restano disponibili come compatibility / advanced layer:
+
 ```bash
 tubo relay run --config relay.yaml
 tubo edge run --config edge.yaml
