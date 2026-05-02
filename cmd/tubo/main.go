@@ -33,12 +33,12 @@ func run(args []string) error {
 	if len(args) == 0 {
 		return usage()
 	}
+	if role, roleArgs, ok, err := resolveRuntimeRole(args); err != nil {
+		return err
+	} else if ok {
+		return runRole(role, roleArgs)
+	}
 	switch args[0] {
-	case "relay", "edge", "service", "bridge":
-		if len(args) < 2 || args[1] != "run" {
-			return usage()
-		}
-		return runRole(args[0], args[2:])
 	case "keygen":
 		return keygen(args[1:])
 	case "id":
@@ -57,8 +57,56 @@ func run(args []string) error {
 		return usage()
 	}
 }
+
+func resolveRuntimeRole(args []string) (string, []string, bool, error) {
+	if len(args) == 0 {
+		return "", nil, false, nil
+	}
+	switch args[0] {
+	case "relay":
+		if len(args) >= 2 && args[1] == "run" {
+			return "relay", args[2:], true, nil
+		}
+		return "relay", args[1:], true, nil
+	case "edge", "service", "bridge":
+		if len(args) < 2 || args[1] != "run" {
+			return "", nil, false, usage()
+		}
+		return args[0], args[2:], true, nil
+	case "gateway":
+		return "edge", args[1:], true, nil
+	case "attach":
+		attachArgs, err := rewriteAttachArgs(args[1:])
+		if err != nil {
+			return "", nil, false, err
+		}
+		return "service", attachArgs, true, nil
+	default:
+		return "", nil, false, nil
+	}
+}
+
+func rewriteAttachArgs(args []string) ([]string, error) {
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		return args, nil
+	}
+	if hasLongFlag(args[1:], "--target") {
+		return nil, errors.New("attach target provided both positionally and via --target")
+	}
+	return append([]string{"--target", args[0]}, args[1:]...), nil
+}
+
+func hasLongFlag(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
 func usage() error {
-	return errors.New("usage: tubo <relay|edge|service|bridge> run | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
