@@ -2,12 +2,17 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	cfgpkg "p2p-api-tunnel/internal/config"
 	"p2p-api-tunnel/internal/p2p"
 	iversion "p2p-api-tunnel/internal/version"
 )
@@ -97,10 +102,114 @@ func TestUsageMentionsIntentCommands(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	for _, want := range []string{"attach", "gateway", "relay", "service|bridge"} {
+	for _, want := range []string{"attach", "gateway", "relay", "join", "service|bridge"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("usage missing %q: %s", want, err)
 		}
+	}
+}
+
+func TestJoinCreatesConfigAndInstallsSwarmKey(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	swarmKey := filepath.Join(t.TempDir(), "input.swarm.key")
+	if err := os.WriteFile(swarmKey, []byte("/key/swarm/psk/1.0.0/\n/base16/\n00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	relayID, err := p2p.PeerIDFromSeed("join-relay-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := fmt.Sprintf("/ip4/127.0.0.1/tcp/4001/p2p/%s", relayID)
+	out, err := capture(func() error { return run([]string{"join", "--relay", relay, "--swarm-key", swarmKey}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
+	installedKeyPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "swarm.key")
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+	if _, err := os.Stat(installedKeyPath); err != nil {
+		t.Fatalf("swarm key not written: %v", err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Network.PrivateKeyFile != installedKeyPath {
+		t.Fatalf("private_key_file = %q, want %q", cfg.Network.PrivateKeyFile, installedKeyPath)
+	}
+	if len(cfg.Network.BootstrapPeers) != 1 || cfg.Network.BootstrapPeers[0] != relay {
+		t.Fatalf("bootstrap_peers = %#v", cfg.Network.BootstrapPeers)
+	}
+	if len(cfg.Network.RelayPeers) != 1 || cfg.Network.RelayPeers[0] != relay {
+		t.Fatalf("relay_peers = %#v", cfg.Network.RelayPeers)
+	}
+	if !strings.Contains(out, "joined swarm config") || !strings.Contains(out, "tubo get services") {
+		t.Fatalf("unexpected join output: %s", out)
+	}
+	keyBytes, err := os.ReadFile(installedKeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(keyBytes), "/key/swarm/psk/1.0.0/") {
+		t.Fatalf("unexpected installed swarm key: %s", string(keyBytes))
+	}
+}
+
+func TestJoinJSONAndCheck(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "config")
+	relayID, err := p2p.PeerIDFromSeed("join-relay-check-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+	relay := fmt.Sprintf("/ip4/127.0.0.1/tcp/%d/p2p/%s", port, relayID)
+	keyB64 := base64.StdEncoding.EncodeToString([]byte("/key/swarm/psk/1.0.0/\n/base16/\n00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n"))
+	out, err := capture(func() error {
+		return run([]string{"join", "--relay", relay, "--swarm-key-b64", keyB64, "--config-dir", configDir, "--check", "--json"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got joinResult
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("join json parse: %v\nout=%s", err, out)
+	}
+	if !got.Checked {
+		t.Fatal("expected checked=true")
+	}
+	if got.ConfigPath != filepath.Join(configDir, "config.yaml") {
+		t.Fatalf("config_path = %q", got.ConfigPath)
+	}
+	if len(got.RelayPeers) != 1 || got.RelayPeers[0] != relay {
+		t.Fatalf("relay_peers = %#v", got.RelayPeers)
+	}
+}
+
+func TestJoinRejectsInvalidInput(t *testing.T) {
+	if _, err := capture(func() error { return run([]string{"join"}) }); err == nil {
+		t.Fatal("expected missing relay/key error")
+	}
+	configDir := filepath.Join(t.TempDir(), "config")
+	badKey := filepath.Join(t.TempDir(), "bad.key")
+	if err := os.WriteFile(badKey, []byte("not-a-swarm-key"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error {
+		return run([]string{"join", "--relay", "not-a-multiaddr", "--swarm-key", badKey, "--config-dir", configDir})
+	}); err == nil {
+		t.Fatal("expected invalid relay error")
+	}
+	if _, err := capture(func() error {
+		return run([]string{"join", "--relay", "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWTest", "--swarm-key", badKey, "--config-dir", configDir})
+	}); err == nil {
+		t.Fatal("expected invalid swarm key error")
 	}
 }
 
