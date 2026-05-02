@@ -199,6 +199,7 @@ jobs:
       - name: Create or update GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
