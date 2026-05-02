@@ -104,22 +104,29 @@ func (c *Cache) Remove(serviceName string) {
 
 // Count returns the number of active (non-expired) entries in the cache.
 func (c *Cache) Count() int {
+	return len(c.List())
+}
+
+// List returns a snapshot of all active (non-expired) entries.
+func (c *Cache) List() []*ServiceEntry {
 	c.mu.Lock()
-	count := 0
+	entries := make([]*ServiceEntry, 0, len(c.entries))
 	var expired []struct {
 		name string
 		pid  peer.ID
 	}
 	for name, entry := range c.entries {
 		if entry.Expired() {
-			delete(c.entries, name) // lazy cleanup during count too
+			delete(c.entries, name)
 			expired = append(expired, struct {
 				name string
 				pid  peer.ID
 			}{name, entry.PeerID})
-		} else {
-			count++
+			continue
 		}
+		copyEntry := *entry
+		copyEntry.Addresses = append([]string(nil), entry.Addresses...)
+		entries = append(entries, &copyEntry)
 	}
 	onExpired := c.onExpired
 	c.mu.Unlock()
@@ -129,7 +136,7 @@ func (c *Cache) Count() int {
 			go onExpired(e.name, e.pid)
 		}
 	}
-	return count
+	return entries
 }
 
 // Stop shuts down the background cleanup goroutine.

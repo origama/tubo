@@ -3,10 +3,12 @@ package edge
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1055,9 +1057,59 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	log.Printf("proxy completed service=%q peer=%s connection_path=%s stream_protocol_id=%s status=%d bytes=%d duration=%s", route.ServiceName, entry.PeerID, connectionPath, stream.Protocol(), resp.StatusCode, bytesWritten, time.Since(start))
 }
 
+type serviceAdminView struct {
+	Kind             string   `json:"kind"`
+	Name             string   `json:"name"`
+	PeerID           string   `json:"peer_id"`
+	Addresses        []string `json:"addresses"`
+	Status           string   `json:"status"`
+	Path             string   `json:"path"`
+	TTLSeconds       int64    `json:"ttl_seconds"`
+	ExpiresInSeconds int64    `json:"expires_in_seconds"`
+	Capabilities     []string `json:"capabilities"`
+	RegisteredAt     string   `json:"registered_at"`
+}
+
+func serviceAdminViewFromEntry(entry *discovery.ServiceEntry) serviceAdminView {
+	path := "unknown"
+	if len(entry.Addresses) > 0 {
+		path = "direct"
+	}
+	if hasAnnouncedRelayedAddr(entry.Addresses) {
+		path = "relayed"
+	}
+	expiresIn := time.Until(entry.Registered.Add(entry.TTL))
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
+	return serviceAdminView{
+		Kind:             "service",
+		Name:             entry.ServiceName,
+		PeerID:           entry.PeerID.String(),
+		Addresses:        append([]string(nil), entry.Addresses...),
+		Status:           "online",
+		Path:             path,
+		TTLSeconds:       int64(entry.TTL.Seconds()),
+		ExpiresInSeconds: int64(expiresIn.Seconds()),
+		Capabilities:     []string{},
+		RegisteredAt:     entry.Registered.Format(time.RFC3339),
+	}
+}
+
 func (gw *Gateway) handleListServices(w http.ResponseWriter, r *http.Request) {
+	entries := gw.cache.List()
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].ServiceName < entries[j].ServiceName
+	})
+	items := make([]serviceAdminView, 0, len(entries))
+	for _, entry := range entries {
+		items = append(items, serviceAdminViewFromEntry(entry))
+	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, "{\"count\":%d}\n", gw.cache.Count())
+	_ = json.NewEncoder(w).Encode(struct {
+		Count int                `json:"count"`
+		Items []serviceAdminView `json:"items"`
+	}{Count: len(items), Items: items})
 }
 
 func (gw *Gateway) handleListRoutes(w http.ResponseWriter, r *http.Request) {

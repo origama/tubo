@@ -87,6 +87,33 @@ Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, opp
 
 `init` crea una nuova configurazione locale; `join` importa la configurazione di uno swarm esistente.
 
+## Resource discovery
+
+Con una config locale creata via `join`, puoi ispezionare i servizi pubblicizzati nello swarm:
+
+```bash
+tubo get services
+tubo get service/lmstudio
+tubo describe service/lmstudio
+tubo inspect service/lmstudio --json
+tubo watch services --timeout 10s
+```
+
+Comportamento:
+
+- se trova un edge locale gia' in ascolto sull'admin API, usa la sua cache discovery locale;
+- altrimenti avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce.
+
+Flag utili in questo MVP:
+
+```bash
+--config <path>
+--timeout 5s
+--live
+--cached-only
+--json
+```
+
 `config print` maschera i segreti (`private_key_b64`) e non stampa il contenuto di `swarm.key`.
 
 ## Init
