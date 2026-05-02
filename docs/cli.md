@@ -21,6 +21,7 @@ tubo relay --config relay.yaml
 tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 tubo gateway --config edge.yaml
 tubo attach http://127.0.0.1:1234 --name lmstudio
+tubo connect lmstudio --local 127.0.0.1:51234
 ```
 
 Equivalentemente, `attach` supporta anche la forma esplicita con flag:
@@ -86,6 +87,24 @@ Di default salva:
 Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, oppure fare un check TCP basilare del relay con `--check`.
 
 `init` crea una nuova configurazione locale; `join` importa la configurazione di uno swarm esistente.
+
+## Connect
+
+`connect` apre un listener HTTP locale verso un servizio scoperto nello swarm.
+
+```bash
+tubo connect lmstudio --local 127.0.0.1:51234
+```
+
+Se `--local` non e' specificato, sceglie automaticamente una porta libera su `127.0.0.1`.
+
+Per scripting:
+
+```bash
+tubo connect lmstudio --json
+```
+
+`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, altrimenti observer effimero live.
 
 ## Resource discovery
 

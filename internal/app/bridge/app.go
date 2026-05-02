@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"p2p-api-tunnel/internal/p2p"
 	"time"
@@ -14,10 +16,12 @@ import (
 
 type Config struct{ Listen, Seed, P2PListen, ServiceAddr, ServiceSeed, ServiceP2PListen, PrivateKeyFile, PrivateKeyB64 string }
 type App struct {
-	cfg     Config
-	host    host.Host
-	service peer.AddrInfo
-	server  *http.Server
+	cfg        Config
+	host       host.Host
+	service    peer.AddrInfo
+	server     *http.Server
+	listener   net.Listener
+	listenAddr string
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -59,10 +63,16 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
 	log.Printf("bridge peer_id=%s", a.host.ID())
+	ln, err := net.Listen("tcp", a.cfg.Listen)
+	if err != nil {
+		return fmt.Errorf("listen bridge: %w", err)
+	}
+	a.listener = ln
+	a.listenAddr = ln.Addr().String()
 	a.server = &http.Server{Addr: a.cfg.Listen, Handler: a.mux()}
 	go func() {
-		log.Printf("client bridge listening on %s", a.cfg.Listen)
-		if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		log.Printf("client bridge listening on %s", a.listenAddr)
+		if err := a.server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("bridge server: %v", err)
 		}
 	}()
@@ -71,11 +81,19 @@ func (a *App) Start(ctx context.Context) error {
 	defer c()
 	return a.server.Shutdown(sd)
 }
+
+func (a *App) ListenAddr() string {
+	if a.listenAddr != "" {
+		return a.listenAddr
+	}
+	return a.cfg.Listen
+}
 func (a *App) mux() *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		s, err := a.host.NewStream(context.Background(), a.service.ID, p2p.SupportedProtocolIDs()...)
+		streamCtx := network.WithAllowLimitedConn(context.Background(), "bridge tunnel stream")
+		s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.SupportedProtocolIDs()...)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return
