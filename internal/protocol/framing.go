@@ -222,7 +222,7 @@ func encodeRequestHeader(m *RequestHeader) ([]byte, error) {
 	result = append(result, encodeHeaders(m.Headers)...)
 
 	// ContentLengthHint as signed varint (zigzag encoding)
-	clh := uint64(m.ContentLengthHint)
+	var clh uint64
 	if m.ContentLengthHint < 0 {
 		clh = uint64((-m.ContentLengthHint-1)<<1) | 1
 	} else {

@@ -90,9 +90,21 @@ type Gateway struct {
 	openStream          func(context.Context, peer.ID) (network.Stream, string, error)
 	relayRecoveryMu     sync.Mutex
 	relayRecoveryAfter  map[string]time.Time
+	relayRecoveryActive map[string]*relayRecoveryState
+	lastKnownEntries    map[string]*discovery.ServiceEntry
 }
 
-const maxRetryableProxyBodyBytes = 2 << 20
+// relayRecoveryState coordinates edge-side relay recovery so concurrent
+// requests do not all clear peer/backoff state at the same time.
+type relayRecoveryState struct {
+	started time.Time
+	waitCh  chan struct{}
+}
+
+const (
+	maxRetryableProxyBodyBytes = 2 << 20
+	relayRecoveryMaxWindow     = 6 * time.Second
+)
 
 // New constructs a new edge runtime.
 func New(ctx context.Context, cfg Config) (*App, error) {
@@ -256,6 +268,8 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		relayPeers:          parsedRelayPeers,
 		directStreamTimeout: directStreamTimeout,
 		relayRecoveryAfter:  make(map[string]time.Time),
+		relayRecoveryActive: make(map[string]*relayRecoveryState),
+		lastKnownEntries:    make(map[string]*discovery.ServiceEntry),
 	}
 	if len(gw.relayPeers) > 0 {
 		log.Printf("configured %d relay peer(s)", len(gw.relayPeers))
@@ -281,6 +295,20 @@ func (gw *Gateway) clearRelayRecoveryGate(serviceName string) {
 	delete(gw.relayRecoveryAfter, serviceName)
 }
 
+func (gw *Gateway) relayRecoveryAnnouncementPending(serviceName string) bool {
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	after, ok := gw.relayRecoveryAfter[serviceName]
+	if !ok {
+		return false
+	}
+	if time.Since(after) > relayRecoveryMaxWindow {
+		delete(gw.relayRecoveryAfter, serviceName)
+		return false
+	}
+	return true
+}
+
 func (gw *Gateway) noteRelayRecoveryWait(serviceName string) {
 	gw.relayRecoveryMu.Lock()
 	defer gw.relayRecoveryMu.Unlock()
@@ -300,11 +328,171 @@ func (gw *Gateway) waitingForFreshRelayAnnouncement(entry *discovery.ServiceEntr
 	if !ok {
 		return false
 	}
+	if time.Since(after) > relayRecoveryMaxWindow {
+		delete(gw.relayRecoveryAfter, entry.ServiceName)
+		return false
+	}
 	if entry.Registered.After(after) {
 		delete(gw.relayRecoveryAfter, entry.ServiceName)
 		return false
 	}
 	return true
+}
+
+func (gw *Gateway) beginRelayRecovery(serviceName string) (bool, chan struct{}) {
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	if gw.relayRecoveryActive == nil {
+		gw.relayRecoveryActive = make(map[string]*relayRecoveryState)
+	}
+	if state, ok := gw.relayRecoveryActive[serviceName]; ok {
+		if time.Since(state.started) <= relayRecoveryMaxWindow {
+			return false, state.waitCh
+		}
+		delete(gw.relayRecoveryActive, serviceName)
+		close(state.waitCh)
+	}
+	state := &relayRecoveryState{started: time.Now(), waitCh: make(chan struct{})}
+	gw.relayRecoveryActive[serviceName] = state
+	return true, state.waitCh
+}
+
+func (gw *Gateway) endRelayRecovery(serviceName string, waitCh chan struct{}, recovered bool) {
+	gw.relayRecoveryMu.Lock()
+	state, ok := gw.relayRecoveryActive[serviceName]
+	if !ok || state.waitCh != waitCh {
+		gw.relayRecoveryMu.Unlock()
+		return
+	}
+	delete(gw.relayRecoveryActive, serviceName)
+	close(state.waitCh)
+	gw.relayRecoveryMu.Unlock()
+
+	if recovered {
+		return
+	}
+	if gw.cache != nil {
+		if _, ok := gw.cache.Resolve(serviceName); ok {
+			return
+		}
+	}
+	gw.clearRelayRecoveryGate(serviceName)
+	if gw.routes != nil {
+		gw.routes.Remove(serviceName, "/")
+	}
+}
+
+func (gw *Gateway) currentRelayRecoveryWaitCh(serviceName string) chan struct{} {
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	state, ok := gw.relayRecoveryActive[serviceName]
+	if !ok {
+		return nil
+	}
+	if time.Since(state.started) > relayRecoveryMaxWindow {
+		delete(gw.relayRecoveryActive, serviceName)
+		close(state.waitCh)
+		return nil
+	}
+	return state.waitCh
+}
+
+func waitForRelayRecovery(ctx context.Context, waitCh <-chan struct{}, budget time.Duration) {
+	if budget <= 0 {
+		budget = 750 * time.Millisecond
+	}
+	if waitCh == nil {
+		select {
+		case <-ctx.Done():
+		case <-time.After(budget):
+		}
+		return
+	}
+	select {
+	case <-ctx.Done():
+	case <-waitCh:
+	case <-time.After(budget):
+	}
+}
+
+func copyServiceEntry(entry *discovery.ServiceEntry) *discovery.ServiceEntry {
+	if entry == nil {
+		return nil
+	}
+	copied := *entry
+	copied.Addresses = append([]string(nil), entry.Addresses...)
+	return &copied
+}
+
+func (gw *Gateway) rememberDiscoveryEntry(entry *discovery.ServiceEntry) {
+	if entry == nil {
+		return
+	}
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	if gw.lastKnownEntries == nil {
+		gw.lastKnownEntries = make(map[string]*discovery.ServiceEntry)
+	}
+	gw.lastKnownEntries[entry.ServiceName] = copyServiceEntry(entry)
+}
+
+func (gw *Gateway) relayRecoveryPending(serviceName string) bool {
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	if after, ok := gw.relayRecoveryAfter[serviceName]; ok {
+		if time.Since(after) <= relayRecoveryMaxWindow {
+			return true
+		}
+		delete(gw.relayRecoveryAfter, serviceName)
+	}
+	state, ok := gw.relayRecoveryActive[serviceName]
+	if !ok {
+		return false
+	}
+	if time.Since(state.started) > relayRecoveryMaxWindow {
+		delete(gw.relayRecoveryActive, serviceName)
+		close(state.waitCh)
+		return false
+	}
+	return true
+}
+
+func (gw *Gateway) relayRecoveryActiveNow(serviceName string) bool {
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	state, ok := gw.relayRecoveryActive[serviceName]
+	if !ok {
+		return false
+	}
+	if time.Since(state.started) > relayRecoveryMaxWindow {
+		delete(gw.relayRecoveryActive, serviceName)
+		close(state.waitCh)
+		return false
+	}
+	return true
+}
+
+func (gw *Gateway) lastKnownEntry(serviceName string) (*discovery.ServiceEntry, bool) {
+	gw.relayRecoveryMu.Lock()
+	defer gw.relayRecoveryMu.Unlock()
+	entry, ok := gw.lastKnownEntries[serviceName]
+	if !ok {
+		return nil, false
+	}
+	return copyServiceEntry(entry), true
+}
+
+func (gw *Gateway) resolveServiceEntry(serviceName string, allowLastKnown bool) (*discovery.ServiceEntry, bool) {
+	if gw.cache != nil {
+		if entry, ok := gw.cache.Resolve(serviceName); ok {
+			gw.rememberDiscoveryEntry(entry)
+			return entry, true
+		}
+	}
+	if !allowLastKnown || !gw.relayRecoveryPending(serviceName) {
+		return nil, false
+	}
+	return gw.lastKnownEntry(serviceName)
 }
 
 func hasAnnouncedRelayedAddr(addresses []string) bool {
@@ -355,6 +543,7 @@ func (gw *Gateway) handleDiscoveryEvent(event discovery.DiscoveryEvent) {
 		gw.clearRelayRecoveryGate(event.ServiceName)
 		if gw.cache != nil {
 			if entry, ok := gw.cache.Resolve(event.ServiceName); ok {
+				gw.rememberDiscoveryEntry(entry)
 				gw.seedPeerstoreFromDiscoveryEntry(entry)
 			}
 		}
@@ -370,6 +559,10 @@ func (gw *Gateway) handleDiscoveryEvent(event discovery.DiscoveryEvent) {
 			log.Printf("auto-discovery route added: %s → service=%q peer=%s", rt.Hostname, rt.ServiceName, rt.PeerID)
 		}
 	case "removed":
+		if gw.relayRecoveryActiveNow(event.ServiceName) {
+			log.Printf("auto-discovery route expiry deferred during active relay recovery: %s", event.ServiceName)
+			return
+		}
 		gw.clearRelayRecoveryGate(event.ServiceName)
 		if gw.routes.Remove(event.ServiceName, "/") {
 			log.Printf("auto-discovery route removed: %s (service expired)", event.ServiceName)
@@ -416,11 +609,19 @@ func tryAnnouncedRelayedAddrs(ctx context.Context, h host.Host, targetPeer peer.
 	return nil, fmt.Errorf("no usable announced relayed addresses")
 }
 
-func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, relayPeers []peer.AddrInfo) (network.Stream, error) {
+func tryRelayFallback(ctx context.Context, h host.Host, targetPeer peer.ID, relayPeers []peer.AddrInfo, reuseTimeout time.Duration) (network.Stream, error) {
 	var lastErr error
 
 	if hasLimitedConnToPeer(h, targetPeer) {
-		stream, err := h.NewStream(network.WithAllowLimitedConn(ctx, "reuse existing relayed tunnel stream"), targetPeer, p2p.SupportedProtocolIDs()...)
+		reuseCtx := network.WithAllowLimitedConn(ctx, "reuse existing relayed tunnel stream")
+		cancel := func() {}
+		if reuseTimeout > 0 {
+			var cancelTimeout context.CancelFunc
+			reuseCtx, cancelTimeout = context.WithTimeout(reuseCtx, reuseTimeout)
+			cancel = cancelTimeout
+		}
+		stream, err := h.NewStream(reuseCtx, targetPeer, p2p.SupportedProtocolIDs()...)
+		cancel()
 		if err == nil {
 			log.Printf("relay fallback reusing existing limited connection target=%s", targetPeer)
 			return stream, nil
@@ -518,20 +719,6 @@ func closeIdleLimitedConnsToPeer(h host.Host, targetPeer peer.ID) {
 	}
 }
 
-func closeIdleConnsToPeer(h host.Host, targetPeer peer.ID) {
-	if h == nil {
-		return
-	}
-	for _, conn := range h.Network().ConnsToPeer(targetPeer) {
-		if len(conn.GetStreams()) > 0 {
-			continue
-		}
-		if err := conn.Close(); err != nil {
-			log.Printf("close idle conn target=%s limited=%t err=%v", targetPeer, conn.Stat().Limited, err)
-		}
-	}
-}
-
 func clearDialBackoff(h host.Host, targetPeer peer.ID) {
 	if h == nil {
 		return
@@ -560,7 +747,7 @@ func (gw *Gateway) openStreamToEntryOnce(ctx context.Context, entry *discovery.S
 	var stream network.Stream
 	var err error
 	if hasLimitedConnToPeer(gw.host, targetPeer) {
-		stream, err := tryRelayFallback(ctx, gw.host, targetPeer, gw.relayPeers)
+		stream, err := tryRelayFallback(ctx, gw.host, targetPeer, gw.relayPeers, gw.directStreamTimeout)
 		if err != nil {
 			return nil, "relayed", fmt.Errorf("cannot reach %s (relay only): %w", targetPeer.String(), err)
 		}
@@ -591,7 +778,7 @@ func (gw *Gateway) openStreamToEntryOnce(ctx context.Context, entry *discovery.S
 		return nil, "direct", fmt.Errorf("cannot reach %s", targetPeer.String())
 	}
 
-	stream, err = tryRelayFallback(ctx, gw.host, targetPeer, gw.relayPeers)
+	stream, err = tryRelayFallback(ctx, gw.host, targetPeer, gw.relayPeers, gw.directStreamTimeout)
 	if err != nil {
 		return nil, "relayed", fmt.Errorf("cannot reach %s (direct and relay): %w", targetPeer.String(), err)
 	}
@@ -663,15 +850,35 @@ func buildReplayableRequestBody(r *http.Request) ([]byte, bool, error) {
 	return body, true, nil
 }
 
-func (gw *Gateway) openStreamWithRetry(ctx context.Context, entry *discovery.ServiceEntry) (network.Stream, string, error) {
-	if entry == nil {
-		return nil, "", fmt.Errorf("missing discovery entry")
+func (gw *Gateway) openStreamWithRetry(ctx context.Context, serviceName string) (network.Stream, string, *discovery.ServiceEntry, error) {
+	if serviceName == "" {
+		return nil, "", nil, fmt.Errorf("missing service name")
 	}
-	targetPeer := entry.PeerID
 	deadline := time.Now().Add(8 * time.Second)
 	var lastErr error
 	var path string
+	var entry *discovery.ServiceEntry
+	var recoveryLeader bool
+	var recoveryRecovered bool
+	var recoveryWaitCh chan struct{}
+	defer func() {
+		if recoveryLeader {
+			gw.endRelayRecovery(serviceName, recoveryWaitCh, recoveryRecovered)
+		}
+	}()
+
 	for attempt := 1; ; attempt++ {
+		var ok bool
+		entry, ok = gw.resolveServiceEntry(serviceName, recoveryLeader || attempt > 1)
+		if !ok {
+			return nil, path, nil, fmt.Errorf("service %s not found in discovery", serviceName)
+		}
+		gw.seedPeerstoreFromDiscoveryEntry(entry)
+		if attempt > 1 && !recoveryLeader && gw.waitingForFreshRelayAnnouncement(entry) {
+			waitForRelayRecovery(ctx, gw.currentRelayRecoveryWaitCh(serviceName), 750*time.Millisecond)
+		}
+
+		targetPeer := entry.PeerID
 		var (
 			stream         network.Stream
 			connectionPath string
@@ -685,15 +892,32 @@ func (gw *Gateway) openStreamWithRetry(ctx context.Context, entry *discovery.Ser
 		}
 		if err == nil {
 			if attempt > 1 {
-				log.Printf("stream open recovered target=%s attempts=%d path=%s", targetPeer, attempt, connectionPath)
+				recoveryRecovered = recoveryLeader
+				gw.clearRelayRecoveryGate(serviceName)
+				log.Printf("stream open recovered service=%s target=%s attempts=%d path=%s", serviceName, targetPeer, attempt, connectionPath)
 			}
-			return stream, connectionPath, nil
+			return stream, connectionPath, entry, nil
 		}
 		lastErr = err
 		path = connectionPath
 		if !retryableOpenStreamError(err) || time.Now().After(deadline) || ctx.Err() != nil {
-			return nil, path, lastErr
+			return nil, path, entry, lastErr
 		}
+
+		gw.noteRelayRecoveryWait(serviceName)
+		if !recoveryLeader {
+			leader, waitCh := gw.beginRelayRecovery(serviceName)
+			if leader {
+				recoveryLeader = true
+				recoveryWaitCh = waitCh
+				log.Printf("relay recovery leader started service=%s target=%s", serviceName, targetPeer)
+			} else {
+				log.Printf("relay recovery follower waiting service=%s target=%s attempt=%d", serviceName, targetPeer, attempt)
+				waitForRelayRecovery(ctx, waitCh, 750*time.Millisecond)
+				continue
+			}
+		}
+
 		gw.clearRelayRetryState(targetPeer)
 		time.Sleep(250 * time.Millisecond)
 	}
@@ -716,7 +940,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("route matched host=%s path=%s service=%q route_peer=%s", hostname, r.URL.Path, route.ServiceName, route.PeerID)
 
-	entry, ok := gw.cache.Resolve(route.ServiceName)
+	entry, ok := gw.resolveServiceEntry(route.ServiceName, false)
 	if !ok {
 		log.Printf("discovery missing service=%q host=%s path=%s duration=%s", route.ServiceName, hostname, r.URL.Path, time.Since(start))
 		http.Error(w, "service "+route.ServiceName+" not found in discovery", http.StatusBadGateway)
@@ -727,8 +951,17 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	gw.seedPeerstoreFromDiscoveryEntry(entry)
 	if gw.waitingForFreshRelayAnnouncement(entry) {
 		log.Printf("proxy waiting for fresh relay announcement service=%q peer=%s registered=%s", route.ServiceName, entry.PeerID, entry.Registered.Format(time.RFC3339Nano))
-		http.Error(w, "waiting for relay recovery announcement", http.StatusBadGateway)
-		return
+		if waitCh := gw.currentRelayRecoveryWaitCh(route.ServiceName); waitCh != nil {
+			waitForRelayRecovery(r.Context(), waitCh, 1500*time.Millisecond)
+			if refreshed, ok := gw.resolveServiceEntry(route.ServiceName, true); ok {
+				entry = refreshed
+				gw.seedPeerstoreFromDiscoveryEntry(entry)
+			}
+		}
+		if gw.waitingForFreshRelayAnnouncement(entry) && !gw.relayRecoveryActiveNow(route.ServiceName) {
+			http.Error(w, "waiting for relay recovery announcement", http.StatusBadGateway)
+			return
+		}
 	}
 
 	replayBody, canRetry, err := buildReplayableRequestBody(r)
@@ -757,15 +990,21 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	var connectionPath string
 	var stream network.Stream
 	for attempt := 1; attempt <= attempts; attempt++ {
-		stream, connectionPath, err = gw.openStreamWithRetry(r.Context(), entry)
+		stream, connectionPath, entry, err = gw.openStreamWithRetry(r.Context(), route.ServiceName)
 		if err != nil {
 			if relayRecoveryWaitError(err) {
 				gw.noteRelayRecoveryWait(route.ServiceName)
 			}
-			if shouldEvictDiscoveryEntryAfterOpenStreamFailure(entry, err) {
+			if entry == nil {
+				gw.evictDiscoveryRoute(route.ServiceName, peer.ID(route.PeerID), "discovery-missing-after-retry")
+			} else if shouldEvictDiscoveryEntryAfterOpenStreamFailure(entry, err) {
 				gw.evictDiscoveryRoute(route.ServiceName, entry.PeerID, "stale-open-stream-failure")
 			}
-			log.Printf("proxy failed reason=relay_unavailable peer=%s path=%s err=%v duration=%s", entry.PeerID, connectionPath, err, time.Since(start))
+			peerID := route.PeerID
+			if entry != nil {
+				peerID = entry.PeerID.String()
+			}
+			log.Printf("proxy failed reason=relay_unavailable peer=%s path=%s err=%v duration=%s", peerID, connectionPath, err, time.Since(start))
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
@@ -785,7 +1024,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		stream.Reset()
+		_ = stream.Reset()
 		if attempt == attempts || !retryableExchangeError(err) {
 			log.Printf("proxy failed reason=stream_forward_failed service=%q peer=%s connection_path=%s err=%v duration=%s", route.ServiceName, entry.PeerID, connectionPath, err, time.Since(start))
 			http.Error(w, err.Error(), http.StatusBadGateway)

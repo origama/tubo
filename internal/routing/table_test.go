@@ -87,8 +87,8 @@ func TestAddInvalidRoute(t *testing.T) {
 		{
 			name: "empty hostname",
 			route: Route{
-				Hostname:   "",
-				PathPrefix: "/api",
+				Hostname:    "",
+				PathPrefix:  "/api",
 				ServiceName: "users-svc",
 				PeerID:      "peer-123",
 			},
@@ -187,24 +187,24 @@ func TestMatchExact(t *testing.T) {
 		wantFields Route
 	}{
 		{
-			name: "root prefix matches subpath",
-			route: Route{Hostname: "example.com", PathPrefix: "/", ServiceName: "catchall"},
-			queryPath: "/api/users",
-			wantMatch: true,
+			name:       "root prefix matches subpath",
+			route:      Route{Hostname: "example.com", PathPrefix: "/", ServiceName: "catchall"},
+			queryPath:  "/api/users",
+			wantMatch:  true,
 			wantFields: Route{Hostname: "example.com", PathPrefix: "/", ServiceName: "catchall"},
 		},
 		{
-			name: "exact prefix match",
-			route: Route{Hostname: "example.com", PathPrefix: "/api", ServiceName: "users-svc"},
-			queryPath: "/api/users/123",
-			wantMatch: true,
+			name:       "exact prefix match",
+			route:      Route{Hostname: "example.com", PathPrefix: "/api", ServiceName: "users-svc"},
+			queryPath:  "/api/users/123",
+			wantMatch:  true,
 			wantFields: Route{Hostname: "example.com", PathPrefix: "/api", ServiceName: "users-svc"},
 		},
 		{
-			name: "prefix equals path exactly",
-			route: Route{Hostname: "example.com", PathPrefix: "/health", ServiceName: "healthcheck"},
-			queryPath: "/health",
-			wantMatch: true,
+			name:       "prefix equals path exactly",
+			route:      Route{Hostname: "example.com", PathPrefix: "/health", ServiceName: "healthcheck"},
+			queryPath:  "/health",
+			wantMatch:  true,
 			wantFields: Route{Hostname: "example.com", PathPrefix: "/health", ServiceName: "healthcheck"},
 		},
 	}
@@ -277,24 +277,24 @@ func TestMatchLongestPrefix(t *testing.T) {
 // Match returns an empty Route and false.
 func TestMatchNoMatch(t *testing.T) {
 	tests := []struct {
-		name       string
-		route      Route
-		queryHost  string
-		queryPath  string
+		name      string
+		route     Route
+		queryHost string
+		queryPath string
 	}{
 		{
-			name: "wrong hostname",
-			route: Route{Hostname: "example.com", PathPrefix: "/api"},
+			name:      "wrong hostname",
+			route:     Route{Hostname: "example.com", PathPrefix: "/api"},
 			queryHost: "other.com", queryPath: "/api/users",
 		},
 		{
-			name: "path doesn't start with prefix",
-			route: Route{Hostname: "example.com", PathPrefix: "/api"},
+			name:      "path doesn't start with prefix",
+			route:     Route{Hostname: "example.com", PathPrefix: "/api"},
 			queryHost: "example.com", queryPath: "/health",
 		},
 		{
-			name: "empty table",
-			route: Route{},
+			name:      "empty table",
+			route:     Route{},
 			queryHost: "example.com", queryPath: "/anything",
 		},
 	}
@@ -313,8 +313,8 @@ func TestMatchNoMatch(t *testing.T) {
 			if ok {
 				t.Errorf("Match() returned true for non-matching query (host=%q path=%q)", tc.queryHost, tc.queryPath)
 			}
-		if got.Hostname != "" || got.PathPrefix != "" || got.ServiceName != "" {
-			t.Errorf("Match() returned %+v, want empty Route", got)
+			if got.Hostname != "" || got.PathPrefix != "" || got.ServiceName != "" {
+				t.Errorf("Match() returned %+v, want empty Route", got)
 			}
 		})
 	}
@@ -405,23 +405,23 @@ func TestMatchPackageLevel(t *testing.T) {
 		wantPrefix string
 	}{
 		{
-			name: "single route exact match",
-			routes: []Route{{Hostname: "x.com", PathPrefix: "/api"}},
+			name:     "single route exact match",
+			routes:   []Route{{Hostname: "x.com", PathPrefix: "/api"}},
 			hostname: "x.com", path: "/api/v1", wantOk: true, wantPrefix: "/api",
 		},
 		{
-			name: "root prefix matches everything",
-			routes: []Route{{Hostname: "x.com", PathPrefix: "/"}},
+			name:     "root prefix matches everything",
+			routes:   []Route{{Hostname: "x.com", PathPrefix: "/"}},
 			hostname: "x.com", path: "/anything/deep/here", wantOk: true, wantPrefix: "/",
 		},
 		{
-			name: "no matching hostname",
-			routes: []Route{{Hostname: "a.com", PathPrefix: "/api"}},
+			name:     "no matching hostname",
+			routes:   []Route{{Hostname: "a.com", PathPrefix: "/api"}},
 			hostname: "b.com", path: "/api", wantOk: false,
 		},
 		{
-			name: "path shorter than prefix",
-			routes: []Route{{Hostname: "x.com", PathPrefix: "/api/v1/users"}},
+			name:     "path shorter than prefix",
+			routes:   []Route{{Hostname: "x.com", PathPrefix: "/api/v1/users"}},
 			hostname: "x.com", path: "/api", wantOk: false,
 		},
 	}
@@ -487,34 +487,34 @@ func TestMultipleAddsAndRemoves(t *testing.T) {
 // TestMatchPathPrefixBoundary tests edge cases around path prefix matching.
 func TestMatchPathPrefixBoundary(t *testing.T) {
 	tests := []struct {
-		name       string
-		route      Route
-		queryPath  string
-		wantOk     bool
+		name      string
+		route     Route
+		queryPath string
+		wantOk    bool
 	}{
 		{
-			name: "prefix with trailing slash matches subpath",
-			route: Route{Hostname: "x.com", PathPrefix: "/api/", ServiceName: "svc"},
+			name:      "prefix with trailing slash matches subpath",
+			route:     Route{Hostname: "x.com", PathPrefix: "/api/", ServiceName: "svc"},
 			queryPath: "/api/users", wantOk: true,
 		},
 		{
-			name: "prefix without trailing slash matches prefix+subpath",
-			route: Route{Hostname: "x.com", PathPrefix: "/api", ServiceName: "svc"},
+			name:      "prefix without trailing slash matches prefix+subpath",
+			route:     Route{Hostname: "x.com", PathPrefix: "/api", ServiceName: "svc"},
 			queryPath: "/api/users", wantOk: true,
 		},
 		{
-			name: "prefix without trailing slash matches exact path",
-			route: Route{Hostname: "x.com", PathPrefix: "/api", ServiceName: "svc"},
+			name:      "prefix without trailing slash matches exact path",
+			route:     Route{Hostname: "x.com", PathPrefix: "/api", ServiceName: "svc"},
 			queryPath: "/api", wantOk: true,
 		},
 		{
-			name: "path is substring of prefix (too short)",
-			route: Route{Hostname: "x.com", PathPrefix: "/api/v1/users", ServiceName: "svc"},
+			name:      "path is substring of prefix (too short)",
+			route:     Route{Hostname: "x.com", PathPrefix: "/api/v1/users", ServiceName: "svc"},
 			queryPath: "/api", wantOk: false,
 		},
 		{
-			name: "prefix shares start but diverges",
-			route: Route{Hostname: "x.com", PathPrefix: "/api", ServiceName: "svc"},
+			name:      "prefix shares start but diverges",
+			route:     Route{Hostname: "x.com", PathPrefix: "/api", ServiceName: "svc"},
 			queryPath: "/application", wantOk: false,
 		},
 	}
@@ -550,7 +550,10 @@ func TestConcurrentAccess(t *testing.T) {
 					PathPrefix:  fmt.Sprintf("/path-%d-%d", id, j),
 					ServiceName: fmt.Sprintf("svc-%d-%d", id, j),
 				}
-				tt.Add(route)
+				if err := tt.Add(route); err != nil {
+					t.Errorf("Add(%+v) err = %v", route, err)
+					return
+				}
 			}
 		}(i)
 	}
