@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"gopkg.in/yaml.v3"
+	"net"
 	"os"
 	"os/signal"
 	"p2p-api-tunnel/internal/app/bridge"
@@ -21,6 +24,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/multiformats/go-multiaddr"
 )
 
 func main() {
@@ -39,6 +44,8 @@ func run(args []string) error {
 		return runRole(role, roleArgs)
 	}
 	switch args[0] {
+	case "join":
+		return joinCmd(args[1:])
 	case "keygen":
 		return keygen(args[1:])
 	case "id":
@@ -106,7 +113,7 @@ func hasLongFlag(args []string, name string) bool {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
@@ -192,6 +199,201 @@ func runRole(role string, args []string) error {
 	}
 	return nil
 }
+
+type joinResult struct {
+	ConfigPath     string   `json:"config_path"`
+	SwarmKeyPath   string   `json:"swarm_key_path"`
+	RelayPeers     []string `json:"relay_peers"`
+	BootstrapPeers []string `json:"bootstrap_peers"`
+	Checked        bool     `json:"checked"`
+}
+
+func joinCmd(args []string) error {
+	fs := flag.NewFlagSet("join", flag.ContinueOnError)
+	var relayPeers []string
+	fs.Var(csvFlag{&relayPeers}, "relay", "")
+	swarmKeyPath := fs.String("swarm-key", "", "")
+	swarmKeyB64 := fs.String("swarm-key-b64", "", "")
+	configDir := fs.String("config-dir", defaultTuboConfigDir(), "")
+	force := fs.Bool("force", false, "")
+	jsonOut := fs.Bool("json", false, "")
+	check := fs.Bool("check", false, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	relayPeers = uniqueStrings(relayPeers)
+	if len(relayPeers) == 0 {
+		return errors.New("join requires at least one --relay <multiaddr>")
+	}
+	if (*swarmKeyPath == "" && *swarmKeyB64 == "") || (*swarmKeyPath != "" && *swarmKeyB64 != "") {
+		return errors.New("join requires exactly one of --swarm-key or --swarm-key-b64")
+	}
+	for _, relayPeer := range relayPeers {
+		if _, err := multiaddr.NewMultiaddr(relayPeer); err != nil {
+			return fmt.Errorf("join relay %q: %w", relayPeer, err)
+		}
+	}
+	keyData, err := loadJoinSwarmKey(*swarmKeyPath, *swarmKeyB64)
+	if err != nil {
+		return err
+	}
+	if err := validateSwarmKeyData(keyData); err != nil {
+		return err
+	}
+	if *check {
+		if err := checkJoinRelayPeers(relayPeers); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(*configDir, 0700); err != nil {
+		return err
+	}
+	configPath := filepath.Join(*configDir, "config.yaml")
+	installedKeyPath := filepath.Join(*configDir, "swarm.key")
+	if !*force {
+		for _, path := range []string{configPath, installedKeyPath} {
+			if _, err := os.Stat(path); err == nil {
+				return fmt.Errorf("%s exists (use --force)", path)
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+	}
+	existing, err := cfgpkg.LoadFile(configPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	joined := cfgpkg.Merge(existing, cfgpkg.Config{Network: cfgpkg.Network{
+		PrivateKeyFile: installedKeyPath,
+		BootstrapPeers: relayPeers,
+		RelayPeers:     relayPeers,
+		Autorelay:      true,
+		HolePunching:   true,
+	}})
+	joined.Network.PrivateKeyB64 = ""
+	b, err := yaml.Marshal(joined)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(installedKeyPath, keyData, 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(configPath, b, 0600); err != nil {
+		return err
+	}
+	result := joinResult{
+		ConfigPath:     configPath,
+		SwarmKeyPath:   installedKeyPath,
+		RelayPeers:     relayPeers,
+		BootstrapPeers: relayPeers,
+		Checked:        *check,
+	}
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(result)
+	}
+	fmt.Println("joined swarm config")
+	fmt.Printf("config: %s\n", result.ConfigPath)
+	for i, relayPeer := range result.RelayPeers {
+		if i == 0 {
+			fmt.Printf("relay: %s\n", relayPeer)
+		} else {
+			fmt.Printf("relay[%d]: %s\n", i+1, relayPeer)
+		}
+	}
+	fmt.Printf("swarm key installed: %s\n", result.SwarmKeyPath)
+	if result.Checked {
+		fmt.Println("relay check: ok")
+	}
+	fmt.Println()
+	fmt.Println("next:")
+	fmt.Println("  tubo get services")
+	fmt.Println("  tubo attach http://127.0.0.1:1234 --name my-service")
+	fmt.Println("  tubo connect lmstudio")
+	return nil
+}
+
+func loadJoinSwarmKey(path, b64 string) ([]byte, error) {
+	if path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		return data, nil
+	}
+	data, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, fmt.Errorf("decode --swarm-key-b64: %w", err)
+	}
+	return data, nil
+}
+
+func validateSwarmKeyData(data []byte) error {
+	body := string(data)
+	if !strings.Contains(body, "/key/swarm/psk/1.0.0/") || !strings.Contains(body, "/base16/") {
+		return errors.New("invalid swarm key format")
+	}
+	return nil
+}
+
+func checkJoinRelayPeers(relayPeers []string) error {
+	for _, relayPeer := range relayPeers {
+		if err := checkJoinRelayPeer(relayPeer); err != nil {
+			return fmt.Errorf("relay check failed for %s: %w", relayPeer, err)
+		}
+	}
+	return nil
+}
+
+func checkJoinRelayPeer(relayPeer string) error {
+	maddr, err := multiaddr.NewMultiaddr(relayPeer)
+	if err != nil {
+		return err
+	}
+	host, err := maddr.ValueForProtocol(multiaddr.P_IP4)
+	if err != nil {
+		host, err = maddr.ValueForProtocol(multiaddr.P_IP6)
+		if err != nil {
+			return errors.New("--check currently supports /ip4|ip6/.../tcp/... relay addresses")
+		}
+	}
+	port, err := maddr.ValueForProtocol(multiaddr.P_TCP)
+	if err != nil {
+		return errors.New("--check currently supports /ip4|ip6/.../tcp/... relay addresses")
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 3*time.Second)
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
+	return nil
+}
+
+func defaultTuboConfigDir() string {
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "tubo")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(".", ".tubo")
+	}
+	return filepath.Join(home, ".config", "tubo")
+}
+
+func uniqueStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
+}
+
 func keygen(args []string) error {
 	if len(args) == 0 || args[0] != "swarm" {
 		return usage()

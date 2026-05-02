@@ -18,6 +18,7 @@ La UX base espone comandi orientati all'intento:
 
 ```bash
 tubo relay --config relay.yaml
+tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 tubo gateway --config edge.yaml
 tubo attach http://127.0.0.1:1234 --name lmstudio
 ```
@@ -55,6 +56,36 @@ tubo config validate --config service.yaml
 tubo config print --config service.yaml
 tubo doctor --config service.yaml
 ```
+
+## Join
+
+`join` configura localmente questa macchina per usare uno swarm esistente. Non avvia processi in background.
+
+```bash
+tubo join \
+  --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
+  --swarm-key ./swarm.key
+```
+
+Per scripting:
+
+```bash
+tubo join \
+  --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
+  --swarm-key ./swarm.key \
+  --json
+```
+
+Di default salva:
+
+```text
+~/.config/tubo/config.yaml
+~/.config/tubo/swarm.key
+```
+
+Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, oppure fare un check TCP basilare del relay con `--check`.
+
+`init` crea una nuova configurazione locale; `join` importa la configurazione di uno swarm esistente.
 
 `config print` maschera i segreti (`private_key_b64`) e non stampa il contenuto di `swarm.key`.
 
