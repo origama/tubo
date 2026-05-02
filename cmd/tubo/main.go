@@ -51,6 +51,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "join":
 		return joinCmd(args[1:])
+	case "connect":
+		return connectCmd(args[1:])
 	case "get":
 		return getCmd(args[1:])
 	case "describe":
@@ -126,7 +128,7 @@ func hasLongFlag(args []string, name string) bool {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo get <services|service/name> [flags] | tubo describe service/name [flags] | tubo inspect service/name [flags] | tubo watch services [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo get <services|service/name> [flags] | tubo describe service/name [flags] | tubo inspect service/name [flags] | tubo watch services [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
@@ -440,6 +442,121 @@ type serviceWatchEvent struct {
 type servicesAdminResponse struct {
 	Count int               `json:"count"`
 	Items []serviceResource `json:"items"`
+}
+
+type connectResult struct {
+	Service string `json:"service"`
+	Local   string `json:"local"`
+	Path    string `json:"path"`
+}
+
+func connectCmd(args []string) error {
+	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
+	local := fs.String("local", "", "")
+	configPath := fs.String("config", defaultTuboConfigPath(), "")
+	timeout := fs.Duration("timeout", 5*time.Second, "")
+	jsonOut := fs.Bool("json", false, "")
+	cachedOnly := fs.Bool("cached-only", false, "")
+	live := fs.Bool("live", false, "")
+	serviceName := ""
+	parseArgs := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		serviceName = args[0]
+		parseArgs = args[1:]
+	}
+	if err := fs.Parse(parseArgs); err != nil {
+		return err
+	}
+	if serviceName == "" {
+		if fs.NArg() != 1 {
+			return errors.New("usage: tubo connect <service-name> [--local host:port] [flags]")
+		}
+		serviceName = fs.Arg(0)
+	} else if fs.NArg() != 0 {
+		return errors.New("usage: tubo connect <service-name> [--local host:port] [flags]")
+	}
+	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
+	if err != nil {
+		return err
+	}
+	serviceView, err := requireService(result.Services, serviceName)
+	if err != nil {
+		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", serviceName)
+	}
+	listenAddr, localURL, err := chooseConnectLocal(*local)
+	if err != nil {
+		return err
+	}
+	serviceAddr, err := preferredConnectServiceAddr(serviceView)
+	if err != nil {
+		return err
+	}
+	cfg, err := loadDiscoveryConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	bridgeCfg := bridge.Config{
+		Listen:         listenAddr,
+		Seed:           cfg.Node.Seed,
+		P2PListen:      cfg.Node.P2PListen,
+		ServiceAddr:    serviceAddr,
+		PrivateKeyFile: cfg.Network.PrivateKeyFile,
+		PrivateKeyB64:  cfg.Network.PrivateKeyB64,
+	}
+	if bridgeCfg.Seed == "" {
+		bridgeCfg.Seed = "connect-" + serviceName + "-seed"
+	}
+	if bridgeCfg.P2PListen == "" {
+		bridgeCfg.P2PListen = "/ip4/127.0.0.1/tcp/0"
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	app, err := bridge.New(ctx, bridgeCfg)
+	if err != nil {
+		return err
+	}
+	output := connectResult{Service: serviceName, Local: localURL, Path: serviceView.Path}
+	if *jsonOut {
+		if err := printJSON(output); err != nil {
+			return err
+		}
+	} else {
+		fmt.Printf("connected to service %q\n", serviceName)
+		fmt.Printf("local: %s\n", localURL)
+		fmt.Printf("path: %s\n", serviceView.Path)
+		fmt.Println("press Ctrl+C to stop")
+	}
+	return app.Start(ctx)
+}
+
+func chooseConnectLocal(local string) (listenAddr string, localURL string, err error) {
+	if local != "" {
+		if _, _, splitErr := net.SplitHostPort(local); splitErr != nil {
+			return "", "", fmt.Errorf("invalid --local %q: %w", local, splitErr)
+		}
+		return local, "http://" + local, nil
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", "", err
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+	return addr, "http://" + addr, nil
+}
+
+func preferredConnectServiceAddr(service serviceResource) (string, error) {
+	if len(service.Addresses) == 0 {
+		return "", fmt.Errorf("service %q has no announced addresses", service.Name)
+	}
+	if service.Path == "relayed" {
+		for _, addr := range service.Addresses {
+			if strings.Contains(addr, "/p2p-circuit") {
+				return addr, nil
+			}
+		}
+	}
+	return service.Addresses[0], nil
 }
 
 func getCmd(args []string) error {

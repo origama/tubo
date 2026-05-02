@@ -106,7 +106,7 @@ func TestUsageMentionsIntentCommands(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	for _, want := range []string{"attach", "gateway", "relay", "join", "service|bridge"} {
+	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "service|bridge"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("usage missing %q: %s", want, err)
 		}
@@ -255,6 +255,42 @@ func TestFetchLocalServiceCache(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Name != "myapi" {
 		t.Fatalf("unexpected items: %#v", items)
+	}
+}
+
+func TestChooseConnectLocal(t *testing.T) {
+	listen, url, err := chooseConnectLocal("127.0.0.1:51234")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if listen != "127.0.0.1:51234" || url != "http://127.0.0.1:51234" {
+		t.Fatalf("unexpected explicit local result: %q %q", listen, url)
+	}
+	listen, url, err = chooseConnectLocal("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(listen, "127.0.0.1:") || !strings.HasPrefix(url, "http://127.0.0.1:") {
+		t.Fatalf("unexpected auto local result: %q %q", listen, url)
+	}
+}
+
+func TestPreferredConnectServiceAddr(t *testing.T) {
+	service := serviceResource{Name: "myapi", Path: "relayed", Addresses: []string{"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/target", "/ip4/5.6.7.8/tcp/4001/p2p/target"}}
+	addr, err := preferredConnectServiceAddr(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(addr, "/p2p-circuit") {
+		t.Fatalf("expected relayed addr, got %q", addr)
+	}
+	service = serviceResource{Name: "myapi", Path: "direct", Addresses: []string{"/ip4/5.6.7.8/tcp/4001/p2p/target"}}
+	addr, err = preferredConnectServiceAddr(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != service.Addresses[0] {
+		t.Fatalf("unexpected direct addr: %q", addr)
 	}
 }
 
