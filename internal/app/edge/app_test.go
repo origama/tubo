@@ -177,10 +177,10 @@ func TestHandleProxyEvictsStaleRouteAfterHardOpenStreamFailure(t *testing.T) {
 	cache := discovery.NewCache(30*time.Second, time.Hour)
 	defer cache.Stop()
 	pid := peer.ID("12D3KooWTestPeer")
-	if err := cache.Add(pid, "myapi", []string{"/ip4/127.0.0.1/tcp/4001"}, 20*time.Millisecond); err != nil {
+	if err := cache.Add(pid, "myapi", []string{"/ip4/127.0.0.1/tcp/4001"}, time.Second); err != nil {
 		t.Fatalf("cache add: %v", err)
 	}
-	time.Sleep(12 * time.Millisecond)
+	time.Sleep(600 * time.Millisecond)
 
 	gw := &Gateway{
 		cache:  cache,
@@ -206,5 +206,142 @@ func TestHandleProxyEvictsStaleRouteAfterHardOpenStreamFailure(t *testing.T) {
 	}
 	if _, ok := gw.cache.Resolve("myapi"); ok {
 		t.Fatal("expected stale cache entry to be removed after hard open-stream failure")
+	}
+}
+
+func TestOpenStreamWithRetryReResolvesDiscoveryEntryOnRetry(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Hour)
+	defer cache.Stop()
+	oldPeer := peer.ID("12D3KooWOldPeer")
+	freshPeer := peer.ID("12D3KooWFreshPeer")
+	if err := cache.Add(oldPeer, "myapi", []string{"/ip4/127.0.0.1/tcp/4001"}, 30*time.Second); err != nil {
+		t.Fatalf("cache add old: %v", err)
+	}
+
+	attempts := 0
+	gw := &Gateway{
+		cache:               cache,
+		relayRecoveryAfter:  make(map[string]time.Time),
+		relayRecoveryActive: make(map[string]*relayRecoveryState),
+		openStream: func(_ context.Context, pid peer.ID) (network.Stream, string, error) {
+			attempts++
+			if pid == oldPeer {
+				if err := cache.Add(freshPeer, "myapi", []string{"/ip4/127.0.0.1/tcp/4002"}, 30*time.Second); err != nil {
+					return nil, "relayed", err
+				}
+				return nil, "relayed", errors.New("dial backoff")
+			}
+			if pid == freshPeer {
+				return nil, "relayed", nil
+			}
+			return nil, "relayed", errors.New("unexpected peer")
+		},
+	}
+
+	_, path, entry, err := gw.openStreamWithRetry(context.Background(), "myapi")
+	if err != nil {
+		t.Fatalf("openStreamWithRetry err: %v", err)
+	}
+	if path != "relayed" {
+		t.Fatalf("path = %q, want relayed", path)
+	}
+	if entry == nil || entry.PeerID != freshPeer {
+		t.Fatalf("entry peer = %v, want %v", entry, freshPeer)
+	}
+	if attempts < 2 {
+		t.Fatalf("expected at least 2 attempts, got %d", attempts)
+	}
+}
+
+func TestRelayRecoverySingleFlight(t *testing.T) {
+	gw := &Gateway{relayRecoveryActive: make(map[string]*relayRecoveryState)}
+	leader, ch1 := gw.beginRelayRecovery("myapi")
+	if !leader || ch1 == nil {
+		t.Fatal("expected first recovery caller to become leader")
+	}
+	leader, ch2 := gw.beginRelayRecovery("myapi")
+	if leader {
+		t.Fatal("expected second recovery caller to wait behind leader")
+	}
+	if ch1 != ch2 {
+		t.Fatal("expected callers for same service to share wait channel")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		waitForRelayRecovery(context.Background(), ch2, time.Second)
+		close(done)
+	}()
+	gw.endRelayRecovery("myapi", ch1)
+
+	select {
+	case <-done:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("expected waiter to be released when leader ends recovery")
+	}
+
+	leader, ch3 := gw.beginRelayRecovery("myapi")
+	if !leader || ch3 == nil {
+		t.Fatal("expected new leader after previous recovery completes")
+	}
+	if ch3 == ch1 {
+		t.Fatal("expected new recovery cycle to allocate a new wait channel")
+	}
+}
+
+func TestResolveServiceEntryDoesNotUseLastKnownWithoutRecovery(t *testing.T) {
+	gw := &Gateway{lastKnownEntries: map[string]*discovery.ServiceEntry{"myapi": {ServiceName: "myapi", PeerID: peer.ID("12D3KooWTestPeer")}}}
+	if entry, ok := gw.resolveServiceEntry("myapi", false); ok || entry != nil {
+		t.Fatal("expected last-known entry to be ignored when recovery is not active")
+	}
+}
+
+func TestHandleDiscoveryEventDefersExpiryOnlyDuringActiveRecovery(t *testing.T) {
+	gw := &Gateway{
+		routes:              routing.NewRouteTable(),
+		relayRecoveryActive: make(map[string]*relayRecoveryState),
+	}
+	pid := peer.ID("12D3KooWTestPeer")
+	if err := gw.routes.Add(routing.Route{Hostname: "myapi", PathPrefix: "/", ServiceName: "myapi", PeerID: pid.String()}); err != nil {
+		t.Fatalf("add route: %v", err)
+	}
+	leader, waitCh := gw.beginRelayRecovery("myapi")
+	if !leader {
+		t.Fatal("expected recovery leader")
+	}
+	gw.handleDiscoveryEvent(discovery.DiscoveryEvent{Type: "removed", ServiceName: "myapi", PeerID: pid})
+	if _, ok := gw.routes.Match("myapi", "/v1/dummy"); !ok {
+		t.Fatal("expected route expiry to be deferred while recovery is active")
+	}
+	gw.endRelayRecovery("myapi", waitCh)
+	gw.handleDiscoveryEvent(discovery.DiscoveryEvent{Type: "removed", ServiceName: "myapi", PeerID: pid})
+	if _, ok := gw.routes.Match("myapi", "/v1/dummy"); ok {
+		t.Fatal("expected route removal once recovery is no longer active")
+	}
+}
+
+func TestEndRelayRecoveryRemovesRouteIfServiceDoesNotReturn(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Hour)
+	defer cache.Stop()
+	pid := peer.ID("12D3KooWTestPeer")
+	gw := &Gateway{
+		cache:               cache,
+		routes:              routing.NewRouteTable(),
+		relayRecoveryAfter:  map[string]time.Time{"myapi": time.Now()},
+		relayRecoveryActive: make(map[string]*relayRecoveryState),
+	}
+	if err := gw.routes.Add(routing.Route{Hostname: "myapi", PathPrefix: "/", ServiceName: "myapi", PeerID: pid.String()}); err != nil {
+		t.Fatalf("add route: %v", err)
+	}
+	leader, waitCh := gw.beginRelayRecovery("myapi")
+	if !leader {
+		t.Fatal("expected recovery leader")
+	}
+	gw.endRelayRecovery("myapi", waitCh)
+	if _, ok := gw.routes.Match("myapi", "/v1/dummy"); ok {
+		t.Fatal("expected route removal when recovery ends without a fresh service entry")
+	}
+	if gw.relayRecoveryAnnouncementPending("myapi") {
+		t.Fatal("expected relay recovery gate to clear when recovery ends without service return")
 	}
 }
