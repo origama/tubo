@@ -145,17 +145,7 @@ jobs:
               tar -C "$DIST_ROOT" -czf "$DIST_ROOT/${NAME}.tar.gz" "$NAME"
               ;;
             zip)
-              NAME="$NAME" python3 - <<'PY'
-              from pathlib import Path
-              import os
-              import zipfile
-
-              root = Path("dist")
-              name = Path(os.environ["NAME"])
-              with zipfile.ZipFile(root / f"{name}.zip", "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-                  for path in sorted((root / name).rglob("*")):
-                      zf.write(path, path.relative_to(root))
-              PY
+              python3 -m zipfile -c "$DIST_ROOT/${NAME}.zip" "$DIST_ROOT/$NAME"
               ;;
             *)
               echo "unsupported archive format: $ARCHIVE" >&2
@@ -209,6 +199,7 @@ jobs:
       - name: Create or update GitHub Release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           set -euo pipefail
