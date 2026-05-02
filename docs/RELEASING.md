@@ -10,6 +10,13 @@ Each release must update or produce:
 - `CHANGELOG.md`
 - git tag `vX.Y.Z`
 - GitHub Release from that tag
+- prebuilt `tubo` archives for:
+  - Linux amd64
+  - Linux arm64
+  - macOS amd64
+  - macOS arm64
+  - Windows amd64
+- `SHA256SUMS.txt`
 
 ## Checklist
 
@@ -26,11 +33,24 @@ Each release must update or produce:
    - `git tag -a vX.Y.Z -m "vX.Y.Z"`
 9. Push commit and tag:
    - `git push origin main --follow-tags`
-10. Create the GitHub Release using the matching changelog text.
+10. Wait for `.github/workflows/release.yml` to create/update the GitHub Release and attach:
+   - platform archives
+   - `SHA256SUMS.txt`
+11. Review the GitHub Release body and make sure it matches the new `CHANGELOG.md` section.
+12. Post-release verification:
+   - download one published archive (for example `tubo_X.Y.Z_linux_amd64.tar.gz`)
+   - verify checksums with `SHA256SUMS.txt`
+   - run `./tubo version` from the extracted archive and confirm it reports:
+     - product version
+     - protocol version
+     - commit SHA
+     - build date
+
+The release workflow can also be re-run manually with `workflow_dispatch` for an existing tag.
 
 ## Build metadata
 
-Release builds should inject:
+Release builds should inject or preserve:
 
 - product version
 - protocol version
@@ -45,3 +65,5 @@ COMMIT=$(git rev-parse HEAD)
 BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 go build -ldflags "-X p2p-api-tunnel/internal/version.ProductVersion=$VERSION -X p2p-api-tunnel/internal/version.Commit=$COMMIT -X p2p-api-tunnel/internal/version.BuildDate=$BUILD_DATE" ./cmd/tubo
 ```
+
+The release workflow uses the same metadata injection and the resulting binaries must report it via `tubo version`.
