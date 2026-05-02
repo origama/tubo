@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"p2p-api-tunnel/internal/app/bridge"
@@ -18,13 +19,17 @@ import (
 	"p2p-api-tunnel/internal/app/relay"
 	"p2p-api-tunnel/internal/app/service"
 	cfgpkg "p2p-api-tunnel/internal/config"
+	"p2p-api-tunnel/internal/discovery"
 	"p2p-api-tunnel/internal/p2p"
 	iversion "p2p-api-tunnel/internal/version"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -46,6 +51,14 @@ func run(args []string) error {
 	switch args[0] {
 	case "join":
 		return joinCmd(args[1:])
+	case "get":
+		return getCmd(args[1:])
+	case "describe":
+		return describeCmd(args[1:])
+	case "inspect":
+		return inspectCmd(args[1:])
+	case "watch":
+		return watchCmd(args[1:])
 	case "keygen":
 		return keygen(args[1:])
 	case "id":
@@ -113,7 +126,7 @@ func hasLongFlag(args []string, name string) bool {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo get <services|service/name> [flags] | tubo describe service/name [flags] | tubo inspect service/name [flags] | tubo watch services [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
@@ -392,6 +405,452 @@ func uniqueStrings(in []string) []string {
 		out = append(out, item)
 	}
 	return out
+}
+
+func defaultTuboConfigPath() string {
+	return filepath.Join(defaultTuboConfigDir(), "config.yaml")
+}
+
+type serviceResource struct {
+	Kind             string   `json:"kind"`
+	Name             string   `json:"name"`
+	PeerID           string   `json:"peer_id"`
+	Addresses        []string `json:"addresses"`
+	Status           string   `json:"status"`
+	Path             string   `json:"path"`
+	TTLSeconds       int64    `json:"ttl_seconds"`
+	ExpiresInSeconds int64    `json:"expires_in_seconds"`
+	Capabilities     []string `json:"capabilities"`
+	RegisteredAt     string   `json:"registered_at"`
+}
+
+type discoveryLookupResult struct {
+	Services []serviceResource `json:"services"`
+	Messages []string          `json:"messages"`
+	Mode     string            `json:"mode"`
+}
+
+type serviceWatchEvent struct {
+	Type   string `json:"type"`
+	Name   string `json:"name"`
+	PeerID string `json:"peer_id"`
+	Path   string `json:"path"`
+}
+
+type servicesAdminResponse struct {
+	Count int               `json:"count"`
+	Items []serviceResource `json:"items"`
+}
+
+func getCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: tubo get <services|service/name> [flags]")
+	}
+	resource := args[0]
+	fs := flag.NewFlagSet("get", flag.ContinueOnError)
+	configPath := fs.String("config", defaultTuboConfigPath(), "")
+	timeout := fs.Duration("timeout", 5*time.Second, "")
+	jsonOut := fs.Bool("json", false, "")
+	cachedOnly := fs.Bool("cached-only", false, "")
+	live := fs.Bool("live", false, "")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
+	if err != nil {
+		return err
+	}
+	switch {
+	case resource == "services":
+		if *jsonOut {
+			return printJSON(struct {
+				Mode     string            `json:"mode"`
+				Messages []string          `json:"messages"`
+				Count    int               `json:"count"`
+				Items    []serviceResource `json:"items"`
+			}{Mode: result.Mode, Messages: result.Messages, Count: len(result.Services), Items: result.Services})
+		}
+		printMessages(result.Messages)
+		printServicesTable(result.Services)
+		return nil
+	case strings.HasPrefix(resource, "service/"):
+		name := strings.TrimPrefix(resource, "service/")
+		service, err := requireService(result.Services, name)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			return printJSON(struct {
+				Mode     string          `json:"mode"`
+				Messages []string        `json:"messages"`
+				Item     serviceResource `json:"item"`
+			}{Mode: result.Mode, Messages: result.Messages, Item: service})
+		}
+		printMessages(result.Messages)
+		printServicesTable([]serviceResource{service})
+		return nil
+	default:
+		return fmt.Errorf("unsupported get resource %q", resource)
+	}
+}
+
+func describeCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: tubo describe service/name [flags]")
+	}
+	resource := args[0]
+	if !strings.HasPrefix(resource, "service/") {
+		return fmt.Errorf("unsupported describe resource %q", resource)
+	}
+	fs := flag.NewFlagSet("describe", flag.ContinueOnError)
+	configPath := fs.String("config", defaultTuboConfigPath(), "")
+	timeout := fs.Duration("timeout", 5*time.Second, "")
+	cachedOnly := fs.Bool("cached-only", false, "")
+	live := fs.Bool("live", false, "")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
+	if err != nil {
+		return err
+	}
+	service, err := requireService(result.Services, strings.TrimPrefix(resource, "service/"))
+	if err != nil {
+		return err
+	}
+	printMessages(result.Messages)
+	printServiceDescription(service, result.Messages)
+	return nil
+}
+
+func inspectCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: tubo inspect service/name [flags]")
+	}
+	resource := args[0]
+	if !strings.HasPrefix(resource, "service/") {
+		return fmt.Errorf("unsupported inspect resource %q", resource)
+	}
+	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
+	configPath := fs.String("config", defaultTuboConfigPath(), "")
+	timeout := fs.Duration("timeout", 5*time.Second, "")
+	cachedOnly := fs.Bool("cached-only", false, "")
+	live := fs.Bool("live", false, "")
+	_ = fs.Bool("json", false, "")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
+	if err != nil {
+		return err
+	}
+	service, err := requireService(result.Services, strings.TrimPrefix(resource, "service/"))
+	if err != nil {
+		return err
+	}
+	return printJSON(struct {
+		Mode     string          `json:"mode"`
+		Messages []string        `json:"messages"`
+		Item     serviceResource `json:"item"`
+	}{Mode: result.Mode, Messages: result.Messages, Item: service})
+}
+
+func watchCmd(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: tubo watch services [flags]")
+	}
+	if args[0] != "services" {
+		return fmt.Errorf("unsupported watch resource %q", args[0])
+	}
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	configPath := fs.String("config", defaultTuboConfigPath(), "")
+	timeout := fs.Duration("timeout", 10*time.Second, "")
+	cachedOnly := fs.Bool("cached-only", false, "")
+	live := fs.Bool("live", false, "")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	cfg, err := loadDiscoveryConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("watching services for %s...\n", timeout.String())
+	if !*live {
+		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
+			fmt.Printf("using local cache from edge admin at %s\n", adminAddr)
+			for _, service := range services {
+				fmt.Printf("CURRENT\tservice/%s\tpeer=%s\tpath=%s\n", service.Name, service.PeerID, service.Path)
+			}
+			if *cachedOnly {
+				return nil
+			}
+			fmt.Printf("also observing swarm live for %s...\n", timeout.String())
+		} else if *cachedOnly {
+			return errors.New("no local cache found")
+		} else {
+			fmt.Println("no local cache found")
+		}
+	}
+	_, err = observeServices(cfg, *timeout, func(event serviceWatchEvent) {
+		fmt.Printf("%s\tservice/%s\tpeer=%s\tpath=%s\n", strings.ToUpper(event.Type), event.Name, event.PeerID, event.Path)
+	})
+	return err
+}
+
+func discoverServices(configPath string, timeout time.Duration, cachedOnly, live bool) (discoveryLookupResult, error) {
+	cfg, err := loadDiscoveryConfig(configPath)
+	if err != nil {
+		return discoveryLookupResult{}, err
+	}
+	if !live {
+		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
+			return discoveryLookupResult{
+				Services: services,
+				Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)},
+				Mode:     "cache",
+			}, nil
+		}
+		if cachedOnly {
+			return discoveryLookupResult{}, errors.New("no local cache found")
+		}
+	}
+	services, err := observeServices(cfg, timeout, nil)
+	if err != nil {
+		return discoveryLookupResult{}, err
+	}
+	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
+	if !live {
+		messages = append([]string{"no local cache found"}, messages...)
+	}
+	return discoveryLookupResult{Services: services, Messages: messages, Mode: "live"}, nil
+}
+
+func loadDiscoveryConfig(path string) (cfgpkg.Config, error) {
+	cfg, err := cfgpkg.LoadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return cfgpkg.Config{}, fmt.Errorf("config not found at %s; run `tubo join --relay ... --swarm-key ...` first or pass --config", path)
+		}
+		return cfgpkg.Config{}, err
+	}
+	if cfg.Network.PrivateKeyFile == "" && cfg.Network.PrivateKeyB64 == "" {
+		return cfgpkg.Config{}, errors.New("config is missing swarm key settings; run `tubo join --relay ... --swarm-key ...` first")
+	}
+	if len(cfg.Network.BootstrapPeers) == 0 && len(cfg.Network.RelayPeers) == 0 {
+		return cfgpkg.Config{}, errors.New("config is missing relay/bootstrap peers; run `tubo join --relay ... --swarm-key ...` first")
+	}
+	return cfg, nil
+}
+
+func fetchLocalServiceCache(cfg cfgpkg.Config) ([]serviceResource, string, error) {
+	edgeCfg := cfgpkg.Merge(cfgpkg.Defaults("edge"), cfg)
+	adminAddr := edgeCfg.Edge.AdminListen
+	if adminAddr == "" {
+		return nil, "", errors.New("edge admin listen address is not configured")
+	}
+	client := &http.Client{Timeout: 1500 * time.Millisecond}
+	resp, err := client.Get("http://" + hostPortForHTTP(adminAddr) + "/services")
+	if err != nil {
+		return nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("edge admin status %d", resp.StatusCode)
+	}
+	var payload servicesAdminResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, "", err
+	}
+	if payload.Items == nil {
+		return nil, "", errors.New("edge admin did not return service details")
+	}
+	sortServiceResources(payload.Items)
+	return payload.Items, adminAddr, nil
+}
+
+func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serviceWatchEvent)) ([]serviceResource, error) {
+	peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+	if len(peers) == 0 {
+		return nil, errors.New("no bootstrap or relay peers configured")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
+	if err != nil {
+		return nil, fmt.Errorf("load private network key: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "", psk)
+	if err != nil {
+		return nil, fmt.Errorf("create observer host: %w", err)
+	}
+	defer h.Close()
+	ps, err := pubsub.NewGossipSub(ctx, h)
+	if err != nil {
+		return nil, fmt.Errorf("create observer gossipsub: %w", err)
+	}
+	topic, err := ps.Join(discovery.DiscoveryTopic)
+	if err != nil {
+		return nil, fmt.Errorf("join discovery topic: %w", err)
+	}
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	sub := discovery.NewPubSubSubscriber(topic, cache)
+	stopCh := sub.Start(ctx)
+	defer close(stopCh)
+	for _, raw := range peers {
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid bootstrap peer %q: %w", raw, err)
+		}
+		connectCtx, cancelConnect := context.WithTimeout(ctx, 5*time.Second)
+		_ = h.Connect(connectCtx, info)
+		cancelConnect()
+	}
+	if onEvent != nil {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev := <-sub.OnEvents():
+					watchEvent := serviceWatchEvent{Type: ev.Type, Name: ev.ServiceName, PeerID: ev.PeerID.String(), Path: "unknown"}
+					if entry, ok := cache.Resolve(ev.ServiceName); ok {
+						watchEvent.Path = servicePathFromAddresses(entry.Addresses)
+					}
+					onEvent(watchEvent)
+				}
+			}
+		}()
+	}
+	<-ctx.Done()
+	if err := ctx.Err(); err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		return nil, err
+	}
+	services := serviceResourcesFromEntries(cache.List())
+	sortServiceResources(services)
+	return services, nil
+}
+
+func serviceResourcesFromEntries(entries []*discovery.ServiceEntry) []serviceResource {
+	services := make([]serviceResource, 0, len(entries))
+	for _, entry := range entries {
+		services = append(services, serviceResourceFromEntry(entry))
+	}
+	return services
+}
+
+func serviceResourceFromEntry(entry *discovery.ServiceEntry) serviceResource {
+	expiresIn := time.Until(entry.Registered.Add(entry.TTL))
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
+	return serviceResource{
+		Kind:             "service",
+		Name:             entry.ServiceName,
+		PeerID:           entry.PeerID.String(),
+		Addresses:        append([]string(nil), entry.Addresses...),
+		Status:           "online",
+		Path:             servicePathFromAddresses(entry.Addresses),
+		TTLSeconds:       int64(entry.TTL.Seconds()),
+		ExpiresInSeconds: int64(expiresIn.Seconds()),
+		Capabilities:     []string{},
+		RegisteredAt:     entry.Registered.Format(time.RFC3339),
+	}
+}
+
+func servicePathFromAddresses(addresses []string) string {
+	if len(addresses) == 0 {
+		return "unknown"
+	}
+	for _, addr := range addresses {
+		if strings.Contains(addr, "/p2p-circuit/") {
+			return "relayed"
+		}
+	}
+	return "direct"
+}
+
+func sortServiceResources(items []serviceResource) {
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Name < items[j].Name
+	})
+}
+
+func requireService(services []serviceResource, name string) (serviceResource, error) {
+	for _, service := range services {
+		if service.Name == name {
+			return service, nil
+		}
+	}
+	return serviceResource{}, fmt.Errorf("service %q not found", name)
+}
+
+func printServicesTable(services []serviceResource) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tSTATUS\tPATH\tPEER\tCAPABILITIES")
+	for _, service := range services {
+		caps := "-"
+		if len(service.Capabilities) > 0 {
+			caps = strings.Join(service.Capabilities, ",")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", service.Name, service.Status, service.Path, service.PeerID, caps)
+	}
+	_ = w.Flush()
+}
+
+func printServiceDescription(service serviceResource, messages []string) {
+	fmt.Printf("Name: %s\n", service.Name)
+	fmt.Printf("Kind: %s\n", service.Kind)
+	fmt.Printf("Status: %s\n", service.Status)
+	fmt.Printf("Peer ID: %s\n", service.PeerID)
+	fmt.Printf("Path: %s\n", service.Path)
+	fmt.Printf("TTL: %ds\n", service.TTLSeconds)
+	fmt.Printf("Expires in: %ds\n", service.ExpiresInSeconds)
+	fmt.Println("Capabilities:")
+	if len(service.Capabilities) == 0 {
+		fmt.Println("  - none")
+	} else {
+		for _, cap := range service.Capabilities {
+			fmt.Printf("  - %s\n", cap)
+		}
+	}
+	fmt.Println("Addresses:")
+	if len(service.Addresses) == 0 {
+		fmt.Println("  - none")
+	} else {
+		for _, addr := range service.Addresses {
+			fmt.Printf("  - %s\n", addr)
+		}
+	}
+	fmt.Println("Observed from:")
+	for _, msg := range messages {
+		fmt.Printf("  - %s\n", msg)
+	}
+}
+
+func printMessages(messages []string) {
+	for _, message := range messages {
+		fmt.Println(message)
+	}
+	if len(messages) > 0 {
+		fmt.Println()
+	}
+}
+
+func printJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
+}
+
+func hostPortForHTTP(addr string) string {
+	if strings.HasPrefix(addr, ":") {
+		return "127.0.0.1" + addr
+	}
+	return addr
 }
 
 func keygen(args []string) error {

@@ -7,12 +7,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	cfgpkg "p2p-api-tunnel/internal/config"
+	"p2p-api-tunnel/internal/discovery"
 	"p2p-api-tunnel/internal/p2p"
 	iversion "p2p-api-tunnel/internal/version"
 )
@@ -210,6 +214,60 @@ func TestJoinRejectsInvalidInput(t *testing.T) {
 		return run([]string{"join", "--relay", "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWTest", "--swarm-key", badKey, "--config-dir", configDir})
 	}); err == nil {
 		t.Fatal("expected invalid swarm key error")
+	}
+}
+
+func TestServiceResourceFromEntry(t *testing.T) {
+	entry := &discovery.ServiceEntry{
+		ServiceName: "lmstudio",
+		PeerID:      "12D3KooWTestPeer",
+		Addresses:   []string{"/ip4/1.2.3.4/tcp/4001/p2p-circuit/p2p/12D3KooWTestPeer"},
+		TTL:         30 * time.Second,
+		Registered:  time.Now().Add(-5 * time.Second),
+	}
+	got := serviceResourceFromEntry(entry)
+	if got.Name != "lmstudio" || got.Kind != "service" {
+		t.Fatalf("unexpected service view: %#v", got)
+	}
+	if got.Path != "relayed" {
+		t.Fatalf("path = %q, want relayed", got.Path)
+	}
+	if got.ExpiresInSeconds <= 0 || got.ExpiresInSeconds > 30 {
+		t.Fatalf("unexpected expires_in_seconds: %d", got.ExpiresInSeconds)
+	}
+}
+
+func TestFetchLocalServiceCache(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/services" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(servicesAdminResponse{Count: 1, Items: []serviceResource{{Kind: "service", Name: "myapi", Status: "online", Path: "relayed", PeerID: "12D3KooWTestPeer"}}})
+	}))
+	defer ts.Close()
+	cfg := cfgpkg.Config{Edge: cfgpkg.Edge{AdminListen: strings.TrimPrefix(ts.URL, "http://")}}
+	items, addr, err := fetchLocalServiceCache(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr == "" {
+		t.Fatal("expected admin addr")
+	}
+	if len(items) != 1 || items[0].Name != "myapi" {
+		t.Fatalf("unexpected items: %#v", items)
+	}
+}
+
+func TestRequireService(t *testing.T) {
+	service, err := requireService([]serviceResource{{Name: "myapi"}}, "myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.Name != "myapi" {
+		t.Fatalf("unexpected service: %#v", service)
+	}
+	if _, err := requireService([]serviceResource{{Name: "myapi"}}, "missing"); err == nil {
+		t.Fatal("expected missing service error")
 	}
 }
 
