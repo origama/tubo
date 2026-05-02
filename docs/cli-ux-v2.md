@@ -1,8 +1,14 @@
 # Tubo CLI UX v2
 
-Questo documento raccoglie il design discusso per una nuova UX della CLI di `tubo`, piu' orientata alle intenzioni dell'utente e meno ai ruoli interni dell'implementazione.
+Questo documento raccoglie il design proposto per una nuova UX della CLI di `tubo`, piu' orientata alle intenzioni dell'utente e meno ai ruoli interni dell'implementazione.
 
-L'obiettivo e' mantenere `tubo` come single binary, daemonless by default, ma rendere piu' semplice il flusso quotidiano per pubblicare servizi, consumare servizi remoti, gestire processi locali e ispezionare la mesh.
+L'obiettivo e' mantenere `tubo` come single binary, daemonless by default, ma rendere piu' semplice il flusso quotidiano per:
+
+- pubblicare servizi locali nello swarm;
+- consumare servizi remoti come endpoint locali;
+- avviare gateway e relay;
+- gestire processi long-running senza demone centrale;
+- interrogare risorse pubblicate nello swarm con una grammatica coerente.
 
 Questa proposta non rimuove subito i comandi attuali. Li riclassifica come layer avanzato/compatibile, sopra cui introdurre una UX piu' diretta.
 
@@ -20,7 +26,7 @@ La nuova UX dovrebbe permettere di:
 - lasciare processi long-running in foreground by default;
 - staccare processi in background con `-d` / `--detach` in stile Podman;
 - ispezionare processi locali detached con `ps`, `logs`, `stop`, `inspect`;
-- ispezionare risorse pubblicizzate nello swarm con `mesh`;
+- interrogare risorse pubblicizzate nello swarm con una grammatica stile `kubectl`: `get`, `describe`, `inspect`, `watch`;
 - ridurre il bisogno di scrivere, renderizzare e distribuire manualmente file topology/config per il caso comune.
 
 ---
@@ -47,17 +53,77 @@ Questo e' piu' vicino al modello Podman che al modello Docker.
 ## Nuovo modello mentale
 
 ```text
-attach   = pubblica un endpoint locale nello swarm
-connect  = apre un tunnel locale verso un servizio dello swarm
-gateway  = espone un gateway HTTP verso servizi dello swarm
-relay    = avvia un relay/bootstrap node
-join     = configura questo host per usare uno swarm esistente
-init     = crea una nuova configurazione locale/swarm locale
-ps       = mostra processi tubo detached locali
-logs     = mostra log dei processi detached locali
-stop     = ferma processi detached locali
-inspect  = ispeziona un processo locale o una risorsa mesh
-mesh     = mostra risorse pubblicizzate nello swarm
+attach    = pubblica un endpoint locale nello swarm
+connect   = apre un tunnel locale verso un servizio dello swarm
+gateway   = espone un gateway HTTP verso servizi dello swarm
+relay     = avvia un relay/bootstrap node
+join      = configura questo host per usare uno swarm esistente
+init      = crea una nuova configurazione locale/swarm locale
+
+get       = lista o recupera risorse locali/remoto-swarm
+describe  = mostra dettagli leggibili di una risorsa
+inspect   = mostra dettagli tecnici/raw di una risorsa
+watch     = osserva cambiamenti live
+
+ps        = alias pratico per processi locali detached
+logs      = mostra log dei processi detached locali
+stop      = ferma processi detached locali
+rm        = rimuove state/log locali di processi terminati
+```
+
+La parola `mesh` resta utile come concetto architetturale, ma non deve necessariamente essere un namespace primario della CLI.
+
+---
+
+## Grammatica stile kubectl
+
+Per le operazioni di lettura/ispezione, la UX si ispira a `kubectl`:
+
+```bash
+tubo get services
+tubo get service/lmstudio
+tubo describe service/lmstudio
+tubo inspect service/lmstudio --json
+tubo watch services
+```
+
+Questo consente di separare verbo e risorsa:
+
+```text
+get       = vista breve/tabellare
+describe  = vista umana dettagliata
+inspect   = vista tecnica/raw, adatta anche a scripting/debug
+watch     = stream di cambiamenti/eventi
+```
+
+Risorse possibili:
+
+```text
+service / services / svc
+agent / agents
+peer / peers
+process / processes / proc
+tunnel / tunnels
+gateway / gateways
+route / routes
+relay / relays
+reservation / reservations
+circuit / circuits
+event / events
+capability / capabilities
+```
+
+Esempi di ID tipizzati:
+
+```text
+service/lmstudio
+agent/reviewer.gpubox
+peer/12D3...
+process/attach-lmstudio
+tunnel/lmstudio-51234
+gateway/default
+relay/default
+route/lmstudio
 ```
 
 ---
@@ -71,6 +137,9 @@ mesh     = mostra risorse pubblicizzate nello swarm
 | `tubo edge run --listen :8443` | `tubo gateway --listen :8443` | L'attuale edge e' un gateway HTTP, non una connessione puntuale. |
 | `tubo relay run` | `tubo relay` | Forma breve, piu' diretta. |
 | topology/config manuale per entrare in uno swarm | `tubo join --relay ... --swarm-key ...` | Importa configurazione di uno swarm esistente. |
+| `tubo mesh services` | `tubo get services` | `mesh` non e' necessario come namespace primario. |
+| `tubo mesh inspect X` | `tubo describe X` / `tubo inspect X` | `describe` per output umano, `inspect` per output tecnico/raw. |
+| `tubo mesh watch` | `tubo watch services` / `tubo watch events` | Watch diventa un verbo top-level. |
 | processi in foreground | default | Nessun flag necessario. |
 | processi in background | `-d` / `--detach` | Da implementare con state locale, senza demone centrale. |
 
@@ -191,7 +260,7 @@ Output possibile:
 
 ```text
 attached service "lmstudio"
-id: attach/lmstudio
+id: process/attach-lmstudio
 pid: 18422
 logs: ~/.local/share/tubo/logs/attach-lmstudio.log
 ```
@@ -206,7 +275,7 @@ Output possibile:
 
 ```text
 connected service "lmstudio"
-id: connect/lmstudio-51234
+id: process/connect-lmstudio-51234
 local: http://127.0.0.1:51234
 pid: 18480
 logs: ~/.local/share/tubo/logs/connect-lmstudio-51234.log
@@ -230,9 +299,11 @@ Esempio state file:
 
 ```json
 {
-  "id": "attach/lmstudio",
-  "kind": "attach",
-  "name": "lmstudio",
+  "id": "process/attach-lmstudio",
+  "kind": "process",
+  "command": "attach",
+  "name": "attach-lmstudio",
+  "service": "lmstudio",
   "pid": 18422,
   "started_at": "2026-05-02T12:00:00Z",
   "target": "http://127.0.0.1:1234",
@@ -255,14 +326,20 @@ Mostra i processi `tubo` detached avviati su questa macchina.
 tubo ps
 ```
 
+`ps` e' un alias pratico di:
+
+```bash
+tubo get processes
+```
+
 Output target:
 
 ```text
-ID                         KIND      NAME        STATUS    PID     LOCAL                  TARGET
-attach/lmstudio            attach    lmstudio    running   18422   -                      http://127.0.0.1:1234
-connect/lmstudio-51234     connect   lmstudio    running   18480   127.0.0.1:51234        lmstudio
-gateway/default            gateway   -           running   18520   :8443                  swarm
-relay/default              relay     -           running   18590   /ip4/0.0.0.0/tcp/4001  -
+NAME                    COMMAND   STATUS    PID     LOCAL                  TARGET
+attach-lmstudio          attach    running   18422   -                      http://127.0.0.1:1234
+connect-lmstudio-51234   connect   running   18480   127.0.0.1:51234        lmstudio
+gateway-default          gateway   running   18520   :8443                  swarm
+relay-default            relay     running   18590   /ip4/0.0.0.0/tcp/4001  -
 ```
 
 Flag utili:
@@ -273,30 +350,50 @@ tubo ps --json
 tubo ps --kind attach
 ```
 
+### `tubo get processes`
+
+```bash
+tubo get processes
+```
+
+Output equivalente a `tubo ps`, ma coerente con la grammatica resource-based.
+
 ### `tubo logs`
 
 ```bash
-tubo logs attach/lmstudio
+tubo logs attach-lmstudio
+```
+
+oppure, con ID tipizzato:
+
+```bash
+tubo logs process/attach-lmstudio
 ```
 
 Follow:
 
 ```bash
-tubo logs -f attach/lmstudio
+tubo logs -f process/attach-lmstudio
 ```
 
 Tail:
 
 ```bash
-tubo logs --tail 100 gateway/default
+tubo logs --tail 100 process/gateway-default
 ```
 
 ### `tubo stop`
 
 ```bash
-tubo stop attach/lmstudio
-tubo stop connect/lmstudio-51234
-tubo stop gateway/default
+tubo stop process/attach-lmstudio
+tubo stop process/connect-lmstudio-51234
+tubo stop process/gateway-default
+```
+
+Alias breve ammesso se non ambiguo:
+
+```bash
+tubo stop attach-lmstudio
 ```
 
 Tutti:
@@ -305,23 +402,33 @@ Tutti:
 tubo stop --all
 ```
 
-### `tubo inspect`
+### `tubo describe process/...`
 
 ```bash
-tubo inspect attach/lmstudio
+tubo describe process/attach-lmstudio
 ```
 
-Dovrebbe mostrare:
+Dovrebbe mostrare una vista umana:
 
-- ID processo;
-- PID;
-- stato;
-- config effettiva mascherata;
-- peer ID;
-- target;
-- listener locali;
-- path log;
-- eventuale health/status runtime.
+```yaml
+Name: attach-lmstudio
+Kind: process
+Command: attach
+Status: running
+PID: 18422
+Target: http://127.0.0.1:1234
+Service: lmstudio
+Log file: ~/.local/share/tubo/logs/attach-lmstudio.log
+State file: ~/.local/share/tubo/processes/attach-lmstudio.json
+```
+
+### `tubo inspect process/...`
+
+```bash
+tubo inspect process/attach-lmstudio --json
+```
+
+Dovrebbe mostrare lo state tecnico/raw, adatto a debugging e scripting.
 
 ### `tubo rm`
 
@@ -329,119 +436,213 @@ Rimuove state/log locali di processi terminati.
 
 ```bash
 tubo rm --stale
-tubo rm connect/lmstudio-51234
+tubo rm process/connect-lmstudio-51234
 ```
 
 ---
 
-## `ps` vs `mesh`
+## Processi locali vs risorse nello swarm
 
 Questa distinzione e' centrale.
 
 ```bash
 tubo ps
+# oppure
+
+tubo get processes
 ```
 
 mostra cosa gira localmente su questa macchina.
 
 ```bash
-tubo mesh list
+tubo get services
 ```
 
-mostra cosa e' pubblicizzato nello swarm.
+mostra servizi pubblicizzati nello swarm.
 
 Esempio:
 
-- `tubo ps` puo' mostrare `connect/lmstudio-51234`, cioe' il processo locale che mantiene aperto un tunnel;
-- `tubo mesh list` puo' mostrare `service lmstudio`, cioe' il servizio remoto pubblicato nello swarm.
+- `tubo ps` puo' mostrare `process/connect-lmstudio-51234`, cioe' il processo locale che mantiene aperto un tunnel;
+- `tubo get services` puo' mostrare `service/lmstudio`, cioe' il servizio remoto pubblicato nello swarm.
 
 Sono due piani diversi.
 
 ---
 
-## Mesh discovery
+## Discovery delle risorse nello swarm
 
-La nuova UX dovrebbe includere comandi per vedere le risorse nello swarm.
+La UX primaria non usa piu' `tubo mesh ...` come namespace principale.
 
-### `tubo mesh list`
+Usa invece:
 
 ```bash
-tubo mesh list
+tubo get services
+tubo get agents
+tubo get peers
+tubo describe service/lmstudio
+tubo inspect service/lmstudio --json
+tubo watch services
+```
+
+### Come fa `get services` a vedere lo swarm?
+
+`tubo get services` non puo' vedere magicamente lo swarm da fuori. Deve partecipare alla rete o usare una cache locale.
+
+Comportamento raccomandato:
+
+1. Se esiste un processo locale gia' connesso allo swarm, usare la sua cache/admin API quando disponibile.
+2. Se non esiste una cache locale, avviare un observer effimero:
+   - carica config locale da `join`/`init`;
+   - carica swarm key;
+   - crea un host libp2p temporaneo;
+   - si connette a bootstrap/relay peer;
+   - ascolta discovery per un timeout esplicito;
+   - stampa le risorse osservate;
+   - esce.
+
+L'output deve sempre dire chiaramente quale modalita' sta usando.
+
+Esempio con cache locale:
+
+```text
+using local cache from process/gateway-default
+observing swarm for 5s to discover fresh announcements...
+```
+
+Esempio senza cache locale:
+
+```text
+no local cache found
+starting temporary observer for 10s...
+```
+
+Flag utili:
+
+```bash
+tubo get services --cached-only
+tubo get services --live
+tubo get services --timeout 15s
+tubo get services --json
+```
+
+### `tubo get services`
+
+```bash
+tubo get services
 ```
 
 Output target:
 
 ```text
-KIND      NAME                STATUS    PATH       PEER
-service   lmstudio            online    relayed    12D3...
-service   ollama              online    direct     12D3...
-agent     reviewer.gpubox     online    relayed    12D3...
-agent     builder.linode      busy      direct     12D3...
+NAME        STATUS    PATH       PEER       CAPABILITIES
+lmstudio    online    relayed    12D3...    model.openai-compatible
+ollama      online    direct     12D3...    model.ollama
 ```
 
-### `tubo mesh services`
+Alias possibile:
 
 ```bash
-tubo mesh services
+tubo get svc
 ```
 
-Output target:
+### `tubo get service/lmstudio`
+
+```bash
+tubo get service/lmstudio
+```
+
+Output breve:
 
 ```text
-NAME        STATUS    PATH       CAPABILITIES
-lmstudio    online    relayed    model.openai-compatible
-ollama      online    direct     model.ollama
+NAME        STATUS    PATH       PEER       TTL
+lmstudio    online    relayed    12D3...    24s
 ```
 
-### `tubo mesh agents`
+### `tubo describe service/lmstudio`
+
+```bash
+tubo describe service/lmstudio
+```
+
+Output umano dettagliato:
+
+```yaml
+Name: lmstudio
+Kind: service
+Status: online
+Peer ID: 12D3...
+Path: relayed
+TTL: 30s
+Expires in: 24s
+Capabilities:
+  - model.openai-compatible
+Addresses:
+  - /ip4/.../p2p-circuit/p2p/12D3...
+Observed from:
+  - local cache: process/gateway-default
+  - live discovery: 5s
+```
+
+### `tubo inspect service/lmstudio`
+
+```bash
+tubo inspect service/lmstudio --json
+```
+
+Dovrebbe produrre una vista tecnica/raw, adatta a debug e automazione.
+
+### `tubo get agents`
 
 Futuro, quando saranno introdotti agent announcement.
 
 ```bash
-tubo mesh agents
+tubo get agents
 ```
 
 Output target:
 
 ```text
-NAME               STATUS    CAPABILITIES
-reviewer.gpubox    online    agent.code_review, tool.go_test
-builder.linode     busy      tool.docker_build, tool.go_test
+NAME               STATUS    PEER       CAPABILITIES
+reviewer.gpubox    online    12D3...    agent.code_review, tool.go_test
+builder.linode     busy      12D3...    tool.docker_build, tool.go_test
 ```
 
-### `tubo mesh find`
+### `tubo watch services`
 
 ```bash
-tubo mesh find --capability model.openai-compatible
-tubo mesh find --capability agent.code_review
-tubo mesh find --kind service
-tubo mesh find --kind agent
-```
-
-### `tubo mesh inspect`
-
-```bash
-tubo mesh inspect lmstudio
+tubo watch services
 ```
 
 Output target:
 
-```yaml
-kind: service
-name: lmstudio
-peer_id: 12D3...
-status: online
-addresses:
-  - /ip4/.../p2p-circuit/p2p/12D3...
-capabilities:
-  - model.openai-compatible
-ttl: 30s
-expires_in: 24s
+```text
+watching services...
+using local cache: process/gateway-default
+also observing swarm live
+
+ADDED     service/lmstudio       peer=12D3... path=relayed
+ADDED     service/ollama         peer=12D3... path=direct
+REMOVED   service/old-service
+```
+
+### `tubo watch events`
+
+```bash
+tubo watch events
+```
+
+Output target:
+
+```text
+ADDED     service/lmstudio
+ADDED     agent/reviewer.gpubox
+UPDATED   service/ollama
+REMOVED   peer/12D3...
 ```
 
 ### Nota implementativa
 
-Oggi l'edge espone un endpoint `/services`, ma restituisce solo un conteggio. Per `mesh list` serve esporre o ottenere una lista completa di discovery entries, con almeno:
+Oggi l'edge espone un endpoint `/services`, ma restituisce solo un conteggio. Per `get services` serve esporre o ottenere una lista completa di discovery entries, con almeno:
 
 - service name;
 - peer ID;
@@ -449,6 +650,43 @@ Oggi l'edge espone un endpoint `/services`, ma restituisce solo un conteggio. Pe
 - TTL;
 - registered/age/expires;
 - eventuale kind/capabilities future.
+
+---
+
+## Risoluzione ambiguita' in `describe` e `inspect`
+
+`inspect` e `describe` possono riferirsi sia a processi locali sia a risorse nello swarm.
+
+Per evitare ambiguita', si raccomanda l'uso di ID tipizzati:
+
+```bash
+tubo describe service/lmstudio
+tubo describe process/attach-lmstudio
+tubo inspect agent/reviewer.gpubox
+tubo inspect peer/12D3...
+```
+
+Se l'utente usa un nome non tipizzato:
+
+```bash
+tubo inspect lmstudio
+```
+
+`tubo` puo' auto-risolvere solo se il match e' univoco.
+
+Se e' ambiguo:
+
+```text
+ambiguous resource "lmstudio"
+
+matches:
+  service/lmstudio
+  process/attach-lmstudio
+
+try:
+  tubo inspect service/lmstudio
+  tubo inspect process/attach-lmstudio
+```
 
 ---
 
@@ -513,7 +751,7 @@ relay: /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 swarm key installed: ~/.config/tubo/swarm.key
 
 next:
-  tubo mesh list
+  tubo get services
   tubo attach http://127.0.0.1:1234 --name my-service
   tubo connect lmstudio
 ```
@@ -562,7 +800,7 @@ Output target:
 
 ```text
 relay running
-id: relay/default
+id: process/relay-default
 peer: 12D3...
 addr: /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 
@@ -581,7 +819,7 @@ tubo attach http://127.0.0.1:1234 --name lmstudio -d
 
 ```bash
 tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
-tubo mesh services
+tubo get services
 tubo connect lmstudio --local 127.0.0.1:51234
 ```
 
@@ -606,6 +844,7 @@ tubo attach http://127.0.0.1:11434 --name ollama -d
 ### Host client
 
 ```bash
+tubo get services
 tubo connect ollama --local 127.0.0.1:11434 -d
 ```
 
@@ -660,8 +899,9 @@ tubo attach http://127.0.0.1:7777 \
 Poi altri agenti o utenti potrebbero trovarlo:
 
 ```bash
-tubo mesh agents
-tubo mesh find --capability agent.code_review
+tubo get agents
+tubo get agents --capability agent.code_review
+tubo describe agent/reviewer.gpubox
 tubo connect reviewer.gpubox
 ```
 
@@ -739,20 +979,21 @@ Sostituisce molti passaggi manuali di config per il caso comune.
 
 ```bash
 tubo ps
-tubo logs -f attach/lmstudio
-tubo stop attach/lmstudio
+tubo logs -f process/attach-lmstudio
+tubo stop process/attach-lmstudio
 ```
 
 Rende usabili i processi detached senza demone centrale.
 
-### 8. Discovery mesh
+### 8. Discovery delle risorse nello swarm
 
 ```bash
-tubo mesh services
-tubo mesh inspect lmstudio
+tubo get services
+tubo describe service/lmstudio
+tubo watch services
 ```
 
-Permette di capire cosa e' disponibile nello swarm.
+Permette di capire cosa e' disponibile nello swarm, senza richiedere necessariamente un gateway long-running.
 
 ---
 
@@ -921,7 +1162,7 @@ Esempi possibili:
 
 ```bash
 tubo attach http://127.0.0.1:1234 --name lmstudio --install --enable
-tubo generate systemd attach/lmstudio
+tubo generate systemd process/attach-lmstudio
 ```
 
 Questa e' una capability opzionale, non parte del nucleo daemonless.
@@ -952,14 +1193,6 @@ tubo open dashboard
 ```
 
 Se non esiste una connessione locale, puo' crearne una temporanea.
-
-### `tubo mesh watch`
-
-Mostra eventi live dello swarm:
-
-```bash
-tubo mesh watch
-```
 
 ---
 
@@ -1010,18 +1243,15 @@ tubo connect
 tubo gateway
 tubo relay
 
+tubo get <resource>
+tubo describe <resource>
+tubo inspect <resource>
+tubo watch <resource>
+
 tubo ps
 tubo logs
 tubo stop
-tubo inspect
 tubo rm
-
-tubo mesh list
-tubo mesh services
-tubo mesh agents
-tubo mesh find
-tubo mesh inspect
-tubo mesh watch
 
 tubo call
 tubo doctor
@@ -1032,6 +1262,8 @@ tubo keygen ...
 tubo id ...
 tubo topology ...
 ```
+
+La UX primaria non richiede piu' un namespace `mesh`. Se in futuro serve, `tubo mesh ...` puo' restare come namespace advanced o interno, ma il quickstart dovrebbe usare `get`, `describe`, `inspect`, `watch`.
 
 ---
 
@@ -1047,7 +1279,7 @@ Ordine consigliato:
 3. implementare `-d/--detach`;
 4. implementare `ps/logs/stop/inspect/rm`;
 5. implementare `connect <service>` by discovery;
-6. implementare `mesh list/services/inspect`;
+6. implementare `get services`, `describe service/...`, `watch services`;
 7. aggiungere init implicito;
 8. aggiornare docs/README;
 9. investigare systemd/launchd.
@@ -1062,7 +1294,7 @@ Il lavoro e' tracciato nella epic:
 #39 — Epic: CLI UX v2 — attach/connect/gateway, daemonless detach e mesh commands
 ```
 
-Sub-issue operative:
+Sub-issue operative esistenti:
 
 ```text
 #40 — CLI UX v2: implementare comandi intent-based attach, gateway e relay breve
@@ -1076,6 +1308,8 @@ Sub-issue operative:
 #48 — CLI UX v2: investigare integrazione systemd/launchd per processi persistenti
 ```
 
+Nota: #46 dovrebbe essere rivista/rinominata in ottica `get/describe/watch` invece che `mesh` come namespace primario.
+
 ---
 
 ## Decisioni chiave
@@ -1086,17 +1320,20 @@ Sub-issue operative:
 4. `connect` dovrebbe essere un local tunnel verso un service name.
 5. `join` configura uno swarm esistente, non avvia processi.
 6. `init` crea nuovo contesto locale; puo' essere implicito per ridurre attrito.
-7. `ps` e `mesh` devono restare concetti separati.
-8. `-d` deve essere daemonless, non dipendere da un `tubod`.
-9. systemd/launchd sono integrazioni opzionali per persistenza, non requisiti della CLI base.
-10. I comandi role-based attuali restano come advanced/compatibility layer.
+7. `ps` e `get services` devono restare concetti separati: processi locali vs risorse nello swarm.
+8. `get services` deve spiegare se usa cache locale, observer effimero o entrambi.
+9. `-d` deve essere daemonless, non dipendere da un `tubod`.
+10. systemd/launchd sono integrazioni opzionali per persistenza, non requisiti della CLI base.
+11. I comandi role-based attuali restano come advanced/compatibility layer.
+12. Il namespace `mesh` non e' necessario nella UX primaria; si preferisce `get/describe/inspect/watch`.
 
 ---
 
 ## Open questions
 
 - `connect` deve essere implementato evolvendo `bridge` o creando un mini-edge locale?
-- `mesh list` deve avviare un nodo discovery temporaneo o interrogare un processo locale esistente?
+- `get services` deve avviare un nodo discovery temporaneo o interrogare un processo locale esistente?
+- Un relay deve esporre una cache discovery interrogabile o restare solo transport/discovery router?
 - Come gestire il timeout discovery nei comandi one-shot?
 - Quale formato usare per lo state locale dei processi detached?
 - Come gestire collisioni di ID, ad esempio due `attach` con lo stesso nome?
@@ -1105,3 +1342,4 @@ Sub-issue operative:
 - Quando introdurre `kind=agent` e `capabilities` negli announcement?
 - Come collegare `agent_name`, `service_name`, `peer_id` e policy?
 - Quanto mantenere in vita i vecchi role commands nella documentazione principale?
+- Conviene rinominare #46 da `mesh discovery commands` a `resource discovery commands`?
