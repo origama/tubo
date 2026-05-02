@@ -951,8 +951,17 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	gw.seedPeerstoreFromDiscoveryEntry(entry)
 	if gw.waitingForFreshRelayAnnouncement(entry) {
 		log.Printf("proxy waiting for fresh relay announcement service=%q peer=%s registered=%s", route.ServiceName, entry.PeerID, entry.Registered.Format(time.RFC3339Nano))
-		http.Error(w, "waiting for relay recovery announcement", http.StatusBadGateway)
-		return
+		if waitCh := gw.currentRelayRecoveryWaitCh(route.ServiceName); waitCh != nil {
+			waitForRelayRecovery(r.Context(), waitCh, 1500*time.Millisecond)
+			if refreshed, ok := gw.resolveServiceEntry(route.ServiceName, true); ok {
+				entry = refreshed
+				gw.seedPeerstoreFromDiscoveryEntry(entry)
+			}
+		}
+		if gw.waitingForFreshRelayAnnouncement(entry) && !gw.relayRecoveryActiveNow(route.ServiceName) {
+			http.Error(w, "waiting for relay recovery announcement", http.StatusBadGateway)
+			return
+		}
 	}
 
 	replayBody, canRetry, err := buildReplayableRequestBody(r)
