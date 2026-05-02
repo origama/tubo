@@ -21,6 +21,28 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.1.3] - 2026-05-02
+
+Service-restart recovery release focused on reducing relayed traffic disruption during service restarts, especially on the real 3-host Linode bench.
+
+### Added
+- Edge regression coverage for coordinated relay recovery, retry-time discovery re-resolution, guarded last-known entry use, and recovery-end route handling.
+
+### Changed
+- Edge now coordinates relay recovery per service as a bounded single-flight flow instead of letting each failing request independently thrash the retry path.
+- Stream-open retries now re-resolve discovery state on each attempt and only rely on last-known service entries inside the active recovery window.
+- Requests arriving during active relay recovery now briefly wait for the in-flight recovery/announcement refresh instead of failing immediately while the service is still republishing its relay path.
+
+### Fixed
+- Relayed traffic during service restart now recovers cleanly on the validated 3-host Linode restart stress, with zero request failures on the final release-candidate rerun.
+- Route expiry/removal no longer races a successful coordinated recovery completion.
+
+### Compatibility
+- Product version: v0.1.3
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none; this is a backward-compatible recovery and latency improvement on top of the existing protocol `1.1` + legacy fallback behavior
+
 ## [v0.1.2] - 2026-05-01
 
 Relay-first recovery release focused on making traffic recover cleanly after relay restarts in both NAT compose tests and the real Linode multi-host bench.
