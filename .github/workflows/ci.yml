@@ -46,6 +46,21 @@ jobs:
         with:
           args: --timeout=5m
 
+  smoke-cli-ux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Run CLI UX smoke test
+        run: ./tests/smoke-cli-ux.sh
+
   smoke-compose:
     runs-on: ubuntu-latest
     timeout-minutes: 30
