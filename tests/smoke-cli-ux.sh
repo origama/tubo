@@ -56,7 +56,7 @@ wait_file_nonempty() {
 assert_contains() {
   local needle="$1"
   local path="$2"
-  if ! rg -F -- "$needle" "$path" >/dev/null 2>&1; then
+  if ! grep -F -- "$needle" "$path" >/dev/null 2>&1; then
     echo "[smoke-cli-ux] expected to find: $needle"
     echo "[smoke-cli-ux] in file: $path"
     echo "--- $path ---"
@@ -235,13 +235,13 @@ wait_http_ok "http://127.0.0.1:$gateway_port/healthz"
 
 for i in $(seq 1 80); do
   services_json="$(curl -fsS "http://127.0.0.1:$gateway_admin_port/services" || true)"
-  if printf '%s' "$services_json" | rg -F '"name":"lmstudio"' >/dev/null 2>&1; then
+  if printf '%s' "$services_json" | grep -F '"name":"lmstudio"' >/dev/null 2>&1; then
     break
   fi
   sleep 0.25
 done
 services_json="$(curl -fsS "http://127.0.0.1:$gateway_admin_port/services")"
-printf '%s' "$services_json" | rg -F '"name":"lmstudio"' >/dev/null
+printf '%s' "$services_json" | grep -F '"name":"lmstudio"' >/dev/null
 
 cat >"$WORK_DIR/gateway-cache-config.yaml" <<EOF
 network:
