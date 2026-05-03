@@ -18,6 +18,7 @@ import (
 
 	cfgpkg "p2p-api-tunnel/internal/config"
 	"p2p-api-tunnel/internal/discovery"
+	discoveryquery "p2p-api-tunnel/internal/discovery/query"
 	"p2p-api-tunnel/internal/p2p"
 	iversion "p2p-api-tunnel/internal/version"
 )
@@ -447,6 +448,102 @@ func TestFetchLocalServiceCache(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].Name != "myapi" {
 		t.Fatalf("unexpected items: %#v", items)
+	}
+}
+
+func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "remote-query-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	if err := cache.Add(server.ID(), "myapi", []string{p2p.PeerAddrs(server)[0]}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfgYAML := fmt.Sprintf("network:\n  private_key_file: %s\n  bootstrap_peers:\n    - %s\nedge:\n  admin_listen: 127.0.0.1:1\n", keyPath, p2p.PeerAddrs(server)[0])
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := discoverServices(configPath, 5*time.Second, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != "remote-query" {
+		t.Fatalf("mode = %q, want remote-query", result.Mode)
+	}
+	if result.Metadata == nil || result.Metadata.ServedByRole != "relay" {
+		t.Fatalf("unexpected metadata: %#v", result.Metadata)
+	}
+	if len(result.Services) != 1 || result.Services[0].Name != "myapi" {
+		t.Fatalf("unexpected services: %#v", result.Services)
+	}
+	joined := strings.Join(result.Messages, "\n")
+	if !strings.Contains(joined, "querying discovery cache from relay") || !strings.Contains(joined, "received 1 services") {
+		t.Fatalf("unexpected messages: %s", joined)
+	}
+}
+
+func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "remote-query-service-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	if err := cache.Add(server.ID(), "myapi", []string{p2p.PeerAddrs(server)[0]}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfgYAML := fmt.Sprintf("network:\n  private_key_file: %s\n  bootstrap_peers:\n    - %s\nedge:\n  admin_listen: 127.0.0.1:1\n", keyPath, p2p.PeerAddrs(server)[0])
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, service, err := discoverService(configPath, "myapi", 5*time.Second, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != "remote-query" {
+		t.Fatalf("mode = %q, want remote-query", result.Mode)
+	}
+	if result.Metadata == nil || result.Metadata.ServedByRole != "relay" {
+		t.Fatalf("unexpected metadata: %#v", result.Metadata)
+	}
+	if service.Name != "myapi" {
+		t.Fatalf("unexpected service: %#v", service)
+	}
+	joined := strings.Join(result.Messages, "\n")
+	if !strings.Contains(joined, "querying discovery cache from relay") || !strings.Contains(joined, "received service myapi") {
+		t.Fatalf("unexpected messages: %s", joined)
 	}
 }
 

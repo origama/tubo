@@ -12,6 +12,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"p2p-api-tunnel/internal/discovery"
+	discoveryquery "p2p-api-tunnel/internal/discovery/query"
+	"p2p-api-tunnel/internal/p2p"
 	"p2p-api-tunnel/internal/routing"
 )
 
@@ -108,6 +110,37 @@ func TestHandleAddRoute(t *testing.T) {
 	}
 	if _, ok := gw.routes.Match("demo.local", "/api/test"); !ok {
 		t.Fatal("expected route to be stored")
+	}
+}
+
+func TestGatewayDiscoveryQueryServesCachedServices(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer close(stopCh)
+	defer gw.cache.Stop()
+	defer gw.host.Close()
+	if err := gw.cache.Add(gw.host.ID(), "myapi", p2p.PeerAddrs(gw.host), 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	client, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "edge-query-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	info, err := p2p.AddrInfoFromString(p2p.PeerAddrs(gw.host)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := discoveryquery.ListServices(ctx, client, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Metadata.ServedByRole != "gateway" || len(resp.Services) != 1 || resp.Services[0].Name != "myapi" {
+		t.Fatalf("unexpected response: %#v", resp)
 	}
 }
 

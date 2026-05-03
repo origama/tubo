@@ -192,7 +192,7 @@ Per scripting:
 tubo connect lmstudio --json
 ```
 
-`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, altrimenti observer effimero live.
+`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live.
 
 ## Detached process state
 
@@ -261,8 +261,9 @@ tubo watch services --timeout 10s
 Comportamento:
 
 - se trova un edge locale gia' in ascolto sull'admin API, usa la sua cache discovery locale;
-- altrimenti avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce;
-- i messaggi di output indicano esplicitamente se sta usando cache locale, observer live, o entrambi.
+- altrimenti prova una remote discovery query verso il primo bootstrap/relay peer disponibile;
+- se anche la query remota fallisce o non basta, avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce;
+- i messaggi di output indicano esplicitamente se sta usando cache locale, query remota, observer live, o fallback tra questi.
 
 Flag utili in questo MVP:
 

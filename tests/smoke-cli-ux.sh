@@ -183,9 +183,17 @@ wait_file_nonempty "$XDG_DATA_HOME/tubo/logs/attach-lmstudio.log"
 # resource discovery without a local gateway cache
 "$BIN" get services --timeout 8s >"$WORK_DIR/get-services-live.out"
 assert_contains "no local cache found" "$WORK_DIR/get-services-live.out"
-assert_contains "starting temporary observer" "$WORK_DIR/get-services-live.out"
+assert_contains "querying discovery cache from relay" "$WORK_DIR/get-services-live.out"
+if grep -F "received 1 services" "$WORK_DIR/get-services-live.out" >/dev/null 2>&1; then
+  true
+else
+  assert_contains "received 0 services" "$WORK_DIR/get-services-live.out"
+  assert_contains "starting temporary observer" "$WORK_DIR/get-services-live.out"
+fi
 assert_contains "lmstudio" "$WORK_DIR/get-services-live.out"
 "$BIN" get service/lmstudio >"$WORK_DIR/get-service.out"
+assert_contains "querying discovery cache from relay" "$WORK_DIR/get-service.out"
+assert_contains "received service lmstudio" "$WORK_DIR/get-service.out"
 assert_contains "lmstudio" "$WORK_DIR/get-service.out"
 "$BIN" describe service/lmstudio >"$WORK_DIR/describe-service.out"
 assert_contains "Name: lmstudio" "$WORK_DIR/describe-service.out"
@@ -196,11 +204,14 @@ assert_contains "fallback: relay" "$WORK_DIR/describe-service.out"
 assert_contains "  Direct:" "$WORK_DIR/describe-service.out"
 assert_contains "  Relayed:" "$WORK_DIR/describe-service.out"
 assert_contains "Observed from:" "$WORK_DIR/describe-service.out"
+assert_contains "querying discovery cache from relay" "$WORK_DIR/describe-service.out"
 "$BIN" inspect service/lmstudio --json >"$WORK_DIR/inspect-service.json"
 python3 - "$WORK_DIR/inspect-service.json" <<'PY'
 import json, sys
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     payload = json.load(f)
+assert payload['mode'] == 'remote-query', payload
+assert payload['metadata']['served_by_role'] == 'relay', payload
 assert payload['item']['name'] == 'lmstudio', payload
 assert payload['item']['kind'] == 'service', payload
 assert payload['item']['status'] == 'online', payload
@@ -224,6 +235,8 @@ for i in $(seq 1 80); do
   sleep 0.25
 done
 wait_http_ok "http://127.0.0.1:$connect_port/healthz"
+assert_contains "querying discovery cache from relay" "$WORK_DIR/connect.out"
+assert_contains "received service lmstudio" "$WORK_DIR/connect.out"
 assert_contains "path: direct" "$WORK_DIR/connect.out"
 assert_contains "direct: selected" "$WORK_DIR/connect.out"
 assert_contains "relay: available as fallback" "$WORK_DIR/connect.out"

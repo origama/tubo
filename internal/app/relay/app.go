@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"p2p-api-tunnel/internal/discovery"
+	discoveryquery "p2p-api-tunnel/internal/discovery/query"
 	"p2p-api-tunnel/internal/p2p"
 	"strings"
 	"time"
@@ -24,9 +25,11 @@ type Config struct {
 	LimitDataBytes                                                                                             int64
 }
 type App struct {
-	cfg    Config
-	host   host.Host
-	health *http.Server
+	cfg            Config
+	host           host.Host
+	health         *http.Server
+	cache          *discovery.Cache
+	stopSubscriber chan struct{}
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -63,13 +66,17 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if using {
 		log.Printf("libp2p private network enabled")
 	}
+	var cache *discovery.Cache
+	var stopSubscriber chan struct{}
 	if cfg.EnableDiscoveryPubSub {
-		if err := startDiscovery(ctx, h); err != nil {
+		cache, stopSubscriber, err = startDiscovery(ctx, h)
+		if err != nil {
 			_ = h.Close()
 			return nil, err
 		}
 	}
-	return &App{cfg: cfg, host: h}, nil
+	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "relay", cache))
+	return &App{cfg: cfg, host: h, cache: cache, stopSubscriber: stopSubscriber}, nil
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
@@ -95,6 +102,12 @@ func (a *App) Start(ctx context.Context) error {
 		defer c()
 		_ = a.health.Shutdown(sd)
 	}
+	if a.stopSubscriber != nil {
+		close(a.stopSubscriber)
+	}
+	if a.cache != nil {
+		a.cache.Stop()
+	}
 	return nil
 }
 func (a *App) mux() *http.ServeMux {
@@ -105,30 +118,27 @@ func (a *App) mux() *http.ServeMux {
 	})
 	return m
 }
-func startDiscovery(ctx context.Context, h host.Host) error {
+func startDiscovery(ctx context.Context, h host.Host) (*discovery.Cache, chan struct{}, error) {
 	ps, err := pubsub.NewGossipSub(ctx, h)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	topic, err := ps.Join(discovery.DiscoveryTopic)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	sub, err := topic.Subscribe()
-	if err != nil {
-		return err
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	subscriber := discovery.NewPubSubSubscriber(topic, cache)
+	if pubKey := h.Peerstore().PubKey(h.ID()); pubKey != nil {
+		subscriber.AddPublicKey(h.ID(), pubKey)
 	}
+	stopCh := subscriber.Start(ctx)
 	log.Printf("discovery pubsub router joined topic %s", discovery.DiscoveryTopic)
 	go func() {
-		defer sub.Cancel()
-		for {
-			if _, err := sub.Next(ctx); err != nil {
-				log.Printf("discovery pubsub router stopped: %v", err)
-				return
-			}
-		}
+		<-ctx.Done()
+		log.Printf("discovery pubsub router stopped: %v", ctx.Err())
 	}()
-	return nil
+	return cache, stopCh, nil
 }
 func PrintStartupCommandHints(h host.Host, addr string) {
 	ra := RelayAdvertiseAddr(h, addr)

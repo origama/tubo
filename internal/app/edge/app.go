@@ -22,6 +22,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 
 	"p2p-api-tunnel/internal/discovery"
+	discoveryquery "p2p-api-tunnel/internal/discovery/query"
 	"p2p-api-tunnel/internal/p2p"
 	"p2p-api-tunnel/internal/protocol"
 	"p2p-api-tunnel/internal/routing"
@@ -273,6 +274,7 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		relayRecoveryActive: make(map[string]*relayRecoveryState),
 		lastKnownEntries:    make(map[string]*discovery.ServiceEntry),
 	}
+	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "gateway", cache))
 	if len(gw.relayPeers) > 0 {
 		log.Printf("configured %d relay peer(s)", len(gw.relayPeers))
 	}

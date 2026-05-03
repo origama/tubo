@@ -1,11 +1,13 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	discoveryquery "p2p-api-tunnel/internal/discovery/query"
 	"p2p-api-tunnel/internal/p2p"
 )
 
@@ -58,5 +60,37 @@ func TestHasRelayReservationUsesTrackedExpiry(t *testing.T) {
 	app.reservationReadyUntil = time.Now().Add(-time.Second)
 	if app.hasRelayReservation() {
 		t.Fatal("expected expired tracked reservation to be ignored")
+	}
+}
+
+func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "service-query-seed", ServiceName: "myapi", Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	if app.cache == nil {
+		t.Fatal("expected service cache")
+	}
+	if _, ok := app.currentAnnouncement(); !ok {
+		t.Fatal("expected current announcement")
+	}
+	client, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-query-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	info, err := p2p.AddrInfoFromString(p2p.PeerAddrs(app.host)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := discoveryquery.GetService(ctx, client, info, "myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Metadata.ServedByRole != "attach" || resp.Service == nil || resp.Service.Name != "myapi" {
+		t.Fatalf("unexpected response: %#v", resp)
 	}
 }

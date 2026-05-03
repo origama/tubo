@@ -503,7 +503,8 @@ tubo watch services
 Comportamento raccomandato:
 
 1. Se esiste un processo locale gia' connesso allo swarm, usare la sua cache/admin API quando disponibile.
-2. Se non esiste una cache locale, avviare un observer effimero:
+2. Se non esiste una cache locale, interrogare la discovery cache di un bootstrap/relay peer via `/tubo/discovery/query/1.0`.
+3. Se la query remota fallisce o non restituisce abbastanza dati, avviare un observer effimero:
    - carica config locale da `join`/`init`;
    - carica swarm key;
    - crea un host libp2p temporaneo;
@@ -521,10 +522,19 @@ using local cache from process/gateway-default
 observing swarm for 5s to discover fresh announcements...
 ```
 
-Esempio senza cache locale:
+Esempio senza cache locale ma con query remota riuscita:
 
 ```text
 no local cache found
+querying discovery cache from relay 12D3...
+received 2 services
+```
+
+Fallback se la query remota fallisce:
+
+```text
+no local cache found
+remote discovery query failed: timeout
 starting temporary observer for 10s...
 ```
 
@@ -656,7 +666,7 @@ REMOVED   peer/12D3...
 
 ### Nota implementativa
 
-L'edge admin ora espone `/services` con `count` e `items[]`, quindi `get services` puo' usare una cache locale reale quando un gateway locale e' gia' attivo. In assenza di cache, la CLI avvia un observer effimero con timeout esplicito.
+L'edge admin ora espone `/services` con `count` e `items[]`, quindi `get services` puo' usare una cache locale reale quando un gateway locale e' gia' attivo. In assenza di cache, la CLI prova prima una remote discovery query verso un bootstrap/relay peer e solo dopo fa fallback a un observer effimero con timeout esplicito.
 
 ---
 
