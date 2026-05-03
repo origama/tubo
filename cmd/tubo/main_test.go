@@ -113,6 +113,58 @@ func TestStripDetachArgs(t *testing.T) {
 	}
 }
 
+func TestStripNoInitArgs(t *testing.T) {
+	got, noInit := stripNoInitArgs([]string{"--target", "http://127.0.0.1:1234", "--no-init", "--name", "lmstudio"})
+	if !noInit {
+		t.Fatal("expected --no-init to be detected")
+	}
+	want := []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestMaybeImplicitInitCreatesConfigAndKey(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "cfg")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("CI", "")
+	if err := maybeImplicitInit("service", []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio", "--relay", "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWTestPeer"}, false); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configHome, "tubo", "config.yaml")
+	keyPath := filepath.Join(configHome, "tubo", "swarm.key")
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config not created: %v", err)
+	}
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Fatalf("swarm key not created: %v", err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Network.PrivateKeyFile != keyPath {
+		t.Fatalf("private_key_file = %q, want %q", cfg.Network.PrivateKeyFile, keyPath)
+	}
+	if len(cfg.Network.RelayPeers) != 1 {
+		t.Fatalf("relay_peers = %#v", cfg.Network.RelayPeers)
+	}
+	if !cfg.Network.Autorelay || !cfg.Network.HolePunching {
+		t.Fatalf("expected autorelay and hole punching defaults: %#v", cfg.Network)
+	}
+}
+
+func TestMaybeImplicitInitDisabled(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	if err := maybeImplicitInit("service", []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}, true); err == nil {
+		t.Fatal("expected --no-init to disable implicit init")
+	}
+	t.Setenv("CI", "true")
+	if err := maybeImplicitInit("service", []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}, false); err == nil {
+		t.Fatal("expected CI to disable implicit init")
+	}
+}
+
 func TestSanitizeProcessName(t *testing.T) {
 	if got := sanitizeProcessName("Reviewer.GPU Box"); got != "reviewer-gpu-box" {
 		t.Fatalf("sanitizeProcessName = %q", got)
