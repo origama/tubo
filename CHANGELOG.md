@@ -21,6 +21,37 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.2.0] - 2026-05-03
+
+CLI UX v2 milestone release with the intent-based/resource-oriented command set, daemonless local process management, docs-driven happy-path smoke coverage, and direct-first service connection behavior when relay fallback is also available.
+
+### Added
+- Intent-based CLI surface for `relay`, `attach`, `gateway`, `join`, and `connect`.
+- Resource-oriented swarm discovery commands: `get services`, `get service/<name>`, `describe service/<name>`, `inspect service/<name> --json`, and `watch services`.
+- Local detached process management commands: `ps`, `get processes`, `logs`, `stop`, `rm --stale`, `describe process/...`, and `inspect process/... --json`.
+- Docs-driven CLI happy-path smoke harness `tests/smoke-cli-ux.sh` plus dedicated CI coverage.
+- Direct-vs-relayed address classification in service discovery output and inspect JSON.
+- GitHub release workflow for publishing platform binaries and checksums to GitHub Releases.
+
+### Changed
+- `connect` now prefers direct service addresses when available and keeps relay addresses as explicit fallback.
+- `describe service/...` now shows dial policy plus separate direct and relayed address sections.
+- Default CLI workflow is now centered on `relay -> join -> attach -> get services -> connect`, while legacy role commands remain available as advanced compatibility commands.
+- Local detached process state/log management now follows stable `process/...` resource IDs.
+- Implicit local init for `attach`, `gateway`, and `relay` is now available outside CI, with `--no-init` and CI-safe fail-fast behavior.
+
+### Fixed
+- Same-machine relay/bootstrap setups no longer misleadingly prefer relayed service paths when a usable direct path is advertised.
+- `connect` output now clearly reports whether direct was selected, unavailable, or being kept behind relay fallback.
+- CLI UX smoke portability and CI reliability improved for local observer/cache discovery paths.
+- Release asset publishing workflow issues discovered in live validation were fixed, and published releases can now be re-run successfully.
+
+### Compatibility
+- Product version: v0.2.0
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none; this is a backward-compatible CLI/runtime feature release on top of protocol `1.1`
+
 ## [v0.1.3] - 2026-05-02
 
 Service-restart recovery release focused on reducing relayed traffic disruption during service restarts, especially on the real 3-host Linode bench.
