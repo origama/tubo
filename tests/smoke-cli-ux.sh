@@ -183,7 +183,11 @@ wait_file_nonempty "$XDG_DATA_HOME/tubo/logs/attach-lmstudio.log"
 # resource discovery without a local gateway cache
 "$BIN" get services --timeout 8s >"$WORK_DIR/get-services-live.out"
 assert_contains "no local cache found" "$WORK_DIR/get-services-live.out"
-assert_contains "starting temporary observer" "$WORK_DIR/get-services-live.out"
+if grep -F "querying discovery cache from" "$WORK_DIR/get-services-live.out" >/dev/null 2>&1; then
+  assert_contains "received" "$WORK_DIR/get-services-live.out"
+else
+  assert_contains "starting temporary observer" "$WORK_DIR/get-services-live.out"
+fi
 assert_contains "lmstudio" "$WORK_DIR/get-services-live.out"
 "$BIN" get service/lmstudio >"$WORK_DIR/get-service.out"
 assert_contains "lmstudio" "$WORK_DIR/get-service.out"

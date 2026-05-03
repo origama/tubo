@@ -18,6 +18,7 @@ import (
 	"github.com/multiformats/go-multiaddr"
 
 	"p2p-api-tunnel/internal/discovery"
+	discoveryquery "p2p-api-tunnel/internal/discovery/query"
 	"p2p-api-tunnel/internal/p2p"
 	"p2p-api-tunnel/internal/protocol"
 )
@@ -34,6 +35,8 @@ type App struct {
 	publisher             *discovery.Publisher
 	hb                    *discovery.HeartbeatLoop
 	health                *http.Server
+	cache                 *discovery.Cache
+	stopSubscriber        chan struct{}
 	relayInfos            []peer.AddrInfo
 	announcementTTL       time.Duration
 	requireRelayReadyAnn  bool
@@ -91,8 +94,17 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		_ = h.Close()
 		return nil, err
 	}
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	subscriber := discovery.NewPubSubSubscriber(topic, cache)
+	if pubKey := h.Peerstore().PubKey(h.ID()); pubKey != nil {
+		subscriber.AddPublicKey(h.ID(), pubKey)
+	}
+	stopSubscriber := subscriber.Start(ctx)
+
 	pk := h.Peerstore().PrivKey(h.ID())
 	if pk == nil {
+		close(stopSubscriber)
+		cache.Stop()
 		_ = h.Close()
 		return nil, fmt.Errorf("no private key for peer")
 	}
@@ -101,11 +113,14 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		cfg:                  cfg,
 		host:                 h,
 		publisher:            pub,
+		cache:                cache,
+		stopSubscriber:       stopSubscriber,
 		relayInfos:           relays,
 		announcementTTL:      computeAnnouncementTTL(cfg.HeartbeatInterval),
 		requireRelayReadyAnn: len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
 		relayConnected:       make(map[peer.ID]bool),
 	}
+	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
 	app.hb = discovery.NewHeartbeatLoopFunc(pub, cfg.HeartbeatInterval, app.currentAnnouncement)
 	app.registerRelayNotifiee()
 	return app, nil
@@ -149,6 +164,12 @@ func (a *App) Start(ctx context.Context) error {
 		sd, c := context.WithTimeout(context.Background(), 5*time.Second)
 		defer c()
 		_ = a.health.Shutdown(sd)
+	}
+	if a.stopSubscriber != nil {
+		close(a.stopSubscriber)
+	}
+	if a.cache != nil {
+		a.cache.Stop()
 	}
 	return nil
 }
@@ -222,12 +243,16 @@ func (a *App) currentAnnouncement() (discovery.Announcement, bool) {
 	if a.requireRelayReadyAnn {
 		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
 	}
-	return discovery.Announcement{
+	ann := discovery.Announcement{
 		ServiceName: a.cfg.ServiceName,
 		PeerID:      a.host.ID(),
 		Addresses:   addrs,
 		TTL:         a.announcementTTL,
-	}, true
+	}
+	if a.cache != nil {
+		_ = a.cache.Add(ann.PeerID, ann.ServiceName, ann.Addresses, ann.TTL)
+	}
+	return ann, true
 }
 
 func hasCircuitAddr(addrs []string) bool {

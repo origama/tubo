@@ -22,6 +22,7 @@ import (
 	"p2p-api-tunnel/internal/app/service"
 	cfgpkg "p2p-api-tunnel/internal/config"
 	"p2p-api-tunnel/internal/discovery"
+	discoveryquery "p2p-api-tunnel/internal/discovery/query"
 	"p2p-api-tunnel/internal/p2p"
 	iversion "p2p-api-tunnel/internal/version"
 	"path/filepath"
@@ -1111,9 +1112,10 @@ type serviceResource struct {
 }
 
 type discoveryLookupResult struct {
-	Services []serviceResource `json:"services"`
-	Messages []string          `json:"messages"`
-	Mode     string            `json:"mode"`
+	Services []serviceResource        `json:"services"`
+	Messages []string                 `json:"messages"`
+	Mode     string                   `json:"mode"`
+	Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
 }
 
 type serviceWatchEvent struct {
@@ -1413,11 +1415,12 @@ func getCmd(args []string) error {
 	case resource == "services":
 		if *jsonOut {
 			return printJSON(struct {
-				Mode     string            `json:"mode"`
-				Messages []string          `json:"messages"`
-				Count    int               `json:"count"`
-				Items    []serviceResource `json:"items"`
-			}{Mode: result.Mode, Messages: result.Messages, Count: len(result.Services), Items: result.Services})
+				Mode     string                   `json:"mode"`
+				Messages []string                 `json:"messages"`
+				Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
+				Count    int                      `json:"count"`
+				Items    []serviceResource        `json:"items"`
+			}{Mode: result.Mode, Messages: result.Messages, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
 		}
 		printMessages(result.Messages)
 		printServicesTable(result.Services)
@@ -1430,10 +1433,11 @@ func getCmd(args []string) error {
 		}
 		if *jsonOut {
 			return printJSON(struct {
-				Mode     string          `json:"mode"`
-				Messages []string        `json:"messages"`
-				Item     serviceResource `json:"item"`
-			}{Mode: result.Mode, Messages: result.Messages, Item: service})
+				Mode     string                   `json:"mode"`
+				Messages []string                 `json:"messages"`
+				Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
+				Item     serviceResource          `json:"item"`
+			}{Mode: result.Mode, Messages: result.Messages, Metadata: result.Metadata, Item: service})
 		}
 		printMessages(result.Messages)
 		printServicesTable([]serviceResource{service})
@@ -1516,10 +1520,11 @@ func inspectCmd(args []string) error {
 		return err
 	}
 	return printJSON(struct {
-		Mode     string          `json:"mode"`
-		Messages []string        `json:"messages"`
-		Item     serviceResource `json:"item"`
-	}{Mode: result.Mode, Messages: result.Messages, Item: service})
+		Mode     string                   `json:"mode"`
+		Messages []string                 `json:"messages"`
+		Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
+		Item     serviceResource          `json:"item"`
+	}{Mode: result.Mode, Messages: result.Messages, Metadata: result.Metadata, Item: service})
 }
 
 func watchCmd(args []string) error {
@@ -1580,6 +1585,20 @@ func discoverServices(configPath string, timeout time.Duration, cachedOnly, live
 		if cachedOnly {
 			return discoveryLookupResult{}, errors.New("no local cache found")
 		}
+		if services, metadata, messages, err := fetchRemoteServiceCache(cfg, timeout); err == nil {
+			if len(services) > 0 {
+				messages = append([]string{"no local cache found"}, messages...)
+				return discoveryLookupResult{Services: services, Messages: messages, Mode: "remote-query", Metadata: metadata}, nil
+			}
+		} else {
+			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
+			services, obsErr := observeServices(cfg, timeout, nil)
+			if obsErr != nil {
+				return discoveryLookupResult{}, obsErr
+			}
+			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
+			return discoveryLookupResult{Services: services, Messages: messages, Mode: "live"}, nil
+		}
 	}
 	services, err := observeServices(cfg, timeout, nil)
 	if err != nil {
@@ -1636,6 +1655,56 @@ func fetchLocalServiceCache(cfg cfgpkg.Config) ([]serviceResource, string, error
 	}
 	sortServiceResources(payload.Items)
 	return payload.Items, adminAddr, nil
+}
+
+func fetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]serviceResource, *discoveryquery.Metadata, []string, error) {
+	peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+	if len(peers) == 0 {
+		return nil, nil, nil, errors.New("no bootstrap or relay peers configured")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load private network key: %w", err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "", psk)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create remote query host: %w", err)
+	}
+	defer h.Close()
+	var lastErr error
+	for _, raw := range peers {
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			lastErr = fmt.Errorf("invalid bootstrap peer %q: %w", raw, err)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		resp, err := discoveryquery.ListServices(ctx, h, info)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.Error != "" {
+			lastErr = errors.New(resp.Error)
+			continue
+		}
+		services := make([]serviceResource, 0, len(resp.Services))
+		for _, service := range resp.Services {
+			services = append(services, serviceResourceFromQueryService(service))
+		}
+		sortServiceResources(services)
+		metadata := resp.Metadata
+		messages := []string{fmt.Sprintf("querying discovery cache from %s %s", metadata.ServedByRole, metadata.ServedBy), fmt.Sprintf("received %d services", len(services))}
+		return services, &metadata, messages, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("remote discovery query failed")
+	}
+	return nil, nil, nil, lastErr
 }
 
 func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serviceWatchEvent)) ([]serviceResource, error) {
@@ -1727,6 +1796,23 @@ func serviceResourceFromEntry(entry *discovery.ServiceEntry) serviceResource {
 		ExpiresInSeconds: int64(expiresIn.Seconds()),
 		Capabilities:     []string{},
 		RegisteredAt:     entry.Registered.Format(time.RFC3339),
+	})
+}
+
+func serviceResourceFromQueryService(service discoveryquery.Service) serviceResource {
+	return normalizeServiceResource(serviceResource{
+		Kind:             service.Kind,
+		Name:             service.Name,
+		PeerID:           service.PeerID,
+		Addresses:        append([]string(nil), service.Addresses...),
+		DirectAddresses:  append([]string(nil), service.DirectAddresses...),
+		RelayedAddresses: append([]string(nil), service.RelayedAddresses...),
+		Status:           service.Status,
+		Path:             service.Path,
+		TTLSeconds:       service.TTLSeconds,
+		ExpiresInSeconds: service.ExpiresInSeconds,
+		Capabilities:     append([]string(nil), service.Capabilities...),
+		RegisteredAt:     service.RegisteredAt,
 	})
 }
 
