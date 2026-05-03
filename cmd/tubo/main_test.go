@@ -407,16 +407,22 @@ func TestServiceResourceFromEntry(t *testing.T) {
 	entry := &discovery.ServiceEntry{
 		ServiceName: "lmstudio",
 		PeerID:      "12D3KooWTestPeer",
-		Addresses:   []string{"/ip4/1.2.3.4/tcp/4001/p2p-circuit/p2p/12D3KooWTestPeer"},
-		TTL:         30 * time.Second,
-		Registered:  time.Now().Add(-5 * time.Second),
+		Addresses: []string{
+			"/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWTestPeer",
+			"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWTestPeer",
+		},
+		TTL:        30 * time.Second,
+		Registered: time.Now().Add(-5 * time.Second),
 	}
 	got := serviceResourceFromEntry(entry)
 	if got.Name != "lmstudio" || got.Kind != "service" {
 		t.Fatalf("unexpected service view: %#v", got)
 	}
-	if got.Path != "relayed" {
-		t.Fatalf("path = %q, want relayed", got.Path)
+	if got.Path != "direct" {
+		t.Fatalf("path = %q, want direct", got.Path)
+	}
+	if len(got.DirectAddresses) != 1 || len(got.RelayedAddresses) != 1 {
+		t.Fatalf("unexpected address split: %#v", got)
 	}
 	if got.ExpiresInSeconds <= 0 || got.ExpiresInSeconds > 30 {
 		t.Fatalf("unexpected expires_in_seconds: %d", got.ExpiresInSeconds)
@@ -461,22 +467,61 @@ func TestChooseConnectLocal(t *testing.T) {
 	}
 }
 
-func TestPreferredConnectServiceAddr(t *testing.T) {
-	service := serviceResource{Name: "myapi", Path: "relayed", Addresses: []string{"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/target", "/ip4/5.6.7.8/tcp/4001/p2p/target"}}
-	addr, err := preferredConnectServiceAddr(service)
+func TestConnectCandidatesPreferDirectThenRelay(t *testing.T) {
+	service := serviceResource{Name: "myapi", Addresses: []string{
+		"/ip4/5.6.7.8/tcp/4001/p2p/target",
+		"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/target",
+	}}
+	candidates, err := connectCandidates(service)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(addr, "/p2p-circuit") {
-		t.Fatalf("expected relayed addr, got %q", addr)
+	if len(candidates) != 2 {
+		t.Fatalf("candidate count = %d", len(candidates))
 	}
-	service = serviceResource{Name: "myapi", Path: "direct", Addresses: []string{"/ip4/5.6.7.8/tcp/4001/p2p/target"}}
-	addr, err = preferredConnectServiceAddr(service)
+	if candidates[0].Path != "direct" || strings.Contains(candidates[0].Addr, "/p2p-circuit") {
+		t.Fatalf("first candidate = %#v, want direct", candidates[0])
+	}
+	if candidates[1].Path != "relayed" || !strings.Contains(candidates[1].Addr, "/p2p-circuit") {
+		t.Fatalf("second candidate = %#v, want relayed", candidates[1])
+	}
+}
+
+func TestConnectStatusMessages(t *testing.T) {
+	service := normalizeServiceResource(serviceResource{Name: "myapi", Addresses: []string{
+		"/ip4/5.6.7.8/tcp/4001/p2p/target",
+		"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/target",
+	}})
+	if got := connectDirectMessage(service, []connectAttempt{{Path: "direct", Addr: service.DirectAddresses[0], Status: "selected"}}, "direct"); got != "selected" {
+		t.Fatalf("direct selected message = %q", got)
+	}
+	if got := connectRelayMessage(service, service.DirectAddresses[0], "direct"); got != "available as fallback" {
+		t.Fatalf("relay fallback message = %q", got)
+	}
+	if got := connectDirectMessage(service, []connectAttempt{{Path: "direct", Addr: service.DirectAddresses[0], Status: "failed", Error: "timeout"}, {Path: "relayed", Addr: service.RelayedAddresses[0], Status: "selected"}}, "relayed"); got != "attempted, failed" {
+		t.Fatalf("direct fallback message = %q", got)
+	}
+	relayOnly := normalizeServiceResource(serviceResource{Name: "myapi", Addresses: []string{service.RelayedAddresses[0]}})
+	if got := connectDirectMessage(relayOnly, []connectAttempt{{Path: "relayed", Addr: relayOnly.RelayedAddresses[0], Status: "selected"}}, "relayed"); got != "unavailable, no direct addresses advertised" {
+		t.Fatalf("relay-only direct message = %q", got)
+	}
+}
+
+func TestPrintServiceDescriptionShowsAddressClasses(t *testing.T) {
+	out, err := capture(func() error {
+		printServiceDescription(serviceResource{Name: "myapi", Kind: "service", Status: "online", PeerID: "12D3KooWTestPeer", Addresses: []string{
+			"/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWTestPeer",
+			"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/12D3KooWTestPeer",
+		}}, []string{"starting temporary observer for 5s..."})
+		return nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if addr != service.Addresses[0] {
-		t.Fatalf("unexpected direct addr: %q", addr)
+	for _, want := range []string{"Path: direct", "Dial policy:", "preferred: direct", "fallback: relay", "Addresses:", "  Direct:", "  Relayed:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("description missing %q: %s", want, out)
+		}
 	}
 }
 

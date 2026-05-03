@@ -1100,6 +1100,8 @@ type serviceResource struct {
 	Name             string   `json:"name"`
 	PeerID           string   `json:"peer_id"`
 	Addresses        []string `json:"addresses"`
+	DirectAddresses  []string `json:"direct_addresses"`
+	RelayedAddresses []string `json:"relayed_addresses"`
 	Status           string   `json:"status"`
 	Path             string   `json:"path"`
 	TTLSeconds       int64    `json:"ttl_seconds"`
@@ -1142,10 +1144,26 @@ type servicesAdminResponse struct {
 	Items []serviceResource `json:"items"`
 }
 
+type connectAttempt struct {
+	Path   string `json:"path"`
+	Addr   string `json:"addr"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
 type connectResult struct {
-	Service string `json:"service"`
-	Local   string `json:"local"`
-	Path    string `json:"path"`
+	Service  string           `json:"service"`
+	Local    string           `json:"local"`
+	Path     string           `json:"path"`
+	Selected string           `json:"selected_addr,omitempty"`
+	Direct   string           `json:"direct,omitempty"`
+	Relay    string           `json:"relay,omitempty"`
+	Attempts []connectAttempt `json:"attempts,omitempty"`
+}
+
+type connectCandidate struct {
+	Path string
+	Addr string
 }
 
 func connectCmd(args []string) error {
@@ -1181,11 +1199,8 @@ func connectCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", serviceName)
 	}
+	serviceView = normalizeServiceResource(serviceView)
 	listenAddr, localURL, err := chooseConnectLocal(*local)
-	if err != nil {
-		return err
-	}
-	serviceAddr, err := preferredConnectServiceAddr(serviceView)
 	if err != nil {
 		return err
 	}
@@ -1197,7 +1212,6 @@ func connectCmd(args []string) error {
 		Listen:         listenAddr,
 		Seed:           cfg.Node.Seed,
 		P2PListen:      cfg.Node.P2PListen,
-		ServiceAddr:    serviceAddr,
 		PrivateKeyFile: cfg.Network.PrivateKeyFile,
 		PrivateKeyB64:  cfg.Network.PrivateKeyB64,
 	}
@@ -1209,11 +1223,13 @@ func connectCmd(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	app, err := bridge.New(ctx, bridgeCfg)
+	selectedPath, selectedAddr, attempts, app, err := connectBridge(ctx, bridgeCfg, serviceView)
 	if err != nil {
 		return err
 	}
-	output := connectResult{Service: serviceName, Local: localURL, Path: serviceView.Path}
+	directMsg := connectDirectMessage(serviceView, attempts, selectedPath)
+	relayMsg := connectRelayMessage(serviceView, selectedAddr, selectedPath)
+	output := connectResult{Service: serviceName, Local: localURL, Path: selectedPath, Selected: selectedAddr, Direct: directMsg, Relay: relayMsg, Attempts: attempts}
 	if *jsonOut {
 		if err := printJSON(output); err != nil {
 			return err
@@ -1221,7 +1237,13 @@ func connectCmd(args []string) error {
 	} else {
 		fmt.Printf("connected to service %q\n", serviceName)
 		fmt.Printf("local: %s\n", localURL)
-		fmt.Printf("path: %s\n", serviceView.Path)
+		fmt.Printf("path: %s\n", selectedPath)
+		if directMsg != "" {
+			fmt.Printf("direct: %s\n", directMsg)
+		}
+		if relayMsg != "" {
+			fmt.Printf("relay: %s\n", relayMsg)
+		}
 		fmt.Println("press Ctrl+C to stop")
 	}
 	return app.Start(ctx)
@@ -1243,18 +1265,84 @@ func chooseConnectLocal(local string) (listenAddr string, localURL string, err e
 	return addr, "http://" + addr, nil
 }
 
-func preferredConnectServiceAddr(service serviceResource) (string, error) {
-	if len(service.Addresses) == 0 {
-		return "", fmt.Errorf("service %q has no announced addresses", service.Name)
+func connectBridge(ctx context.Context, base bridge.Config, service serviceResource) (string, string, []connectAttempt, *bridge.App, error) {
+	candidates, err := connectCandidates(service)
+	if err != nil {
+		return "", "", nil, nil, err
 	}
-	if service.Path == "relayed" {
-		for _, addr := range service.Addresses {
-			if strings.Contains(addr, "/p2p-circuit") {
-				return addr, nil
-			}
+	attempts := make([]connectAttempt, 0, len(candidates))
+	for _, candidate := range candidates {
+		cfg := base
+		cfg.ServiceAddr = candidate.Addr
+		app, err := bridge.New(ctx, cfg)
+		if err != nil {
+			attempts = append(attempts, connectAttempt{Path: candidate.Path, Addr: candidate.Addr, Status: "failed", Error: err.Error()})
+			continue
+		}
+		attempts = append(attempts, connectAttempt{Path: candidate.Path, Addr: candidate.Addr, Status: "selected"})
+		return candidate.Path, candidate.Addr, attempts, app, nil
+	}
+	return "", "", attempts, nil, fmt.Errorf("connect to service %q failed: %s", service.Name, summarizeConnectAttempts(attempts))
+}
+
+func connectCandidates(service serviceResource) ([]connectCandidate, error) {
+	service = normalizeServiceResource(service)
+	if len(service.DirectAddresses) == 0 && len(service.RelayedAddresses) == 0 {
+		return nil, fmt.Errorf("service %q has no announced addresses", service.Name)
+	}
+	candidates := make([]connectCandidate, 0, len(service.DirectAddresses)+len(service.RelayedAddresses))
+	for _, addr := range service.DirectAddresses {
+		candidates = append(candidates, connectCandidate{Path: "direct", Addr: addr})
+	}
+	for _, addr := range service.RelayedAddresses {
+		candidates = append(candidates, connectCandidate{Path: "relayed", Addr: addr})
+	}
+	return candidates, nil
+}
+
+func summarizeConnectAttempts(attempts []connectAttempt) string {
+	parts := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.Status == "selected" {
+			parts = append(parts, fmt.Sprintf("%s succeeded", attempt.Path))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s failed (%s)", attempt.Path, attempt.Error))
+	}
+	if len(parts) == 0 {
+		return "no dial attempts"
+	}
+	return strings.Join(parts, "; ")
+}
+
+func connectDirectMessage(service serviceResource, attempts []connectAttempt, selectedPath string) string {
+	service = normalizeServiceResource(service)
+	if len(service.DirectAddresses) == 0 {
+		return "unavailable, no direct addresses advertised"
+	}
+	if selectedPath == "direct" {
+		return "selected"
+	}
+	for _, attempt := range attempts {
+		if attempt.Path == "direct" && attempt.Status == "failed" {
+			return "attempted, failed"
 		}
 	}
-	return service.Addresses[0], nil
+	return "available"
+}
+
+func connectRelayMessage(service serviceResource, selectedAddr, selectedPath string) string {
+	service = normalizeServiceResource(service)
+	if len(service.RelayedAddresses) == 0 {
+		return ""
+	}
+	if selectedPath == "direct" {
+		return "available as fallback"
+	}
+	if selectedAddr != "" {
+		return selectedAddr
+	}
+	return "selected"
 }
 
 func psCmd(args []string) error {
@@ -1543,6 +1631,9 @@ func fetchLocalServiceCache(cfg cfgpkg.Config) ([]serviceResource, string, error
 	if payload.Items == nil {
 		return nil, "", errors.New("edge admin did not return service details")
 	}
+	for i := range payload.Items {
+		payload.Items[i] = normalizeServiceResource(payload.Items[i])
+	}
 	sortServiceResources(payload.Items)
 	return payload.Items, adminAddr, nil
 }
@@ -1626,30 +1717,57 @@ func serviceResourceFromEntry(entry *discovery.ServiceEntry) serviceResource {
 	if expiresIn < 0 {
 		expiresIn = 0
 	}
-	return serviceResource{
+	return normalizeServiceResource(serviceResource{
 		Kind:             "service",
 		Name:             entry.ServiceName,
 		PeerID:           entry.PeerID.String(),
 		Addresses:        append([]string(nil), entry.Addresses...),
 		Status:           "online",
-		Path:             servicePathFromAddresses(entry.Addresses),
 		TTLSeconds:       int64(entry.TTL.Seconds()),
 		ExpiresInSeconds: int64(expiresIn.Seconds()),
 		Capabilities:     []string{},
 		RegisteredAt:     entry.Registered.Format(time.RFC3339),
+	})
+}
+
+func normalizeServiceResource(service serviceResource) serviceResource {
+	addresses := append([]string(nil), service.Addresses...)
+	if len(addresses) == 0 {
+		addresses = append(addresses, service.DirectAddresses...)
+		addresses = append(addresses, service.RelayedAddresses...)
 	}
+	direct, relayed := splitServiceAddresses(addresses)
+	service.Addresses = addresses
+	service.DirectAddresses = direct
+	service.RelayedAddresses = relayed
+	service.Path = servicePathFromAddresses(addresses)
+	if service.Capabilities == nil {
+		service.Capabilities = []string{}
+	}
+	return service
+}
+
+func splitServiceAddresses(addresses []string) (direct []string, relayed []string) {
+	for _, addr := range addresses {
+		if strings.Contains(addr, "/p2p-circuit/") {
+			relayed = append(relayed, addr)
+			continue
+		}
+		direct = append(direct, addr)
+	}
+	return direct, relayed
 }
 
 func servicePathFromAddresses(addresses []string) string {
-	if len(addresses) == 0 {
+	direct, relayed := splitServiceAddresses(addresses)
+	switch {
+	case len(direct) > 0:
+		return "direct"
+	case len(relayed) > 0:
+		return "relayed"
+	default:
 		return "unknown"
 	}
-	for _, addr := range addresses {
-		if strings.Contains(addr, "/p2p-circuit/") {
-			return "relayed"
-		}
-	}
-	return "direct"
 }
 
 func sortServiceResources(items []serviceResource) {
@@ -1681,6 +1799,7 @@ func printServicesTable(services []serviceResource) {
 }
 
 func printServiceDescription(service serviceResource, messages []string) {
+	service = normalizeServiceResource(service)
 	fmt.Printf("Name: %s\n", service.Name)
 	fmt.Printf("Kind: %s\n", service.Kind)
 	fmt.Printf("Status: %s\n", service.Status)
@@ -1696,12 +1815,34 @@ func printServiceDescription(service serviceResource, messages []string) {
 			fmt.Printf("  - %s\n", cap)
 		}
 	}
+	fmt.Println("Dial policy:")
+	switch {
+	case len(service.DirectAddresses) > 0:
+		fmt.Println("  preferred: direct")
+		if len(service.RelayedAddresses) > 0 {
+			fmt.Println("  fallback: relay")
+		}
+	case len(service.RelayedAddresses) > 0:
+		fmt.Println("  preferred: relay")
+		fmt.Println("  direct: unavailable")
+	default:
+		fmt.Println("  preferred: unknown")
+	}
 	fmt.Println("Addresses:")
-	if len(service.Addresses) == 0 {
-		fmt.Println("  - none")
+	fmt.Println("  Direct:")
+	if len(service.DirectAddresses) == 0 {
+		fmt.Println("    - none")
 	} else {
-		for _, addr := range service.Addresses {
-			fmt.Printf("  - %s\n", addr)
+		for _, addr := range service.DirectAddresses {
+			fmt.Printf("    - %s\n", addr)
+		}
+	}
+	fmt.Println("  Relayed:")
+	if len(service.RelayedAddresses) == 0 {
+		fmt.Println("    - none")
+	} else {
+		for _, addr := range service.RelayedAddresses {
+			fmt.Printf("    - %s\n", addr)
 		}
 	}
 	fmt.Println("Observed from:")
