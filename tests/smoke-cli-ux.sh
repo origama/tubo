@@ -190,6 +190,11 @@ assert_contains "lmstudio" "$WORK_DIR/get-service.out"
 "$BIN" describe service/lmstudio >"$WORK_DIR/describe-service.out"
 assert_contains "Name: lmstudio" "$WORK_DIR/describe-service.out"
 assert_contains "Kind: service" "$WORK_DIR/describe-service.out"
+assert_contains "Dial policy:" "$WORK_DIR/describe-service.out"
+assert_contains "preferred: direct" "$WORK_DIR/describe-service.out"
+assert_contains "fallback: relay" "$WORK_DIR/describe-service.out"
+assert_contains "  Direct:" "$WORK_DIR/describe-service.out"
+assert_contains "  Relayed:" "$WORK_DIR/describe-service.out"
 assert_contains "Observed from:" "$WORK_DIR/describe-service.out"
 "$BIN" inspect service/lmstudio --json >"$WORK_DIR/inspect-service.json"
 python3 - "$WORK_DIR/inspect-service.json" <<'PY'
@@ -199,6 +204,9 @@ with open(sys.argv[1], 'r', encoding='utf-8') as f:
 assert payload['item']['name'] == 'lmstudio', payload
 assert payload['item']['kind'] == 'service', payload
 assert payload['item']['status'] == 'online', payload
+assert payload['item']['path'] == 'direct', payload
+assert payload['item']['direct_addresses'], payload
+assert payload['item']['relayed_addresses'], payload
 PY
 
 echo "[smoke-cli-ux] starting foreground connect command"
@@ -216,6 +224,9 @@ for i in $(seq 1 80); do
   sleep 0.25
 done
 wait_http_ok "http://127.0.0.1:$connect_port/healthz"
+assert_contains "path: direct" "$WORK_DIR/connect.out"
+assert_contains "direct: selected" "$WORK_DIR/connect.out"
+assert_contains "relay: available as fallback" "$WORK_DIR/connect.out"
 connect_body="$WORK_DIR/connect-body.json"
 connect_code="$(curl -sS -o "$connect_body" -w '%{http_code}' -X POST -d 'hello-connect' "http://127.0.0.1:$connect_port/v1/dummy?from=connect")"
 if [[ "$connect_code" != "200" ]]; then
