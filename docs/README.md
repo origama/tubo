@@ -11,6 +11,7 @@ Available documentation:
 - [`VERSIONING.md`](./VERSIONING.md) — Policy di versioning prodotto/protocollo e compatibilita' tra ruoli
 - [`RELEASING.md`](./RELEASING.md) — Checklist manuale per tag, changelog e GitHub Release
 - [`cli.md`](./cli.md) — CLI reference per `tubo`, YAML config e topology
+- [`PROCESS_SUPERVISORS.md`](./PROCESS_SUPERVISORS.md) — Strategia consigliata per systemd/launchd senza introdurre un demone centrale
 - [`LINODE_TERRAFORM_TESTBENCH.md`](./LINODE_TERRAFORM_TESTBENCH.md) — Terraform stack + smoke harness per bench distribuito Linode multi-region
 - [`FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md`](./FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md) — Report della failure campaign sul bench distribuito a 2 macchine
 
