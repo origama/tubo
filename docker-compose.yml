@@ -12,12 +12,15 @@ services:
       - --seed
       - relay-demo-seed
     environment:
+      XDG_CONFIG_HOME: /etc/xdg
       RELAY_HEALTH_LISTEN: ":8092"
       ENABLE_RELAY_SERVICE: "true"
       ENABLE_AUTONAT_SERVICE: "true"
       ENABLE_DISCOVERY_PUBSUB: "true"
       FORCE_REACHABILITY_PUBLIC: "true"
       PRINT_RUN_COMMANDS: "false"
+    volumes:
+      - ./tests/compose/relay-default-config:/etc/xdg/tubo:ro
     ports:
       - "4002:4002"
       - "8092:8092"
@@ -29,6 +32,7 @@ services:
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
+      DUMMY_API_KNOWN_TEXT: "compose-root-known-ok"
     ports:
       - "8000:8000"
     healthcheck:

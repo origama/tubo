@@ -36,22 +36,19 @@ wait_http_ok() {
   return 1
 }
 
-echo "[smoke] docker compose up -d"
-if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
-  echo "[smoke] forcing image rebuild (sequential)"
-  build_ok=0
-  for attempt in 1 2 3; do
-    if compose_build_serial; then
-      build_ok=1
-      break
-    fi
-    echo "[smoke] compose build attempt $attempt failed, retrying..."
-    sleep 2
-  done
-  if [[ "$build_ok" != "1" ]]; then
-    echo "[smoke] compose build failed after 3 attempts"
-    exit 1
+echo "[smoke] docker compose build"
+build_ok=0
+for attempt in 1 2 3; do
+  if compose_build_serial; then
+    build_ok=1
+    break
   fi
+  echo "[smoke] compose build attempt $attempt failed, retrying..."
+  sleep 2
+done
+if [[ "$build_ok" != "1" ]]; then
+  echo "[smoke] compose build failed after 3 attempts"
+  exit 1
 fi
 
 up_ok=0
@@ -94,7 +91,25 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "[smoke] running end-to-end request through tubo edge"
+echo "[smoke] proving known-string fetch through tubo gateway"
+known_body="$(mktemp)"
+known_code="$(curl -sS -o "$known_body" -w "%{http_code}" \
+  -H "Host: myapi" \
+  "http://127.0.0.1:8443/known.txt")"
+
+if [[ "$known_code" != "200" ]]; then
+  echo "[smoke] expected HTTP 200 for known string, got $known_code"
+  cat "$known_body"
+  exit 1
+fi
+
+if [[ "$(tr -d '\r\n' < "$known_body")" != "compose-root-known-ok" ]]; then
+  echo "[smoke] known string mismatch"
+  cat "$known_body"
+  exit 1
+fi
+
+echo "[smoke] running end-to-end request through tubo gateway"
 payload="hello-compose"
 payload_b64="$(printf '%s' "$payload" | base64)"
 resp_headers="$(mktemp)"

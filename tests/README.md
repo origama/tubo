@@ -52,15 +52,16 @@ Il test verifica:
 - health endpoints up
 - discovery cache popolata (`/services`)
 - auto-route presente (`/routes`)
+- fetch di una stringa nota dal dummy backend tramite `Host: myapi`
 - chiamata end-to-end `Host: myapi` con risposta HTTP 200 e payload coerente
 
-## Smoke E2E tubo UX (Docker Compose)
+## Smoke E2E tubo UX (Docker Compose con relay + attach + connect)
 
-Verifica la nuova UX con immagine unica `tubo` e config YAML:
+Verifica davvero la nuova UX user-facing in Compose:
 
-- `tubo relay run --config /etc/tubo/relay.yaml`
-- `tubo edge run --config /etc/tubo/edge.yaml`
-- `tubo service run --config /etc/tubo/service.yaml`
+- `tubo relay`
+- `tubo attach`
+- `tubo connect`
 
 Comando:
 
@@ -68,7 +69,15 @@ Comando:
 ./tests/smoke-compose-tubo.sh
 ```
 
-Lo script genera `generated/tubo-smoke/*.yaml`, avvia `docker-compose.tubo.yml`, attende health/discovery/route e fa una richiesta end-to-end via edge.
+Lo script:
+
+- genera `swarm.key`
+- prepara config `join`-like per `attach` e `connect`
+- avvia `docker-compose.tubo.yml`
+- aspetta `relay`, `attach` e `connect`
+- fa una `GET /known.txt` sul listener locale di `connect`
+- verifica una stringa nota servita dal dummy backend
+- fa anche una richiesta `POST /v1/dummy` attraverso `connect` e verifica echo di path/query/body
 
 ## Smoke E2E Relay/NAT-like (Docker Compose con reti isolate)
 
@@ -86,7 +95,10 @@ Comando:
 ./tests/smoke-compose-relay-nat.sh
 ```
 
-Il test verifica anche nei log dell'edge che il percorso usato sia `connection_path=relayed`.
+Il test verifica anche:
+
+- fetch di una stringa nota dal backend attraverso il path relayed
+- nei log dell'edge che il percorso usato sia `connection_path=relayed`
 
 ## Smoke E2E Private Overlay Multi-Service (Docker Compose con 3 service nodes)
 
@@ -120,6 +132,7 @@ Il test verifica:
 - discovery cache con `count=3`
 - auto-route per `svc-one`, `svc-two`, `svc-three`
 - routing host-based verso i tre backend tramite un solo endpoint edge
+- fetch di una stringa nota distinta per ciascun backend
 - risposta coerente dal backend atteso (`instance`)
 
 ## Smoke E2E Distributed 2-host (edge locale + relay remoto)

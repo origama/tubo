@@ -10,22 +10,28 @@ import (
 )
 
 type dummyResponse struct {
-	Instance   string            `json:"instance,omitempty"`
-	Method     string            `json:"method"`
-	Path       string            `json:"path"`
-	RawQuery   string            `json:"raw_query"`
-	Headers    map[string]string `json:"headers"`
-	BodyB64    string            `json:"body_b64,omitempty"`
+	Instance string            `json:"instance,omitempty"`
+	Method   string            `json:"method"`
+	Path     string            `json:"path"`
+	RawQuery string            `json:"raw_query"`
+	Headers  map[string]string `json:"headers"`
+	BodyB64  string            `json:"body_b64,omitempty"`
 }
 
 func main() {
 	listen := getenv("DUMMY_API_LISTEN", "127.0.0.1:8000")
 	instance := getenv("DUMMY_API_INSTANCE", "")
+	knownText := getenv("DUMMY_API_KNOWN_TEXT", "tubo-dummy-known-ok")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
+	})
+	mux.HandleFunc("/known.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(knownText))
 	})
 	mux.HandleFunc("/v1/dummy", func(w http.ResponseWriter, r *http.Request) {
 		headers := map[string]string{}

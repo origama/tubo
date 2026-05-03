@@ -6,6 +6,7 @@ services:
       dockerfile: deploy/Dockerfile.tubo
     command: ["relay", "run", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
     environment:
+      XDG_CONFIG_HOME: /etc/xdg
       RELAY_HEALTH_LISTEN: ":8092"
       ENABLE_RELAY_SERVICE: "true"
       ENABLE_AUTONAT_SERVICE: "true"
@@ -14,6 +15,8 @@ services:
       RELAY_LIMIT_DATA_BYTES: "268435456"
       RELAY_MAX_CIRCUITS: "64"
       PRINT_RUN_COMMANDS: "false"
+    volumes:
+      - ./tests/compose/relay-default-config:/etc/xdg/tubo:ro
     ports:
       - "8092:8092"
     networks:
@@ -27,6 +30,7 @@ services:
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
+      DUMMY_API_KNOWN_TEXT: "compose-nat-known-ok"
     ports:
       - "8000:8000"
     networks:

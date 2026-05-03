@@ -4,9 +4,22 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
-    command: ["relay", "run", "--config", "/etc/tubo/relay.yaml"]
+    command:
+      - relay
+      - --listen
+      - /ip4/0.0.0.0/tcp/4002
+      - --seed
+      - relay-demo-seed
+    environment:
+      XDG_CONFIG_HOME: /etc/xdg
+      RELAY_HEALTH_LISTEN: ":8092"
+      ENABLE_RELAY_SERVICE: "true"
+      ENABLE_AUTONAT_SERVICE: "true"
+      ENABLE_DISCOVERY_PUBSUB: "true"
+      FORCE_REACHABILITY_PUBLIC: "true"
+      PRINT_RUN_COMMANDS: "false"
     volumes:
-      - ./generated/tubo-smoke/relay.yaml:/etc/tubo/relay.yaml:ro
+      - ./generated/tubo-smoke/relay-config:/etc/xdg/tubo:ro
     ports:
       - "4002:4002"
       - "8092:8092"
@@ -18,34 +31,64 @@ services:
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
+      DUMMY_API_INSTANCE: "myapi"
+      DUMMY_API_KNOWN_TEXT: "tubo-compose-connect-known-ok"
     ports:
       - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8000/healthz >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
 
-  tubo-edge:
-    image: p2p-api-tunnel-tubo:dev
-    build:
-      context: .
-      dockerfile: deploy/Dockerfile.tubo
-    command: ["edge", "run", "--config", "/etc/tubo/edge.yaml"]
-    volumes:
-      - ./generated/tubo-smoke/edge.yaml:/etc/tubo/edge.yaml:ro
-    ports:
-      - "8443:8443"
-      - "8444:8444"
-      - "4001:4001"
-
-  tubo-service:
+  tubo-attach:
     image: p2p-api-tunnel-tubo:dev
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - tubo-dummy-api-server
-      - tubo-edge
       - tubo-relay
-    command: ["service", "run", "--config", "/etc/tubo/service.yaml"]
+    command:
+      - attach
+      - --target
+      - http://tubo-dummy-api-server:8000
+      - --name
+      - myapi
+      - --seed
+      - service-demo-seed
+      - --p2p-listen
+      - /ip4/0.0.0.0/tcp/40123
+      - --heartbeat-interval
+      - 1s
+    environment:
+      XDG_CONFIG_HOME: /etc/xdg
+      SERVICE_HEALTH_LISTEN: ":8091"
     volumes:
-      - ./generated/tubo-smoke/service.yaml:/etc/tubo/service.yaml:ro
+      - ./generated/tubo-smoke/attach-config:/etc/xdg/tubo:ro
     ports:
       - "8091:8091"
-      - "40123:40123"
+
+  tubo-connect:
+    image: p2p-api-tunnel-tubo:dev
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.tubo
+    depends_on:
+      - tubo-attach
+      - tubo-relay
+    command:
+      - connect
+      - myapi
+      - --local
+      - 0.0.0.0:18081
+      - --timeout
+      - 15s
+      - --live
+    environment:
+      XDG_CONFIG_HOME: /etc/xdg
+    volumes:
+      - ./generated/tubo-smoke/connect-config:/etc/xdg/tubo:ro
+    restart: on-failure
+    ports:
+      - "18081:18081"

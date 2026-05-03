@@ -65,7 +65,25 @@ for i in $(seq 1 60); do
   sleep 1
 done
 
-echo "[smoke-nat] running end-to-end request through tubo edge"
+echo "[smoke-nat] proving known-string fetch through relayed path"
+known_body="$(mktemp)"
+known_code="$(curl -sS -o "$known_body" -w "%{http_code}" \
+  -H "Host: myapi" \
+  "http://127.0.0.1:8443/known.txt")"
+
+if [[ "$known_code" != "200" ]]; then
+  echo "[smoke-nat] expected HTTP 200 for known string, got $known_code"
+  cat "$known_body"
+  exit 1
+fi
+
+if [[ "$(tr -d '\r\n' < "$known_body")" != "compose-nat-known-ok" ]]; then
+  echo "[smoke-nat] known string mismatch"
+  cat "$known_body"
+  exit 1
+fi
+
+echo "[smoke-nat] running end-to-end request through tubo gateway"
 payload="hello-relay-nat"
 payload_b64="$(printf '%s' "$payload" | base64)"
 resp_body="$(mktemp)"
@@ -103,9 +121,10 @@ if ! grep -q "\"body_b64\":\"$payload_b64\"" "$resp_body"; then
 fi
 
 echo "[smoke-nat] verifying relay fallback path from edge logs"
-if ! $COMPOSE logs edge --no-color 2>/dev/null | grep -q 'connection_path=relayed'; then
+edge_logs="$($COMPOSE logs edge --no-color 2>/dev/null || true)"
+if ! grep -q 'connection_path=relayed' <<<"$edge_logs"; then
   echo "[smoke-nat] expected relayed connection path in edge logs"
-  $COMPOSE logs edge --no-color || true
+  printf '%s\n' "$edge_logs"
   exit 1
 fi
 

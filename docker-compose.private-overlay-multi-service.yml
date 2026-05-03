@@ -13,6 +13,7 @@ services:
       dockerfile: deploy/Dockerfile.tubo
     command: ["relay", "run", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
     environment:
+      XDG_CONFIG_HOME: /etc/xdg
       RELAY_HEALTH_LISTEN: ":8092"
       ENABLE_RELAY_SERVICE: "true"
       ENABLE_AUTONAT_SERVICE: "true"
@@ -22,6 +23,8 @@ services:
       RELAY_MAX_CIRCUITS: "128"
       PRINT_RUN_COMMANDS: "false"
       LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    volumes:
+      - ./tests/compose/relay-default-config:/etc/xdg/tubo:ro
     networks:
       - edge-private
       - service-one-private
@@ -74,6 +77,7 @@ services:
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
       DUMMY_API_INSTANCE: "svc-one"
+      DUMMY_API_KNOWN_TEXT: "svc-one-known-ok"
     networks:
       - service-one-private
     healthcheck:
@@ -120,6 +124,7 @@ services:
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
       DUMMY_API_INSTANCE: "svc-two"
+      DUMMY_API_KNOWN_TEXT: "svc-two-known-ok"
     networks:
       - service-two-private
     healthcheck:
@@ -166,6 +171,7 @@ services:
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
       DUMMY_API_INSTANCE: "svc-three"
+      DUMMY_API_KNOWN_TEXT: "svc-three-known-ok"
     networks:
       - service-three-private
     healthcheck:

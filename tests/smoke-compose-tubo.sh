@@ -15,7 +15,7 @@ trap cleanup EXIT
 
 wait_http_ok() {
   local url="$1"
-  local tries="${2:-60}"
+  local tries="${2:-90}"
   local i
   for i in $(seq 1 "$tries"); do
     if curl -fsS "$url" >/dev/null 2>&1; then
@@ -26,61 +26,6 @@ wait_http_ok() {
   return 1
 }
 
-mkdir -p generated/tubo-smoke
-
-relay_id="$(go run ./cmd/tubo id from-seed relay-demo-seed)"
-edge_id="$(go run ./cmd/tubo id from-seed edge-demo-seed)"
-relay_addr="/dns4/tubo-relay/tcp/4002/p2p/${relay_id}"
-edge_addr="/dns4/tubo-edge/tcp/4001/p2p/${edge_id}"
-
-cat > generated/tubo-smoke/relay.yaml <<YAML
-role: relay
-node:
-  seed: relay-demo-seed
-  p2p_listen: /ip4/0.0.0.0/tcp/4002
-relay:
-  health_listen: :8092
-  enable_relay_service: true
-  enable_autonat_service: true
-  enable_discovery_pubsub: true
-  force_reachability_public: true
-  print_run_commands: false
-YAML
-
-cat > generated/tubo-smoke/edge.yaml <<YAML
-role: edge
-node:
-  seed: edge-demo-seed
-  p2p_listen: /ip4/0.0.0.0/tcp/4001
-network:
-  relay_peers:
-    - ${relay_addr}
-edge:
-  listen: :8443
-  admin_listen: :8444
-  direct_stream_timeout: 750ms
-YAML
-
-cat > generated/tubo-smoke/service.yaml <<YAML
-role: service
-node:
-  seed: service-demo-seed
-  p2p_listen: /ip4/0.0.0.0/tcp/40123
-network:
-  bootstrap_peers:
-    - ${edge_addr}
-    - ${relay_addr}
-  relay_peers:
-    - ${relay_addr}
-  autorelay: true
-  hole_punching: true
-service:
-  name: myapi
-  target: http://tubo-dummy-api-server:8000
-health_listen: :8091
-heartbeat_interval: 5s
-YAML
-
 compose_build_serial() {
   if $COMPOSE build --help 2>/dev/null | grep -q -- "--no-parallel"; then
     $COMPOSE build --no-parallel
@@ -89,47 +34,75 @@ compose_build_serial() {
   COMPOSE_PARALLEL_LIMIT=1 $COMPOSE build
 }
 
-if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
-  echo "[smoke-tubo] forcing image rebuild"
-  compose_build_serial
-fi
+mkdir -p generated/tubo-smoke
+rm -rf generated/tubo-smoke/relay-config generated/tubo-smoke/attach-config generated/tubo-smoke/connect-config generated/tubo-smoke/swarm.key
+mkdir -p generated/tubo-smoke/relay-config
+
+echo "[smoke-tubo] generating compose UX config dirs"
+go run ./cmd/tubo keygen swarm --out generated/tubo-smoke/swarm.key >/dev/null
+relay_id="$(go run ./cmd/tubo id from-seed relay-demo-seed | tr -d '\n')"
+relay_addr="/dns4/tubo-relay/tcp/4002/p2p/${relay_id}"
+
+cp generated/tubo-smoke/swarm.key generated/tubo-smoke/relay-config/swarm.key
+cat > generated/tubo-smoke/relay-config/config.yaml <<'YAML'
+role: relay
+network:
+  private_key_file: /etc/xdg/tubo/swarm.key
+YAML
+
+go run ./cmd/tubo join \
+  --force \
+  --config-dir generated/tubo-smoke/attach-config \
+  --relay "$relay_addr" \
+  --swarm-key generated/tubo-smoke/swarm.key >/dev/null
+
+go run ./cmd/tubo join \
+  --force \
+  --config-dir generated/tubo-smoke/connect-config \
+  --relay "$relay_addr" \
+  --swarm-key generated/tubo-smoke/swarm.key >/dev/null
+
+sed -i 's|private_key_file: .*|private_key_file: /etc/xdg/tubo/swarm.key|' generated/tubo-smoke/attach-config/config.yaml
+sed -i 's|private_key_file: .*|private_key_file: /etc/xdg/tubo/swarm.key|' generated/tubo-smoke/connect-config/config.yaml
+chmod 755 generated/tubo-smoke/relay-config generated/tubo-smoke/attach-config generated/tubo-smoke/connect-config
+chmod 644 generated/tubo-smoke/relay-config/config.yaml generated/tubo-smoke/relay-config/swarm.key
+chmod 644 generated/tubo-smoke/attach-config/config.yaml generated/tubo-smoke/attach-config/swarm.key
+chmod 644 generated/tubo-smoke/connect-config/config.yaml generated/tubo-smoke/connect-config/swarm.key
+
+echo "[smoke-tubo] docker compose build"
+compose_build_serial
 
 echo "[smoke-tubo] docker compose up -d"
 $COMPOSE up -d --remove-orphans
 
 echo "[smoke-tubo] waiting for health endpoints"
 wait_http_ok "http://127.0.0.1:8000/healthz"
-wait_http_ok "http://127.0.0.1:8443/healthz"
-wait_http_ok "http://127.0.0.1:8444/healthz"
 wait_http_ok "http://127.0.0.1:8091/healthz"
 wait_http_ok "http://127.0.0.1:8092/healthz"
+wait_http_ok "http://127.0.0.1:18081/healthz"
 
-echo "[smoke-tubo] waiting for discovery cache and route"
-for i in $(seq 1 75); do
-  services_json="$(curl -fsS http://127.0.0.1:8444/services || true)"
-  routes_json="$(curl -fsS http://127.0.0.1:8444/routes || true)"
-  if echo "$services_json" | grep -Eq '"count"[[:space:]]*:[[:space:]]*1' && \
-     echo "$routes_json" | grep -q '"hostname":"myapi"'; then
-    break
-  fi
-  if [[ "$i" == "75" ]]; then
-    echo "[smoke-tubo] discovery not ready"
-    echo "services: $services_json"
-    echo "routes:   $routes_json"
-    exit 1
-  fi
-  sleep 1
-done
+echo "[smoke-tubo] proving known-string fetch through tubo connect"
+known_body="$(mktemp)"
+known_code="$(curl -sS -o "$known_body" -w "%{http_code}" "http://127.0.0.1:18081/known.txt")"
+if [[ "$known_code" != "200" ]]; then
+  echo "[smoke-tubo] expected HTTP 200 for known string, got $known_code"
+  cat "$known_body"
+  exit 1
+fi
+if [[ "$(tr -d '\r\n' < "$known_body")" != "tubo-compose-connect-known-ok" ]]; then
+  echo "[smoke-tubo] known string mismatch"
+  cat "$known_body"
+  exit 1
+fi
 
-echo "[smoke-tubo] running end-to-end request"
-payload="hello-tubo-compose"
+echo "[smoke-tubo] running end-to-end request through tubo connect"
+payload="hello-tubo-compose-connect"
 payload_b64="$(printf '%s' "$payload" | base64)"
 resp_body="$(mktemp)"
 http_code="$(curl -sS -o "$resp_body" -w "%{http_code}" \
-  -H "Host: myapi" \
   -H "Content-Type: text/plain" \
   --data "$payload" \
-  "http://127.0.0.1:8443/v1/dummy?from=tubo-compose")"
+  "http://127.0.0.1:18081/v1/dummy?from=tubo-compose-connect")"
 
 if [[ "$http_code" != "200" ]]; then
   echo "[smoke-tubo] expected HTTP 200, got $http_code"
@@ -137,9 +110,10 @@ if [[ "$http_code" != "200" ]]; then
   exit 1
 fi
 
+grep -q '"instance":"myapi"' "$resp_body"
 grep -q '"method":"POST"' "$resp_body"
 grep -q '"path":"/v1/dummy"' "$resp_body"
-grep -q '"raw_query":"from=tubo-compose"' "$resp_body"
+grep -q '"raw_query":"from=tubo-compose-connect"' "$resp_body"
 grep -q "\"body_b64\":\"$payload_b64\"" "$resp_body"
 
-echo "[smoke-tubo] PASS: tubo compose stack works"
+echo "[smoke-tubo] PASS: compose UX stack works via relay + attach + connect"

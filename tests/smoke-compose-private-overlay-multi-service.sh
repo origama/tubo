@@ -51,6 +51,12 @@ request_from_edge() {
     "curl --fail-with-body -sS -H 'Host: $host' -H 'Content-Type: text/plain' --data '$payload' 'http://edge:8443/v1/dummy?$query'"
 }
 
+request_known_from_edge() {
+  local host="$1"
+  $COMPOSE exec -T curl-client sh -lc \
+    "curl --fail-with-body -sS -H 'Host: $host' 'http://edge:8443/known.txt'"
+}
+
 edge_admin_get() {
   local path="$1"
   $COMPOSE exec -T curl-client sh -lc "curl --fail-with-body -sS 'http://edge:8444$path'"
@@ -110,6 +116,9 @@ payload="hello-private-overlay"
 payload_b64="$(printf '%s' "$payload" | base64 | tr -d '\n')"
 
 for host in svc-one svc-two svc-three; do
+  known_response="$(request_known_from_edge "$host")"
+  assert_contains "${host}-known-ok" "$known_response" "expected known string from $host"
+
   response="$(request_from_edge "$host" "$payload" "from=private-multi&service=$host")"
   assert_contains '"method":"POST"' "$response" "expected POST response for $host"
   assert_contains '"path":"/v1/dummy"' "$response" "expected /v1/dummy path for $host"
