@@ -206,6 +206,8 @@ Quando usi `-d`, `tubo` salva state locale in stile daemonless:
 
 con supporto XDG tramite `XDG_DATA_HOME` quando impostato.
 
+Per persistenza dopo reboot o restart-on-failure tramite supervisor del sistema operativo, vedi anche `docs/PROCESS_SUPERVISORS.md`.
+
 ## Processi locali vs risorse nello swarm
 
 Questa distinzione e' importante:
