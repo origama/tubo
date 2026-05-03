@@ -14,6 +14,25 @@ Questa proposta non rimuove subito i comandi attuali. Li riclassifica come layer
 
 ---
 
+## Stato implementazione corrente
+
+Gia' implementato nella CLI corrente:
+
+- `attach`, `connect`, `gateway`, `relay`;
+- `join`;
+- `-d` / `--detach` con state locale XDG-style;
+- `ps`, `get processes`, `logs`, `stop`, `rm --stale`, `describe process/...`, `inspect process/...`;
+- `get services`, `get service/<name>`, `describe service/<name>`, `inspect service/<name> --json`, `watch services`;
+- init implicito locale per `attach`, `gateway` e `relay`.
+
+Ancora fuori scope / futuro in questo documento:
+
+- `get agents`, `get peers`;
+- `watch events`;
+- integrazione opzionale systemd/launchd.
+
+---
+
 ## Obiettivi
 
 La nuova UX dovrebbe permettere di:
@@ -139,9 +158,9 @@ route/lmstudio
 | topology/config manuale per entrare in uno swarm | `tubo join --relay ... --swarm-key ...` | Importa configurazione di uno swarm esistente. |
 | `tubo mesh services` | `tubo get services` | `mesh` non e' necessario come namespace primario. |
 | `tubo mesh inspect X` | `tubo describe X` / `tubo inspect X` | `describe` per output umano, `inspect` per output tecnico/raw. |
-| `tubo mesh watch` | `tubo watch services` / `tubo watch events` | Watch diventa un verbo top-level. |
+| `tubo mesh watch` | `tubo watch services` | Watch diventa un verbo top-level. |
 | processi in foreground | default | Nessun flag necessario. |
-| processi in background | `-d` / `--detach` | Da implementare con state locale, senza demone centrale. |
+| processi in background | `-d` / `--detach` | Implementato con state locale, senza demone centrale. |
 
 I comandi esistenti possono restare disponibili come advanced/compatibility commands:
 
@@ -396,12 +415,6 @@ Alias breve ammesso se non ambiguo:
 tubo stop attach-lmstudio
 ```
 
-Tutti:
-
-```bash
-tubo stop --all
-```
-
 ### `tubo describe process/...`
 
 ```bash
@@ -436,7 +449,6 @@ Rimuove state/log locali di processi terminati.
 
 ```bash
 tubo rm --stale
-tubo rm process/connect-lmstudio-51234
 ```
 
 ---
@@ -627,6 +639,8 @@ REMOVED   service/old-service
 
 ### `tubo watch events`
 
+Futuro, se verra' introdotto uno stream eventi generalizzato oltre ai servizi.
+
 ```bash
 tubo watch events
 ```
@@ -642,14 +656,7 @@ REMOVED   peer/12D3...
 
 ### Nota implementativa
 
-Oggi l'edge espone un endpoint `/services`, ma restituisce solo un conteggio. Per `get services` serve esporre o ottenere una lista completa di discovery entries, con almeno:
-
-- service name;
-- peer ID;
-- addresses;
-- TTL;
-- registered/age/expires;
-- eventuale kind/capabilities future.
+L'edge admin ora espone `/services` con `count` e `items[]`, quindi `get services` puo' usare una cache locale reale quando un gateway locale e' gia' attivo. In assenza di cache, la CLI avvia un observer effimero con timeout esplicito.
 
 ---
 
@@ -1269,20 +1276,17 @@ La UX primaria non richiede piu' un namespace `mesh`. Se in futuro serve, `tubo 
 
 ## MVP suggerito
 
-Ordine consigliato:
+Ordine consigliato / stato attuale:
 
-1. introdurre alias intent-based semplici:
-   - `attach`;
-   - `gateway`;
-   - short `relay`;
-2. implementare `join` come config import;
-3. implementare `-d/--detach`;
-4. implementare `ps/logs/stop/inspect/rm`;
-5. implementare `connect <service>` by discovery;
-6. implementare `get services`, `describe service/...`, `watch services`;
-7. aggiungere init implicito;
-8. aggiornare docs/README;
-9. investigare systemd/launchd.
+1. introdurre alias intent-based semplici — fatto;
+2. implementare `join` come config import — fatto;
+3. implementare `-d/--detach` — fatto;
+4. implementare `ps/logs/stop/inspect/rm` — fatto;
+5. implementare `connect <service>` by discovery — fatto;
+6. implementare `get services`, `describe service/...`, `watch services` — fatto;
+7. aggiungere init implicito — fatto;
+8. aggiornare docs/README — documentato con #47;
+9. investigare systemd/launchd — rimane #48.
 
 ---
 
@@ -1303,12 +1307,12 @@ Sub-issue operative esistenti:
 #43 — CLI UX v2: aggiungere process management locale ps/logs/stop/inspect/rm
 #44 — CLI UX v2: implementare tubo join per configurare uno swarm esistente
 #45 — CLI UX v2: aggiungere init implicito locale quando manca la config
-#46 — CLI UX v2: aggiungere mesh discovery commands
+#46 — CLI UX v2: aggiungere resource discovery commands
 #47 — CLI UX v2: documentare nuova UX e compatibilita' con role commands
 #48 — CLI UX v2: investigare integrazione systemd/launchd per processi persistenti
 ```
 
-Nota: #46 dovrebbe essere rivista/rinominata in ottica `get/describe/watch` invece che `mesh` come namespace primario.
+Le sub-issue #40, #41, #42, #43, #44, #45 e #46 sono state poi implementate in questa forma resource-oriented.
 
 ---
 
@@ -1331,15 +1335,8 @@ Nota: #46 dovrebbe essere rivista/rinominata in ottica `get/describe/watch` inve
 
 ## Open questions
 
-- `connect` deve essere implementato evolvendo `bridge` o creando un mini-edge locale?
-- `get services` deve avviare un nodo discovery temporaneo o interrogare un processo locale esistente?
-- Un relay deve esporre una cache discovery interrogabile o restare solo transport/discovery router?
-- Come gestire il timeout discovery nei comandi one-shot?
-- Quale formato usare per lo state locale dei processi detached?
-- Come gestire collisioni di ID, ad esempio due `attach` con lo stesso nome?
-- Quali comandi devono supportare init implicito?
-- In CI, l'init implicito deve essere disabilitato di default?
 - Quando introdurre `kind=agent` e `capabilities` negli announcement?
 - Come collegare `agent_name`, `service_name`, `peer_id` e policy?
 - Quanto mantenere in vita i vecchi role commands nella documentazione principale?
-- Conviene rinominare #46 da `mesh discovery commands` a `resource discovery commands`?
+- Come presentare in futuro `get peers` / `get agents` senza sovraccaricare il quickstart?
+- Quale integrazione opzionale offrire per systemd/launchd senza indebolire il modello daemonless?
