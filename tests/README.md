@@ -1,5 +1,29 @@
 # Tests
 
+## Smoke E2E CLI UX v2 (locale, senza Docker)
+
+Valida i principali happy path documentati per la nuova CLI user-facing usando solo processi locali, porte dinamiche, directory temporanee e mock HTTP server locale.
+
+Copre:
+
+- `relay -d`
+- `join`
+- `attach -d`
+- `ps` / `get processes` / `describe process/...` / `inspect process/... --json` / `logs` / `stop` / `rm --stale`
+- `get services` senza gateway locale (observer effimero)
+- `get service/<name>` / `describe service/<name>` / `inspect service/<name> --json`
+- `connect <service-name>` + richiesta HTTP reale
+- `gateway -d` + richiesta HTTP reale con `Host:`
+- smoke di foreground-by-default per `attach` senza `-d`
+
+Comando:
+
+```bash
+./tests/smoke-cli-ux.sh
+```
+
+Imposta `KEEP_WORK=1` per preservare la working directory temporanea in caso di debug.
+
 ## Smoke E2E (Docker Compose)
 
 Esegue il percorso minimo completo:
