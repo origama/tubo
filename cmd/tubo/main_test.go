@@ -499,6 +499,54 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	}
 }
 
+func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "remote-query-service-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	if err := cache.Add(server.ID(), "myapi", []string{p2p.PeerAddrs(server)[0]}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfgYAML := fmt.Sprintf("network:\n  private_key_file: %s\n  bootstrap_peers:\n    - %s\nedge:\n  admin_listen: 127.0.0.1:1\n", keyPath, p2p.PeerAddrs(server)[0])
+	if err := os.WriteFile(configPath, []byte(cfgYAML), 0600); err != nil {
+		t.Fatal(err)
+	}
+	result, service, err := discoverService(configPath, "myapi", 5*time.Second, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != "remote-query" {
+		t.Fatalf("mode = %q, want remote-query", result.Mode)
+	}
+	if result.Metadata == nil || result.Metadata.ServedByRole != "relay" {
+		t.Fatalf("unexpected metadata: %#v", result.Metadata)
+	}
+	if service.Name != "myapi" {
+		t.Fatalf("unexpected service: %#v", service)
+	}
+	joined := strings.Join(result.Messages, "\n")
+	if !strings.Contains(joined, "querying discovery cache from relay") || !strings.Contains(joined, "received service myapi") {
+		t.Fatalf("unexpected messages: %s", joined)
+	}
+}
+
 func TestChooseConnectLocal(t *testing.T) {
 	listen, url, err := chooseConnectLocal("127.0.0.1:51234")
 	if err != nil {

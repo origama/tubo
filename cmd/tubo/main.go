@@ -1193,11 +1193,7 @@ func connectCmd(args []string) error {
 	} else if fs.NArg() != 0 {
 		return errors.New("usage: tubo connect <service-name> [--local host:port] [flags]")
 	}
-	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
-	if err != nil {
-		return err
-	}
-	serviceView, err := requireService(result.Services, serviceName)
+	result, serviceView, err := discoverService(*configPath, serviceName, *timeout, *cachedOnly, *live)
 	if err != nil {
 		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", serviceName)
 	}
@@ -1237,6 +1233,7 @@ func connectCmd(args []string) error {
 			return err
 		}
 	} else {
+		printMessages(result.Messages)
 		fmt.Printf("connected to service %q\n", serviceName)
 		fmt.Printf("local: %s\n", localURL)
 		fmt.Printf("path: %s\n", selectedPath)
@@ -1427,7 +1424,7 @@ func getCmd(args []string) error {
 		return nil
 	case strings.HasPrefix(resource, "service/"):
 		name := strings.TrimPrefix(resource, "service/")
-		service, err := requireService(result.Services, name)
+		result, service, err := discoverService(*configPath, name, *timeout, *cachedOnly, *live)
 		if err != nil {
 			return err
 		}
@@ -1471,11 +1468,7 @@ func describeCmd(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
-	if err != nil {
-		return err
-	}
-	service, err := requireService(result.Services, strings.TrimPrefix(resource, "service/"))
+	result, service, err := discoverService(*configPath, strings.TrimPrefix(resource, "service/"), *timeout, *cachedOnly, *live)
 	if err != nil {
 		return err
 	}
@@ -1511,11 +1504,7 @@ func inspectCmd(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
-	if err != nil {
-		return err
-	}
-	service, err := requireService(result.Services, strings.TrimPrefix(resource, "service/"))
+	result, service, err := discoverService(*configPath, strings.TrimPrefix(resource, "service/"), *timeout, *cachedOnly, *live)
 	if err != nil {
 		return err
 	}
@@ -1586,10 +1575,16 @@ func discoverServices(configPath string, timeout time.Duration, cachedOnly, live
 			return discoveryLookupResult{}, errors.New("no local cache found")
 		}
 		if services, metadata, messages, err := fetchRemoteServiceCache(cfg, timeout); err == nil {
+			messages = append([]string{"no local cache found"}, messages...)
 			if len(services) > 0 {
-				messages = append([]string{"no local cache found"}, messages...)
 				return discoveryLookupResult{Services: services, Messages: messages, Mode: "remote-query", Metadata: metadata}, nil
 			}
+			services, obsErr := observeServices(cfg, timeout, nil)
+			if obsErr != nil {
+				return discoveryLookupResult{}, obsErr
+			}
+			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
+			return discoveryLookupResult{Services: services, Messages: messages, Mode: "live"}, nil
 		} else {
 			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
 			services, obsErr := observeServices(cfg, timeout, nil)
@@ -1609,6 +1604,53 @@ func discoverServices(configPath string, timeout time.Duration, cachedOnly, live
 		messages = append([]string{"no local cache found"}, messages...)
 	}
 	return discoveryLookupResult{Services: services, Messages: messages, Mode: "live"}, nil
+}
+
+func discoverService(configPath, serviceName string, timeout time.Duration, cachedOnly, live bool) (discoveryLookupResult, serviceResource, error) {
+	cfg, err := loadDiscoveryConfig(configPath)
+	if err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
+	if !live {
+		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
+			service, err := requireService(services, serviceName)
+			if err == nil {
+				return discoveryLookupResult{Services: []serviceResource{service}, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache"}, service, nil
+			}
+		}
+		if cachedOnly {
+			return discoveryLookupResult{}, serviceResource{}, errors.New("no local cache found")
+		}
+		if service, metadata, messages, err := fetchRemoteService(cfg, serviceName, timeout); err == nil {
+			messages = append([]string{"no local cache found"}, messages...)
+			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "remote-query", Metadata: metadata}, service, nil
+		} else {
+			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
+			services, obsErr := observeServices(cfg, timeout, nil)
+			if obsErr != nil {
+				return discoveryLookupResult{}, serviceResource{}, obsErr
+			}
+			service, obsErr := requireService(services, serviceName)
+			if obsErr != nil {
+				return discoveryLookupResult{}, serviceResource{}, obsErr
+			}
+			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
+			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live"}, service, nil
+		}
+	}
+	services, err := observeServices(cfg, timeout, nil)
+	if err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
+	service, err := requireService(services, serviceName)
+	if err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
+	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
+	if !live {
+		messages = append([]string{"no local cache found"}, messages...)
+	}
+	return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live"}, service, nil
 }
 
 func loadDiscoveryConfig(path string) (cfgpkg.Config, error) {
@@ -1705,6 +1747,56 @@ func fetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]servic
 		lastErr = errors.New("remote discovery query failed")
 	}
 	return nil, nil, nil, lastErr
+}
+
+func fetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Duration) (serviceResource, *discoveryquery.Metadata, []string, error) {
+	peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+	if len(peers) == 0 {
+		return serviceResource{}, nil, nil, errors.New("no bootstrap or relay peers configured")
+	}
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
+	if err != nil {
+		return serviceResource{}, nil, nil, fmt.Errorf("load private network key: %w", err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "", psk)
+	if err != nil {
+		return serviceResource{}, nil, nil, fmt.Errorf("create remote query host: %w", err)
+	}
+	defer h.Close()
+	var lastErr error
+	for _, raw := range peers {
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			lastErr = fmt.Errorf("invalid bootstrap peer %q: %w", raw, err)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		resp, err := discoveryquery.GetService(ctx, h, info, serviceName)
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if resp.Error != "" {
+			lastErr = errors.New(resp.Error)
+			continue
+		}
+		if resp.Service == nil {
+			lastErr = errors.New("service not found")
+			continue
+		}
+		service := serviceResourceFromQueryService(*resp.Service)
+		metadata := resp.Metadata
+		messages := []string{fmt.Sprintf("querying discovery cache from %s %s", metadata.ServedByRole, metadata.ServedBy), fmt.Sprintf("received service %s", service.Name)}
+		return service, &metadata, messages, nil
+	}
+	if lastErr == nil {
+		lastErr = errors.New("remote discovery query failed")
+	}
+	return serviceResource{}, nil, nil, lastErr
 }
 
 func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serviceWatchEvent)) ([]serviceResource, error) {
