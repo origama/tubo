@@ -27,25 +27,43 @@ docker compose up -d --build
 ./tests/smoke-compose.sh
 ```
 
-Con `tubo` locale:
+Con `tubo` locale, la UX primaria e' intent-based:
 
 ```bash
-go build ./cmd/tubo
+go build -o tubo ./cmd/tubo
+
+# host relay
+tubo relay -d
+
+# host service
+tubo join --relay /ip4/RELAY_IP/tcp/4001/p2p/RELAY_PEER --swarm-key ./swarm.key
+tubo attach http://127.0.0.1:1234 --name lmstudio -d
+
+# host client
+tubo join --relay /ip4/RELAY_IP/tcp/4001/p2p/RELAY_PEER --swarm-key ./swarm.key
+tubo get services
+tubo describe service/lmstudio
+tubo connect lmstudio --local 127.0.0.1:51234 -d
+```
+
+Per il layer advanced / compatibility restano disponibili anche i role commands:
+
+```bash
+tubo relay run --config relay.yaml
+tubo edge run --config edge.yaml
+tubo service run --config service.yaml
+tubo bridge run --config bridge.yaml
+```
+
+Per una topologia locale renderizzata da file:
+
+```bash
 tubo keygen swarm --out swarm.key
 tubo init topology --out topology.yaml
 tubo topology render --config topology.yaml --out generated
-tubo relay run --config generated/relay.yaml
-tubo edge run --config generated/edge.yaml
-tubo service run --config generated/lmstudio.yaml
 ```
 
-Per un service tipico:
-
-```bash
-tubo service run --config service.yaml
-# oppure
-tubo service run --name lmstudio --target http://192.168.1.28:1234 --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3...
-```
+Per la guida CLI completa vedi anche `docs/cli.md`.
 
 ## Punto unico per runbook operativo
 

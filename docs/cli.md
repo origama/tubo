@@ -14,14 +14,38 @@ Il prompt interattivo e' riservato ai casi TTY, senza `--non-interactive`, e con
 
 ## Comandi principali
 
-La UX base espone comandi orientati all'intento:
+La UX primaria di `tubo` e' intent-based:
+
+```text
+attach    = pubblica un endpoint HTTP locale nello swarm
+connect   = apre un listener HTTP locale verso un servizio remoto
+gateway   = avvia un HTTP gateway verso lo swarm
+relay     = avvia un relay/bootstrap node
+join      = configura questa macchina per uno swarm esistente
+
+get       = lista o recupera risorse
+describe  = mostra dettagli leggibili
+inspect   = mostra dettagli tecnici/raw
+watch     = osserva servizi nello swarm
+
+ps        = mostra processi detached locali
+logs      = segue o taila i log locali
+stop      = ferma un processo detached locale
+rm --stale = pulisce state/log di processi terminati
+```
+
+I comandi piu' comuni sono:
 
 ```bash
-tubo relay --config relay.yaml
+tubo relay
 tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
-tubo gateway --config edge.yaml
+tubo gateway
 tubo attach http://127.0.0.1:1234 --name lmstudio
 tubo connect lmstudio --local 127.0.0.1:51234
+tubo get services
+tubo describe service/lmstudio
+tubo inspect service/lmstudio --json
+tubo watch services
 ```
 
 Equivalentemente, `attach` supporta anche la forma esplicita con flag:
@@ -30,13 +54,52 @@ Equivalentemente, `attach` supporta anche la forma esplicita con flag:
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
 ```
 
+## Happy path
+
+### Host relay
+
+```bash
+tubo relay -d
+```
+
+### Host service
+
+```bash
+tubo join \
+  --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
+  --swarm-key ./swarm.key
+
+tubo attach http://127.0.0.1:1234 --name lmstudio -d
+```
+
+### Host client
+
+```bash
+tubo join \
+  --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
+  --swarm-key ./swarm.key
+
+tubo get services
+tubo describe service/lmstudio
+tubo connect lmstudio --local 127.0.0.1:51234 -d
+```
+
+### Host gateway
+
+```bash
+tubo gateway --listen :8443 -d
+```
+
 I comandi long-running restano in foreground di default. Con `-d` / `--detach` possono essere lasciati in background:
 
 ```bash
 tubo relay -d
-tubo gateway --config edge.yaml -d
+tubo gateway -d
 tubo attach http://127.0.0.1:1234 --name lmstudio -d
+tubo connect lmstudio --local 127.0.0.1:51234 -d
 ```
+
+## Init implicito e `--no-init`
 
 Se manca la config locale di default, `attach`, `gateway` e `relay` possono fare init implicito creando:
 
@@ -51,7 +114,9 @@ Per disabilitarlo esplicitamente:
 --no-init
 ```
 
-In `CI=true`, l'init implicito e' disabilitato e il comando fallisce con next steps espliciti.
+In `CI=true`, l'init implicito e' disabilitato e il comando fallisce con next steps espliciti invece di creare state locale implicitamente.
+
+## Advanced role commands
 
 I role commands restano disponibili come compatibility / advanced layer:
 
@@ -81,7 +146,9 @@ tubo config print --config service.yaml
 tubo doctor --config service.yaml
 ```
 
-## Join
+## Init vs Join
+
+`init` crea una nuova configurazione locale; `join` importa la configurazione di uno swarm esistente.
 
 `join` configura localmente questa macchina per usare uno swarm esistente. Non avvia processi in background.
 
@@ -108,8 +175,6 @@ Di default salva:
 ```
 
 Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, oppure fare un check TCP basilare del relay con `--check`.
-
-`init` crea una nuova configurazione locale; `join` importa la configurazione di uno swarm esistente.
 
 ## Connect
 
@@ -140,6 +205,27 @@ Quando usi `-d`, `tubo` salva state locale in stile daemonless:
 ```
 
 con supporto XDG tramite `XDG_DATA_HOME` quando impostato.
+
+## Processi locali vs risorse nello swarm
+
+Questa distinzione e' importante:
+
+```bash
+tubo ps
+tubo get processes
+```
+
+mostrano processi locali detached di questa macchina.
+
+```bash
+tubo get services
+tubo describe service/lmstudio
+tubo inspect service/lmstudio --json
+```
+
+mostrano invece risorse discovery osservate nello swarm.
+
+Esempio: `process/connect-lmstudio-51234` e' il processo locale che mantiene il tunnel; `service/lmstudio` e' la risorsa pubblicizzata dal publisher remoto.
 
 ## Process management locale
 
@@ -173,7 +259,8 @@ tubo watch services --timeout 10s
 Comportamento:
 
 - se trova un edge locale gia' in ascolto sull'admin API, usa la sua cache discovery locale;
-- altrimenti avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce.
+- altrimenti avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce;
+- i messaggi di output indicano esplicitamente se sta usando cache locale, observer live, o entrambi.
 
 Flag utili in questo MVP:
 
@@ -186,6 +273,37 @@ Flag utili in questo MVP:
 ```
 
 `config print` maschera i segreti (`private_key_b64`) e non stampa il contenuto di `swarm.key`.
+
+## Esempi LM Studio / Ollama
+
+LM Studio pubblicato nello swarm:
+
+```bash
+tubo attach http://127.0.0.1:1234 --name lmstudio -d
+tubo get services
+tubo describe service/lmstudio
+```
+
+Ollama pubblicato nello swarm:
+
+```bash
+tubo attach http://127.0.0.1:11434 --name ollama -d
+tubo get services
+tubo describe service/ollama
+```
+
+## Mapping vecchia UX -> nuova UX
+
+| Attuale | Nuova UX |
+|---|---|
+| `tubo service run --name X --target URL` | `tubo attach URL --name X` |
+| `tubo bridge run ...` | `tubo connect X --local ADDR` |
+| `tubo edge run --listen :8443` | `tubo gateway --listen :8443` |
+| `tubo relay run` | `tubo relay` |
+| config manuale per swarm esistente | `tubo join --relay ... --swarm-key ...` |
+| `tubo mesh services` | `tubo get services` |
+| `tubo mesh inspect X` | `tubo describe X` / `tubo inspect X --json` |
+| `tubo mesh watch` | `tubo watch services` |
 
 ## Init
 
