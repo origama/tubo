@@ -30,6 +30,14 @@ Equivalentemente, `attach` supporta anche la forma esplicita con flag:
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
 ```
 
+I comandi long-running restano in foreground di default. Con `-d` / `--detach` possono essere lasciati in background:
+
+```bash
+tubo relay -d
+tubo gateway --config edge.yaml -d
+tubo attach http://127.0.0.1:1234 --name lmstudio -d
+```
+
 I role commands restano disponibili come compatibility / advanced layer:
 
 ```bash
@@ -105,6 +113,18 @@ tubo connect lmstudio --json
 ```
 
 `connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, altrimenti observer effimero live.
+
+## Detached process state
+
+Quando usi `-d`, `tubo` salva state locale in stile daemonless:
+
+```text
+~/.local/share/tubo/processes/
+~/.local/share/tubo/logs/
+~/.local/share/tubo/run/
+```
+
+con supporto XDG tramite `XDG_DATA_HOME` quando impostato.
 
 ## Resource discovery
 
