@@ -117,6 +117,8 @@ dummy_pid=$!
 wait_http_ok "http://127.0.0.1:$dummy_port/healthz"
 
 echo "[smoke-cli-ux] starting detached relay"
+mkdir -p "$WORK_DIR/relay-config/tubo"
+: >"$WORK_DIR/relay-config/tubo/config.yaml"
 XDG_CONFIG_HOME="$WORK_DIR/relay-config" \
 RELAY_HEALTH_LISTEN="127.0.0.1:$relay_health_port" \
   "$BIN" relay \
