@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -132,6 +133,105 @@ func TestBuildDetachedSpec(t *testing.T) {
 	}
 	if spec.HealthURL != "http://127.0.0.1:8091/healthz" {
 		t.Fatalf("health url = %q", spec.HealthURL)
+	}
+}
+
+func TestProcessStateListingAndLookup(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	running := detachedProcessState{ID: "process/attach-myapi", Kind: "process", Command: "attach", Name: "attach-myapi", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), LogFile: filepath.Join(processLogDir(), "attach-myapi.log")}
+	stale := detachedProcessState{ID: "process/relay-default", Kind: "process", Command: "relay", Name: "relay-default", PID: 999999, PIDFile: filepath.Join(processRunDir(), "relay-default.pid"), StateFile: filepath.Join(processStateDir(), "relay-default.json"), LogFile: filepath.Join(processLogDir(), "relay-default.log")}
+	_ = os.WriteFile(running.PIDFile, []byte(fmt.Sprintf("%d\n", running.PID)), 0600)
+	for _, st := range []detachedProcessState{running, stale} {
+		b, _ := json.Marshal(st)
+		if err := os.WriteFile(st.StateFile, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items, err := listProcessViews(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != running.ID {
+		t.Fatalf("unexpected running items: %#v", items)
+	}
+	items, err = listProcessViews(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("expected 2 items with --all, got %#v", items)
+	}
+	if _, status, err := loadProcessState("attach-myapi"); err != nil || status != "running" {
+		t.Fatalf("loadProcessState running err=%v status=%q", err, status)
+	}
+}
+
+func TestLogsCmdAndRmStale(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processLogDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", Command: "attach", Name: "attach-myapi", PID: 999999, PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), LogFile: filepath.Join(processLogDir(), "attach-myapi.log")}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(state.LogFile, []byte("line1\nline2\nline3\n"), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return logsCmd([]string{"--tail", "2", state.ID}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "line2") || !strings.Contains(out, "line3") {
+		t.Fatalf("unexpected logs output: %s", out)
+	}
+	out, err = capture(func() error { return rmCmd([]string{"--stale"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "removed 1 stale process artifacts") {
+		t.Fatalf("unexpected rm output: %s", out)
+	}
+	if _, err := os.Stat(state.StateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected state file removed, stat err=%v", err)
+	}
+}
+
+func TestStopCmd(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	state := detachedProcessState{ID: "process/relay-default", Kind: "process", Command: "relay", Name: "relay-default", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "relay-default.pid"), StateFile: filepath.Join(processStateDir(), "relay-default.json"), LogFile: filepath.Join(processLogDir(), "relay-default.log")}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return stopCmd([]string{state.ID}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped "+state.ID) {
+		t.Fatalf("unexpected stop output: %s", out)
+	}
+	if pidRunning(state.PID) {
+		t.Fatal("expected process to stop")
 	}
 }
 
