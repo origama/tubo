@@ -21,6 +21,34 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.3.0] - 2026-05-03
+
+Remote discovery query release focused on making service discovery and connect resolution more reliable when clients arrive after the initial pubsub announcement window.
+
+### Added
+- New libp2p application protocol `/tubo/discovery/query/1.0` for querying remote discovery cache state.
+- New package `internal/discovery/query` with request/response structs, JSON stream handlers, client helpers, and discovery DTO mapping.
+- Discovery query serving on gateway/edge, relay, and attach/service roles.
+- Relay-side discovery cache usable for remote query responses.
+- Role-specific tests covering gateway, relay, and attach query serving.
+
+### Changed
+- CLI discovery resolution now prefers: local edge admin cache -> remote discovery query -> live pubsub observer fallback.
+- Single-service lookups (`get service/...`, `describe service/...`, `inspect service/...`, `connect`) now use targeted remote `get_service` queries instead of depending only on list+filter or live observer timing.
+- Human-readable CLI output now reports when discovery data came from remote query, and JSON output includes remote-query metadata.
+- CLI UX smoke now validates the remote-query path before connect/service inspection.
+
+### Fixed
+- `get services` and related resource-oriented commands no longer depend solely on catching a fresh heartbeat during the observer timeout window when a bootstrap/relay peer already has the service in cache.
+- `connect <service>` can now resolve services through remote cache query before falling back to live observation, reducing false negatives after late joins.
+- Same-swarm service inspection is more reliable when no local edge cache exists but a relay already knows the service.
+
+### Compatibility
+- Product version: v0.3.0
+- Protocol version: 1.1
+- Protocol compatibility change: none; `/tubo/discovery/query/1.0` is an additive optional application protocol
+- Operator action required: none; this is a backward-compatible feature release on top of protocol `1.1`
+
 ## [v0.2.0] - 2026-05-03
 
 CLI UX v2 milestone release with the intent-based/resource-oriented command set, daemonless local process management, docs-driven happy-path smoke coverage, and direct-first service connection behavior when relay fallback is also available.
