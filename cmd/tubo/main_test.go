@@ -127,6 +127,7 @@ func TestStripNoInitArgs(t *testing.T) {
 func TestMaybeImplicitInitCreatesConfigAndKey(t *testing.T) {
 	configHome := filepath.Join(t.TempDir(), "cfg")
 	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("CI", "")
 	if err := maybeImplicitInit("service", []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio", "--relay", "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWTestPeer"}, false); err != nil {
 		t.Fatal(err)
 	}
