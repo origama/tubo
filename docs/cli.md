@@ -38,6 +38,21 @@ tubo gateway --config edge.yaml -d
 tubo attach http://127.0.0.1:1234 --name lmstudio -d
 ```
 
+Se manca la config locale di default, `attach`, `gateway` e `relay` possono fare init implicito creando:
+
+```text
+~/.config/tubo/config.yaml
+~/.config/tubo/swarm.key
+```
+
+Per disabilitarlo esplicitamente:
+
+```bash
+--no-init
+```
+
+In `CI=true`, l'init implicito e' disabilitato e il comando fallisce con next steps espliciti.
+
 I role commands restano disponibili come compatibility / advanced layer:
 
 ```bash

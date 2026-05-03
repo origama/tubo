@@ -50,8 +50,23 @@ func run(args []string) error {
 	} else if ok {
 		if shouldHandleDetach(args[0]) {
 			cleanArgs, detach := stripDetachArgs(roleArgs)
+			roleArgs = cleanArgs
+			if shouldHandleImplicitInit(args[0]) {
+				cleanArgs, noInit := stripNoInitArgs(roleArgs)
+				if err := maybeImplicitInit(role, cleanArgs, noInit); err != nil {
+					return err
+				}
+				roleArgs = cleanArgs
+			}
 			if detach {
-				return detachRoleCommand(args[0], role, cleanArgs)
+				return detachRoleCommand(args[0], role, roleArgs)
+			}
+			return runRole(role, roleArgs)
+		}
+		if shouldHandleImplicitInit(args[0]) {
+			cleanArgs, noInit := stripNoInitArgs(roleArgs)
+			if err := maybeImplicitInit(role, cleanArgs, noInit); err != nil {
+				return err
 			}
 			roleArgs = cleanArgs
 		}
@@ -144,6 +159,15 @@ func hasLongFlag(args []string, name string) bool {
 	return false
 }
 
+func shouldHandleImplicitInit(command string) bool {
+	switch command {
+	case "attach", "gateway", "relay":
+		return true
+	default:
+		return false
+	}
+}
+
 func shouldHandleDetach(command string) bool {
 	switch command {
 	case "attach", "gateway", "relay":
@@ -151,6 +175,19 @@ func shouldHandleDetach(command string) bool {
 	default:
 		return false
 	}
+}
+
+func stripNoInitArgs(args []string) ([]string, bool) {
+	out := make([]string, 0, len(args))
+	noInit := false
+	for _, arg := range args {
+		if arg == "--no-init" {
+			noInit = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out, noInit
 }
 
 func stripDetachArgs(args []string) ([]string, bool) {
@@ -217,14 +254,21 @@ func resolveRoleConfig(role string, args []string) (cfgpkg.Config, string, error
 	if err != nil {
 		return cfgpkg.Config{}, "", err
 	}
-	c, err := cfgpkg.Effective(role, path, os.Getenv, flags)
+	effectivePath := path
+	if effectivePath == "" {
+		defaultPath := defaultTuboConfigPath()
+		if _, err := os.Stat(defaultPath); err == nil {
+			effectivePath = defaultPath
+		}
+	}
+	c, err := cfgpkg.Effective(role, effectivePath, os.Getenv, flags)
 	if err != nil {
 		return cfgpkg.Config{}, "", err
 	}
 	if err := cfgpkg.Validate(c); err != nil {
 		return cfgpkg.Config{}, "", err
 	}
-	return c, path, nil
+	return c, effectivePath, nil
 }
 
 func runRole(role string, args []string) error {
@@ -556,6 +600,62 @@ func detachRoleCommand(commandName, role string, args []string) error {
 		return err
 	}
 	printDetachedSummary(commandName, spec.State)
+	return nil
+}
+
+func maybeImplicitInit(role string, args []string, noInit bool) error {
+	configPath := defaultTuboConfigPath()
+	if _, err := os.Stat(configPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if noInit {
+		return fmt.Errorf("config not found at %s (--no-init set)", configPath)
+	}
+	if strings.EqualFold(os.Getenv("CI"), "true") {
+		return fmt.Errorf("config not found at %s; implicit init disabled in CI (use `tubo join`, `tubo init`, or pass --config)", configPath)
+	}
+	_, flags, err := roleFlags(role, args)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(defaultTuboConfigDir(), 0700); err != nil {
+		return err
+	}
+	keyPath := filepath.Join(defaultTuboConfigDir(), "swarm.key")
+	createdKey := false
+	if _, err := os.Stat(keyPath); errors.Is(err, os.ErrNotExist) {
+		data, err := newSwarmKeyData()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(keyPath, data, 0600); err != nil {
+			return err
+		}
+		createdKey = true
+	} else if err != nil {
+		return err
+	}
+	cfg := cfgpkg.Config{Network: cfgpkg.Network{
+		PrivateKeyFile: keyPath,
+		BootstrapPeers: append([]string(nil), flags.Network.BootstrapPeers...),
+		RelayPeers:     append([]string(nil), flags.Network.RelayPeers...),
+		Autorelay:      true,
+		HolePunching:   true,
+	}}
+	if err := cfgpkg.WriteFile(configPath, cfg, false); err != nil {
+		if !errors.Is(err, os.ErrExist) && !strings.Contains(err.Error(), "exists") {
+			return err
+		}
+	} else {
+		fmt.Println("no tubo config found")
+		fmt.Printf("created local config: %s\n", configPath)
+		if createdKey {
+			fmt.Printf("created private swarm key: %s\n", keyPath)
+		}
+		fmt.Println()
+	}
 	return nil
 }
 
@@ -1632,6 +1732,15 @@ func hostPortForHTTP(addr string) string {
 	return addr
 }
 
+func newSwarmKeyData() ([]byte, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return nil, err
+	}
+	data := "/key/swarm/psk/1.0.0/\n/base16/\n" + hex.EncodeToString(b) + "\n"
+	return []byte(data), nil
+}
+
 func keygen(args []string) error {
 	if len(args) == 0 || args[0] != "swarm" {
 		return usage()
@@ -1647,12 +1756,11 @@ func keygen(args []string) error {
 			return fmt.Errorf("%s exists (use --force)", *out)
 		}
 	}
-	b := make([]byte, 32)
-	if _, err := rand.Read(b); err != nil {
+	data, err := newSwarmKeyData()
+	if err != nil {
 		return err
 	}
-	data := "/key/swarm/psk/1.0.0/\n/base16/\n" + hex.EncodeToString(b) + "\n"
-	return os.WriteFile(*out, []byte(data), 0600)
+	return os.WriteFile(*out, data, 0600)
 }
 func id(args []string) error {
 	if len(args) != 2 || args[0] != "from-seed" {
@@ -1856,7 +1964,12 @@ func topoExample() string {
 
 type csvFlag struct{ p *[]string }
 
-func (c csvFlag) String() string     { return strings.Join(*c.p, ",") }
+func (c csvFlag) String() string {
+	if c.p == nil {
+		return ""
+	}
+	return strings.Join(*c.p, ",")
+}
 func (c csvFlag) Set(s string) error { *c.p = append(*c.p, cfgpkg.CSV(s)...); return nil }
 
 type durationFlag struct{ p *cfgpkg.Duration }
