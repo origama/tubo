@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"p2p-api-tunnel/internal/app/bridge"
 	"p2p-api-tunnel/internal/app/edge"
@@ -46,6 +47,13 @@ func run(args []string) error {
 	if role, roleArgs, ok, err := resolveRuntimeRole(args); err != nil {
 		return err
 	} else if ok {
+		if shouldHandleDetach(args[0]) {
+			cleanArgs, detach := stripDetachArgs(roleArgs)
+			if detach {
+				return detachRoleCommand(args[0], role, cleanArgs)
+			}
+			roleArgs = cleanArgs
+		}
 		return runRole(role, roleArgs)
 	}
 	switch args[0] {
@@ -127,6 +135,28 @@ func hasLongFlag(args []string, name string) bool {
 	return false
 }
 
+func shouldHandleDetach(command string) bool {
+	switch command {
+	case "attach", "gateway", "relay":
+		return true
+	default:
+		return false
+	}
+}
+
+func stripDetachArgs(args []string) ([]string, bool) {
+	out := make([]string, 0, len(args))
+	detach := false
+	for _, arg := range args {
+		if arg == "-d" || arg == "--detach" {
+			detach = true
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out, detach
+}
+
 func usage() error {
 	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo get <services|service/name> [flags] | tubo describe service/name [flags] | tubo inspect service/name [flags] | tubo watch services [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
@@ -172,16 +202,25 @@ func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	_ = *non
 	return *path, f, nil
 }
-func runRole(role string, args []string) error {
+
+func resolveRoleConfig(role string, args []string) (cfgpkg.Config, string, error) {
 	path, flags, err := roleFlags(role, args)
 	if err != nil {
-		return err
+		return cfgpkg.Config{}, "", err
 	}
 	c, err := cfgpkg.Effective(role, path, os.Getenv, flags)
 	if err != nil {
-		return err
+		return cfgpkg.Config{}, "", err
 	}
 	if err := cfgpkg.Validate(c); err != nil {
+		return cfgpkg.Config{}, "", err
+	}
+	return c, path, nil
+}
+
+func runRole(role string, args []string) error {
+	c, _, err := resolveRoleConfig(role, args)
+	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -213,6 +252,22 @@ func runRole(role string, args []string) error {
 		return a.Start(ctx)
 	}
 	return nil
+}
+
+type detachedProcessState struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	Command   string `json:"command"`
+	Name      string `json:"name"`
+	Service   string `json:"service,omitempty"`
+	Local     string `json:"local,omitempty"`
+	Target    string `json:"target,omitempty"`
+	PID       int    `json:"pid"`
+	StartedAt string `json:"started_at"`
+	LogFile   string `json:"log_file"`
+	StateFile string `json:"state_file"`
+	PIDFile   string `json:"pid_file"`
+	StatusURL string `json:"status_url,omitempty"`
 }
 
 type joinResult struct {
@@ -411,6 +466,229 @@ func uniqueStrings(in []string) []string {
 
 func defaultTuboConfigPath() string {
 	return filepath.Join(defaultTuboConfigDir(), "config.yaml")
+}
+
+func defaultTuboDataDir() string {
+	if xdg := os.Getenv("XDG_DATA_HOME"); xdg != "" {
+		return filepath.Join(xdg, "tubo")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(".", ".tubo-data")
+	}
+	return filepath.Join(home, ".local", "share", "tubo")
+}
+
+type detachedSpec struct {
+	State     detachedProcessState
+	ChildArgs []string
+	HealthURL string
+}
+
+func detachRoleCommand(commandName, role string, args []string) error {
+	cfg, _, err := resolveRoleConfig(role, args)
+	if err != nil {
+		return err
+	}
+	spec, err := buildDetachedSpec(commandName, cfg, args)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(spec.State.StateFile), 0700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(spec.State.LogFile), 0700); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(spec.State.PIDFile), 0700); err != nil {
+		return err
+	}
+	for _, path := range []string{spec.State.StateFile, spec.State.PIDFile} {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("detached process state already exists for %s", spec.State.ID)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	logFile, err := os.OpenFile(spec.State.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	defer logFile.Close()
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(exe, spec.ChildArgs...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.Stdin = nil
+	cmd.Env = append(os.Environ(), "TUBO_DETACHED_CHILD=1")
+	configureDetachedCommand(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	spec.State.PID = cmd.Process.Pid
+	spec.State.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	pidBytes := []byte(fmt.Sprintf("%d\n", spec.State.PID))
+	if err := os.WriteFile(spec.State.PIDFile, pidBytes, 0600); err != nil {
+		return err
+	}
+	stateBytes, err := json.MarshalIndent(spec.State, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(spec.State.StateFile, stateBytes, 0600); err != nil {
+		return err
+	}
+	if err := waitForDetachedStart(cmd, spec.HealthURL, spec.State.LogFile, 5*time.Second); err != nil {
+		_ = os.Remove(spec.State.PIDFile)
+		_ = os.Remove(spec.State.StateFile)
+		return err
+	}
+	printDetachedSummary(commandName, spec.State)
+	return nil
+}
+
+func buildDetachedSpec(commandName string, cfg cfgpkg.Config, args []string) (detachedSpec, error) {
+	dataRoot := defaultTuboDataDir()
+	var name, local, target, serviceName, statusAddr string
+	switch commandName {
+	case "attach":
+		serviceName = cfg.Service.Name
+		name = "attach-" + sanitizeProcessName(serviceName)
+		target = cfg.Service.Target
+		statusAddr = cfg.HealthListen
+	case "gateway":
+		name = "gateway-default"
+		local = cfg.Edge.Listen
+		target = "swarm"
+		statusAddr = cfg.Edge.AdminListen
+	case "relay":
+		name = "relay-default"
+		local = cfg.Node.P2PListen
+		statusAddr = cfg.Relay.HealthListen
+	default:
+		return detachedSpec{}, fmt.Errorf("detach is not supported for %s", commandName)
+	}
+	if name == "" {
+		return detachedSpec{}, fmt.Errorf("unable to derive detached process name for %s", commandName)
+	}
+	statePath := filepath.Join(dataRoot, "processes", name+".json")
+	logPath := filepath.Join(dataRoot, "logs", name+".log")
+	pidPath := filepath.Join(dataRoot, "run", name+".pid")
+	statusURL := ""
+	if statusAddr != "" {
+		statusURL = "http://" + hostPortForHTTP(statusAddr) + "/healthz"
+	}
+	return detachedSpec{
+		State: detachedProcessState{
+			ID:        "process/" + name,
+			Kind:      "process",
+			Command:   commandName,
+			Name:      name,
+			Service:   serviceName,
+			Local:     local,
+			Target:    target,
+			LogFile:   logPath,
+			StateFile: statePath,
+			PIDFile:   pidPath,
+			StatusURL: statusURL,
+		},
+		ChildArgs: append([]string{commandName}, args...),
+		HealthURL: statusURL,
+	}, nil
+}
+
+func sanitizeProcessName(s string) string {
+	if s == "" {
+		return "default"
+	}
+	mapped := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '_', r == '.':
+			return '-'
+		default:
+			return '-'
+		}
+	}, s)
+	mapped = strings.Trim(mapped, "-")
+	for strings.Contains(mapped, "--") {
+		mapped = strings.ReplaceAll(mapped, "--", "-")
+	}
+	if mapped == "" {
+		return "default"
+	}
+	return mapped
+}
+
+func waitForDetachedStart(cmd *exec.Cmd, healthURL, logPath string, timeout time.Duration) error {
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Wait()
+	}()
+	deadline := time.Now().Add(timeout)
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	for {
+		select {
+		case err := <-errCh:
+			if err == nil {
+				return fmt.Errorf("detached process exited before becoming ready")
+			}
+			return fmt.Errorf("detached process exited early: %w\n%s", err, tailFile(logPath, 4096))
+		default:
+		}
+		if healthURL != "" {
+			if resp, err := client.Get(healthURL); err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					return nil
+				}
+			}
+		} else if time.Now().After(deadline.Add(-timeout + 500*time.Millisecond)) {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return nil
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func tailFile(path string, max int) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(b) > max {
+		b = b[len(b)-max:]
+	}
+	return string(b)
+}
+
+func printDetachedSummary(commandName string, state detachedProcessState) {
+	switch commandName {
+	case "attach":
+		fmt.Printf("attached service %q\n", state.Service)
+	case "gateway":
+		fmt.Println("gateway running")
+	case "relay":
+		fmt.Println("relay running")
+	default:
+		fmt.Printf("started %s\n", commandName)
+	}
+	fmt.Printf("id: %s\n", state.ID)
+	if state.Local != "" {
+		fmt.Printf("local: %s\n", state.Local)
+	}
+	fmt.Printf("pid: %d\n", state.PID)
+	fmt.Printf("logs: %s\n", state.LogFile)
 }
 
 type serviceResource struct {

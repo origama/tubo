@@ -101,6 +101,40 @@ func TestResolveRuntimeRoleRejectsDuplicateAttachTarget(t *testing.T) {
 	}
 }
 
+func TestStripDetachArgs(t *testing.T) {
+	got, detach := stripDetachArgs([]string{"http://127.0.0.1:1234", "-d", "--name", "lmstudio", "--detach"})
+	if !detach {
+		t.Fatal("expected detach flag to be detected")
+	}
+	want := []string{"http://127.0.0.1:1234", "--name", "lmstudio"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", got, want)
+	}
+}
+
+func TestSanitizeProcessName(t *testing.T) {
+	if got := sanitizeProcessName("Reviewer.GPU Box"); got != "reviewer-gpu-box" {
+		t.Fatalf("sanitizeProcessName = %q", got)
+	}
+}
+
+func TestBuildDetachedSpec(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	spec, err := buildDetachedSpec("attach", cfgpkg.Config{Service: cfgpkg.Service{Name: "lmstudio", Target: "http://127.0.0.1:1234"}, HealthListen: "127.0.0.1:8091"}, []string{"http://127.0.0.1:1234", "--name", "lmstudio"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.State.ID != "process/attach-lmstudio" {
+		t.Fatalf("id = %q", spec.State.ID)
+	}
+	if !strings.Contains(spec.State.LogFile, filepath.Join("tubo", "logs", "attach-lmstudio.log")) {
+		t.Fatalf("unexpected log path: %q", spec.State.LogFile)
+	}
+	if spec.HealthURL != "http://127.0.0.1:8091/healthz" {
+		t.Fatalf("health url = %q", spec.HealthURL)
+	}
+}
+
 func TestUsageMentionsIntentCommands(t *testing.T) {
 	err := usage()
 	if err == nil {
