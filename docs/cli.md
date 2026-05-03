@@ -126,6 +126,23 @@ Quando usi `-d`, `tubo` salva state locale in stile daemonless:
 
 con supporto XDG tramite `XDG_DATA_HOME` quando impostato.
 
+## Process management locale
+
+I processi detached locali possono essere ispezionati e gestiti con:
+
+```bash
+tubo ps
+tubo get processes
+tubo describe process/attach-lmstudio
+tubo inspect process/attach-lmstudio --json
+tubo logs process/attach-lmstudio
+tubo stop process/attach-lmstudio
+tubo rm --stale
+```
+
+`ps` / `get processes` riguardano i processi locali di questa macchina.
+`get services` riguarda invece le risorse discovery pubblicizzate nello swarm.
+
 ## Resource discovery
 
 Con una config locale creata via `join`, puoi ispezionare i servizi pubblicizzati nello swarm:

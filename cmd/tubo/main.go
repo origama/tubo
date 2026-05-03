@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"gopkg.in/yaml.v3"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -61,6 +62,8 @@ func run(args []string) error {
 		return joinCmd(args[1:])
 	case "connect":
 		return connectCmd(args[1:])
+	case "ps":
+		return psCmd(args[1:])
 	case "get":
 		return getCmd(args[1:])
 	case "describe":
@@ -69,6 +72,12 @@ func run(args []string) error {
 		return inspectCmd(args[1:])
 	case "watch":
 		return watchCmd(args[1:])
+	case "logs":
+		return logsCmd(args[1:])
+	case "stop":
+		return stopCmd(args[1:])
+	case "rm":
+		return rmCmd(args[1:])
 	case "keygen":
 		return keygen(args[1:])
 	case "id":
@@ -158,7 +167,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo get <services|service/name> [flags] | tubo describe service/name [flags] | tubo inspect service/name [flags] | tubo watch services [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo ps [flags] | tubo get <services|service/name|processes> [flags] | tubo describe <service/name|process/name> [flags] | tubo inspect <service/name|process/name> [flags] | tubo watch services [flags] | tubo logs <process/name> [flags] | tubo stop <process/name> [flags] | tubo rm --stale [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
@@ -691,6 +700,301 @@ func printDetachedSummary(commandName string, state detachedProcessState) {
 	fmt.Printf("logs: %s\n", state.LogFile)
 }
 
+func processStateDir() string { return filepath.Join(defaultTuboDataDir(), "processes") }
+func processLogDir() string   { return filepath.Join(defaultTuboDataDir(), "logs") }
+func processRunDir() string   { return filepath.Join(defaultTuboDataDir(), "run") }
+
+func listProcessViews(includeAll bool) ([]processView, error) {
+	states, err := listProcessStates()
+	if err != nil {
+		return nil, err
+	}
+	items := make([]processView, 0, len(states))
+	for _, state := range states {
+		status := processStateStatus(state)
+		if !includeAll && status != "running" {
+			continue
+		}
+		items = append(items, processViewFromState(state, status))
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	return items, nil
+}
+
+func listProcessStates() ([]detachedProcessState, error) {
+	entries, err := os.ReadDir(processStateDir())
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	states := make([]detachedProcessState, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		path := filepath.Join(processStateDir(), entry.Name())
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var state detachedProcessState
+		if err := json.Unmarshal(b, &state); err != nil {
+			return nil, err
+		}
+		states = append(states, state)
+	}
+	return states, nil
+}
+
+func normalizeProcessRef(ref string) string {
+	if strings.HasPrefix(ref, "process/") {
+		return ref
+	}
+	return "process/" + ref
+}
+
+func loadProcessState(ref string) (detachedProcessState, string, error) {
+	ref = normalizeProcessRef(ref)
+	states, err := listProcessStates()
+	if err != nil {
+		return detachedProcessState{}, "", err
+	}
+	for _, state := range states {
+		if state.ID == ref {
+			return state, processStateStatus(state), nil
+		}
+	}
+	return detachedProcessState{}, "", fmt.Errorf("unknown process %q", ref)
+}
+
+func processStateStatus(state detachedProcessState) string {
+	if state.PID <= 0 {
+		return "stale"
+	}
+	if _, err := os.Stat(state.PIDFile); err != nil {
+		return "stale"
+	}
+	if pidRunning(state.PID) {
+		return "running"
+	}
+	return "stale"
+}
+
+func processViewFromState(state detachedProcessState, status string) processView {
+	return processView{
+		ID:        state.ID,
+		Name:      state.Name,
+		Command:   state.Command,
+		Status:    status,
+		PID:       state.PID,
+		Service:   state.Service,
+		Local:     state.Local,
+		Target:    state.Target,
+		LogFile:   state.LogFile,
+		StateFile: state.StateFile,
+		PIDFile:   state.PIDFile,
+		StatusURL: state.StatusURL,
+		StartedAt: state.StartedAt,
+	}
+}
+
+func printProcessesTable(items []processView) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tCOMMAND\tSTATUS\tPID\tLOCAL\tTARGET")
+	for _, item := range items {
+		local := item.Local
+		if local == "" {
+			local = "-"
+		}
+		target := item.Target
+		if target == "" {
+			target = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.Command, item.Status, item.PID, local, target)
+	}
+	_ = w.Flush()
+}
+
+func printProcessDescription(state detachedProcessState, status string) {
+	fmt.Printf("Name: %s\n", state.Name)
+	fmt.Printf("Kind: %s\n", state.Kind)
+	fmt.Printf("Command: %s\n", state.Command)
+	fmt.Printf("Status: %s\n", status)
+	fmt.Printf("PID: %d\n", state.PID)
+	if state.Service != "" {
+		fmt.Printf("Service: %s\n", state.Service)
+	}
+	if state.Local != "" {
+		fmt.Printf("Local: %s\n", state.Local)
+	}
+	if state.Target != "" {
+		fmt.Printf("Target: %s\n", state.Target)
+	}
+	fmt.Printf("Log file: %s\n", state.LogFile)
+	fmt.Printf("State file: %s\n", state.StateFile)
+	fmt.Printf("PID file: %s\n", state.PIDFile)
+	if state.StatusURL != "" {
+		fmt.Printf("Status URL: %s\n", state.StatusURL)
+	}
+}
+
+func logsCmd(args []string) error {
+	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
+	follow := fs.Bool("f", false, "")
+	fs.BoolVar(follow, "follow", false, "")
+	tail := fs.Int("tail", 200, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: tubo logs [-f|--follow] [--tail N] <process/name>")
+	}
+	state, _, err := loadProcessState(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if err := printLogTail(state.LogFile, *tail); err != nil {
+		return err
+	}
+	if !*follow {
+		return nil
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return followLogFile(ctx, state.LogFile)
+}
+
+func printLogTail(path string, lines int) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(string(b), "\n")
+	filtered := make([]string, 0, len(parts))
+	for _, line := range parts {
+		if line == "" {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	start := 0
+	if lines > 0 && len(filtered) > lines {
+		start = len(filtered) - lines
+	}
+	for _, line := range filtered[start:] {
+		fmt.Println(line)
+	}
+	return nil
+}
+
+func followLogFile(ctx context.Context, path string) error {
+	var offset int64
+	if info, err := os.Stat(path); err == nil {
+		offset = info.Size()
+	}
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			f, err := os.Open(path)
+			if err != nil {
+				continue
+			}
+			_, _ = f.Seek(offset, io.SeekStart)
+			buf, err := io.ReadAll(f)
+			_ = f.Close()
+			if err != nil {
+				continue
+			}
+			if len(buf) > 0 {
+				fmt.Print(string(buf))
+				offset += int64(len(buf))
+			}
+		}
+	}
+}
+
+func stopCmd(args []string) error {
+	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
+	force := fs.Bool("force", false, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: tubo stop [--force] <process/name>")
+	}
+	state, status, err := loadProcessState(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if status != "running" {
+		return fmt.Errorf("process %s is not running", state.ID)
+	}
+	if err := terminatePID(state.PID); err != nil {
+		return err
+	}
+	if err := waitForProcessExit(state.PID, 5*time.Second); err != nil {
+		if !*force {
+			return err
+		}
+		if err := killPID(state.PID); err != nil {
+			return err
+		}
+		if err := waitForProcessExit(state.PID, 2*time.Second); err != nil {
+			return err
+		}
+	}
+	_ = os.Remove(state.PIDFile)
+	fmt.Printf("stopped %s\n", state.ID)
+	return nil
+}
+
+func waitForProcessExit(pid int, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !pidRunning(pid) {
+			return nil
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("process %d did not exit in time", pid)
+}
+
+func rmCmd(args []string) error {
+	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
+	stale := fs.Bool("stale", false, "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*stale {
+		return errors.New("usage: tubo rm --stale")
+	}
+	states, err := listProcessStates()
+	if err != nil {
+		return err
+	}
+	removed := 0
+	for _, state := range states {
+		if processStateStatus(state) == "running" {
+			continue
+		}
+		for _, path := range []string{state.StateFile, state.PIDFile, state.LogFile} {
+			if path == "" {
+				continue
+			}
+			_ = os.Remove(path)
+		}
+		removed++
+	}
+	fmt.Printf("removed %d stale process artifacts\n", removed)
+	return nil
+}
+
 type serviceResource struct {
 	Kind             string   `json:"kind"`
 	Name             string   `json:"name"`
@@ -715,6 +1019,22 @@ type serviceWatchEvent struct {
 	Name   string `json:"name"`
 	PeerID string `json:"peer_id"`
 	Path   string `json:"path"`
+}
+
+type processView struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Command   string `json:"command"`
+	Status    string `json:"status"`
+	PID       int    `json:"pid"`
+	Service   string `json:"service,omitempty"`
+	Local     string `json:"local,omitempty"`
+	Target    string `json:"target,omitempty"`
+	LogFile   string `json:"log_file"`
+	StateFile string `json:"state_file"`
+	PIDFile   string `json:"pid_file"`
+	StatusURL string `json:"status_url,omitempty"`
+	StartedAt string `json:"started_at,omitempty"`
 }
 
 type servicesAdminResponse struct {
@@ -837,6 +1157,37 @@ func preferredConnectServiceAddr(service serviceResource) (string, error) {
 	return service.Addresses[0], nil
 }
 
+func psCmd(args []string) error {
+	fs := flag.NewFlagSet("ps", flag.ContinueOnError)
+	all := fs.Bool("all", false, "")
+	jsonOut := fs.Bool("json", false, "")
+	kind := fs.String("kind", "", "")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	items, err := listProcessViews(*all)
+	if err != nil {
+		return err
+	}
+	if *kind != "" {
+		filtered := make([]processView, 0, len(items))
+		for _, item := range items {
+			if item.Command == *kind {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
+	}
+	if *jsonOut {
+		return printJSON(struct {
+			Count int           `json:"count"`
+			Items []processView `json:"items"`
+		}{Count: len(items), Items: items})
+	}
+	printProcessesTable(items)
+	return nil
+}
+
 func getCmd(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: tubo get <services|service/name> [flags]")
@@ -850,6 +1201,21 @@ func getCmd(args []string) error {
 	live := fs.Bool("live", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
+	}
+	switch {
+	case resource == "processes":
+		items, err := listProcessViews(false)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			return printJSON(struct {
+				Count int           `json:"count"`
+				Items []processView `json:"items"`
+			}{Count: len(items), Items: items})
+		}
+		printProcessesTable(items)
+		return nil
 	}
 	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
 	if err != nil {
@@ -891,9 +1257,17 @@ func getCmd(args []string) error {
 
 func describeCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo describe service/name [flags]")
+		return errors.New("usage: tubo describe <service/name|process/name> [flags]")
 	}
 	resource := args[0]
+	if strings.HasPrefix(resource, "process/") || !strings.Contains(resource, "/") {
+		state, status, err := loadProcessState(resource)
+		if err != nil {
+			return err
+		}
+		printProcessDescription(state, status)
+		return nil
+	}
 	if !strings.HasPrefix(resource, "service/") {
 		return fmt.Errorf("unsupported describe resource %q", resource)
 	}
@@ -920,9 +1294,19 @@ func describeCmd(args []string) error {
 
 func inspectCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo inspect service/name [flags]")
+		return errors.New("usage: tubo inspect <service/name|process/name> [flags]")
 	}
 	resource := args[0]
+	if strings.HasPrefix(resource, "process/") || !strings.Contains(resource, "/") {
+		state, status, err := loadProcessState(resource)
+		if err != nil {
+			return err
+		}
+		return printJSON(struct {
+			Status string               `json:"status"`
+			State  detachedProcessState `json:"state"`
+		}{Status: status, State: state})
+	}
 	if !strings.HasPrefix(resource, "service/") {
 		return fmt.Errorf("unsupported inspect resource %q", resource)
 	}
