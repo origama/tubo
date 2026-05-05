@@ -17,14 +17,14 @@ export TF_VAR_linode_token="$(< ~/.token)"
 ### Plan
 
 ```bash
-cd /root/p2p-api-tunnel/infra/terraform/linode-distributed
+cd /root/tubo/infra/terraform/linode-distributed
 terraform plan
 ```
 
 ### Apply
 
 ```bash
-cd /root/p2p-api-tunnel/infra/terraform/linode-distributed
+cd /root/tubo/infra/terraform/linode-distributed
 terraform apply
 ```
 
@@ -51,7 +51,7 @@ terraform output service_firewall_id
 ## Smoke test distribuito
 
 ```bash
-cd /root/p2p-api-tunnel
+cd /root/tubo
 ./tests/smoke-terraform-linode.sh
 ```
 
@@ -66,7 +66,7 @@ Lo smoke:
 Per lasciare i processi remoti in esecuzione:
 
 ```bash
-cd /root/p2p-api-tunnel
+cd /root/tubo
 KEEP_RUNNING=1 ./tests/smoke-terraform-linode.sh
 ```
 
@@ -82,7 +82,7 @@ Esegue il setup sul testbed Linode/Terraform, lancia gli scenari di carico e sal
 Comando:
 
 ```bash
-cd /root/p2p-api-tunnel
+cd /root/tubo
 python3 ./tests/perf/run_linode_terraform_perf.py
 ```
 
@@ -155,9 +155,9 @@ ssh root@45.79.168.161 "grep 'connection_path=relayed' /var/log/tubo/edge.log"
 for host in 172.104.128.174 45.79.168.161 172.104.190.233; do
   ssh root@$host '
     for name in relay edge service dummy-api-server; do
-      if [ -f "/var/run/p2p-api-tunnel/$name.pid" ]; then
-        kill "$(cat /var/run/p2p-api-tunnel/$name.pid)" 2>/dev/null || true
-        rm -f "/var/run/p2p-api-tunnel/$name.pid"
+      if [ -f "/var/run/tubo/$name.pid" ]; then
+        kill "$(cat /var/run/tubo/$name.pid)" 2>/dev/null || true
+        rm -f "/var/run/tubo/$name.pid"
       fi
     done
   '
@@ -167,7 +167,7 @@ done
 ## Destroy infrastruttura
 
 ```bash
-cd /root/p2p-api-tunnel/infra/terraform/linode-distributed
+cd /root/tubo/infra/terraform/linode-distributed
 terraform destroy
 ```
 

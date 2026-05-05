@@ -1,6 +1,6 @@
 package protocol
 
-import iversion "p2p-api-tunnel/internal/version"
+import iversion "github.com/origama/tubo/internal/version"
 
 // Protocol version identifier
 const (

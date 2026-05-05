@@ -7,7 +7,7 @@ variable "linode_token" {
 variable "project" {
   description = "Project/name prefix used for Linode labels and tags"
   type        = string
-  default     = "p2p-api-tunnel"
+  default     = "tubo"
 }
 
 variable "environment" {

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	discoveryquery "p2p-api-tunnel/internal/discovery/query"
-	"p2p-api-tunnel/internal/p2p"
+	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	"github.com/origama/tubo/internal/p2p"
 )
 
 func TestRelayDiscoveryQueryServesCachedServices(t *testing.T) {

@@ -137,7 +137,7 @@ Migrate to the new binary protocol for all new tunnels.
 
 ## Go Implementation
 
-Package: `p2p-api-tunnel/internal/protocol`
+Package: `github.com/origama/tubo/internal/protocol`
 
 Key types and functions:
 - `RequestHeader`, `ResponseHeader`, `BodyChunk`, `ErrorFrame` — frame structs

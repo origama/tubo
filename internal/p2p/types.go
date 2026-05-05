@@ -2,7 +2,7 @@ package p2p
 
 import (
 	libprotocol "github.com/libp2p/go-libp2p/core/protocol"
-	"p2p-api-tunnel/internal/protocol"
+	"github.com/origama/tubo/internal/protocol"
 )
 
 // ProtocolID is the preferred libp2p protocol identifier for tunnel streams.

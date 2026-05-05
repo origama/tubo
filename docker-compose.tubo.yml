@@ -1,6 +1,6 @@
 services:
   tubo-relay:
-    image: p2p-api-tunnel-tubo:dev
+    image: tubo:dev
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
@@ -12,7 +12,7 @@ services:
       - "8092:8092"
 
   tubo-dummy-api-server:
-    image: p2p-api-tunnel-dummy-api-server:dev
+    image: tubo-dummy-api-server:dev
     build:
       context: .
       dockerfile: deploy/Dockerfile.dummy-api-server
@@ -22,7 +22,7 @@ services:
       - "8000:8000"
 
   tubo-edge:
-    image: p2p-api-tunnel-tubo:dev
+    image: tubo:dev
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
@@ -35,7 +35,7 @@ services:
       - "4001:4001"
 
   tubo-service:
-    image: p2p-api-tunnel-tubo:dev
+    image: tubo:dev
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo

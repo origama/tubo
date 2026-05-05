@@ -397,7 +397,7 @@ def generate_html(report):
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>p2p-api-tunnel — NAT/Relay Performance Report</title>
+<title>tubo — NAT/Relay Performance Report</title>
 <style>
 :root {{
   --bg: #0b1020;
@@ -453,7 +453,7 @@ footer {{ margin-top:32px; color:var(--muted); font-size:12px; }}
 <div class="container">
   <div class="card">
     <div class="badge">Self-contained interactive report</div>
-    <h1 style="margin-top:10px;">p2p-api-tunnel — NAT/Relay Performance Report</h1>
+    <h1 style="margin-top:10px;">tubo — NAT/Relay Performance Report</h1>
     <p>Report generato sul testbed Docker NAT/relay reale: edge e service su reti isolate, relay come terza macchina logica. Include traffico piccolo, traffico misto con upload grandi, burst consecutivi e resilienza al restart.</p>
     <div class="small" id="meta"></div>
   </div>

@@ -1,9 +1,9 @@
 package auth
 
 type Policy struct {
-	TenantID         string
-	ServiceName      string
-	AllowedMethods   []string
+	TenantID          string
+	ServiceName       string
+	AllowedMethods    []string
 	AllowedPathPrefix []string
 }
 

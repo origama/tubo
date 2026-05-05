@@ -9,8 +9,8 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"p2p-api-tunnel/internal/discovery"
-	"p2p-api-tunnel/internal/p2p"
+	"github.com/origama/tubo/internal/discovery"
+	"github.com/origama/tubo/internal/p2p"
 )
 
 func TestResponseForRequestListAndGet(t *testing.T) {

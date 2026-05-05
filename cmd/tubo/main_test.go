@@ -16,11 +16,11 @@ import (
 	"testing"
 	"time"
 
-	cfgpkg "p2p-api-tunnel/internal/config"
-	"p2p-api-tunnel/internal/discovery"
-	discoveryquery "p2p-api-tunnel/internal/discovery/query"
-	"p2p-api-tunnel/internal/p2p"
-	iversion "p2p-api-tunnel/internal/version"
+	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/discovery"
+	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	"github.com/origama/tubo/internal/p2p"
+	iversion "github.com/origama/tubo/internal/version"
 )
 
 func capture(f func() error) (string, error) {

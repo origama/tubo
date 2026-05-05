@@ -7,7 +7,7 @@ RUN_DIR="${RUN_DIR:-$ROOT_DIR/generated/linode-terraform-mixed-version}"
 LEGACY_REF="${LEGACY_REF:-c9bbb1f}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-}"
 SERVICE_NAME="${SERVICE_NAME:-myapi}"
-REMOTE_BASE_DIR="${REMOTE_BASE_DIR:-/opt/p2p-api-tunnel}"
+REMOTE_BASE_DIR="${REMOTE_BASE_DIR:-/opt/tubo}"
 EDGE_HTTP_LISTEN="${EDGE_HTTP_LISTEN:-127.0.0.1:8443}"
 EDGE_ADMIN_LISTEN="${EDGE_ADMIN_LISTEN:-127.0.0.1:8444}"
 RELAY_HEALTH_LISTEN="${RELAY_HEALTH_LISTEN:-127.0.0.1:8092}"
@@ -79,9 +79,9 @@ cleanup() {
     ssh "${SSH_OPTS[@]}" "$host" '
       set -e
       for name in relay edge service dummy-api-server; do
-        if [ -f "/var/run/p2p-api-tunnel/$name.pid" ]; then
-          kill "$(cat "/var/run/p2p-api-tunnel/$name.pid")" >/dev/null 2>&1 || true
-          rm -f "/var/run/p2p-api-tunnel/$name.pid"
+        if [ -f "/var/run/tubo/$name.pid" ]; then
+          kill "$(cat "/var/run/tubo/$name.pid")" >/dev/null 2>&1 || true
+          rm -f "/var/run/tubo/$name.pid"
         fi
       done
     ' >/dev/null 2>&1 || true
@@ -95,7 +95,7 @@ build_binaries() {
   (cd "$ROOT_DIR" && go build -o "$RUN_DIR/dummy-api-server" ./cmd/dummy-api-server)
 
   info "building legacy binary from $LEGACY_REF"
-  LEGACY_WORKTREE="$(mktemp -d /tmp/p2p-api-tunnel-legacy-XXXXXX)"
+  LEGACY_WORKTREE="$(mktemp -d /tmp/tubo-legacy-XXXXXX)"
   git -C "$ROOT_DIR" worktree add --detach "$LEGACY_WORKTREE" "$LEGACY_REF" >/dev/null
   (cd "$LEGACY_WORKTREE" && go build -o "$RUN_DIR/tubo-legacy" ./cmd/tubo)
 }
@@ -265,7 +265,7 @@ EOF
 
 remote_prepare_dir() {
   local host="$1"
-  ssh "${SSH_OPTS[@]}" "$host" "mkdir -p '$REMOTE_BASE_DIR' /etc/tubo /var/log/tubo /var/run/p2p-api-tunnel"
+  ssh "${SSH_OPTS[@]}" "$host" "mkdir -p '$REMOTE_BASE_DIR' /etc/tubo /var/log/tubo /var/run/tubo"
 }
 
 upload_common_artifacts() {
@@ -301,9 +301,9 @@ remote_stop() {
   ssh "${SSH_OPTS[@]}" "$host" '
     set -e
     for name in relay edge service dummy-api-server; do
-      if [ -f "/var/run/p2p-api-tunnel/$name.pid" ]; then
-        kill "$(cat "/var/run/p2p-api-tunnel/$name.pid")" >/dev/null 2>&1 || true
-        rm -f "/var/run/p2p-api-tunnel/$name.pid"
+      if [ -f "/var/run/tubo/$name.pid" ]; then
+        kill "$(cat "/var/run/tubo/$name.pid")" >/dev/null 2>&1 || true
+        rm -f "/var/run/tubo/$name.pid"
       fi
     done
   ' >/dev/null 2>&1 || true
@@ -328,9 +328,9 @@ start_processes() {
   remote_stop "$EDGE_HOST"
   remote_stop "$SERVICE_HOST"
 
-  ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "nohup '$REMOTE_BASE_DIR/tubo' relay run --config /etc/tubo/relay.yaml > /var/log/tubo/relay.log 2>&1 & echo \$! > /var/run/p2p-api-tunnel/relay.pid"
-  ssh "${SSH_OPTS[@]}" "$EDGE_HOST" "nohup '$REMOTE_BASE_DIR/tubo' edge run --config /etc/tubo/edge.yaml > /var/log/tubo/edge.log 2>&1 & echo \$! > /var/run/p2p-api-tunnel/edge.pid"
-  ssh "${SSH_OPTS[@]}" "$SERVICE_HOST" "nohup env DUMMY_API_LISTEN='$DUMMY_API_LISTEN' DUMMY_API_INSTANCE='linode-terraform-mixed-version' '$REMOTE_BASE_DIR/dummy-api-server' > /var/log/tubo/dummy-api-server.log 2>&1 & echo \$! > /var/run/p2p-api-tunnel/dummy-api-server.pid; nohup '$REMOTE_BASE_DIR/tubo' service run --config /etc/tubo/service.yaml > /var/log/tubo/service.log 2>&1 & echo \$! > /var/run/p2p-api-tunnel/service.pid"
+  ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "nohup '$REMOTE_BASE_DIR/tubo' relay run --config /etc/tubo/relay.yaml > /var/log/tubo/relay.log 2>&1 & echo \$! > /var/run/tubo/relay.pid"
+  ssh "${SSH_OPTS[@]}" "$EDGE_HOST" "nohup '$REMOTE_BASE_DIR/tubo' edge run --config /etc/tubo/edge.yaml > /var/log/tubo/edge.log 2>&1 & echo \$! > /var/run/tubo/edge.pid"
+  ssh "${SSH_OPTS[@]}" "$SERVICE_HOST" "nohup env DUMMY_API_LISTEN='$DUMMY_API_LISTEN' DUMMY_API_INSTANCE='linode-terraform-mixed-version' '$REMOTE_BASE_DIR/dummy-api-server' > /var/log/tubo/dummy-api-server.log 2>&1 & echo \$! > /var/run/tubo/dummy-api-server.pid; nohup '$REMOTE_BASE_DIR/tubo' service run --config /etc/tubo/service.yaml > /var/log/tubo/service.log 2>&1 & echo \$! > /var/run/tubo/service.pid"
 }
 
 wait_readiness() {

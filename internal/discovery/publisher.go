@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/libp2p/go-libp2p/core/crypto"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/crypto"
 )
 
 // Publisher signs and broadcasts service announcements via a GossipSub topic.

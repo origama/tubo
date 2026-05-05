@@ -13,7 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	libprotocol "github.com/libp2p/go-libp2p/core/protocol"
 
-	"p2p-api-tunnel/internal/discovery"
+	"github.com/origama/tubo/internal/discovery"
 )
 
 const (
