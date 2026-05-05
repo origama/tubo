@@ -6,11 +6,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/origama/tubo/internal/p2p"
 	"io"
 	"log"
 	"net"
 	"net/http"
-	"p2p-api-tunnel/internal/p2p"
 	"time"
 )
 

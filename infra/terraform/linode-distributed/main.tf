@@ -15,7 +15,7 @@ locals {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -y
     apt-get install -y curl
-    mkdir -p /opt/p2p-api-tunnel/bin /etc/tubo /var/log/tubo /var/run/p2p-api-tunnel
+    mkdir -p /opt/github.com/origama/tubo/bin /etc/tubo /var/log/tubo /var/run/tubo
   EOT
 }
 

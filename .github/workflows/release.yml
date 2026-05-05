@@ -127,7 +127,7 @@ jobs:
 
           GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build \
             -trimpath \
-            -ldflags "-X p2p-api-tunnel/internal/version.ProductVersion=$TAG -X p2p-api-tunnel/internal/version.Commit=$COMMIT -X p2p-api-tunnel/internal/version.BuildDate=$BUILD_DATE" \
+            -ldflags "-X github.com/origama/tubo/internal/version.ProductVersion=$TAG -X github.com/origama/tubo/internal/version.Commit=$COMMIT -X github.com/origama/tubo/internal/version.BuildDate=$BUILD_DATE" \
             -o "$STAGE_DIR/$BIN" \
             ./cmd/tubo
 

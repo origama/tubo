@@ -1,5 +1,5 @@
 swarm:
-  key_file: /root/p2p-api-tunnel/swarm.key
+  key_file: /root/github.com/origama/tubo/swarm.key
 nodes:
   relay:
     role: relay

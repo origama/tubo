@@ -11,7 +11,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	libprotocol "github.com/libp2p/go-libp2p/core/protocol"
 
-	"p2p-api-tunnel/internal/protocol"
+	"github.com/origama/tubo/internal/protocol"
 )
 
 func TestHandleClientRequestUsesContentLengthHeaderAsHint(t *testing.T) {

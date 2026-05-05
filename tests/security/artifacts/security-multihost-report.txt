@@ -1,11 +1,12 @@
 [security-multihost] starting security multihost testbench
-[security-multihost] compose file: /root/p2p-api-tunnel/tests/security/docker-compose.security-multihost.yml
+[security-multihost] compose file: /root/github.com/origama/tubo/tests/security/docker-compose.security-multihost.yml
 [security-multihost] building images serially to avoid parallel tag races
 DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
             Install the buildx component to build images with BuildKit:
             https://docs.docker.com/go/buildx/
 
-Sending build context to Docker daemon  16.83MB
+Sending build context to Docker daemon  16.83MB
+
 Step 1/10 : FROM golang:1.24 AS build
  ---> d2d2bc1c84f7
 Step 2/10 : WORKDIR /src
@@ -35,12 +36,13 @@ Step 10/10 : ENTRYPOINT ["/usr/local/bin/tubo"]
  ---> Using cache
  ---> 6806e8235afb
 Successfully built 6806e8235afb
-Successfully tagged p2p-api-tunnel-tubo:security-multihost
+Successfully tagged tubo:security-multihost
 DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
             Install the buildx component to build images with BuildKit:
             https://docs.docker.com/go/buildx/
 
-Sending build context to Docker daemon  16.83MB
+Sending build context to Docker daemon  16.83MB
+
 Step 1/5 : FROM golang:1.24-alpine
  ---> 8bee1901f1e5
 Step 2/5 : WORKDIR /app
@@ -57,7 +59,7 @@ Step 5/5 : CMD ["/usr/local/bin/dummy-api-server"]
  ---> Removed intermediate container f8dcc5d59032
  ---> f7c8badf4d2b
 Successfully built f7c8badf4d2b
-Successfully tagged p2p-api-tunnel-dummy-api-server:security-multihost
+Successfully tagged tubo-dummy-api-server:security-multihost
  Network security_rogue-net  Creating
  Network security_rogue-net  Created
  Network security_edge-net  Creating
@@ -124,5 +126,5 @@ SEC-003 | high | vulnerable | a peer with the private swarm key can announce an 
 SEC-004 | medium | vulnerable | public edge ingress accepts unauthenticated HTTP requests for published services
 [security-multihost] SEC-005: no enforced ServiceName -> PeerID binding
 SEC-005 | high | observed-design-gap | routes and discovery are keyed by service name; cache keeps one mutable registration per name and does not enforce a pinned peer identity
-[security-multihost] report written to /root/p2p-api-tunnel/tests/security/artifacts/security-multihost-report.txt
+[security-multihost] report written to /root/github.com/origama/tubo/tests/security/artifacts/security-multihost-report.txt
 [security-multihost] done

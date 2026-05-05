@@ -78,7 +78,7 @@ terraform apply
 5. Lancia lo smoke:
 
 ```bash
-cd /root/p2p-api-tunnel
+cd /root/tubo
 ./tests/smoke-terraform-linode.sh
 ```
 

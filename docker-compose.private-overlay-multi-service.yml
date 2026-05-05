@@ -7,7 +7,7 @@ x-service-env: &service-env
 
 services:
   relay:
-    image: p2p-api-tunnel-tubo:private-multi
+    image: tubo:private-multi
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
@@ -29,7 +29,7 @@ services:
       - service-three-private
 
   edge:
-    image: p2p-api-tunnel-tubo:private-multi
+    image: tubo:private-multi
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
@@ -67,7 +67,7 @@ services:
       - edge-private
 
   dummy-api-server-one:
-    image: p2p-api-tunnel-dummy-api-server:private-multi
+    image: tubo-dummy-api-server:private-multi
     build:
       context: .
       dockerfile: deploy/Dockerfile.dummy-api-server
@@ -83,7 +83,7 @@ services:
       retries: 20
 
   service-one:
-    image: p2p-api-tunnel-tubo:private-multi
+    image: tubo:private-multi
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
@@ -113,7 +113,7 @@ services:
       - service-one-private
 
   dummy-api-server-two:
-    image: p2p-api-tunnel-dummy-api-server:private-multi
+    image: tubo-dummy-api-server:private-multi
     build:
       context: .
       dockerfile: deploy/Dockerfile.dummy-api-server
@@ -129,7 +129,7 @@ services:
       retries: 20
 
   service-two:
-    image: p2p-api-tunnel-tubo:private-multi
+    image: tubo:private-multi
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
@@ -159,7 +159,7 @@ services:
       - service-two-private
 
   dummy-api-server-three:
-    image: p2p-api-tunnel-dummy-api-server:private-multi
+    image: tubo-dummy-api-server:private-multi
     build:
       context: .
       dockerfile: deploy/Dockerfile.dummy-api-server
@@ -175,7 +175,7 @@ services:
       retries: 20
 
   service-three:
-    image: p2p-api-tunnel-tubo:private-multi
+    image: tubo:private-multi
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo

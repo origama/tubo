@@ -6,7 +6,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"p2p-api-tunnel/internal/discovery"
+	"github.com/origama/tubo/internal/discovery"
 )
 
 // --- Announcement signing and verification ---

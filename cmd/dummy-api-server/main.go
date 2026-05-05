@@ -10,12 +10,12 @@ import (
 )
 
 type dummyResponse struct {
-	Instance   string            `json:"instance,omitempty"`
-	Method     string            `json:"method"`
-	Path       string            `json:"path"`
-	RawQuery   string            `json:"raw_query"`
-	Headers    map[string]string `json:"headers"`
-	BodyB64    string            `json:"body_b64,omitempty"`
+	Instance string            `json:"instance,omitempty"`
+	Method   string            `json:"method"`
+	Path     string            `json:"path"`
+	RawQuery string            `json:"raw_query"`
+	Headers  map[string]string `json:"headers"`
+	BodyB64  string            `json:"body_b64,omitempty"`
 }
 
 func main() {

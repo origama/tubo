@@ -17,10 +17,10 @@ import (
 	circuitclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	"github.com/multiformats/go-multiaddr"
 
-	"p2p-api-tunnel/internal/discovery"
-	discoveryquery "p2p-api-tunnel/internal/discovery/query"
-	"p2p-api-tunnel/internal/p2p"
-	"p2p-api-tunnel/internal/protocol"
+	"github.com/origama/tubo/internal/discovery"
+	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/protocol"
 )
 
 type Config struct {

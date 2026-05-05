@@ -1,4 +1,4 @@
-module p2p-api-tunnel
+module github.com/origama/tubo
 
 go 1.24.6
 

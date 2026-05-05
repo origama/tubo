@@ -24,7 +24,7 @@ LOCAL_EDGE_HTTP = "http://127.0.0.1:28443"
 LOCAL_EDGE_ADMIN = "http://127.0.0.1:28444"
 RELAY_HEALTH = "127.0.0.1:8092"
 SERVICE_HEALTH = "127.0.0.1:8091"
-REMOTE_BASE_DIR = "/opt/p2p-api-tunnel"
+REMOTE_BASE_DIR = "/opt/tubo"
 SERVICE_NAME = "myapi"
 
 
@@ -478,7 +478,7 @@ class LinodeTerraformBench:
 
     def cleanup_processes(self):
         for host in (self.relay_ip, self.edge_ip, self.service_ip):
-            self.ssh(host, "set -e; for name in relay edge service dummy-api-server; do if [ -f /var/run/p2p-api-tunnel/$name.pid ]; then kill $(cat /var/run/p2p-api-tunnel/$name.pid) >/dev/null 2>&1 || true; rm -f /var/run/p2p-api-tunnel/$name.pid; fi; done", check=False)
+            self.ssh(host, "set -e; for name in relay edge service dummy-api-server; do if [ -f /var/run/github.com/origama/tubo/$name.pid ]; then kill $(cat /var/run/github.com/origama/tubo/$name.pid) >/dev/null 2>&1 || true; rm -f /var/run/github.com/origama/tubo/$name.pid; fi; done", check=False)
 
     def wait_ready(self):
         def ok(url):
@@ -505,8 +505,8 @@ class LinodeTerraformBench:
         wait_until("service relay reservation", 120, lambda: "/p2p-circuit" in self.ssh(self.service_ip, f"curl -fsS 'http://{SERVICE_HEALTH}/debug/peer'", check=False))
 
     def restart_service(self):
-        self.ssh(self.service_ip, "if [ -f /var/run/p2p-api-tunnel/service.pid ]; then kill $(cat /var/run/p2p-api-tunnel/service.pid) >/dev/null 2>&1 || true; rm -f /var/run/p2p-api-tunnel/service.pid; fi", check=False)
-        self.ssh(self.service_ip, f"nohup '{REMOTE_BASE_DIR}/tubo' service run --config /etc/tubo/service.yaml > /var/log/tubo/service.log 2>&1 & echo $! > /var/run/p2p-api-tunnel/service.pid")
+        self.ssh(self.service_ip, "if [ -f /var/run/github.com/origama/tubo/service.pid ]; then kill $(cat /var/run/github.com/origama/tubo/service.pid) >/dev/null 2>&1 || true; rm -f /var/run/github.com/origama/tubo/service.pid; fi", check=False)
+        self.ssh(self.service_ip, f"nohup '{REMOTE_BASE_DIR}/tubo' service run --config /etc/tubo/service.yaml > /var/log/tubo/service.log 2>&1 & echo $! > /var/run/github.com/origama/tubo/service.pid")
         self.wait_ready()
 
 

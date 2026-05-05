@@ -1,6 +1,6 @@
 services:
   relay:
-    image: p2p-api-tunnel-tubo:nat
+    image: tubo:nat
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
@@ -21,7 +21,7 @@ services:
       - service-private
 
   dummy-api-server:
-    image: p2p-api-tunnel-dummy-api-server:nat
+    image: tubo-dummy-api-server:nat
     build:
       context: .
       dockerfile: deploy/Dockerfile.dummy-api-server
@@ -38,7 +38,7 @@ services:
       retries: 20
 
   edge:
-    image: p2p-api-tunnel-tubo:nat
+    image: tubo:nat
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
@@ -66,7 +66,7 @@ services:
       - edge-private
 
   service:
-    image: p2p-api-tunnel-tubo:nat
+    image: tubo:nat
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo

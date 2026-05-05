@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"p2p-api-tunnel/internal/protocol"
+	"github.com/origama/tubo/internal/protocol"
 )
 
 type NegotiationEvent struct {

@@ -63,7 +63,7 @@ Example build pattern:
 VERSION=$(cat VERSION)
 COMMIT=$(git rev-parse HEAD)
 BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-go build -ldflags "-X p2p-api-tunnel/internal/version.ProductVersion=$VERSION -X p2p-api-tunnel/internal/version.Commit=$COMMIT -X p2p-api-tunnel/internal/version.BuildDate=$BUILD_DATE" ./cmd/tubo
+go build -ldflags "-X github.com/origama/tubo/internal/version.ProductVersion=$VERSION -X github.com/origama/tubo/internal/version.Commit=$COMMIT -X github.com/origama/tubo/internal/version.BuildDate=$BUILD_DATE" ./cmd/tubo
 ```
 
 The release workflow uses the same metadata injection and the resulting binaries must report it via `tubo version`.

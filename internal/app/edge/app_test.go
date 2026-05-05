@@ -11,10 +11,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"p2p-api-tunnel/internal/discovery"
-	discoveryquery "p2p-api-tunnel/internal/discovery/query"
-	"p2p-api-tunnel/internal/p2p"
-	"p2p-api-tunnel/internal/routing"
+	"github.com/origama/tubo/internal/discovery"
+	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/routing"
 )
 
 func TestLoadConfigFromEnvDefaults(t *testing.T) {

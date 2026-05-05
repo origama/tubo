@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"p2p-api-tunnel/internal/protocol"
+	"github.com/origama/tubo/internal/protocol"
 )
 
 type partialWriter struct {

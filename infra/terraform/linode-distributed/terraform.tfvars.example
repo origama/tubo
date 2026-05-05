@@ -5,7 +5,7 @@ ssh_public_key       = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... you@example"
 # Use an absolute path here: Terraform's file() does not reliably expand ~
 ssh_private_key_path = "/root/.ssh/id_ed25519"
 
-project     = "p2p-api-tunnel"
+project     = "tubo"
 environment = "linode-dist"
 
 # choose 3 different regions

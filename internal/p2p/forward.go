@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
-	"p2p-api-tunnel/internal/forwarding"
-	"p2p-api-tunnel/internal/protocol"
+	"github.com/origama/tubo/internal/forwarding"
+	"github.com/origama/tubo/internal/protocol"
 )
 
 const streamChunkSize = 32 * 1024
