@@ -17,14 +17,14 @@ export TF_VAR_linode_token="$(< ~/.token)"
 ### Plan
 
 ```bash
-cd /root/github.com/origama/tubo/infra/terraform/linode-distributed
+cd /root/tubo/infra/terraform/linode-distributed
 terraform plan
 ```
 
 ### Apply
 
 ```bash
-cd /root/github.com/origama/tubo/infra/terraform/linode-distributed
+cd /root/tubo/infra/terraform/linode-distributed
 terraform apply
 ```
 
@@ -155,9 +155,9 @@ ssh root@45.79.168.161 "grep 'connection_path=relayed' /var/log/tubo/edge.log"
 for host in 172.104.128.174 45.79.168.161 172.104.190.233; do
   ssh root@$host '
     for name in relay edge service dummy-api-server; do
-      if [ -f "/var/run/github.com/origama/tubo/$name.pid" ]; then
-        kill "$(cat /var/run/github.com/origama/tubo/$name.pid)" 2>/dev/null || true
-        rm -f "/var/run/github.com/origama/tubo/$name.pid"
+      if [ -f "/var/run/tubo/$name.pid" ]; then
+        kill "$(cat /var/run/tubo/$name.pid)" 2>/dev/null || true
+        rm -f "/var/run/tubo/$name.pid"
       fi
     done
   '
@@ -167,7 +167,7 @@ done
 ## Destroy infrastruttura
 
 ```bash
-cd /root/github.com/origama/tubo/infra/terraform/linode-distributed
+cd /root/tubo/infra/terraform/linode-distributed
 terraform destroy
 ```
 
