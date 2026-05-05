@@ -21,6 +21,32 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.4.0] - 2026-05-05
+
+Repository/module rename release that aligns the project identity around `tubo`, updates operational paths and image names, and validates the renamed tree on the real 3-node Linode bench.
+
+### Added
+- No new runtime protocol features; this release is focused on project/repository identity alignment and operability validation.
+
+### Changed
+- GitHub repository moved from `origama/p2p-api-tunnel` to `origama/tubo`.
+- Go module path changed from `p2p-api-tunnel` to `github.com/origama/tubo`.
+- Internal imports, release ldflags, and source references now use the new module path.
+- Operational/docs references were updated from `p2p-api-tunnel` to `tubo`.
+- Remote runtime paths now use `/opt/tubo` and `/var/run/tubo`.
+- Local compose image names now use `tubo` / `tubo-dummy-api-server`.
+- Local checkout path is now `/root/tubo`.
+
+### Fixed
+- Rename fallout in Linode runtime scripts was corrected so remote pid/state paths no longer expand to invalid `github.com/origama/tubo` filesystem paths.
+- The renamed tree was validated successfully on the real 3-node Linode setup after fixing those path regressions.
+
+### Compatibility
+- Product version: v0.4.0
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: if you consume the source tree directly, update Git remotes, Go module imports, local checkout path expectations, Docker image references, and remote runtime paths from `p2p-api-tunnel` to `tubo`
+
 ## [v0.3.0] - 2026-05-03
 
 Remote discovery query release focused on making service discovery and connect resolution more reliable when clients arrive after the initial pubsub announcement window.
