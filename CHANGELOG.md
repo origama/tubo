@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `tubo` will be documented in this file.
+All notable changes to this project will be documented in this file.
 
 This project follows the versioning policy in `docs/VERSIONING.md`.
 
@@ -20,6 +20,32 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol version: 1.1
 - Protocol compatibility change: none
 - Operator action required: none
+
+## [v0.4.0] - 2026-05-05
+
+Repository/module rename release that aligns the project identity around `tubo`, updates operational paths and image names, and validates the renamed tree on the real 3-node Linode bench.
+
+### Added
+- No new runtime protocol features; this release is focused on project/repository identity alignment and operability validation.
+
+### Changed
+- GitHub repository moved from `origama/p2p-api-tunnel` to `origama/tubo`.
+- Go module path changed from `p2p-api-tunnel` to `github.com/origama/tubo`.
+- Internal imports, release ldflags, and source references now use the new module path.
+- Operational/docs references were updated from `p2p-api-tunnel` to `tubo`.
+- Remote runtime paths now use `/opt/tubo` and `/var/run/tubo`.
+- Local compose image names now use `tubo` / `tubo-dummy-api-server`.
+- Local checkout path is now `/root/tubo`.
+
+### Fixed
+- Rename fallout in Linode runtime scripts was corrected so remote pid/state paths no longer expand to invalid `github.com/origama/tubo` filesystem paths.
+- The renamed tree was validated successfully on the real 3-node Linode setup after fixing those path regressions.
+
+### Compatibility
+- Product version: v0.4.0
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: if you consume the source tree directly, update Git remotes, Go module imports, local checkout path expectations, Docker image references, and remote runtime paths from `p2p-api-tunnel` to `tubo`
 
 ## [v0.3.0] - 2026-05-03
 
@@ -153,28 +179,3 @@ First clean versioned release with explicit product/protocol versioning, protoco
 - Protocol version: 1.1
 - Protocol compatibility change: backward-compatible addition; legacy `/p2p-tunnel/1.0` remains accepted
 - Operator action required: none for same-major upgrades; old/new nodes can mix during rollout through the legacy fallback path
-
-## [v0.1.0] - 2026-05-01
-
-Initial tagged baseline for the unified `tubo` binary after relay-first NAT validation, distributed Linode testbench rollout, and the first stabilized relay large-payload fixes.
-
-### Added
-- Unified `tubo` CLI with role subcommands for edge, relay, service, and bridge.
-- Binary framing protocol with streamed request/response bodies.
-- Discovery via signed pubsub announcements with TTL cache.
-- Relay-first NAT/isolated-network test coverage and Linode Terraform distributed testbench.
-
-### Changed
-- Relay and edge runtime defaults were hardened for relayed large-body traffic.
-- Performance baselines are now saved under `tests/perf/results/linode-terraform/`.
-
-### Fixed
-- Partial frame writes now flush fully during protocol encoding.
-- Relayed large-payload traffic stability improved under mixed and burst load.
-- Stale routes are evicted earlier after hard stream-open failures.
-
-### Compatibility
-- Product version: v0.1.0
-- Protocol version: 1.0
-- Protocol compatibility change: none
-- Operator action required: none
