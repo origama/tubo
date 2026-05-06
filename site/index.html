@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#07111f" />
+    <meta
+      name="description"
+      content="tubo — un tunnel P2P minimale per API e servizi privati, con relay, attach, connect e discovery integrata."
+    />
+    <title>tubo — minimal P2P API tunnel</title>
+    <style>
+      :root {
+        --bg: #07111f;
+        --bg2: #0b1630;
+        --panel: rgba(10, 18, 34, 0.76);
+        --panel-strong: rgba(15, 24, 42, 0.92);
+        --border: rgba(141, 165, 255, 0.16);
+        --text: #e8efff;
+        --muted: #98a7c8;
+        --accent: #7cc4ff;
+        --accent-2: #93f2d0;
+        --accent-3: #b38cff;
+        --shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
+        --radius: 24px;
+        --radius-sm: 16px;
+        --max: 1120px;
+      }
+
+      * { box-sizing: border-box; }
+      html, body { margin: 0; min-height: 100%; }
+      body {
+        color: var(--text);
+        background:
+          radial-gradient(circle at 20% 15%, rgba(124, 196, 255, 0.20), transparent 28%),
+          radial-gradient(circle at 80% 10%, rgba(179, 140, 255, 0.16), transparent 26%),
+          radial-gradient(circle at 50% 100%, rgba(147, 242, 208, 0.08), transparent 30%),
+          linear-gradient(180deg, var(--bg), var(--bg2));
+        font: 16px/1.6 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      a { color: inherit; text-decoration: none; }
+      .wrap { width: min(var(--max), calc(100% - 32px)); margin: 0 auto; }
+      .topbar {
+        position: sticky; top: 0; z-index: 20;
+        backdrop-filter: blur(12px);
+        background: linear-gradient(180deg, rgba(7,17,31,0.96), rgba(7,17,31,0.72));
+        border-bottom: 1px solid rgba(255,255,255,0.06);
+      }
+      .topbar-inner {
+        display: flex; align-items: center; justify-content: space-between;
+        min-height: 72px; gap: 20px;
+      }
+      .brand {
+        display: inline-flex; align-items: center; gap: 12px; font-weight: 750; letter-spacing: -0.03em;
+      }
+      .mark {
+        width: 40px; height: 40px; display: grid; place-items: center;
+        border-radius: 14px;
+        background: linear-gradient(135deg, rgba(124,196,255,0.25), rgba(179,140,255,0.20));
+        border: 1px solid rgba(255,255,255,0.10);
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+      }
+      .mark svg { width: 22px; height: 22px; display: block; }
+      .nav {
+        display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px;
+      }
+      .nav a:hover { color: var(--text); }
+
+      .hero {
+        padding: 68px 0 42px;
+      }
+      .hero-grid {
+        display: grid; grid-template-columns: 1.3fr 0.9fr; gap: 24px; align-items: stretch;
+      }
+      .hero-copy, .hero-card, .panel, .feature, .cmd, .footer-box {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        box-shadow: var(--shadow);
+      }
+      .hero-copy { padding: 40px; }
+      .eyebrow {
+        display: inline-flex; align-items: center; gap: 8px;
+        color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.16em;
+      }
+      .eyebrow::before {
+        content: ""; width: 10px; height: 10px; border-radius: 999px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        box-shadow: 0 0 0 6px rgba(124,196,255,0.08);
+      }
+      h1 {
+        margin: 18px 0 16px;
+        font-size: clamp(42px, 7vw, 76px);
+        line-height: 0.96;
+        letter-spacing: -0.06em;
+      }
+      .lead {
+        max-width: 58ch;
+        color: #c8d4f2;
+        font-size: 18px;
+      }
+      .cta-row {
+        display: flex; flex-wrap: wrap; gap: 12px; margin-top: 26px;
+      }
+      .btn {
+        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+        padding: 12px 16px; border-radius: 999px;
+        border: 1px solid rgba(255,255,255,0.12);
+        font-weight: 650; font-size: 14px;
+        transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+      }
+      .btn:hover { transform: translateY(-1px); border-color: rgba(255,255,255,0.22); }
+      .btn.primary {
+        background: linear-gradient(135deg, rgba(124,196,255,0.18), rgba(147,242,208,0.12));
+      }
+      .btn.secondary { color: var(--muted); background: rgba(255,255,255,0.03); }
+
+      .hero-card {
+        padding: 24px;
+        display: flex; flex-direction: column; gap: 14px;
+        justify-content: space-between;
+      }
+      .hero-card .panel {
+        padding: 18px;
+        border-radius: var(--radius-sm);
+        background: var(--panel-strong);
+      }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .code {
+        font-size: 13px; line-height: 1.65; color: #dfe8ff;
+        white-space: pre-wrap;
+      }
+      .tag-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+      .tag {
+        display: inline-flex; align-items: center; padding: 7px 10px;
+        border-radius: 999px; font-size: 12px; color: #d8e3ff;
+        background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
+      }
+
+      .section { padding: 14px 0 34px; }
+      .section h2 {
+        margin: 0 0 18px; font-size: 22px; letter-spacing: -0.03em;
+      }
+      .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+      .feature, .cmd { padding: 20px; }
+      .feature h3, .cmd h3 { margin: 0 0 8px; font-size: 16px; }
+      .feature p, .cmd p, .small { margin: 0; color: var(--muted); }
+
+      .cmd pre {
+        margin: 14px 0 0;
+        padding: 14px 16px;
+        border-radius: 16px;
+        overflow: auto;
+        background: rgba(0,0,0,0.26);
+        border: 1px solid rgba(255,255,255,0.08);
+        color: #dce6ff;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .split {
+        display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 16px;
+      }
+      .quote {
+        padding: 24px; color: #d9e4ff; font-size: 18px; line-height: 1.55;
+      }
+      .quote strong { color: #fff; }
+      .footer {
+        padding: 26px 0 56px;
+      }
+      .footer-box {
+        display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between;
+        padding: 22px 24px;
+        background: rgba(10,18,34,0.82);
+      }
+      .footer-links { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 14px; }
+      .footer-links a:hover { color: var(--text); }
+
+      @media (max-width: 900px) {
+        .hero-grid, .grid-3, .split { grid-template-columns: 1fr; }
+        .hero-copy { padding: 28px; }
+        .hero { padding-top: 40px; }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="wrap topbar-inner">
+        <a class="brand" href="#top" aria-label="tubo home">
+          <span class="mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M6 8.2C6 6.43 7.43 5 9.2 5h5.6C16.57 5 18 6.43 18 8.2v7.6c0 1.77-1.43 3.2-3.2 3.2H9.2C7.43 19 6 17.57 6 15.8V8.2Z" stroke="white" stroke-opacity="0.9" stroke-width="1.6"/>
+              <path d="M9 8h6M9 12h6M9 16h3" stroke="white" stroke-opacity="0.9" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+          </span>
+          <span>tubo</span>
+        </a>
+        <nav class="nav" aria-label="primary">
+          <a href="#what">what</a>
+          <a href="#flow">flow</a>
+          <a href="#start">start</a>
+          <a href="https://github.com/origama/tubo" target="_blank" rel="noreferrer">github</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="top" class="wrap">
+      <section class="hero">
+        <div class="hero-grid">
+          <div class="hero-copy">
+            <div class="eyebrow">tubo.click</div>
+            <h1>Minimal P2P tunnel for API services.</h1>
+            <p class="lead">
+              <strong>tubo</strong> is a small, intent-based tunnel for private swarms:
+              relay, attach, connect, discover, and curl — without dragging a big control plane behind it.
+            </p>
+            <div class="cta-row">
+              <a class="btn primary" href="https://github.com/origama/tubo" target="_blank" rel="noreferrer">GitHub</a>
+              <a class="btn secondary" href="https://github.com/origama/tubo/releases" target="_blank" rel="noreferrer">Releases</a>
+              <a class="btn secondary" href="https://github.com/origama/tubo/blob/main/docs/cli.md" target="_blank" rel="noreferrer">CLI docs</a>
+            </div>
+          </div>
+
+          <aside class="hero-card">
+            <div class="panel">
+              <div class="small">Quick shape</div>
+              <div class="code mono">
+relay ── attach ── discovery ── connect ── curl
+              </div>
+            </div>
+            <div class="panel">
+              <div class="small">Core idea</div>
+              <div class="code mono">one binary
+one swarm
+one service name
+one HTTP request</div>
+            </div>
+            <div class="tag-row">
+              <span class="tag">intent-based CLI</span>
+              <span class="tag">relay-first</span>
+              <span class="tag">local or remote</span>
+              <span class="tag">GitHub Pages</span>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <section id="what" class="section">
+        <h2>What tubo does</h2>
+        <div class="grid-3">
+          <article class="feature">
+            <h3>Attach services</h3>
+            <p>Publish an HTTP service into a private swarm with a simple name and a target URL.</p>
+          </article>
+          <article class="feature">
+            <h3>Connect by name</h3>
+            <p>Resolve a service and open a local listener that forwards real traffic to the right place.</p>
+          </article>
+          <article class="feature">
+            <h3>Keep the network small</h3>
+            <p>One binary, relay/bootstrap nodes, discovery, and a straightforward operational model.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="flow" class="section">
+        <h2>How it flows</h2>
+        <div class="split">
+          <article class="cmd">
+            <h3>Relay / bootstrap</h3>
+            <p>Start the relay node that anchors the swarm.</p>
+            <pre class="mono">tubo relay</pre>
+          </article>
+          <article class="cmd">
+            <h3>Attach / publish</h3>
+            <p>Expose a local API or app into the swarm under a stable service name.</p>
+            <pre class="mono">tubo attach http://127.0.0.1:1234 --name lmstudio</pre>
+          </article>
+        </div>
+        <div class="split" style="margin-top: 16px;">
+          <article class="cmd">
+            <h3>Join / configure</h3>
+            <p>Point a machine at an existing swarm using a relay and a shared swarm key.</p>
+            <pre class="mono">tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key</pre>
+          </article>
+          <article class="cmd">
+            <h3>Connect / consume</h3>
+            <p>Open a local listener that reaches the published service and try a real request.</p>
+            <pre class="mono">tubo connect lmstudio --local 127.0.0.1:51234
+curl http://127.0.0.1:51234/v1/dummy</pre>
+          </article>
+        </div>
+      </section>
+
+      <section id="start" class="section">
+        <h2>Why tubo</h2>
+        <div class="split">
+          <div class="quote panel">
+            There are many tunnels. <strong>tubo</strong> stays small, composable, and explicit:
+            it lets you wire up relay, attach, connect, and discovery without hiding the network behind magic.
+          </div>
+          <div class="cmd">
+            <h3>Built for operators</h3>
+            <p>
+              It ships with a compact CLI, real discovery, release assets, and a GitHub-pages-friendly site.
+            </p>
+            <pre class="mono">git clone https://github.com/origama/tubo.git
+cd tubo
+# see docs/cli.md for the full flow</pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap footer-box">
+        <div>
+          <div class="brand" style="gap: 10px;">
+            <span class="mark" aria-hidden="true" style="width: 34px; height: 34px; border-radius: 12px;">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M6 8.2C6 6.43 7.43 5 9.2 5h5.6C16.57 5 18 6.43 18 8.2v7.6c0 1.77-1.43 3.2-3.2 3.2H9.2C7.43 19 6 17.57 6 15.8V8.2Z" stroke="white" stroke-opacity="0.9" stroke-width="1.6"/>
+                <path d="M9 8h6M9 12h6M9 16h3" stroke="white" stroke-opacity="0.9" stroke-width="1.6" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>tubo.click</span>
+          </div>
+          <div class="small" style="margin-top: 8px;">Minimal P2P API tunnel, served as a single static page.</div>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/origama/tubo" target="_blank" rel="noreferrer">GitHub</a>
+          <a href="https://github.com/origama/tubo/blob/main/README.md" target="_blank" rel="noreferrer">README</a>
+          <a href="https://github.com/origama/tubo/blob/main/docs/cli.md" target="_blank" rel="noreferrer">docs</a>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
