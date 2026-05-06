@@ -99,22 +99,27 @@ tubo attach http://127.0.0.1:1234 --name lmstudio -d
 tubo connect lmstudio --local 127.0.0.1:51234 -d
 ```
 
-## Init implicito e `--no-init`
+## Join/init implicito e `--no-init`
 
-Se manca la config locale di default, `attach`, `gateway` e `relay` possono fare init implicito creando:
+Se manca la config locale di default:
+
+- `attach`, `connect` e `gateway` fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
+- `relay` continua invece a fare init locale implicito creando una config/swarm key locale.
+
+File coinvolti:
 
 ```text
 ~/.config/tubo/config.yaml
 ~/.config/tubo/swarm.key
 ```
 
-Per disabilitarlo esplicitamente:
+Per disabilitare esplicitamente il comportamento implicito:
 
 ```bash
 --no-init
 ```
 
-In `CI=true`, l'init implicito e' disabilitato e il comando fallisce con next steps espliciti invece di creare state locale implicitamente.
+In `CI=true`, sia l'implicit public join sia l'init implicito sono disabilitati e il comando fallisce con next steps espliciti invece di creare state locale implicitamente.
 
 ## Advanced role commands
 
@@ -194,6 +199,8 @@ Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, opp
 ## Connect
 
 `connect` apre un listener HTTP locale verso un servizio scoperto nello swarm.
+
+Se la config locale di default non esiste ancora, `connect` prova prima a fare implicit public join alla rete pubblica di default.
 
 ```bash
 tubo connect lmstudio --local 127.0.0.1:51234

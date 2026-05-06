@@ -54,9 +54,9 @@ func run(args []string) error {
 		if shouldHandleDetach(args[0]) {
 			cleanArgs, detach := stripDetachArgs(roleArgs)
 			roleArgs = cleanArgs
-			if shouldHandleImplicitInit(args[0]) {
-				cleanArgs, noInit := stripNoInitArgs(roleArgs)
-				if err := maybeImplicitInit(role, cleanArgs, noInit); err != nil {
+			if shouldHandleImplicitBootstrap(args[0]) {
+				cleanArgs, err := maybeImplicitJoinOrInit(args[0], role, roleArgs)
+				if err != nil {
 					return err
 				}
 				roleArgs = cleanArgs
@@ -66,9 +66,9 @@ func run(args []string) error {
 			}
 			return runRole(role, roleArgs)
 		}
-		if shouldHandleImplicitInit(args[0]) {
-			cleanArgs, noInit := stripNoInitArgs(roleArgs)
-			if err := maybeImplicitInit(role, cleanArgs, noInit); err != nil {
+		if shouldHandleImplicitBootstrap(args[0]) {
+			cleanArgs, err := maybeImplicitJoinOrInit(args[0], role, roleArgs)
+			if err != nil {
 				return err
 			}
 			roleArgs = cleanArgs
@@ -79,7 +79,11 @@ func run(args []string) error {
 	case "join":
 		return joinCmd(args[1:])
 	case "connect":
-		return connectCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("connect", noInit); err != nil {
+			return err
+		}
+		return connectCmd(cleanArgs)
 	case "ps":
 		return psCmd(args[1:])
 	case "get":
@@ -162,7 +166,7 @@ func hasLongFlag(args []string, name string) bool {
 	return false
 }
 
-func shouldHandleImplicitInit(command string) bool {
+func shouldHandleImplicitBootstrap(command string) bool {
 	switch command {
 	case "attach", "gateway", "relay":
 		return true
@@ -698,6 +702,46 @@ func detachRoleCommand(commandName, role string, args []string) error {
 		return err
 	}
 	printDetachedSummary(commandName, spec.State)
+	return nil
+}
+
+func maybeImplicitJoinOrInit(command, role string, args []string) ([]string, error) {
+	cleanArgs, noInit := stripNoInitArgs(args)
+	switch command {
+	case "attach", "gateway":
+		if err := ensureJoinedPublicNetwork(command, noInit); err != nil {
+			return nil, err
+		}
+	case "relay":
+		if err := maybeImplicitInit(role, cleanArgs, noInit); err != nil {
+			return nil, err
+		}
+	}
+	return cleanArgs, nil
+}
+
+func ensureJoinedPublicNetwork(command string, noInit bool) error {
+	configPath := defaultTuboConfigPath()
+	if _, err := os.Stat(configPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if noInit {
+		return fmt.Errorf("config not found at %s (--no-init set)", configPath)
+	}
+	if strings.EqualFold(os.Getenv("CI"), "true") {
+		return fmt.Errorf("config not found at %s; implicit public join disabled in CI (use `tubo join`, `tubo init`, or pass --config)", configPath)
+	}
+	fmt.Println("No Tubo network configured.")
+	fmt.Printf("Fetching default network bundle: %s\n", joinDefaultNetworkName)
+	result, err := joinBundleMode(joinDefaultPublicBundleURL, defaultTuboConfigDir(), false)
+	if err != nil {
+		return fmt.Errorf("implicit public join for %s failed: %w", command, err)
+	}
+	fmt.Printf("Signature verified: %s\n", result.KeyID)
+	fmt.Printf("Joined network: %s\n", result.NetworkName)
+	fmt.Println()
 	return nil
 }
 

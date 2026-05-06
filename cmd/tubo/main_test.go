@@ -169,6 +169,55 @@ func TestMaybeImplicitInitDisabled(t *testing.T) {
 	}
 }
 
+func TestEnsureJoinedPublicNetworkInstallsSignedBundle(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	out, err := capture(func() error { return ensureJoinedPublicNetwork("connect", false) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"No Tubo network configured.", "Fetching default network bundle: tubo-public", "Signature verified: tubo-root-2026", "Joined network: tubo-public"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %s", want, out)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")); err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+}
+
+func TestEnsureJoinedPublicNetworkDisabled(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	if err := ensureJoinedPublicNetwork("connect", true); err == nil {
+		t.Fatal("expected --no-init to disable implicit public join")
+	}
+	t.Setenv("CI", "true")
+	if err := ensureJoinedPublicNetwork("connect", false); err == nil {
+		t.Fatal("expected CI to disable implicit public join")
+	}
+}
+
+func TestConnectAutoJoinsDefaultPublicNetwork(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	_, err := capture(func() error { return run([]string{"connect", "myapi", "--cached-only", "--timeout", "1ms"}) })
+	if err == nil {
+		t.Fatal("expected connect to fail after auto-join because no service is available")
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")); err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+}
+
+func TestConnectNoInitBlocksImplicitJoin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	if _, err := capture(func() error { return run([]string{"connect", "myapi", "--no-init"}) }); err == nil {
+		t.Fatal("expected --no-init to block implicit connect join")
+	}
+}
+
 func TestSanitizeProcessName(t *testing.T) {
 	if got := sanitizeProcessName("Reviewer.GPU Box"); got != "reviewer-gpu-box" {
 		t.Fatalf("sanitizeProcessName = %q", got)
@@ -451,6 +500,19 @@ func TestJoinRejectsInvalidBundleSignature(t *testing.T) {
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 		t.Fatalf("config should not be written on invalid signature, stat err=%v", err)
 	}
+}
+
+func useTestBundleDefaults(t *testing.T, validSignature bool) {
+	t.Helper()
+	serverURL, trusted := testSignedBundleServer(t, validSignature)
+	oldURL := joinDefaultPublicBundleURL
+	oldKeys := joinTrustedBundleSigningKey
+	joinDefaultPublicBundleURL = serverURL
+	joinTrustedBundleSigningKey = trusted
+	t.Cleanup(func() {
+		joinDefaultPublicBundleURL = oldURL
+		joinTrustedBundleSigningKey = oldKeys
+	})
 }
 
 func testSignedBundleServer(t *testing.T, validSignature bool) (string, map[string]string) {
