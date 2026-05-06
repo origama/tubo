@@ -1507,12 +1507,19 @@ func connectCandidates(service serviceResource) ([]connectCandidate, error) {
 	}
 	candidates := make([]connectCandidate, 0, len(service.DirectAddresses)+len(service.RelayedAddresses))
 	for _, addr := range service.DirectAddresses {
+		if isUnusableDirectAddress(addr) {
+			continue
+		}
 		candidates = append(candidates, connectCandidate{Path: "direct", Addr: addr})
 	}
 	for _, addr := range service.RelayedAddresses {
 		candidates = append(candidates, connectCandidate{Path: "relayed", Addr: addr})
 	}
 	return candidates, nil
+}
+
+func isUnusableDirectAddress(addr string) bool {
+	return strings.Contains(addr, "/ip4/127.") || strings.Contains(addr, "/ip4/0.0.0.0/") || strings.Contains(addr, "/ip6/::1/") || strings.Contains(addr, "/ip6/::/") || strings.Contains(addr, "/dns4/localhost/") || strings.Contains(addr, "/dns6/localhost/")
 }
 
 func summarizeConnectAttempts(attempts []connectAttempt) string {
@@ -1532,8 +1539,17 @@ func summarizeConnectAttempts(attempts []connectAttempt) string {
 
 func connectDirectMessage(service serviceResource, attempts []connectAttempt, selectedPath string) string {
 	service = normalizeServiceResource(service)
+	usableDirect := 0
+	for _, addr := range service.DirectAddresses {
+		if !isUnusableDirectAddress(addr) {
+			usableDirect++
+		}
+	}
 	if len(service.DirectAddresses) == 0 {
 		return "unavailable, no direct addresses advertised"
+	}
+	if usableDirect == 0 {
+		return "unavailable, only loopback/unspecified direct addresses advertised"
 	}
 	if selectedPath == "direct" {
 		return "selected"

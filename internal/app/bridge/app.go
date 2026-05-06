@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -11,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -103,6 +105,10 @@ func (a *App) mux() *http.ServeMux {
 		for k, v := range r.Header {
 			headers[k] = v
 		}
+		if isWebSocketRequest(r) {
+			a.serveWebSocket(w, r, s, headers)
+			return
+		}
 		resp, err := p2p.HandleClientRequest(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
@@ -119,6 +125,68 @@ func (a *App) mux() *http.ServeMux {
 	})
 	return m
 }
+func (a *App) serveWebSocket(w http.ResponseWriter, r *http.Request, s network.Stream, headers map[string][]string) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "websocket hijack unsupported", http.StatusInternalServerError)
+		return
+	}
+	respHeader, err := p2p.StartClientWebSocketUpgrade(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	conn, rw, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if rw.Reader.Buffered() > 0 {
+		log.Printf("bridge websocket hijack had %d buffered client bytes", rw.Reader.Buffered())
+	}
+	resp := &http.Response{
+		StatusCode: respHeader.StatusCode,
+		Status:     fmt.Sprintf("%d %s", respHeader.StatusCode, http.StatusText(respHeader.StatusCode)),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     http.Header(respHeader.Headers),
+	}
+	bw := bufio.NewWriter(conn)
+	if err := resp.Write(bw); err != nil {
+		return
+	}
+	if err := bw.Flush(); err != nil {
+		return
+	}
+	if respHeader.StatusCode != http.StatusSwitchingProtocols {
+		return
+	}
+	log.Printf("bridge websocket upgraded path=%s", r.URL.Path)
+	proxyRawClient(s, conn, rw.Reader)
+}
+
+func proxyRawClient(s network.Stream, conn net.Conn, clientReader io.Reader) {
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(s, clientReader); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(conn, s); done <- struct{}{} }()
+	<-done
+	_ = s.Close()
+	_ = conn.Close()
+}
+
+func isWebSocketRequest(r *http.Request) bool {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, part := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(part), "upgrade") {
+			return true
+		}
+	}
+	return false
+}
+
 func first(a, b string) string {
 	if a != "" {
 		return a

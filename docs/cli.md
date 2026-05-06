@@ -205,6 +205,8 @@ tubo connect lmstudio --json
 
 `connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live.
 
+HTTP normale e WebSocket (`Upgrade: websocket`) sono inoltrati sullo stesso tunnel. Se un servizio pubblicizza solo indirizzi direct loopback/unspecified (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` li ignora per il dial remoto e usa il path relayed.
+
 ## Detached process state
 
 Quando usi `-d`, `tubo` salva state locale in stile daemonless:
