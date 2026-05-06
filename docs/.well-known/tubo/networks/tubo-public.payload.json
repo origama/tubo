@@ -1,0 +1,23 @@
+{
+  "name": "tubo-public",
+  "id": "tubo-public-v1",
+  "visibility": "public",
+  "description": "Default public Tubo network",
+  "relays": [
+    "/dnsaddr/relay.tubo.click"
+  ],
+  "swarm_key": {
+    "type": "libp2p-pnet",
+    "encoding": "text",
+    "value": "/key/swarm/psk/1.0.0/\n/base16/\necf256f081904fd9031dd3ef9d3cc74c1c7850338e52d3898137ddfbfc72b116\n"
+  },
+  "network": {
+    "autorelay": true,
+    "hole_punching": true,
+    "force_reachability": "private"
+  },
+  "validity": {
+    "not_before": "2026-05-06T00:00:00Z",
+    "not_after": "2027-05-06T00:00:00Z"
+  }
+}
