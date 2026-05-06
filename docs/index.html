@@ -159,10 +159,9 @@
             <div class="panel">
               <div class="small">The shortest path</div>
               <div class="code mono">1. install tubo
-2. start relay
-3. publish a service
-4. connect by name
-5. curl it</div>
+2. attach a service
+3. connect by name
+4. curl it</div>
             </div>
             <div class="panel">
               <div class="small">What you get</div>
@@ -185,25 +184,23 @@ local HTTP listeners</div>
         <h2>Install tubo</h2>
         <div class="grid-3">
           <article class="feature">
-            <h3>1. Download</h3>
-            <p>Grab the latest binary from GitHub Releases for your platform.</p>
+            <h3>1. Install</h3>
+            <p>Use the one-line installer published on tubo.click.</p>
           </article>
           <article class="feature">
-            <h3>2. Put it on your PATH</h3>
-            <p>Unpack it, make it executable, and move it somewhere like <span class="mono">/usr/local/bin</span>.</p>
-          </article>
-          <article class="feature">
-            <h3>3. Verify</h3>
+            <h3>2. Verify</h3>
             <p>Run <span class="mono">tubo version</span> and make sure it starts cleanly.</p>
+          </article>
+          <article class="feature">
+            <h3>3. First run joins the default network</h3>
+            <p><span class="mono">attach</span> and <span class="mono">connect</span> auto-join the signed default public Tubo network when no local config exists yet.</p>
           </article>
         </div>
         <div class="split" style="margin-top: 16px;">
           <article class="cmd">
-            <h3>Binary install</h3>
-            <p>Use the release asset that matches your system, then verify the binary.</p>
-            <pre class="mono"># download the latest release asset from GitHub Releases
-chmod +x tubo
-sudo mv tubo /usr/local/bin/
+            <h3>One-line install</h3>
+            <p>Install the latest release and verify the binary.</p>
+            <pre class="mono">curl -fsSL https://tubo.click/install.sh | sh
 
 tubo version</pre>
           </article>
@@ -219,35 +216,30 @@ go build ./cmd/tubo
       </section>
 
       <section id="quickstart" class="section">
-        <h2>Quickstart in 5 steps</h2>
+        <h2>Quickstart in 4 steps</h2>
         <div class="split steps">
           <article class="cmd step">
-            <h3>Start a relay</h3>
-            <p>Pick one reachable machine and make it the relay for the swarm.</p>
-            <pre class="mono">tubo relay -d</pre>
+            <h3>Machine A: install and attach</h3>
+            <p>Publish a local HTTP service into the default public Tubo network.</p>
+            <pre class="mono">curl -fsSL https://tubo.click/install.sh | sh
+
+tubo attach myapi --port 1234 -d</pre>
           </article>
           <article class="cmd step">
-            <h3>Join the swarm</h3>
-            <p>On each service or client host, point tubo at the relay and the shared swarm key.</p>
-            <pre class="mono">tubo join \
-  --relay /ip4/&lt;relay-ip&gt;/tcp/4001/p2p/&lt;relay-peer-id&gt; \
-  --swarm-key ./swarm.key</pre>
+            <h3>Machine B: install and connect</h3>
+            <p>Resolve the service by name and open a local listener for it.</p>
+            <pre class="mono">curl -fsSL https://tubo.click/install.sh | sh
+
+tubo connect myapi --local 127.0.0.1:51234</pre>
           </article>
         </div>
-        <div class="split steps" style="margin-top: 16px;">
-          <article class="cmd step">
-            <h3>Attach a service</h3>
-            <p>Publish a local HTTP service into the swarm under a stable name.</p>
-            <pre class="mono">tubo attach \
-  --target http://127.0.0.1:1234 \
-  --name myapi \
-  -d</pre>
-          </article>
-          <article class="cmd step">
-            <h3>Connect from a client</h3>
-            <p>Resolve the service by name and open a local listener for it.</p>
-            <pre class="mono">tubo connect myapi --local 127.0.0.1:51234</pre>
-          </article>
+        <div class="cmd step" style="margin-top: 16px;">
+          <h3>What happens on first run</h3>
+          <p>If no local config exists yet, tubo downloads and verifies the signed default network bundle before starting.</p>
+          <pre class="mono">No Tubo network configured.
+Fetching default network bundle: tubo-public
+Signature verified: tubo-root-2026
+Joined network: tubo-public</pre>
         </div>
         <div class="cmd step" style="margin-top: 16px;">
           <h3>Test with curl</h3>

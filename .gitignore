@@ -4,6 +4,9 @@ bin/
 *.test
 tubo
 dummy-api-server
+!docs/.well-known/
+!docs/.well-known/tubo/
+!docs/.well-known/tubo/**
 
 # Go build artifacts
 *.out
