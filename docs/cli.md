@@ -168,6 +168,12 @@ Per bundle custom:
 tubo join --bundle-url https://example.com/network.bundle
 ```
 
+Per test/dev prima che il bundle di default sia pubblicato davvero su GitHub Pages, puoi anche forzare l'URL usato da `tubo join` e dall'implicit public join:
+
+```bash
+export TUBO_DEFAULT_PUBLIC_BUNDLE_URL=https://example.com/tubo-public.bundle
+```
+
 Di default salva:
 
 ```text

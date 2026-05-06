@@ -522,6 +522,23 @@ func TestJoinRejectsInvalidBundleSignature(t *testing.T) {
 	}
 }
 
+func TestJoinDefaultPublicNetworkUsesEnvOverrideBundleURL(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	serverURL, trusted := testSignedBundleServer(t, true)
+	oldKeys := joinTrustedBundleSigningKey
+	joinTrustedBundleSigningKey = trusted
+	defer func() { joinTrustedBundleSigningKey = oldKeys }()
+	t.Setenv("TUBO_DEFAULT_PUBLIC_BUNDLE_URL", serverURL)
+
+	out, err := capture(func() error { return run([]string{"join"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "joined network bundle") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
 func useTestBundleDefaults(t *testing.T, validSignature bool) {
 	t.Helper()
 	serverURL, trusted := testSignedBundleServer(t, validSignature)

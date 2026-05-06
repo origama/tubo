@@ -388,6 +388,13 @@ var (
 	joinTrustedBundleSigningKey = trust.BundleSigningKeys
 )
 
+func effectiveDefaultPublicBundleURL() string {
+	if override := strings.TrimSpace(os.Getenv("TUBO_DEFAULT_PUBLIC_BUNDLE_URL")); override != "" {
+		return override
+	}
+	return joinDefaultPublicBundleURL
+}
+
 func joinCmd(args []string) error {
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	var relayPeers []string
@@ -434,7 +441,7 @@ func joinCmd(args []string) error {
 		if networkName != joinDefaultNetworkName {
 			return fmt.Errorf("unknown network %q; use --bundle-url for custom networks", networkName)
 		}
-		resolvedBundleURL = joinDefaultPublicBundleURL
+		resolvedBundleURL = effectiveDefaultPublicBundleURL()
 	}
 	result, err := joinBundleMode(resolvedBundleURL, *configDir, *force)
 	if err != nil {
@@ -776,7 +783,7 @@ func ensureJoinedPublicNetwork(command string, noInit bool) error {
 	}
 	fmt.Println("No Tubo network configured.")
 	fmt.Printf("Fetching default network bundle: %s\n", joinDefaultNetworkName)
-	result, err := joinBundleMode(joinDefaultPublicBundleURL, defaultTuboConfigDir(), false)
+	result, err := joinBundleMode(effectiveDefaultPublicBundleURL(), defaultTuboConfigDir(), false)
 	if err != nil {
 		return fmt.Errorf("implicit public join for %s failed: %w", command, err)
 	}

@@ -142,6 +142,12 @@ tubo rm --stale
 
 `attach`, `connect`, and `gateway` will also auto-join the default public Tubo network on first run when no local config exists, unless `--no-init` or `CI=true` disables that behavior.
 
+During prerelease/dev testing, before the GitHub Pages site is updated, you can point both `tubo join` and the implicit public join flow at a temporary bundle URL with:
+
+```bash
+export TUBO_DEFAULT_PUBLIC_BUNDLE_URL=https://example.com/tubo-public.bundle
+```
+
 ## Process model
 
 Tubo does not require a central local daemon. Long-running commands stay in the foreground by default. Commands that support `-d` / `--detach` write local process state under XDG-style directories:
