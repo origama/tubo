@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -36,8 +37,12 @@ func ValidatePayloadAt(payload *NetworkPayload, now time.Time) error {
 		return errors.New("payload relays must not be empty")
 	}
 	for _, relay := range payload.Relays {
-		if _, err := multiaddr.NewMultiaddr(relay); err != nil {
+		maddr, err := multiaddr.NewMultiaddr(relay)
+		if err != nil {
 			return fmt.Errorf("invalid relay multiaddr %q: %w", relay, err)
+		}
+		if _, err := peer.AddrInfoFromP2pAddr(maddr); err != nil {
+			return fmt.Errorf("invalid relay bootstrap peer %q: %w", relay, err)
 		}
 	}
 	if payload.SwarmKey.Type != "libp2p-pnet" {

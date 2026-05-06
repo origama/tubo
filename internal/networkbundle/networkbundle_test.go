@@ -90,6 +90,15 @@ func TestValidatePayloadAtRejectsMalformedRelay(t *testing.T) {
 	}
 }
 
+func TestValidatePayloadAtRejectsRelayWithoutPeerID(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	payload := samplePayload(now.Add(-1*time.Hour), now.Add(1*time.Hour))
+	payload.Relays = []string{"/dns4/relay.tubo.click/tcp/4001"}
+	if err := ValidatePayloadAt(&payload, now); err == nil || !strings.Contains(err.Error(), "bootstrap peer") {
+		t.Fatalf("expected bootstrap peer error, got %v", err)
+	}
+}
+
 func TestValidatePayloadAtRejectsMalformedSwarmKey(t *testing.T) {
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
 	payload := samplePayload(now.Add(-1*time.Hour), now.Add(1*time.Hour))
@@ -103,7 +112,7 @@ func samplePayload(notBefore, notAfter time.Time) NetworkPayload {
 	return NetworkPayload{
 		Name:   "tubo-public",
 		ID:     "tubo-public-v1",
-		Relays: []string{"/dnsaddr/relay.tubo.click"},
+		Relays: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"},
 		SwarmKey: SwarmKeyPayload{
 			Type:     "libp2p-pnet",
 			Encoding: "text",
