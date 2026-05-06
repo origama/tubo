@@ -112,7 +112,7 @@ func samplePayload(notBefore, notAfter time.Time) NetworkPayload {
 	return NetworkPayload{
 		Name:   "tubo-public",
 		ID:     "tubo-public-v1",
-		Relays: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWAKD265sq8fHhQgH6PaVxtrQq2v2KgSdfyU8MtUy8CUB1"},
+		Relays: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"},
 		SwarmKey: SwarmKeyPayload{
 			Type:     "libp2p-pnet",
 			Encoding: "text",

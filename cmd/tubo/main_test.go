@@ -190,20 +190,24 @@ func TestMaybeImplicitInitDisabled(t *testing.T) {
 }
 
 func TestEnsureJoinedPublicNetworkInstallsSignedBundle(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
 	t.Setenv("CI", "")
 	useTestBundleDefaults(t, true)
-	out, err := capture(func() error { return ensureJoinedPublicNetwork("connect", false) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"No Tubo network configured.", "Fetching default network bundle: tubo-public", "Signature verified: tubo-root-2026", "Joined network: tubo-public"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("output missing %q: %s", want, out)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")); err != nil {
-		t.Fatalf("config not written: %v", err)
+	for _, command := range []string{"connect", "relay"} {
+		t.Run(command, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+			out, err := capture(func() error { return ensureJoinedPublicNetwork(command, false) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"No Tubo network configured.", "Fetching default network bundle: tubo-public", "Signature verified: tubo-root-2026", "Joined network: tubo-public"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("output missing %q for %s: %s", want, command, out)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")); err != nil {
+				t.Fatalf("config not written: %v", err)
+			}
+		})
 	}
 }
 
@@ -562,7 +566,7 @@ func testSignedBundleServer(t *testing.T, validSignature bool) (string, map[stri
 		"name":       "tubo-public",
 		"id":         "tubo-public-v1",
 		"visibility": "public",
-		"relays":     []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWAKD265sq8fHhQgH6PaVxtrQq2v2KgSdfyU8MtUy8CUB1"},
+		"relays":     []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"},
 		"swarm_key": map[string]any{
 			"type":     "libp2p-pnet",
 			"encoding": "text",

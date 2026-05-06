@@ -104,8 +104,8 @@ tubo connect lmstudio --local 127.0.0.1:51234 -d
 
 Se manca la config locale di default:
 
-- `attach`, `connect` e `gateway` fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
-- `relay` continua invece a fare init locale implicito creando una config/swarm key locale.
+- `attach`, `connect`, `gateway` e `relay` fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
+- questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico.
 
 File coinvolti:
 

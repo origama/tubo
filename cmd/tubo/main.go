@@ -756,12 +756,8 @@ func detachRoleCommand(commandName, role string, args []string) error {
 func maybeImplicitJoinOrInit(command, role string, args []string) ([]string, error) {
 	cleanArgs, noInit := stripNoInitArgs(args)
 	switch command {
-	case "attach", "gateway":
+	case "attach", "gateway", "relay":
 		if err := ensureJoinedPublicNetwork(command, noInit); err != nil {
-			return nil, err
-		}
-	case "relay":
-		if err := maybeImplicitInit(role, cleanArgs, noInit); err != nil {
 			return nil, err
 		}
 	}
