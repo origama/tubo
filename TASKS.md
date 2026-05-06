@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-06 16:48 UTC
+> **Last updated:** 2026-05-06 17:05 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -141,7 +141,7 @@
 | C.39 | Expose product/protocol version metadata in `tubo` | ⏳ | Added `internal/version`, `tubo version`, protocol debug endpoints, and negotiation visibility; remaining work is mainly build-time injection in release/CI artifacts and any residual cleanup from issue #16 |
 | C.40 | Add protocol 1.1 hello handshake with legacy fallback | ✅ | Added protocol 1.1 hello frame carrying `major.minor`, role, and capabilities; edge/bridge now prefer `/p2p-tunnel/1.1` and fall back to `/p2p-tunnel/1.0`, service accepts both, and real Linode multi-host smoke validated both the handshake logs and protocol debug endpoints |
 | C.41 | Add real Linode mixed-version compatibility harness | ✅ | Added `tests/smoke-terraform-linode-mixed-version.sh` and validated it on the real Linode multi-host bench against legacy ref `c9bbb1f`: current edge -> legacy service (`/p2p-tunnel/1.0` fallback), legacy edge -> current service (current service accepts legacy), and current edge -> current service (`/p2p-tunnel/1.1` hello negotiation) |
-| C.42 | Signed public onboarding + CLI UX simplification (PR #68 follow-up) | ⏳ | In progress on prerelease branch `prerelease/pr68-signed-public-onboarding`; GitHub issues opened: #69 #71 #72 #73 #74; implemented #69 + core #71 + #72 (`tubo join` bundle mode + published signed `tubo-public.bundle`/catalog/public key under `docs/.well-known/tubo/`) + #73 (implicit public join for `attach`/`connect`/`gateway`, with `TUBO_DEFAULT_PUBLIC_BUNDLE_URL` override for prerelease/dev testing) and partial #74 (legacy role commands rejected, `attach <name> --port <port>` shorthand, CLI/site/README docs updated); canonical public host corrected to `www.tubo.click` because apex `tubo.click` does not resolve; real Linode test exposed one fix still needed: published relay entry must be a full bootstrap peer (`/dns4/.../tcp/.../p2p/<peer_id>`), not bare `/dnsaddr/...` |
+| C.42 | Signed public onboarding + CLI UX simplification (PR #68 follow-up) | ⏳ | In progress on prerelease branch `prerelease/pr68-signed-public-onboarding`; GitHub issues opened: #69 #71 #72 #73 #74; implemented #69 + core #71 + #72 (`tubo join` bundle mode + published signed `tubo-public.bundle`/catalog/public key under `docs/.well-known/tubo/`) + #73 (implicit public join for `attach`/`connect`/`gateway`, with `TUBO_DEFAULT_PUBLIC_BUNDLE_URL` override for prerelease/dev testing) and partial #74 (legacy role commands rejected, `attach <name> --port <port>` shorthand, CLI/site/README docs updated); canonical public host corrected to `www.tubo.click` because apex `tubo.click` does not resolve; real Linode tests found and fixed two publication issues: relay entry must be a full bootstrap peer (`/ip4|/dns4/.../tcp/.../p2p/<peer_id>`) and the originally published `relay.tubo.click:4001` endpoint was down, so the prerelease bundle is being switched to the live Linode relay `172.104.128.174:4001` |
 
 ---
 
