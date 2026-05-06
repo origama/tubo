@@ -84,7 +84,7 @@ On the machine that runs the HTTP service:
 ```bash
 tubo join --relay "$RELAY_ADDR" --swarm-key ./swarm.key --check
 
-tubo attach http://127.0.0.1:1234 --name lmstudio -d
+tubo attach lmstudio --port 1234 -d
 ```
 
 The service remains published while the detached `attach` process is running.
@@ -116,11 +116,14 @@ curl http://127.0.0.1:51234/healthz
 # Start a relay/bootstrap node
 tubo relay -d
 
-# Join an existing Tubo swarm
+# Join an existing Tubo swarm manually
 tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 
+# Or join the default public Tubo network from a signed bundle
+tubo join
+
 # Publish a local HTTP endpoint into the swarm
-tubo attach http://127.0.0.1:1234 --name lmstudio -d
+tubo attach lmstudio --port 1234 -d
 
 # List and inspect services in the swarm
 tubo get services
@@ -137,14 +140,7 @@ tubo stop process/attach-lmstudio
 tubo rm --stale
 ```
 
-Advanced role commands are still available for explicit configuration-file based operation:
-
-```bash
-tubo relay run --config relay.yaml
-tubo edge run --config edge.yaml
-tubo service run --config service.yaml
-tubo bridge run --config bridge.yaml
-```
+`attach`, `connect`, and `gateway` will also auto-join the default public Tubo network on first run when no local config exists, unless `--no-init` or `CI=true` disables that behavior.
 
 ## Process model
 
