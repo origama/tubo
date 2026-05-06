@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -21,6 +23,7 @@ import (
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	"github.com/origama/tubo/internal/p2p"
 	iversion "github.com/origama/tubo/internal/version"
+	"golang.org/x/crypto/ssh"
 )
 
 func capture(f func() error) (string, error) {
@@ -402,6 +405,113 @@ func TestJoinRejectsInvalidInput(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected invalid swarm key error")
 	}
+}
+
+func TestJoinDefaultPublicNetworkFromSignedBundle(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	serverURL, trusted := testSignedBundleServer(t, true)
+	oldURL := joinDefaultPublicBundleURL
+	oldKeys := joinTrustedBundleSigningKey
+	joinDefaultPublicBundleURL = serverURL
+	joinTrustedBundleSigningKey = trusted
+	defer func() {
+		joinDefaultPublicBundleURL = oldURL
+		joinTrustedBundleSigningKey = oldKeys
+	}()
+
+	out, err := capture(func() error { return run([]string{"join"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "joined network bundle") || !strings.Contains(out, "network: tubo-public") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+}
+
+func TestJoinRejectsInvalidBundleSignature(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	serverURL, trusted := testSignedBundleServer(t, false)
+	oldURL := joinDefaultPublicBundleURL
+	oldKeys := joinTrustedBundleSigningKey
+	joinDefaultPublicBundleURL = serverURL
+	joinTrustedBundleSigningKey = trusted
+	defer func() {
+		joinDefaultPublicBundleURL = oldURL
+		joinTrustedBundleSigningKey = oldKeys
+	}()
+
+	if _, err := capture(func() error { return run([]string{"join"}) }); err == nil {
+		t.Fatal("expected invalid signature error")
+	}
+	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config should not be written on invalid signature, stat err=%v", err)
+	}
+}
+
+func testSignedBundleServer(t *testing.T, validSignature bool) (string, map[string]string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"name":       "tubo-public",
+		"id":         "tubo-public-v1",
+		"visibility": "public",
+		"relays":     []string{"/dnsaddr/relay.tubo.click"},
+		"swarm_key": map[string]any{
+			"type":     "libp2p-pnet",
+			"encoding": "text",
+			"value":    "/key/swarm/psk/1.0.0/\n/base16/\n00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
+		},
+		"network": map[string]any{
+			"autorelay":          true,
+			"hole_punching":      true,
+			"force_reachability": "private",
+		},
+		"validity": map[string]any{
+			"not_before": time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+			"not_after":  time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(priv, payloadBytes)
+	if !validSignature {
+		sig = []byte("broken-signature")
+	}
+	env := map[string]any{
+		"kind":             "tubo.network.bundle",
+		"version":          1,
+		"payload_encoding": "base64url",
+		"payload":          base64.RawURLEncoding.EncodeToString(payloadBytes),
+		"signature": map[string]any{
+			"alg":    "ed25519",
+			"key_id": "tubo-root-2026",
+			"value":  base64.RawURLEncoding.EncodeToString(sig),
+		},
+	}
+	envBytes, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(envBytes)
+	}))
+	t.Cleanup(server.Close)
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := map[string]string{"tubo-root-2026": strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))}
+	return server.URL, trusted
 }
 
 func TestServiceResourceFromEntry(t *testing.T) {

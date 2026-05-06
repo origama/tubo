@@ -16,7 +16,9 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	"github.com/origama/tubo/internal/networkbundle"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/trust"
 	iversion "github.com/origama/tubo/internal/version"
 	"gopkg.in/yaml.v3"
 	"io"
@@ -205,7 +207,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo ps [flags] | tubo get <services|service/name|processes> [flags] | tubo describe <service/name|process/name> [flags] | tubo inspect <service/name|process/name> [flags] | tubo watch services [flags] | tubo logs <process/name> [flags] | tubo stop <process/name> [flags] | tubo rm --stale [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join [<network-name>] [--bundle-url <url>] [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo ps [flags] | tubo get <services|service/name|processes> [flags] | tubo describe <service/name|process/name> [flags] | tubo inspect <service/name|process/name> [flags] | tubo watch services [flags] | tubo logs <process/name> [flags] | tubo stop <process/name> [flags] | tubo rm --stale [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
@@ -325,6 +327,9 @@ type detachedProcessState struct {
 }
 
 type joinResult struct {
+	NetworkName    string   `json:"network_name,omitempty"`
+	NetworkID      string   `json:"network_id,omitempty"`
+	KeyID          string   `json:"key_id,omitempty"`
 	ConfigPath     string   `json:"config_path"`
 	SwarmKeyPath   string   `json:"swarm_key_path"`
 	RelayPeers     []string `json:"relay_peers"`
@@ -332,12 +337,19 @@ type joinResult struct {
 	Checked        bool     `json:"checked"`
 }
 
+var (
+	joinDefaultNetworkName      = trust.DefaultPublicNetworkName
+	joinDefaultPublicBundleURL  = trust.DefaultPublicNetworkBundleURL
+	joinTrustedBundleSigningKey = trust.BundleSigningKeys
+)
+
 func joinCmd(args []string) error {
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	var relayPeers []string
 	fs.Var(csvFlag{&relayPeers}, "relay", "")
 	swarmKeyPath := fs.String("swarm-key", "", "")
 	swarmKeyB64 := fs.String("swarm-key-b64", "", "")
+	bundleURL := fs.String("bundle-url", "", "")
 	configDir := fs.String("config-dir", defaultTuboConfigDir(), "")
 	force := fs.Bool("force", false, "")
 	jsonOut := fs.Bool("json", false, "")
@@ -346,46 +358,91 @@ func joinCmd(args []string) error {
 		return err
 	}
 	relayPeers = uniqueStrings(relayPeers)
-	if len(relayPeers) == 0 {
-		return errors.New("join requires at least one --relay <multiaddr>")
+	networkName := ""
+	if fs.NArg() > 1 {
+		return errors.New("usage: tubo join [<network-name>] [--bundle-url <url>] [flags]")
 	}
-	if (*swarmKeyPath == "" && *swarmKeyB64 == "") || (*swarmKeyPath != "" && *swarmKeyB64 != "") {
-		return errors.New("join requires exactly one of --swarm-key or --swarm-key-b64")
+	if fs.NArg() == 1 {
+		networkName = fs.Arg(0)
 	}
-	for _, relayPeer := range relayPeers {
-		if _, err := multiaddr.NewMultiaddr(relayPeer); err != nil {
-			return fmt.Errorf("join relay %q: %w", relayPeer, err)
+	manualMode := len(relayPeers) > 0 || *swarmKeyPath != "" || *swarmKeyB64 != ""
+	bundleMode := networkName != "" || *bundleURL != ""
+	if manualMode && bundleMode {
+		return errors.New("join manual flags (--relay/--swarm-key) cannot be combined with bundle mode")
+	}
+	if manualMode {
+		result, err := joinManualMode(relayPeers, *swarmKeyPath, *swarmKeyB64, *configDir, *force, *check)
+		if err != nil {
+			return err
 		}
+		if *jsonOut {
+			return printJSON(result)
+		}
+		printJoinResult("joined swarm config", result)
+		return nil
 	}
-	keyData, err := loadJoinSwarmKey(*swarmKeyPath, *swarmKeyB64)
+	if networkName == "" {
+		networkName = joinDefaultNetworkName
+	}
+	resolvedBundleURL := *bundleURL
+	if resolvedBundleURL == "" {
+		if networkName != joinDefaultNetworkName {
+			return fmt.Errorf("unknown network %q; use --bundle-url for custom networks", networkName)
+		}
+		resolvedBundleURL = joinDefaultPublicBundleURL
+	}
+	result, err := joinBundleMode(resolvedBundleURL, *configDir, *force)
 	if err != nil {
 		return err
 	}
-	if err := validateSwarmKeyData(keyData); err != nil {
-		return err
+	if *jsonOut {
+		return printJSON(result)
 	}
-	if *check {
-		if err := checkJoinRelayPeers(relayPeers); err != nil {
-			return err
+	printJoinResult("joined network bundle", result)
+	return nil
+}
+
+func joinManualMode(relayPeers []string, swarmKeyPath, swarmKeyB64, configDir string, force, check bool) (joinResult, error) {
+	if len(relayPeers) == 0 {
+		return joinResult{}, errors.New("join requires at least one --relay <multiaddr>")
+	}
+	if (swarmKeyPath == "" && swarmKeyB64 == "") || (swarmKeyPath != "" && swarmKeyB64 != "") {
+		return joinResult{}, errors.New("join requires exactly one of --swarm-key or --swarm-key-b64")
+	}
+	for _, relayPeer := range relayPeers {
+		if _, err := multiaddr.NewMultiaddr(relayPeer); err != nil {
+			return joinResult{}, fmt.Errorf("join relay %q: %w", relayPeer, err)
 		}
 	}
-	if err := os.MkdirAll(*configDir, 0700); err != nil {
-		return err
+	keyData, err := loadJoinSwarmKey(swarmKeyPath, swarmKeyB64)
+	if err != nil {
+		return joinResult{}, err
 	}
-	configPath := filepath.Join(*configDir, "config.yaml")
-	installedKeyPath := filepath.Join(*configDir, "swarm.key")
-	if !*force {
+	if err := validateSwarmKeyData(keyData); err != nil {
+		return joinResult{}, err
+	}
+	if check {
+		if err := checkJoinRelayPeers(relayPeers); err != nil {
+			return joinResult{}, err
+		}
+	}
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return joinResult{}, err
+	}
+	configPath := filepath.Join(configDir, "config.yaml")
+	installedKeyPath := filepath.Join(configDir, "swarm.key")
+	if !force {
 		for _, path := range []string{configPath, installedKeyPath} {
 			if _, err := os.Stat(path); err == nil {
-				return fmt.Errorf("%s exists (use --force)", path)
+				return joinResult{}, fmt.Errorf("%s exists (use --force)", path)
 			} else if !errors.Is(err, os.ErrNotExist) {
-				return err
+				return joinResult{}, err
 			}
 		}
 	}
 	existing, err := cfgpkg.LoadFile(configPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return joinResult{}, err
 	}
 	joined := cfgpkg.Merge(existing, cfgpkg.Config{Network: cfgpkg.Network{
 		PrivateKeyFile: installedKeyPath,
@@ -397,27 +454,68 @@ func joinCmd(args []string) error {
 	joined.Network.PrivateKeyB64 = ""
 	b, err := yaml.Marshal(joined)
 	if err != nil {
-		return err
+		return joinResult{}, err
 	}
 	if err := os.WriteFile(installedKeyPath, keyData, 0600); err != nil {
-		return err
+		return joinResult{}, err
 	}
 	if err := os.WriteFile(configPath, b, 0600); err != nil {
-		return err
+		return joinResult{}, err
 	}
-	result := joinResult{
+	return joinResult{
 		ConfigPath:     configPath,
 		SwarmKeyPath:   installedKeyPath,
 		RelayPeers:     relayPeers,
 		BootstrapPeers: relayPeers,
-		Checked:        *check,
+		Checked:        check,
+	}, nil
+}
+
+func joinBundleMode(bundleURL, configDir string, force bool) (joinResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	bundleBytes, err := networkbundle.Fetch(ctx, bundleURL)
+	if err != nil {
+		return joinResult{}, err
 	}
-	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(result)
+	bundle, err := networkbundle.Parse(bundleBytes)
+	if err != nil {
+		return joinResult{}, err
 	}
-	fmt.Println("joined swarm config")
+	payloadBytes, keyID, err := networkbundle.Verify(bundle, joinTrustedBundleSigningKey)
+	if err != nil {
+		return joinResult{}, err
+	}
+	payload, err := networkbundle.DecodePayload(payloadBytes)
+	if err != nil {
+		return joinResult{}, err
+	}
+	installed, err := networkbundle.Install(payload, networkbundle.InstallOptions{ConfigDir: configDir, Force: force})
+	if err != nil {
+		return joinResult{}, err
+	}
+	return joinResult{
+		NetworkName:    installed.NetworkName,
+		NetworkID:      installed.NetworkID,
+		KeyID:          keyID,
+		ConfigPath:     installed.ConfigPath,
+		SwarmKeyPath:   installed.SwarmKeyPath,
+		RelayPeers:     installed.RelayPeers,
+		BootstrapPeers: installed.BootstrapPeers,
+	}, nil
+}
+
+func printJoinResult(title string, result joinResult) {
+	fmt.Println(title)
+	if result.NetworkName != "" {
+		fmt.Printf("network: %s\n", result.NetworkName)
+	}
+	if result.NetworkID != "" {
+		fmt.Printf("network id: %s\n", result.NetworkID)
+	}
+	if result.KeyID != "" {
+		fmt.Printf("signature key: %s\n", result.KeyID)
+	}
 	fmt.Printf("config: %s\n", result.ConfigPath)
 	for i, relayPeer := range result.RelayPeers {
 		if i == 0 {
@@ -435,7 +533,6 @@ func joinCmd(args []string) error {
 	fmt.Println("  tubo get services")
 	fmt.Println("  tubo attach http://127.0.0.1:1234 --name my-service")
 	fmt.Println("  tubo connect lmstudio")
-	return nil
 }
 
 func loadJoinSwarmKey(path, b64 string) ([]byte, error) {
