@@ -4,7 +4,7 @@
   "visibility": "public",
   "description": "Default public Tubo network",
   "relays": [
-    "/ip4/172.104.128.174/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"
+    "/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWAKD265sq8fHhQgH6PaVxtrQq2v2KgSdfyU8MtUy8CUB1"
   ],
   "swarm_key": {
     "type": "libp2p-pnet",
