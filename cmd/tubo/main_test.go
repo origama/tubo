@@ -69,11 +69,11 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 		wantRole string
 		wantArgs []string
 	}{
-		{name: "legacy relay run", in: []string{"relay", "run", "--config", "relay.yaml"}, wantRole: "relay", wantArgs: []string{"--config", "relay.yaml"}},
 		{name: "short relay", in: []string{"relay", "--config", "relay.yaml"}, wantRole: "relay", wantArgs: []string{"--config", "relay.yaml"}},
 		{name: "gateway alias", in: []string{"gateway", "--listen", ":8443"}, wantRole: "edge", wantArgs: []string{"--listen", ":8443"}},
 		{name: "attach positional target", in: []string{"attach", "http://127.0.0.1:1234", "--name", "lmstudio"}, wantRole: "service", wantArgs: []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}},
 		{name: "attach explicit target flag", in: []string{"attach", "--target", "http://127.0.0.1:1234", "--name", "lmstudio"}, wantRole: "service", wantArgs: []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}},
+		{name: "attach shorthand name and port", in: []string{"attach", "dummysvc", "--port", "8080"}, wantRole: "service", wantArgs: []string{"--target", "http://127.0.0.1:8080", "--name", "dummysvc"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,15 +94,35 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 	}
 }
 
-func TestResolveRuntimeRoleRejectsLegacyRoleWithoutRun(t *testing.T) {
-	if _, _, _, err := resolveRuntimeRole([]string{"service", "--name", "lmstudio"}); err == nil {
-		t.Fatal("expected error for legacy service command without run")
+func TestResolveRuntimeRoleRejectsLegacyRoleCommands(t *testing.T) {
+	for _, args := range [][]string{
+		{"relay", "run", "--config", "relay.yaml"},
+		{"edge", "run", "--config", "edge.yaml"},
+		{"service", "run", "--config", "service.yaml"},
+		{"bridge", "run", "--config", "bridge.yaml"},
+	} {
+		if _, _, _, err := resolveRuntimeRole(args); err == nil {
+			t.Fatalf("expected legacy command rejection for %v", args)
+		}
 	}
 }
 
 func TestResolveRuntimeRoleRejectsDuplicateAttachTarget(t *testing.T) {
 	if _, _, _, err := resolveRuntimeRole([]string{"attach", "http://127.0.0.1:1234", "--target", "http://127.0.0.1:11434", "--name", "lmstudio"}); err == nil {
 		t.Fatal("expected duplicate attach target error")
+	}
+}
+
+func TestResolveRuntimeRoleRejectsInvalidAttachShorthand(t *testing.T) {
+	for _, args := range [][]string{
+		{"attach", "dummysvc"},
+		{"attach", "dummysvc", "--port", "8080", "--name", "other"},
+		{"attach", "http://127.0.0.1:1234", "--port", "8080"},
+		{"attach", "--port", "8080"},
+	} {
+		if _, _, _, err := resolveRuntimeRole(args); err == nil {
+			t.Fatalf("expected shorthand rejection for %v", args)
+		}
 	}
 }
 
@@ -345,7 +365,7 @@ func TestUsageMentionsIntentCommands(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "service|bridge"} {
+	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "bundle-url"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("usage missing %q: %s", want, err)
 		}

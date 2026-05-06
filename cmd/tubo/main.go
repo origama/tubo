@@ -126,14 +126,11 @@ func resolveRuntimeRole(args []string) (string, []string, bool, error) {
 	switch args[0] {
 	case "relay":
 		if len(args) >= 2 && args[1] == "run" {
-			return "relay", args[2:], true, nil
+			return "", nil, false, errors.New("legacy command `tubo relay run` removed; use `tubo relay`")
 		}
 		return "relay", args[1:], true, nil
 	case "edge", "service", "bridge":
-		if len(args) < 2 || args[1] != "run" {
-			return "", nil, false, usage()
-		}
-		return args[0], args[2:], true, nil
+		return "", nil, false, fmt.Errorf("legacy command `tubo %s run` removed; use intent-based commands (`attach`, `connect`, `gateway`, `relay`, `join`)", args[0])
 	case "gateway":
 		return "edge", args[1:], true, nil
 	case "attach":
@@ -148,13 +145,35 @@ func resolveRuntimeRole(args []string) (string, []string, bool, error) {
 }
 
 func rewriteAttachArgs(args []string) ([]string, error) {
+	cleanArgs, port, hasPort, err := consumeLongFlag(args, "--port")
+	if err != nil {
+		return nil, err
+	}
+	args = cleanArgs
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		if hasPort {
+			return nil, errors.New("attach --port requires a positional service name")
+		}
 		return args, nil
 	}
-	if hasLongFlag(args[1:], "--target") {
-		return nil, errors.New("attach target provided both positionally and via --target")
+	first := args[0]
+	if isHTTPURL(first) {
+		if hasPort {
+			return nil, errors.New("attach cannot combine a positional URL target with --port")
+		}
+		if hasLongFlag(args[1:], "--target") {
+			return nil, errors.New("attach target provided both positionally and via --target")
+		}
+		return append([]string{"--target", first}, args[1:]...), nil
 	}
-	return append([]string{"--target", args[0]}, args[1:]...), nil
+	if !hasPort {
+		return nil, errors.New("attach positional shorthand requires --port, or pass an explicit target URL")
+	}
+	if hasLongFlag(args[1:], "--name") {
+		return nil, errors.New("attach service name provided both positionally and via --name")
+	}
+	target := "http://127.0.0.1:" + port
+	return append([]string{"--target", target, "--name", first}, args[1:]...), nil
 }
 
 func hasLongFlag(args []string, name string) bool {
@@ -164,6 +183,28 @@ func hasLongFlag(args []string, name string) bool {
 		}
 	}
 	return false
+}
+
+func consumeLongFlag(args []string, name string) ([]string, string, bool, error) {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == name {
+			if i+1 >= len(args) {
+				return nil, "", false, fmt.Errorf("%s requires a value", name)
+			}
+			return append(out, args[i+2:]...), args[i+1], true, nil
+		}
+		if strings.HasPrefix(arg, name+"=") {
+			return append(out, args[i+1:]...), strings.TrimPrefix(arg, name+"="), true, nil
+		}
+		out = append(out, arg)
+	}
+	return out, "", false, nil
+}
+
+func isHTTPURL(value string) bool {
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
 }
 
 func shouldHandleImplicitBootstrap(command string) bool {
@@ -211,7 +252,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join [<network-name>] [--bundle-url <url>] [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo ps [flags] | tubo get <services|service/name|processes> [flags] | tubo describe <service/name|process/name> [flags] | tubo inspect <service/name|process/name> [flags] | tubo watch services [flags] | tubo logs <process/name> [flags] | tubo stop <process/name> [flags] | tubo rm --stale [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo join [<network-name>] [--bundle-url <url>] [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo ps [flags] | tubo get <services|service/name|processes> [flags] | tubo describe <service/name|process/name> [flags] | tubo inspect <service/name|process/name> [flags] | tubo watch services [flags] | tubo logs <process/name> [flags] | tubo stop <process/name> [flags] | tubo rm --stale [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)

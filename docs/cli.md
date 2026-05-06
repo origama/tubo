@@ -48,10 +48,11 @@ tubo inspect service/lmstudio --json
 tubo watch services
 ```
 
-Equivalentemente, `attach` supporta anche la forma esplicita con flag:
+`attach` supporta sia la forma esplicita sia lo shorthand name+port:
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
+tubo attach lmstudio --port 1234
 ```
 
 ## Happy path
@@ -120,26 +121,6 @@ Per disabilitare esplicitamente il comportamento implicito:
 ```
 
 In `CI=true`, sia l'implicit public join sia l'init implicito sono disabilitati e il comando fallisce con next steps espliciti invece di creare state locale implicitamente.
-
-## Advanced role commands
-
-I role commands restano disponibili come compatibility / advanced layer:
-
-```bash
-tubo relay run --config relay.yaml
-tubo edge run --config edge.yaml
-tubo service run --config service.yaml
-tubo bridge run --config bridge.yaml
-```
-
-Override via flag, per esempio:
-
-```bash
-tubo service run \
-  --name lmstudio \
-  --target http://192.168.1.28:1234 \
-  --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3...
-```
 
 ## Utility
 
@@ -316,19 +297,6 @@ tubo attach http://127.0.0.1:11434 --name ollama -d
 tubo get services
 tubo describe service/ollama
 ```
-
-## Mapping vecchia UX -> nuova UX
-
-| Attuale | Nuova UX |
-|---|---|
-| `tubo service run --name X --target URL` | `tubo attach URL --name X` |
-| `tubo bridge run ...` | `tubo connect X --local ADDR` |
-| `tubo edge run --listen :8443` | `tubo gateway --listen :8443` |
-| `tubo relay run` | `tubo relay` |
-| config manuale per swarm esistente | `tubo join --relay ... --swarm-key ...` |
-| `tubo mesh services` | `tubo get services` |
-| `tubo mesh inspect X` | `tubo describe X` / `tubo inspect X --json` |
-| `tubo mesh watch` | `tubo watch services` |
 
 ## Init
 
