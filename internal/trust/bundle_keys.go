@@ -2,7 +2,7 @@ package trust
 
 const (
 	DefaultPublicNetworkName      = "tubo-public"
-	DefaultPublicNetworkBundleURL = "https://tubo.click/.well-known/tubo/networks/tubo-public.bundle"
+	DefaultPublicNetworkBundleURL = "https://www.tubo.click/.well-known/tubo/networks/tubo-public.bundle"
 )
 
 var BundleSigningKeys = map[string]string{

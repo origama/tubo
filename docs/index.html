@@ -200,7 +200,7 @@ local HTTP listeners</div>
           <article class="cmd">
             <h3>One-line install</h3>
             <p>Install the latest release and verify the binary.</p>
-            <pre class="mono">curl -fsSL https://tubo.click/install.sh | sh
+            <pre class="mono">curl -fsSL https://www.tubo.click/install.sh | sh
 
 tubo version</pre>
           </article>
@@ -221,14 +221,14 @@ go build ./cmd/tubo
           <article class="cmd step">
             <h3>Machine A: install and attach</h3>
             <p>Publish a local HTTP service into the default public Tubo network.</p>
-            <pre class="mono">curl -fsSL https://tubo.click/install.sh | sh
+            <pre class="mono">curl -fsSL https://www.tubo.click/install.sh | sh
 
 tubo attach myapi --port 1234 -d</pre>
           </article>
           <article class="cmd step">
             <h3>Machine B: install and connect</h3>
             <p>Resolve the service by name and open a local listener for it.</p>
-            <pre class="mono">curl -fsSL https://tubo.click/install.sh | sh
+            <pre class="mono">curl -fsSL https://www.tubo.click/install.sh | sh
 
 tubo connect myapi --local 127.0.0.1:51234</pre>
           </article>

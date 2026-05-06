@@ -21,22 +21,22 @@ Tubo is designed for self-hosted, private networks: the libp2p transport is encr
 The installer downloads the latest prebuilt release for your platform, verifies `SHA256SUMS.txt` when possible, and installs `tubo` into `$HOME/.local/bin` by default.
 
 ```bash
-curl -fsSL https://tubo.click/install.sh | sh
+curl -fsSL https://www.tubo.click/install.sh | sh
 ```
 
 Install a specific release:
 
 ```bash
-curl -fsSL https://tubo.click/install.sh | sh -s -- --version v0.1.3
+curl -fsSL https://www.tubo.click/install.sh | sh -s -- --version v0.1.3
 ```
 
 Install somewhere else:
 
 ```bash
-curl -fsSL https://tubo.click/install.sh | sh -s -- --install-dir /usr/local/bin
+curl -fsSL https://www.tubo.click/install.sh | sh -s -- --install-dir /usr/local/bin
 ```
 
-> The same installer is also published on the GitHub Pages site under `https://tubo.click/install.sh`.
+> The same installer is also published on the GitHub Pages site under `https://www.tubo.click/install.sh`.
 
 ### Build from source
 
@@ -82,7 +82,7 @@ Copy `swarm.key` securely to the service and client hosts. Share `RELAY_ADDR` wi
 On the machine that runs the HTTP service:
 
 ```bash
-curl -fsSL https://tubo.click/install.sh | sh
+curl -fsSL https://www.tubo.click/install.sh | sh
 
 tubo attach lmstudio --port 1234 -d
 ```
@@ -94,7 +94,7 @@ The service remains published while the detached `attach` process is running.
 On the client machine:
 
 ```bash
-curl -fsSL https://tubo.click/install.sh | sh
+curl -fsSL https://www.tubo.click/install.sh | sh
 
 tubo get services --timeout 10s
 tubo describe service/lmstudio

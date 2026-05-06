@@ -7,7 +7,7 @@
       "id": "tubo-public-v1",
       "visibility": "public",
       "description": "Default public Tubo network",
-      "bundle_url": "https://tubo.click/.well-known/tubo/networks/tubo-public.bundle",
+      "bundle_url": "https://www.tubo.click/.well-known/tubo/networks/tubo-public.bundle",
       "key_id": "tubo-root-2026"
     }
   ]
