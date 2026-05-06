@@ -264,21 +264,21 @@ tubo get services
 tubo get service/lmstudio
 tubo describe service/lmstudio
 tubo inspect service/lmstudio --json
-tubo watch services --timeout 10s
+tubo watch services --timeout 20s
 ```
 
 Comportamento:
 
 - se trova un edge locale gia' in ascolto sull'admin API, usa la sua cache discovery locale;
 - altrimenti prova una remote discovery query verso il primo bootstrap/relay peer disponibile;
-- se anche la query remota fallisce o non basta, avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce;
+- se anche la query remota fallisce o non basta, avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce; il default e' pensato per coprire almeno un heartbeat discovery iniziale;
 - i messaggi di output indicano esplicitamente se sta usando cache locale, query remota, observer live, o fallback tra questi.
 
 Flag utili in questo MVP:
 
 ```bash
 --config <path>
---timeout 5s
+--timeout 20s
 --live
 --cached-only
 --json

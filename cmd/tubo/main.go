@@ -1353,11 +1353,13 @@ type connectCandidate struct {
 	Addr string
 }
 
+const defaultDiscoveryTimeout = 20 * time.Second
+
 func connectCmd(args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	local := fs.String("local", "", "")
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 5*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	jsonOut := fs.Bool("json", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
@@ -1567,7 +1569,7 @@ func getCmd(args []string) error {
 	resource := args[0]
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 5*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	jsonOut := fs.Bool("json", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
@@ -1647,7 +1649,7 @@ func describeCmd(args []string) error {
 	}
 	fs := flag.NewFlagSet("describe", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 5*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -1682,7 +1684,7 @@ func inspectCmd(args []string) error {
 	}
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 5*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
 	_ = fs.Bool("json", false, "")
@@ -1710,7 +1712,7 @@ func watchCmd(args []string) error {
 	}
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 10*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -1890,7 +1892,7 @@ func fetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]servic
 		return nil, nil, nil, errors.New("no bootstrap or relay peers configured")
 	}
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = defaultDiscoveryTimeout
 	}
 	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
 	if err != nil {
@@ -1940,7 +1942,7 @@ func fetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 		return serviceResource{}, nil, nil, errors.New("no bootstrap or relay peers configured")
 	}
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = defaultDiscoveryTimeout
 	}
 	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
 	if err != nil {
@@ -1990,7 +1992,7 @@ func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serv
 		return nil, errors.New("no bootstrap or relay peers configured")
 	}
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = defaultDiscoveryTimeout
 	}
 	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
 	if err != nil {
