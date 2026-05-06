@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"context"
+	"log"
 	"sync"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -143,6 +144,7 @@ func (s *PubSubSubscriber) handleMessage(msg *pubsub.Message) {
 
 	// Valid announcement — update cache and emit added event
 	_ = s.cache.Add(ann.PeerID, ann.ServiceName, ann.Addresses, ann.TTL)
+	log.Printf("discovery announcement accepted service=%q peer=%s addrs=%d ttl=%s", ann.ServiceName, ann.PeerID, len(ann.Addresses), ann.TTL)
 	s.events <- DiscoveryEvent{Type: "added", ServiceName: ann.ServiceName, PeerID: ann.PeerID}
 
 	// Ensure key stays cached for future verification.

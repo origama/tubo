@@ -104,8 +104,9 @@ tubo connect lmstudio --local 127.0.0.1:51234 -d
 
 Se manca la config locale di default:
 
-- `attach`, `connect`, `gateway` e `relay` fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
-- questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico.
+- `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
+- questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico;
+- `attach` genera un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse.
 
 File coinvolti:
 
@@ -188,6 +189,7 @@ Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, opp
 `connect` apre un listener HTTP locale verso un servizio scoperto nello swarm.
 
 Se la config locale di default non esiste ancora, `connect` prova prima a fare implicit public join alla rete pubblica di default.
+Anche `get services`, `describe`, `inspect` e `watch` usano lo stesso bootstrap implicito.
 
 ```bash
 tubo connect lmstudio --local 127.0.0.1:51234

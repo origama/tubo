@@ -233,7 +233,7 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 	}
 	p2p.LogNetworkEvents(h, "edge")
 
-	ps, err := pubsub.NewGossipSub(ctx, h)
+	ps, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
 	if err != nil {
 		_ = h.Close()
 		return nil, nil, fmt.Errorf("create gossipsub: %w", err)

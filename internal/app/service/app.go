@@ -84,7 +84,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target))
 	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target))
-	gs, err := pubsub.NewGossipSub(ctx, h)
+	gs, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
 	if err != nil {
 		_ = h.Close()
 		return nil, err

@@ -119,7 +119,7 @@ func (a *App) mux() *http.ServeMux {
 	return m
 }
 func startDiscovery(ctx context.Context, h host.Host) (*discovery.Cache, chan struct{}, error) {
-	ps, err := pubsub.NewGossipSub(ctx, h)
+	ps, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
 	if err != nil {
 		return nil, nil, err
 	}

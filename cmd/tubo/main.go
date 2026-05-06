@@ -87,13 +87,29 @@ func run(args []string) error {
 	case "ps":
 		return psCmd(args[1:])
 	case "get":
-		return getCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("get", noInit); err != nil {
+			return err
+		}
+		return getCmd(cleanArgs)
 	case "describe":
-		return describeCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("describe", noInit); err != nil {
+			return err
+		}
+		return describeCmd(cleanArgs)
 	case "inspect":
-		return inspectCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("inspect", noInit); err != nil {
+			return err
+		}
+		return inspectCmd(cleanArgs)
 	case "watch":
-		return watchCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("watch", noInit); err != nil {
+			return err
+		}
+		return watchCmd(cleanArgs)
 	case "logs":
 		return logsCmd(args[1:])
 	case "stop":
@@ -138,10 +154,26 @@ func resolveRuntimeRole(args []string) (string, []string, bool, error) {
 		if err != nil {
 			return "", nil, false, err
 		}
+		attachArgs, err = ensureRuntimeSeed(attachArgs, "attach")
+		if err != nil {
+			return "", nil, false, err
+		}
 		return "service", attachArgs, true, nil
 	default:
 		return "", nil, false, nil
 	}
+}
+
+func ensureRuntimeSeed(args []string, prefix string) ([]string, error) {
+	if hasLongFlag(args, "--seed") {
+		return args, nil
+	}
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return nil, err
+	}
+	seed := prefix + "-" + hex.EncodeToString(buf)
+	return append(append([]string{}, args...), "--seed", seed), nil
 }
 
 func rewriteAttachArgs(args []string) ([]string, error) {
@@ -1400,9 +1432,6 @@ func connectCmd(args []string) error {
 		PrivateKeyFile: cfg.Network.PrivateKeyFile,
 		PrivateKeyB64:  cfg.Network.PrivateKeyB64,
 	}
-	if bridgeCfg.Seed == "" {
-		bridgeCfg.Seed = "connect-" + serviceName + "-seed"
-	}
 	if bridgeCfg.P2PListen == "" {
 		bridgeCfg.P2PListen = "/ip4/127.0.0.1/tcp/0"
 	}
@@ -2005,7 +2034,7 @@ func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serv
 		return nil, fmt.Errorf("create observer host: %w", err)
 	}
 	defer h.Close()
-	ps, err := pubsub.NewGossipSub(ctx, h)
+	ps, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
 	if err != nil {
 		return nil, fmt.Errorf("create observer gossipsub: %w", err)
 	}

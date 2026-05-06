@@ -87,6 +87,12 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 			if gotRole != tc.wantRole {
 				t.Fatalf("role = %q, want %q", gotRole, tc.wantRole)
 			}
+			if gotRole == "service" && !hasLongFlag(tc.in, "--seed") {
+				if len(gotArgs) < 2 || gotArgs[len(gotArgs)-2] != "--seed" || !strings.HasPrefix(gotArgs[len(gotArgs)-1], "attach-") {
+					t.Fatalf("attach args missing generated seed: %#v", gotArgs)
+				}
+				gotArgs = gotArgs[:len(gotArgs)-2]
+			}
 			if strings.Join(gotArgs, "\x00") != strings.Join(tc.wantArgs, "\x00") {
 				t.Fatalf("args = %#v, want %#v", gotArgs, tc.wantArgs)
 			}
