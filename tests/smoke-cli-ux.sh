@@ -237,9 +237,9 @@ done
 wait_http_ok "http://127.0.0.1:$connect_port/healthz"
 assert_contains "querying discovery cache from relay" "$WORK_DIR/connect.out"
 assert_contains "received service lmstudio" "$WORK_DIR/connect.out"
-assert_contains "path: direct" "$WORK_DIR/connect.out"
-assert_contains "direct: selected" "$WORK_DIR/connect.out"
-assert_contains "relay: available as fallback" "$WORK_DIR/connect.out"
+assert_contains "path: relayed" "$WORK_DIR/connect.out"
+assert_contains "direct: unavailable, only loopback/unspecified direct addresses advertised" "$WORK_DIR/connect.out"
+assert_contains "relay:" "$WORK_DIR/connect.out"
 connect_body="$WORK_DIR/connect-body.json"
 connect_code="$(curl -sS -o "$connect_body" -w '%{http_code}' -X POST -d 'hello-connect' "http://127.0.0.1:$connect_port/v1/dummy?from=connect")"
 if [[ "$connect_code" != "200" ]]; then

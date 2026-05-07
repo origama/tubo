@@ -27,7 +27,7 @@ curl -fsSL https://www.tubo.click/install.sh | sh
 Install a specific release:
 
 ```bash
-curl -fsSL https://www.tubo.click/install.sh | sh -s -- --version v0.5.0
+curl -fsSL https://www.tubo.click/install.sh | sh -s -- --version v0.5.1
 ```
 
 Install somewhere else:

@@ -21,6 +21,19 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.5.1] - 2026-05-07
+
+CI/smoke hotfix for the signed public onboarding release.
+
+### Fixed
+- CLI UX smoke coverage now matches current connect behavior: when a service advertises only loopback direct addresses, `connect` correctly selects the relayed path instead of expecting direct.
+
+### Compatibility
+- Product version: v0.5.1
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none beyond updating from v0.5.0 if you want the CI/smoke metadata hotfix
+
 ## [v0.5.0] - 2026-05-06
 
 Signed public onboarding and connect UX release.
