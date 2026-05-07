@@ -27,7 +27,7 @@ curl -fsSL https://www.tubo.click/install.sh | sh
 Install a specific release:
 
 ```bash
-curl -fsSL https://www.tubo.click/install.sh | sh -s -- --version v0.1.3
+curl -fsSL https://www.tubo.click/install.sh | sh -s -- --version v0.5.0
 ```
 
 Install somewhere else:
@@ -140,7 +140,7 @@ tubo stop process/attach-lmstudio
 tubo rm --stale
 ```
 
-`attach`, `connect`, and `gateway` will also auto-join the default public Tubo network on first run when no local config exists, unless `--no-init` or `CI=true` disables that behavior.
+`attach`, `connect`, `gateway`, `relay`, and discovery commands (`get`, `describe`, `inspect`, `watch`) will also auto-join the default public Tubo network on first run when no local config exists, unless `--no-init` or `CI=true` disables that behavior.
 
 During prerelease/dev testing, before the GitHub Pages site is updated, you can point both `tubo join` and the implicit public join flow at a temporary bundle URL with:
 

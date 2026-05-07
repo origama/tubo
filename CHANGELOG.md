@@ -21,6 +21,37 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.5.0] - 2026-05-06
+
+Signed public onboarding and connect UX release.
+
+### Added
+- Signed public network bundle verification and trust store for onboarding into the default Tubo public network.
+- `tubo join` bundle mode plus published public assets under `docs/.well-known/tubo/` and a GitHub Pages installer.
+- Implicit public join for `attach`, `connect`, `gateway`, `relay`, and discovery commands (`get`, `describe`, `inspect`, `watch`) when no local config exists.
+- WebSocket upgrade tunneling for `connect`/`attach` so browser apps using `/ws` work through the tunnel.
+- Readable `tubo help` and command-specific help for the current intent-based UX.
+
+### Changed
+- `attach` now generates a unique runtime PeerID seed by default and listens on `/ip4/0.0.0.0/tcp/0` to allow direct dial and hole punching when the network permits it.
+- `connect` enables AutoRelay/hole punching when relay metadata is available and reports when an initial relayed path may later upgrade direct.
+- Discovery defaults now use a longer timeout so live observation covers at least one default service heartbeat.
+- Docker Compose smoke commands now use the current `relay`, `gateway`, and `attach` command surface.
+- Website copy in `docs/index.html` now reflects signed onboarding, local HTTP/WebSocket listeners, and current install/attach/connect flow.
+
+### Fixed
+- Public relay/service/client now join the same signed swarm key from zero when using the default bundle.
+- `get services` on a fresh machine now auto-joins instead of failing before discovery.
+- Multiple `attach` processes no longer share the old demo PeerID by default.
+- `connect` no longer treats loopback/unspecified direct addresses as usable remote direct candidates.
+- The installer is POSIX `sh` compatible and no longer fails under dash with `set: Illegal option -o pipefail`.
+
+### Compatibility
+- Product version: v0.5.0
+- Protocol version: 1.1
+- Protocol compatibility change: none; this release adds runtime/CLI behavior on top of protocol 1.1
+- Operator action required: update binaries on public relay/service/client hosts to get signed onboarding, unique attach PeerIDs, WebSocket tunneling, and improved connect path handling
+
 ## [v0.4.0] - 2026-05-05
 
 Repository/module rename release that aligns the project identity around `tubo`, updates operational paths and image names, and validates the renamed tree on the real 3-node Linode bench.
