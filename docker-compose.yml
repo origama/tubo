@@ -6,7 +6,6 @@ services:
       dockerfile: deploy/Dockerfile.tubo
     command:
       - relay
-      - run
       - --listen
       - /ip4/0.0.0.0/tcp/4002
       - --seed
@@ -43,8 +42,7 @@ services:
       context: .
       dockerfile: deploy/Dockerfile.tubo
     command:
-      - edge
-      - run
+      - gateway
       - --listen
       - :8443
       - --admin-listen
@@ -72,8 +70,7 @@ services:
       - edge
       - relay
     command:
-      - service
-      - run
+      - attach
       - --name
       - myapi
       - --target

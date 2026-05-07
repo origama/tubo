@@ -106,7 +106,8 @@ Se manca la config locale di default:
 
 - `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
 - questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico;
-- `attach` genera un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse.
+- `attach` genera un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
+- `attach` ascolta di default su `/ip4/0.0.0.0/tcp/0` per permettere direct dial/hole punching quando la rete lo consente.
 
 File coinvolti:
 
@@ -205,7 +206,7 @@ tubo connect lmstudio --json
 
 `connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live.
 
-HTTP normale e WebSocket (`Upgrade: websocket`) sono inoltrati sullo stesso tunnel. Se un servizio pubblicizza solo indirizzi direct loopback/unspecified (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` li ignora per il dial remoto e usa il path relayed.
+HTTP normale e WebSocket (`Upgrade: websocket`) sono inoltrati sullo stesso tunnel. Se un servizio pubblicizza solo indirizzi direct loopback/unspecified (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` li ignora per il dial remoto e usa il path relayed. Il client `connect` abilita AutoRelay/hole punching quando la config contiene relay peer; il successo del direct upgrade dipende comunque da NAT/firewall e dagli indirizzi annunciati dal service. Anche quando il path iniziale e' `relayed`, libp2p puo' aprire in seguito una connessione direct tramite hole punching.
 
 ## Detached process state
 

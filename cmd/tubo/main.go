@@ -46,7 +46,18 @@ func main() {
 }
 func run(args []string) error {
 	if len(args) == 0 {
-		return usage()
+		printTopLevelHelp()
+		return nil
+	}
+	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		if len(args) > 1 {
+			return printCommandHelp(args[1])
+		}
+		printTopLevelHelp()
+		return nil
+	}
+	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+		return printCommandHelp(args[0])
 	}
 	if role, roleArgs, ok, err := resolveRuntimeRole(args); err != nil {
 		return err
@@ -154,7 +165,7 @@ func resolveRuntimeRole(args []string) (string, []string, bool, error) {
 		if err != nil {
 			return "", nil, false, err
 		}
-		attachArgs, err = ensureRuntimeSeed(attachArgs, "attach")
+		attachArgs, err = ensureAttachRuntimeDefaults(attachArgs)
 		if err != nil {
 			return "", nil, false, err
 		}
@@ -164,16 +175,19 @@ func resolveRuntimeRole(args []string) (string, []string, bool, error) {
 	}
 }
 
-func ensureRuntimeSeed(args []string, prefix string) ([]string, error) {
-	if hasLongFlag(args, "--seed") {
-		return args, nil
+func ensureAttachRuntimeDefaults(args []string) ([]string, error) {
+	out := append([]string{}, args...)
+	if !hasLongFlag(out, "--seed") {
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			return nil, err
+		}
+		out = append(out, "--seed", "attach-"+hex.EncodeToString(buf))
 	}
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return nil, err
+	if !hasLongFlag(out, "--p2p-listen") {
+		out = append(out, "--p2p-listen", "/ip4/0.0.0.0/tcp/0")
 	}
-	seed := prefix + "-" + hex.EncodeToString(buf)
-	return append(append([]string{}, args...), "--seed", seed), nil
+	return out, nil
 }
 
 func rewriteAttachArgs(args []string) ([]string, error) {
@@ -284,7 +298,130 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo join [<network-name>] [--bundle-url <url>] [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo ps [flags] | tubo get <services|service/name|processes> [flags] | tubo describe <service/name|process/name> [flags] | tubo inspect <service/name|process/name> [flags] | tubo watch services [flags] | tubo logs <process/name> [flags] | tubo stop <process/name> [flags] | tubo rm --stale [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+}
+
+func printTopLevelHelp() {
+	fmt.Println(`tubo — publish and connect private HTTP/WebSocket services over libp2p
+
+Usage:
+  tubo attach <url> --name <service> [-d]
+  tubo attach <service> --port <port> [-d]
+  tubo connect <service> [--local 127.0.0.1:PORT]
+  tubo get services
+  tubo relay [-d]
+  tubo gateway [-d]
+  tubo join [tubo-public]
+
+Common flow:
+  # Machine with a local app
+  tubo attach http://127.0.0.1:8080 --name myapp -d
+
+  # Another machine
+  tubo connect myapp --local 127.0.0.1:9888
+  curl http://127.0.0.1:9888/
+
+Discovery and process management:
+  tubo get services
+  tubo describe service/myapp
+  tubo inspect service/myapp --json
+  tubo watch services
+  tubo ps
+  tubo logs process/attach-myapp
+  tubo stop process/attach-myapp
+
+Notes:
+  - First run auto-joins the signed public network bundle.
+  - Use --no-init to disable implicit join.
+  - HTTP and WebSocket upgrade traffic are both tunneled.
+
+Help:
+  tubo help <command>
+  tubo <command> --help`)
+}
+
+func printCommandHelp(command string) error {
+	switch command {
+	case "attach":
+		fmt.Println(`Usage:
+  tubo attach <url> --name <service> [-d]
+  tubo attach <service> --port <port> [-d]
+
+Publish a local HTTP/WebSocket service into the Tubo network.
+
+Examples:
+  tubo attach http://127.0.0.1:8080 --name piweb -d
+  tubo attach piweb --port 8080 -d
+
+Flags:
+  --name <service>          service name to publish
+  --port <port>             shorthand target: http://127.0.0.1:<port>
+  --target <url>            explicit target URL
+  --p2p-listen <multiaddr>  libp2p listen addr (default for attach: /ip4/0.0.0.0/tcp/0)
+  --seed <seed>             stable PeerID seed; auto-generated when omitted
+  --heartbeat-interval <d>  announcement interval, default 15s
+  -d, --detach              run in background
+  --no-init                 fail instead of auto-joining the public bundle`)
+	case "connect":
+		fmt.Println(`Usage:
+  tubo connect <service> [--local 127.0.0.1:PORT]
+
+Open a local HTTP/WebSocket listener to a named service.
+
+Examples:
+  tubo connect piweb --local 127.0.0.1:9888
+  tubo connect piweb
+
+Flags:
+  --local <host:port>       local listener; random 127.0.0.1 port when omitted
+  --timeout <duration>      discovery timeout, default 20s
+  --live                    skip remote cache and observe pubsub live
+  --cached-only             only use local edge cache
+  --json                    print JSON result
+  --no-init                 fail instead of auto-joining the public bundle
+
+Path selection:
+  - usable direct addresses are tried first
+  - loopback/unspecified direct addresses are skipped from remote clients
+  - relayed addresses are used as fallback
+  - hole punching is enabled when relay metadata is available
+  - an initial relayed path may later upgrade to a direct libp2p connection`)
+	case "get":
+		fmt.Println(`Usage:
+  tubo get services [--json]
+  tubo get service/<name> [--json]
+  tubo get processes [--json]
+
+Inspect local processes or services announced in the swarm.`)
+	case "relay":
+		fmt.Println(`Usage:
+  tubo relay [-d]
+
+Run a public relay/bootstrap/discovery-cache node.
+
+Flags:
+  --listen <multiaddr>      default /ip4/0.0.0.0/tcp/4001
+  --public-addr <multiaddr> advertised public relay address
+  -d, --detach              run in background
+  --no-init                 fail instead of auto-joining the public bundle`)
+	case "gateway":
+		fmt.Println(`Usage:
+  tubo gateway [--listen :8443] [-d]
+
+Run an HTTP ingress gateway that routes by discovered services.`)
+	case "join":
+		fmt.Println(`Usage:
+  tubo join [tubo-public]
+  tubo join --bundle-url <url>
+  tubo join --relay <multiaddr> --swarm-key <path>
+
+Install local network config and swarm key. Does not start processes.`)
+	case "watch", "describe", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
+		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
+	default:
+		return fmt.Errorf("unknown help topic %q", command)
+	}
+	return nil
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
@@ -378,7 +515,7 @@ func runRole(role string, args []string) error {
 		}
 		return a.Start(ctx)
 	case "bridge":
-		a, err := bridge.New(ctx, bridge.Config{Listen: c.Bridge.Listen, Seed: c.Node.Seed, P2PListen: c.Node.P2PListen, ServiceAddr: c.Bridge.ServiceAddr, ServiceSeed: c.Bridge.ServiceSeed, ServiceP2PListen: c.Bridge.ServiceP2PListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64})
+		a, err := bridge.New(ctx, bridge.Config{Listen: c.Bridge.Listen, Seed: c.Node.Seed, P2PListen: c.Node.P2PListen, ServiceAddr: c.Bridge.ServiceAddr, ServiceSeed: c.Bridge.ServiceSeed, ServiceP2PListen: c.Bridge.ServiceP2PListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching})
 		if err != nil {
 			return err
 		}
@@ -1431,9 +1568,12 @@ func connectCmd(args []string) error {
 		P2PListen:      cfg.Node.P2PListen,
 		PrivateKeyFile: cfg.Network.PrivateKeyFile,
 		PrivateKeyB64:  cfg.Network.PrivateKeyB64,
+		RelayPeers:     cfg.Network.RelayPeers,
+		Autorelay:      cfg.Network.Autorelay,
+		HolePunching:   cfg.Network.HolePunching,
 	}
 	if bridgeCfg.P2PListen == "" {
-		bridgeCfg.P2PListen = "/ip4/127.0.0.1/tcp/0"
+		bridgeCfg.P2PListen = "/ip4/0.0.0.0/tcp/0"
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -1556,6 +1696,9 @@ func connectDirectMessage(service serviceResource, attempts []connectAttempt, se
 	}
 	for _, attempt := range attempts {
 		if attempt.Path == "direct" && attempt.Status == "failed" {
+			if len(service.RelayedAddresses) > 0 {
+				return "attempted, failed; relay selected and hole punching may still upgrade later"
+			}
 			return "attempted, failed"
 		}
 	}

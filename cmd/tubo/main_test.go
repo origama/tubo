@@ -88,10 +88,20 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 				t.Fatalf("role = %q, want %q", gotRole, tc.wantRole)
 			}
 			if gotRole == "service" && !hasLongFlag(tc.in, "--seed") {
-				if len(gotArgs) < 2 || gotArgs[len(gotArgs)-2] != "--seed" || !strings.HasPrefix(gotArgs[len(gotArgs)-1], "attach-") {
-					t.Fatalf("attach args missing generated seed: %#v", gotArgs)
+				var seed string
+				var ok bool
+				gotArgs, seed, ok, err = consumeLongFlag(gotArgs, "--seed")
+				if err != nil || !ok || !strings.HasPrefix(seed, "attach-") {
+					t.Fatalf("attach args missing generated seed: args=%#v seed=%q ok=%t err=%v", gotArgs, seed, ok, err)
 				}
-				gotArgs = gotArgs[:len(gotArgs)-2]
+			}
+			if gotRole == "service" && !hasLongFlag(tc.in, "--p2p-listen") {
+				var listen string
+				var ok bool
+				gotArgs, listen, ok, err = consumeLongFlag(gotArgs, "--p2p-listen")
+				if err != nil || !ok || listen != "/ip4/0.0.0.0/tcp/0" {
+					t.Fatalf("attach args missing default p2p listen: args=%#v listen=%q ok=%t err=%v", gotArgs, listen, ok, err)
+				}
 			}
 			if strings.Join(gotArgs, "\x00") != strings.Join(tc.wantArgs, "\x00") {
 				t.Fatalf("args = %#v, want %#v", gotArgs, tc.wantArgs)
@@ -814,7 +824,7 @@ func TestConnectStatusMessages(t *testing.T) {
 	if got := connectRelayMessage(service, service.DirectAddresses[0], "direct"); got != "available as fallback" {
 		t.Fatalf("relay fallback message = %q", got)
 	}
-	if got := connectDirectMessage(service, []connectAttempt{{Path: "direct", Addr: service.DirectAddresses[0], Status: "failed", Error: "timeout"}, {Path: "relayed", Addr: service.RelayedAddresses[0], Status: "selected"}}, "relayed"); got != "attempted, failed" {
+	if got := connectDirectMessage(service, []connectAttempt{{Path: "direct", Addr: service.DirectAddresses[0], Status: "failed", Error: "timeout"}, {Path: "relayed", Addr: service.RelayedAddresses[0], Status: "selected"}}, "relayed"); got != "attempted, failed; relay selected and hole punching may still upgrade later" {
 		t.Fatalf("direct fallback message = %q", got)
 	}
 	relayOnly := normalizeServiceResource(serviceResource{Name: "myapi", Addresses: []string{service.RelayedAddresses[0]}})

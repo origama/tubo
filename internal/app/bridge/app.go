@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -16,7 +17,11 @@ import (
 	"time"
 )
 
-type Config struct{ Listen, Seed, P2PListen, ServiceAddr, ServiceSeed, ServiceP2PListen, PrivateKeyFile, PrivateKeyB64 string }
+type Config struct {
+	Listen, Seed, P2PListen, ServiceAddr, ServiceSeed, ServiceP2PListen, PrivateKeyFile, PrivateKeyB64 string
+	RelayPeers                                                                                         []string
+	Autorelay, HolePunching                                                                            bool
+}
 type App struct {
 	cfg        Config
 	host       host.Host
@@ -46,13 +51,24 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	h, err := p2p.NewHostWithSeedAndPSK(cfg.P2PListen, cfg.Seed, psk)
+	relays := parseAddrInfos(cfg.RelayPeers)
+	var opts []libp2p.Option
+	if len(relays) > 0 && cfg.Autorelay {
+		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(relays))
+	}
+	if cfg.HolePunching {
+		opts = append(opts, libp2p.EnableHolePunching())
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions(cfg.P2PListen, cfg.Seed, psk, opts...)
 	if err != nil {
 		return nil, err
 	}
 	p2p.LogNetworkEvents(h, "bridge")
 	if using {
 		log.Printf("libp2p private network enabled")
+	}
+	if cfg.HolePunching {
+		log.Printf("bridge hole punching enabled relay_peers=%d autorelay=%t", len(relays), cfg.Autorelay)
 	}
 	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -185,6 +201,18 @@ func isWebSocketRequest(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+func parseAddrInfos(peers []string) []peer.AddrInfo {
+	out := make([]peer.AddrInfo, 0, len(peers))
+	for _, raw := range peers {
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, info)
+	}
+	return out
 }
 
 func first(a, b string) string {

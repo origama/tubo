@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 REPO="${TUBO_REPO:-origama/tubo}"
 INSTALL_DIR="${TUBO_INSTALL_DIR:-$HOME/.local/bin}"

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#08101c" />
-    <meta name="description" content="tubo — un tunnel minimale per API e servizi privati. Installalo in pochi passi, avvia un relay, pubblica un servizio e connettiti con curl." />
+    <meta name="description" content="tubo — un tunnel minimale per API e servizi privati. Installa, pubblica un servizio con attach, connettiti per nome e usa HTTP/WebSocket da localhost." />
     <title>tubo — minimal tunnel for API services</title>
     <style>
       :root {
@@ -146,8 +146,8 @@
             <div class="eyebrow">tubo.click</div>
             <h1>Minimal tunnel for private API services.</h1>
             <p class="lead">
-              <strong>tubo</strong> keeps the path simple: install it, start one relay, publish a service,
-              connect by name, and test it with a real curl.
+              <strong>tubo</strong> keeps the path simple: install it, attach a local HTTP/WebSocket service,
+              connect by name, and use it from localhost. First run auto-joins the signed public network.
             </p>
             <div class="cta-row">
               <a class="btn primary" href="#install">Get started</a>
@@ -166,15 +166,15 @@
             <div class="panel">
               <div class="small">What you get</div>
               <div class="code mono">a single binary
-an explicit relay
+signed public onboarding
 named services
-local HTTP listeners</div>
+local HTTP/WebSocket listeners</div>
             </div>
             <div class="tag-row">
               <span class="tag">intent-based CLI</span>
-              <span class="tag">relay-first</span>
-              <span class="tag">local or remote</span>
-              <span class="tag">GitHub Pages</span>
+              <span class="tag">signed bundle</span>
+              <span class="tag">relay fallback</span>
+              <span class="tag">WebSocket ready</span>
             </div>
           </aside>
         </div>
@@ -193,7 +193,7 @@ local HTTP listeners</div>
           </article>
           <article class="feature">
             <h3>3. First run joins the default network</h3>
-            <p><span class="mono">attach</span> and <span class="mono">connect</span> auto-join the signed default public Tubo network when no local config exists yet.</p>
+            <p><span class="mono">attach</span>, <span class="mono">connect</span>, <span class="mono">get</span>, <span class="mono">watch</span> and <span class="mono">relay</span> auto-join the signed default public Tubo network when no local config exists yet.</p>
           </article>
         </div>
         <div class="split" style="margin-top: 16px;">
@@ -220,7 +220,7 @@ go build ./cmd/tubo
         <div class="split steps">
           <article class="cmd step">
             <h3>Machine A: install and attach</h3>
-            <p>Publish a local HTTP service into the default public Tubo network.</p>
+            <p>Publish a local HTTP/WebSocket service into the default public Tubo network.</p>
             <pre class="mono">curl -fsSL https://www.tubo.click/install.sh | sh
 
 tubo attach myapi --port 1234 -d</pre>
@@ -242,8 +242,8 @@ Signature verified: tubo-root-2026
 Joined network: tubo-public</pre>
         </div>
         <div class="cmd step" style="margin-top: 16px;">
-          <h3>Test with curl</h3>
-          <p>Once connect is up, send a real request through the tunnel.</p>
+          <h3>Test with curl or WebSocket</h3>
+          <p>Once connect is up, send real HTTP or WebSocket traffic through the tunnel.</p>
           <pre class="mono">curl -X POST \
   -H 'Content-Type: text/plain' \
   -d 'hello tubo' \
@@ -256,16 +256,16 @@ Joined network: tubo-public</pre>
         <div class="split">
           <div class="quote panel">
             The goal is to keep the setup <strong>small, explicit, and easy to reason about</strong>:
-            one relay, one shared swarm key, named services, local listeners, and real HTTP traffic.
+            one signed swarm bundle, named services, relay fallback, local listeners, and real HTTP/WebSocket traffic.
           </div>
           <div class="cmd">
             <h3>Good defaults, simple operations</h3>
             <p>
               tubo is designed to be installed quickly, run on a few hosts, and verified with an actual curl.
             </p>
-            <pre class="mono">relay  →  attach  →  connect  →  curl
+            <pre class="mono">install  →  attach  →  connect  →  curl
 
-No big dashboard required.
+No dashboard required.
 Just enough tooling to get traffic flowing.</pre>
           </div>
         </div>

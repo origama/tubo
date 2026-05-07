@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -236,7 +237,7 @@ func mergeRelayCircuitAddrs(base []string, relayInfos []peer.AddrInfo, self peer
 }
 
 func (a *App) currentAnnouncement() (discovery.Announcement, bool) {
-	addrs := p2p.PeerAddrs(a.host)
+	addrs := expandUnspecifiedListenAddrs(p2p.PeerAddrs(a.host), a.cfg.Listen, a.host.ID())
 	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) && !a.hasRelayReservation() {
 		return discovery.Announcement{}, false
 	}
@@ -262,6 +263,78 @@ func hasCircuitAddr(addrs []string) bool {
 		}
 	}
 	return false
+}
+
+func expandUnspecifiedListenAddrs(addrs []string, listen string, self peer.ID) []string {
+	if !strings.Contains(listen, "/ip4/0.0.0.0/") && !strings.Contains(listen, "/ip6/::/") {
+		return addrs
+	}
+	seen := make(map[string]struct{}, len(addrs))
+	out := make([]string, 0, len(addrs)+4)
+	for _, addr := range addrs {
+		seen[addr] = struct{}{}
+		out = append(out, addr)
+	}
+	for _, addr := range addrs {
+		if strings.Contains(addr, "/p2p-circuit") {
+			continue
+		}
+		port := tcpPortFromMultiaddr(addr)
+		if port == "" {
+			continue
+		}
+		for _, ip := range interfaceIPs() {
+			candidate := fmt.Sprintf("/ip4/%s/tcp/%s/p2p/%s", ip, port, self)
+			if _, ok := seen[candidate]; ok {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
+func tcpPortFromMultiaddr(addr string) string {
+	parts := strings.Split(addr, "/")
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "tcp" {
+			return parts[i+1]
+		}
+	}
+	return ""
+}
+
+func interfaceIPs() []string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, raw := range addrs {
+			var ip net.IP
+			switch v := raw.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			ip4 := ip.To4()
+			if ip4 == nil || ip4.IsLoopback() || ip4.IsUnspecified() {
+				continue
+			}
+			out = append(out, ip4.String())
+		}
+	}
+	return out
 }
 
 func (a *App) registerRelayNotifiee() {
