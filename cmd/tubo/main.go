@@ -16,7 +16,9 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	"github.com/origama/tubo/internal/networkbundle"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/trust"
 	iversion "github.com/origama/tubo/internal/version"
 	"gopkg.in/yaml.v3"
 	"io"
@@ -44,7 +46,18 @@ func main() {
 }
 func run(args []string) error {
 	if len(args) == 0 {
-		return usage()
+		printTopLevelHelp()
+		return nil
+	}
+	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
+		if len(args) > 1 {
+			return printCommandHelp(args[1])
+		}
+		printTopLevelHelp()
+		return nil
+	}
+	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
+		return printCommandHelp(args[0])
 	}
 	if role, roleArgs, ok, err := resolveRuntimeRole(args); err != nil {
 		return err
@@ -52,9 +65,9 @@ func run(args []string) error {
 		if shouldHandleDetach(args[0]) {
 			cleanArgs, detach := stripDetachArgs(roleArgs)
 			roleArgs = cleanArgs
-			if shouldHandleImplicitInit(args[0]) {
-				cleanArgs, noInit := stripNoInitArgs(roleArgs)
-				if err := maybeImplicitInit(role, cleanArgs, noInit); err != nil {
+			if shouldHandleImplicitBootstrap(args[0]) {
+				cleanArgs, err := maybeImplicitJoinOrInit(args[0], role, roleArgs)
+				if err != nil {
 					return err
 				}
 				roleArgs = cleanArgs
@@ -64,9 +77,9 @@ func run(args []string) error {
 			}
 			return runRole(role, roleArgs)
 		}
-		if shouldHandleImplicitInit(args[0]) {
-			cleanArgs, noInit := stripNoInitArgs(roleArgs)
-			if err := maybeImplicitInit(role, cleanArgs, noInit); err != nil {
+		if shouldHandleImplicitBootstrap(args[0]) {
+			cleanArgs, err := maybeImplicitJoinOrInit(args[0], role, roleArgs)
+			if err != nil {
 				return err
 			}
 			roleArgs = cleanArgs
@@ -77,17 +90,37 @@ func run(args []string) error {
 	case "join":
 		return joinCmd(args[1:])
 	case "connect":
-		return connectCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("connect", noInit); err != nil {
+			return err
+		}
+		return connectCmd(cleanArgs)
 	case "ps":
 		return psCmd(args[1:])
 	case "get":
-		return getCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("get", noInit); err != nil {
+			return err
+		}
+		return getCmd(cleanArgs)
 	case "describe":
-		return describeCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("describe", noInit); err != nil {
+			return err
+		}
+		return describeCmd(cleanArgs)
 	case "inspect":
-		return inspectCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("inspect", noInit); err != nil {
+			return err
+		}
+		return inspectCmd(cleanArgs)
 	case "watch":
-		return watchCmd(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		if err := ensureJoinedPublicNetwork("watch", noInit); err != nil {
+			return err
+		}
+		return watchCmd(cleanArgs)
 	case "logs":
 		return logsCmd(args[1:])
 	case "stop":
@@ -120,18 +153,19 @@ func resolveRuntimeRole(args []string) (string, []string, bool, error) {
 	switch args[0] {
 	case "relay":
 		if len(args) >= 2 && args[1] == "run" {
-			return "relay", args[2:], true, nil
+			return "", nil, false, errors.New("legacy command `tubo relay run` removed; use `tubo relay`")
 		}
 		return "relay", args[1:], true, nil
 	case "edge", "service", "bridge":
-		if len(args) < 2 || args[1] != "run" {
-			return "", nil, false, usage()
-		}
-		return args[0], args[2:], true, nil
+		return "", nil, false, fmt.Errorf("legacy command `tubo %s run` removed; use intent-based commands (`attach`, `connect`, `gateway`, `relay`, `join`)", args[0])
 	case "gateway":
 		return "edge", args[1:], true, nil
 	case "attach":
 		attachArgs, err := rewriteAttachArgs(args[1:])
+		if err != nil {
+			return "", nil, false, err
+		}
+		attachArgs, err = ensureAttachRuntimeDefaults(attachArgs)
 		if err != nil {
 			return "", nil, false, err
 		}
@@ -141,14 +175,51 @@ func resolveRuntimeRole(args []string) (string, []string, bool, error) {
 	}
 }
 
+func ensureAttachRuntimeDefaults(args []string) ([]string, error) {
+	out := append([]string{}, args...)
+	if !hasLongFlag(out, "--seed") {
+		buf := make([]byte, 16)
+		if _, err := rand.Read(buf); err != nil {
+			return nil, err
+		}
+		out = append(out, "--seed", "attach-"+hex.EncodeToString(buf))
+	}
+	if !hasLongFlag(out, "--p2p-listen") {
+		out = append(out, "--p2p-listen", "/ip4/0.0.0.0/tcp/0")
+	}
+	return out, nil
+}
+
 func rewriteAttachArgs(args []string) ([]string, error) {
+	cleanArgs, port, hasPort, err := consumeLongFlag(args, "--port")
+	if err != nil {
+		return nil, err
+	}
+	args = cleanArgs
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		if hasPort {
+			return nil, errors.New("attach --port requires a positional service name")
+		}
 		return args, nil
 	}
-	if hasLongFlag(args[1:], "--target") {
-		return nil, errors.New("attach target provided both positionally and via --target")
+	first := args[0]
+	if isHTTPURL(first) {
+		if hasPort {
+			return nil, errors.New("attach cannot combine a positional URL target with --port")
+		}
+		if hasLongFlag(args[1:], "--target") {
+			return nil, errors.New("attach target provided both positionally and via --target")
+		}
+		return append([]string{"--target", first}, args[1:]...), nil
 	}
-	return append([]string{"--target", args[0]}, args[1:]...), nil
+	if !hasPort {
+		return nil, errors.New("attach positional shorthand requires --port, or pass an explicit target URL")
+	}
+	if hasLongFlag(args[1:], "--name") {
+		return nil, errors.New("attach service name provided both positionally and via --name")
+	}
+	target := "http://127.0.0.1:" + port
+	return append([]string{"--target", target, "--name", first}, args[1:]...), nil
 }
 
 func hasLongFlag(args []string, name string) bool {
@@ -160,7 +231,29 @@ func hasLongFlag(args []string, name string) bool {
 	return false
 }
 
-func shouldHandleImplicitInit(command string) bool {
+func consumeLongFlag(args []string, name string) ([]string, string, bool, error) {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == name {
+			if i+1 >= len(args) {
+				return nil, "", false, fmt.Errorf("%s requires a value", name)
+			}
+			return append(out, args[i+2:]...), args[i+1], true, nil
+		}
+		if strings.HasPrefix(arg, name+"=") {
+			return append(out, args[i+1:]...), strings.TrimPrefix(arg, name+"="), true, nil
+		}
+		out = append(out, arg)
+	}
+	return out, "", false, nil
+}
+
+func isHTTPURL(value string) bool {
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+}
+
+func shouldHandleImplicitBootstrap(command string) bool {
 	switch command {
 	case "attach", "gateway", "relay":
 		return true
@@ -205,7 +298,130 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay> [flags] | tubo <relay|edge|service|bridge> run [flags] | tubo join --relay <multiaddr> --swarm-key <path> [flags] | tubo ps [flags] | tubo get <services|service/name|processes> [flags] | tubo describe <service/name|process/name> [flags] | tubo inspect <service/name|process/name> [flags] | tubo watch services [flags] | tubo logs <process/name> [flags] | tubo stop <process/name> [flags] | tubo rm --stale [flags] | init <role|topology> | keygen swarm | id from-seed | config <print|validate> | doctor | topology <render|commands> | version")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+}
+
+func printTopLevelHelp() {
+	fmt.Println(`tubo — publish and connect private HTTP/WebSocket services over libp2p
+
+Usage:
+  tubo attach <url> --name <service> [-d]
+  tubo attach <service> --port <port> [-d]
+  tubo connect <service> [--local 127.0.0.1:PORT]
+  tubo get services
+  tubo relay [-d]
+  tubo gateway [-d]
+  tubo join [tubo-public]
+
+Common flow:
+  # Machine with a local app
+  tubo attach http://127.0.0.1:8080 --name myapp -d
+
+  # Another machine
+  tubo connect myapp --local 127.0.0.1:9888
+  curl http://127.0.0.1:9888/
+
+Discovery and process management:
+  tubo get services
+  tubo describe service/myapp
+  tubo inspect service/myapp --json
+  tubo watch services
+  tubo ps
+  tubo logs process/attach-myapp
+  tubo stop process/attach-myapp
+
+Notes:
+  - First run auto-joins the signed public network bundle.
+  - Use --no-init to disable implicit join.
+  - HTTP and WebSocket upgrade traffic are both tunneled.
+
+Help:
+  tubo help <command>
+  tubo <command> --help`)
+}
+
+func printCommandHelp(command string) error {
+	switch command {
+	case "attach":
+		fmt.Println(`Usage:
+  tubo attach <url> --name <service> [-d]
+  tubo attach <service> --port <port> [-d]
+
+Publish a local HTTP/WebSocket service into the Tubo network.
+
+Examples:
+  tubo attach http://127.0.0.1:8080 --name piweb -d
+  tubo attach piweb --port 8080 -d
+
+Flags:
+  --name <service>          service name to publish
+  --port <port>             shorthand target: http://127.0.0.1:<port>
+  --target <url>            explicit target URL
+  --p2p-listen <multiaddr>  libp2p listen addr (default for attach: /ip4/0.0.0.0/tcp/0)
+  --seed <seed>             stable PeerID seed; auto-generated when omitted
+  --heartbeat-interval <d>  announcement interval, default 15s
+  -d, --detach              run in background
+  --no-init                 fail instead of auto-joining the public bundle`)
+	case "connect":
+		fmt.Println(`Usage:
+  tubo connect <service> [--local 127.0.0.1:PORT]
+
+Open a local HTTP/WebSocket listener to a named service.
+
+Examples:
+  tubo connect piweb --local 127.0.0.1:9888
+  tubo connect piweb
+
+Flags:
+  --local <host:port>       local listener; random 127.0.0.1 port when omitted
+  --timeout <duration>      discovery timeout, default 20s
+  --live                    skip remote cache and observe pubsub live
+  --cached-only             only use local edge cache
+  --json                    print JSON result
+  --no-init                 fail instead of auto-joining the public bundle
+
+Path selection:
+  - usable direct addresses are tried first
+  - loopback/unspecified direct addresses are skipped from remote clients
+  - relayed addresses are used as fallback
+  - hole punching is enabled when relay metadata is available
+  - an initial relayed path may later upgrade to a direct libp2p connection`)
+	case "get":
+		fmt.Println(`Usage:
+  tubo get services [--json]
+  tubo get service/<name> [--json]
+  tubo get processes [--json]
+
+Inspect local processes or services announced in the swarm.`)
+	case "relay":
+		fmt.Println(`Usage:
+  tubo relay [-d]
+
+Run a public relay/bootstrap/discovery-cache node.
+
+Flags:
+  --listen <multiaddr>      default /ip4/0.0.0.0/tcp/4001
+  --public-addr <multiaddr> advertised public relay address
+  -d, --detach              run in background
+  --no-init                 fail instead of auto-joining the public bundle`)
+	case "gateway":
+		fmt.Println(`Usage:
+  tubo gateway [--listen :8443] [-d]
+
+Run an HTTP ingress gateway that routes by discovered services.`)
+	case "join":
+		fmt.Println(`Usage:
+  tubo join [tubo-public]
+  tubo join --bundle-url <url>
+  tubo join --relay <multiaddr> --swarm-key <path>
+
+Install local network config and swarm key. Does not start processes.`)
+	case "watch", "describe", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
+		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
+	default:
+		return fmt.Errorf("unknown help topic %q", command)
+	}
+	return nil
 }
 func roleFlags(role string, args []string) (string, cfgpkg.Config, error) {
 	fs := flag.NewFlagSet(role, flag.ContinueOnError)
@@ -299,7 +515,7 @@ func runRole(role string, args []string) error {
 		}
 		return a.Start(ctx)
 	case "bridge":
-		a, err := bridge.New(ctx, bridge.Config{Listen: c.Bridge.Listen, Seed: c.Node.Seed, P2PListen: c.Node.P2PListen, ServiceAddr: c.Bridge.ServiceAddr, ServiceSeed: c.Bridge.ServiceSeed, ServiceP2PListen: c.Bridge.ServiceP2PListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64})
+		a, err := bridge.New(ctx, bridge.Config{Listen: c.Bridge.Listen, Seed: c.Node.Seed, P2PListen: c.Node.P2PListen, ServiceAddr: c.Bridge.ServiceAddr, ServiceSeed: c.Bridge.ServiceSeed, ServiceP2PListen: c.Bridge.ServiceP2PListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching})
 		if err != nil {
 			return err
 		}
@@ -325,11 +541,27 @@ type detachedProcessState struct {
 }
 
 type joinResult struct {
+	NetworkName    string   `json:"network_name,omitempty"`
+	NetworkID      string   `json:"network_id,omitempty"`
+	KeyID          string   `json:"key_id,omitempty"`
 	ConfigPath     string   `json:"config_path"`
 	SwarmKeyPath   string   `json:"swarm_key_path"`
 	RelayPeers     []string `json:"relay_peers"`
 	BootstrapPeers []string `json:"bootstrap_peers"`
 	Checked        bool     `json:"checked"`
+}
+
+var (
+	joinDefaultNetworkName      = trust.DefaultPublicNetworkName
+	joinDefaultPublicBundleURL  = trust.DefaultPublicNetworkBundleURL
+	joinTrustedBundleSigningKey = trust.BundleSigningKeys
+)
+
+func effectiveDefaultPublicBundleURL() string {
+	if override := strings.TrimSpace(os.Getenv("TUBO_DEFAULT_PUBLIC_BUNDLE_URL")); override != "" {
+		return override
+	}
+	return joinDefaultPublicBundleURL
 }
 
 func joinCmd(args []string) error {
@@ -338,6 +570,7 @@ func joinCmd(args []string) error {
 	fs.Var(csvFlag{&relayPeers}, "relay", "")
 	swarmKeyPath := fs.String("swarm-key", "", "")
 	swarmKeyB64 := fs.String("swarm-key-b64", "", "")
+	bundleURL := fs.String("bundle-url", "", "")
 	configDir := fs.String("config-dir", defaultTuboConfigDir(), "")
 	force := fs.Bool("force", false, "")
 	jsonOut := fs.Bool("json", false, "")
@@ -346,46 +579,91 @@ func joinCmd(args []string) error {
 		return err
 	}
 	relayPeers = uniqueStrings(relayPeers)
-	if len(relayPeers) == 0 {
-		return errors.New("join requires at least one --relay <multiaddr>")
+	networkName := ""
+	if fs.NArg() > 1 {
+		return errors.New("usage: tubo join [<network-name>] [--bundle-url <url>] [flags]")
 	}
-	if (*swarmKeyPath == "" && *swarmKeyB64 == "") || (*swarmKeyPath != "" && *swarmKeyB64 != "") {
-		return errors.New("join requires exactly one of --swarm-key or --swarm-key-b64")
+	if fs.NArg() == 1 {
+		networkName = fs.Arg(0)
 	}
-	for _, relayPeer := range relayPeers {
-		if _, err := multiaddr.NewMultiaddr(relayPeer); err != nil {
-			return fmt.Errorf("join relay %q: %w", relayPeer, err)
+	manualMode := len(relayPeers) > 0 || *swarmKeyPath != "" || *swarmKeyB64 != ""
+	bundleMode := networkName != "" || *bundleURL != ""
+	if manualMode && bundleMode {
+		return errors.New("join manual flags (--relay/--swarm-key) cannot be combined with bundle mode")
+	}
+	if manualMode {
+		result, err := joinManualMode(relayPeers, *swarmKeyPath, *swarmKeyB64, *configDir, *force, *check)
+		if err != nil {
+			return err
 		}
+		if *jsonOut {
+			return printJSON(result)
+		}
+		printJoinResult("joined swarm config", result)
+		return nil
 	}
-	keyData, err := loadJoinSwarmKey(*swarmKeyPath, *swarmKeyB64)
+	if networkName == "" {
+		networkName = joinDefaultNetworkName
+	}
+	resolvedBundleURL := *bundleURL
+	if resolvedBundleURL == "" {
+		if networkName != joinDefaultNetworkName {
+			return fmt.Errorf("unknown network %q; use --bundle-url for custom networks", networkName)
+		}
+		resolvedBundleURL = effectiveDefaultPublicBundleURL()
+	}
+	result, err := joinBundleMode(resolvedBundleURL, *configDir, *force)
 	if err != nil {
 		return err
 	}
-	if err := validateSwarmKeyData(keyData); err != nil {
-		return err
+	if *jsonOut {
+		return printJSON(result)
 	}
-	if *check {
-		if err := checkJoinRelayPeers(relayPeers); err != nil {
-			return err
+	printJoinResult("joined network bundle", result)
+	return nil
+}
+
+func joinManualMode(relayPeers []string, swarmKeyPath, swarmKeyB64, configDir string, force, check bool) (joinResult, error) {
+	if len(relayPeers) == 0 {
+		return joinResult{}, errors.New("join requires at least one --relay <multiaddr>")
+	}
+	if (swarmKeyPath == "" && swarmKeyB64 == "") || (swarmKeyPath != "" && swarmKeyB64 != "") {
+		return joinResult{}, errors.New("join requires exactly one of --swarm-key or --swarm-key-b64")
+	}
+	for _, relayPeer := range relayPeers {
+		if _, err := multiaddr.NewMultiaddr(relayPeer); err != nil {
+			return joinResult{}, fmt.Errorf("join relay %q: %w", relayPeer, err)
 		}
 	}
-	if err := os.MkdirAll(*configDir, 0700); err != nil {
-		return err
+	keyData, err := loadJoinSwarmKey(swarmKeyPath, swarmKeyB64)
+	if err != nil {
+		return joinResult{}, err
 	}
-	configPath := filepath.Join(*configDir, "config.yaml")
-	installedKeyPath := filepath.Join(*configDir, "swarm.key")
-	if !*force {
+	if err := validateSwarmKeyData(keyData); err != nil {
+		return joinResult{}, err
+	}
+	if check {
+		if err := checkJoinRelayPeers(relayPeers); err != nil {
+			return joinResult{}, err
+		}
+	}
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		return joinResult{}, err
+	}
+	configPath := filepath.Join(configDir, "config.yaml")
+	installedKeyPath := filepath.Join(configDir, "swarm.key")
+	if !force {
 		for _, path := range []string{configPath, installedKeyPath} {
 			if _, err := os.Stat(path); err == nil {
-				return fmt.Errorf("%s exists (use --force)", path)
+				return joinResult{}, fmt.Errorf("%s exists (use --force)", path)
 			} else if !errors.Is(err, os.ErrNotExist) {
-				return err
+				return joinResult{}, err
 			}
 		}
 	}
 	existing, err := cfgpkg.LoadFile(configPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
+		return joinResult{}, err
 	}
 	joined := cfgpkg.Merge(existing, cfgpkg.Config{Network: cfgpkg.Network{
 		PrivateKeyFile: installedKeyPath,
@@ -397,27 +675,68 @@ func joinCmd(args []string) error {
 	joined.Network.PrivateKeyB64 = ""
 	b, err := yaml.Marshal(joined)
 	if err != nil {
-		return err
+		return joinResult{}, err
 	}
 	if err := os.WriteFile(installedKeyPath, keyData, 0600); err != nil {
-		return err
+		return joinResult{}, err
 	}
 	if err := os.WriteFile(configPath, b, 0600); err != nil {
-		return err
+		return joinResult{}, err
 	}
-	result := joinResult{
+	return joinResult{
 		ConfigPath:     configPath,
 		SwarmKeyPath:   installedKeyPath,
 		RelayPeers:     relayPeers,
 		BootstrapPeers: relayPeers,
-		Checked:        *check,
+		Checked:        check,
+	}, nil
+}
+
+func joinBundleMode(bundleURL, configDir string, force bool) (joinResult, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	bundleBytes, err := networkbundle.Fetch(ctx, bundleURL)
+	if err != nil {
+		return joinResult{}, err
 	}
-	if *jsonOut {
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(result)
+	bundle, err := networkbundle.Parse(bundleBytes)
+	if err != nil {
+		return joinResult{}, err
 	}
-	fmt.Println("joined swarm config")
+	payloadBytes, keyID, err := networkbundle.Verify(bundle, joinTrustedBundleSigningKey)
+	if err != nil {
+		return joinResult{}, err
+	}
+	payload, err := networkbundle.DecodePayload(payloadBytes)
+	if err != nil {
+		return joinResult{}, err
+	}
+	installed, err := networkbundle.Install(payload, networkbundle.InstallOptions{ConfigDir: configDir, Force: force})
+	if err != nil {
+		return joinResult{}, err
+	}
+	return joinResult{
+		NetworkName:    installed.NetworkName,
+		NetworkID:      installed.NetworkID,
+		KeyID:          keyID,
+		ConfigPath:     installed.ConfigPath,
+		SwarmKeyPath:   installed.SwarmKeyPath,
+		RelayPeers:     installed.RelayPeers,
+		BootstrapPeers: installed.BootstrapPeers,
+	}, nil
+}
+
+func printJoinResult(title string, result joinResult) {
+	fmt.Println(title)
+	if result.NetworkName != "" {
+		fmt.Printf("network: %s\n", result.NetworkName)
+	}
+	if result.NetworkID != "" {
+		fmt.Printf("network id: %s\n", result.NetworkID)
+	}
+	if result.KeyID != "" {
+		fmt.Printf("signature key: %s\n", result.KeyID)
+	}
 	fmt.Printf("config: %s\n", result.ConfigPath)
 	for i, relayPeer := range result.RelayPeers {
 		if i == 0 {
@@ -435,7 +754,6 @@ func joinCmd(args []string) error {
 	fmt.Println("  tubo get services")
 	fmt.Println("  tubo attach http://127.0.0.1:1234 --name my-service")
 	fmt.Println("  tubo connect lmstudio")
-	return nil
 }
 
 func loadJoinSwarmKey(path, b64 string) ([]byte, error) {
@@ -601,6 +919,42 @@ func detachRoleCommand(commandName, role string, args []string) error {
 		return err
 	}
 	printDetachedSummary(commandName, spec.State)
+	return nil
+}
+
+func maybeImplicitJoinOrInit(command, role string, args []string) ([]string, error) {
+	cleanArgs, noInit := stripNoInitArgs(args)
+	switch command {
+	case "attach", "gateway", "relay":
+		if err := ensureJoinedPublicNetwork(command, noInit); err != nil {
+			return nil, err
+		}
+	}
+	return cleanArgs, nil
+}
+
+func ensureJoinedPublicNetwork(command string, noInit bool) error {
+	configPath := defaultTuboConfigPath()
+	if _, err := os.Stat(configPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if noInit {
+		return fmt.Errorf("config not found at %s (--no-init set)", configPath)
+	}
+	if strings.EqualFold(os.Getenv("CI"), "true") {
+		return fmt.Errorf("config not found at %s; implicit public join disabled in CI (use `tubo join`, `tubo init`, or pass --config)", configPath)
+	}
+	fmt.Println("No Tubo network configured.")
+	fmt.Printf("Fetching default network bundle: %s\n", joinDefaultNetworkName)
+	result, err := joinBundleMode(effectiveDefaultPublicBundleURL(), defaultTuboConfigDir(), false)
+	if err != nil {
+		return fmt.Errorf("implicit public join for %s failed: %w", command, err)
+	}
+	fmt.Printf("Signature verified: %s\n", result.KeyID)
+	fmt.Printf("Joined network: %s\n", result.NetworkName)
+	fmt.Println()
 	return nil
 }
 
@@ -1168,11 +1522,13 @@ type connectCandidate struct {
 	Addr string
 }
 
+const defaultDiscoveryTimeout = 20 * time.Second
+
 func connectCmd(args []string) error {
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	local := fs.String("local", "", "")
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 5*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	jsonOut := fs.Bool("json", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
@@ -1212,12 +1568,12 @@ func connectCmd(args []string) error {
 		P2PListen:      cfg.Node.P2PListen,
 		PrivateKeyFile: cfg.Network.PrivateKeyFile,
 		PrivateKeyB64:  cfg.Network.PrivateKeyB64,
-	}
-	if bridgeCfg.Seed == "" {
-		bridgeCfg.Seed = "connect-" + serviceName + "-seed"
+		RelayPeers:     cfg.Network.RelayPeers,
+		Autorelay:      cfg.Network.Autorelay,
+		HolePunching:   cfg.Network.HolePunching,
 	}
 	if bridgeCfg.P2PListen == "" {
-		bridgeCfg.P2PListen = "/ip4/127.0.0.1/tcp/0"
+		bridgeCfg.P2PListen = "/ip4/0.0.0.0/tcp/0"
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -1291,12 +1647,19 @@ func connectCandidates(service serviceResource) ([]connectCandidate, error) {
 	}
 	candidates := make([]connectCandidate, 0, len(service.DirectAddresses)+len(service.RelayedAddresses))
 	for _, addr := range service.DirectAddresses {
+		if isUnusableDirectAddress(addr) {
+			continue
+		}
 		candidates = append(candidates, connectCandidate{Path: "direct", Addr: addr})
 	}
 	for _, addr := range service.RelayedAddresses {
 		candidates = append(candidates, connectCandidate{Path: "relayed", Addr: addr})
 	}
 	return candidates, nil
+}
+
+func isUnusableDirectAddress(addr string) bool {
+	return strings.Contains(addr, "/ip4/127.") || strings.Contains(addr, "/ip4/0.0.0.0/") || strings.Contains(addr, "/ip6/::1/") || strings.Contains(addr, "/ip6/::/") || strings.Contains(addr, "/dns4/localhost/") || strings.Contains(addr, "/dns6/localhost/")
 }
 
 func summarizeConnectAttempts(attempts []connectAttempt) string {
@@ -1316,14 +1679,26 @@ func summarizeConnectAttempts(attempts []connectAttempt) string {
 
 func connectDirectMessage(service serviceResource, attempts []connectAttempt, selectedPath string) string {
 	service = normalizeServiceResource(service)
+	usableDirect := 0
+	for _, addr := range service.DirectAddresses {
+		if !isUnusableDirectAddress(addr) {
+			usableDirect++
+		}
+	}
 	if len(service.DirectAddresses) == 0 {
 		return "unavailable, no direct addresses advertised"
+	}
+	if usableDirect == 0 {
+		return "unavailable, only loopback/unspecified direct addresses advertised"
 	}
 	if selectedPath == "direct" {
 		return "selected"
 	}
 	for _, attempt := range attempts {
 		if attempt.Path == "direct" && attempt.Status == "failed" {
+			if len(service.RelayedAddresses) > 0 {
+				return "attempted, failed; relay selected and hole punching may still upgrade later"
+			}
 			return "attempted, failed"
 		}
 	}
@@ -1382,7 +1757,7 @@ func getCmd(args []string) error {
 	resource := args[0]
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 5*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	jsonOut := fs.Bool("json", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
@@ -1462,7 +1837,7 @@ func describeCmd(args []string) error {
 	}
 	fs := flag.NewFlagSet("describe", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 5*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -1497,7 +1872,7 @@ func inspectCmd(args []string) error {
 	}
 	fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 5*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
 	_ = fs.Bool("json", false, "")
@@ -1525,7 +1900,7 @@ func watchCmd(args []string) error {
 	}
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", 10*time.Second, "")
+	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -1705,7 +2080,7 @@ func fetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]servic
 		return nil, nil, nil, errors.New("no bootstrap or relay peers configured")
 	}
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = defaultDiscoveryTimeout
 	}
 	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
 	if err != nil {
@@ -1755,7 +2130,7 @@ func fetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 		return serviceResource{}, nil, nil, errors.New("no bootstrap or relay peers configured")
 	}
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = defaultDiscoveryTimeout
 	}
 	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
 	if err != nil {
@@ -1805,7 +2180,7 @@ func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serv
 		return nil, errors.New("no bootstrap or relay peers configured")
 	}
 	if timeout <= 0 {
-		timeout = 5 * time.Second
+		timeout = defaultDiscoveryTimeout
 	}
 	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
 	if err != nil {
@@ -1818,7 +2193,7 @@ func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serv
 		return nil, fmt.Errorf("create observer host: %w", err)
 	}
 	defer h.Close()
-	ps, err := pubsub.NewGossipSub(ctx, h)
+	ps, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
 	if err != nil {
 		return nil, fmt.Errorf("create observer gossipsub: %w", err)
 	}

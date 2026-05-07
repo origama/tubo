@@ -1,10 +1,14 @@
 package p2p
 
 import (
+	"bufio"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -96,6 +100,14 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 			upURL += "?" + reqHeader.Query
 		}
 		log.Printf("service upstream request peer=%s method=%s path=%s query=%q url=%s content_length_hint=%d", remotePeer, reqHeader.Method, reqHeader.Path, reqHeader.Query, upURL, reqHeader.ContentLengthHint)
+
+		if isWebSocketUpgrade(reqHeader.Headers) {
+			if err := handleServiceWebSocketUpgrade(s, reader, writer, reqHeader, upURL); err != nil {
+				log.Printf("service websocket upgrade failed peer=%s url=%s err=%v duration=%s", remotePeer, upURL, err, time.Since(start))
+				_ = writer.WriteError(&protocol.Error{Code: 502, Message: "websocket upgrade failed: " + err.Error()})
+			}
+			return
+		}
 
 		// Create upstream request — body will be streamed via BodyReader
 		upReq, err := http.NewRequest(reqHeader.Method, upURL, nil) // body set below
@@ -201,21 +213,8 @@ func HandleClientRequest(s network.Stream, role, method, path, query string, hea
 	writer := protocol.NewStreamWriter(s)
 	reader := protocol.NewStreamReader(s)
 
-	if streamUsesHello(s) {
-		if err := writer.WriteHello(localHello(role)); err != nil {
-			return nil, fmt.Errorf("write hello: %w", err)
-		}
-		peerHello, err := reader.ReadHello()
-		if err != nil {
-			return nil, fmt.Errorf("read hello: %w", err)
-		}
-		if err := validatePeerHello(peerHello); err != nil {
-			return nil, err
-		}
-		negotiated := protocol.NegotiateCapabilities(peerHello.Capabilities)
-		remoteProtocolVersion := fmt.Sprintf("%d.%d", peerHello.ProtocolMajor, peerHello.ProtocolMinor)
-		RecordNegotiation(role, peerHello.Role, string(s.Protocol()), remoteProtocolVersion, negotiated)
-		log.Printf("client protocol negotiated remote_role=%s local_role=%s stream_protocol_id=%s protocol=%s peer_protocol=%s capabilities=%v", peerHello.Role, role, s.Protocol(), protocol.ProtocolVersion, remoteProtocolVersion, negotiated)
+	if err := negotiateClientHello(s, reader, writer, role); err != nil {
+		return nil, err
 	}
 
 	// Determine content length hint
@@ -300,6 +299,144 @@ func HandleClientRequest(s network.Stream, role, method, path, query string, hea
 	}
 
 	return resp, nil
+}
+
+func negotiateClientHello(s network.Stream, reader *protocol.StreamReader, writer *protocol.StreamWriter, role string) error {
+	if !streamUsesHello(s) {
+		return nil
+	}
+	if err := writer.WriteHello(localHello(role)); err != nil {
+		return fmt.Errorf("write hello: %w", err)
+	}
+	peerHello, err := reader.ReadHello()
+	if err != nil {
+		return fmt.Errorf("read hello: %w", err)
+	}
+	if err := validatePeerHello(peerHello); err != nil {
+		return err
+	}
+	negotiated := protocol.NegotiateCapabilities(peerHello.Capabilities)
+	remoteProtocolVersion := fmt.Sprintf("%d.%d", peerHello.ProtocolMajor, peerHello.ProtocolMinor)
+	RecordNegotiation(role, peerHello.Role, string(s.Protocol()), remoteProtocolVersion, negotiated)
+	log.Printf("client protocol negotiated remote_role=%s local_role=%s stream_protocol_id=%s protocol=%s peer_protocol=%s capabilities=%v", peerHello.Role, role, s.Protocol(), protocol.ProtocolVersion, remoteProtocolVersion, negotiated)
+	return nil
+}
+
+// StartClientWebSocketUpgrade sends a websocket upgrade request and leaves the
+// libp2p stream in raw byte mode after the 101 response header.
+func StartClientWebSocketUpgrade(s network.Stream, role, method, path, query string, headers map[string][]string) (*protocol.ResponseHeader, error) {
+	writer := protocol.NewStreamWriter(s)
+	reader := protocol.NewStreamReader(s)
+	if err := negotiateClientHello(s, reader, writer, role); err != nil {
+		return nil, err
+	}
+	if err := writer.WriteRequestHeader(&protocol.RequestHeader{Method: method, Path: path, Query: query, Headers: headers, ContentLengthHint: 0}); err != nil {
+		return nil, fmt.Errorf("write websocket request header: %w", err)
+	}
+	respHeader, errFrame, err := reader.ReadResponseHeaderOrError()
+	if err != nil {
+		return nil, fmt.Errorf("read websocket response header: %w", err)
+	}
+	if errFrame != nil {
+		return nil, fmt.Errorf("server error (code %d): %s", errFrame.Code, errFrame.Message)
+	}
+	return respHeader, nil
+}
+
+func isWebSocketUpgrade(headers map[string][]string) bool {
+	upgrade := false
+	connectionUpgrade := false
+	for k, values := range headers {
+		for _, v := range values {
+			if strings.EqualFold(k, "Upgrade") && strings.EqualFold(strings.TrimSpace(v), "websocket") {
+				upgrade = true
+			}
+			if strings.EqualFold(k, "Connection") {
+				for _, part := range strings.Split(v, ",") {
+					if strings.EqualFold(strings.TrimSpace(part), "upgrade") {
+						connectionUpgrade = true
+					}
+				}
+			}
+		}
+	}
+	return upgrade && connectionUpgrade
+}
+
+func handleServiceWebSocketUpgrade(s network.Stream, _ *protocol.StreamReader, writer *protocol.StreamWriter, reqHeader *protocol.RequestHeader, upURL string) error {
+	upReq, conn, br, err := dialUpgradeUpstream(reqHeader, upURL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	resp, err := http.ReadResponse(br, upReq)
+	if err != nil {
+		return fmt.Errorf("read upstream upgrade response: %w", err)
+	}
+	defer resp.Body.Close()
+	respHeader := &protocol.ResponseHeader{StatusCode: resp.StatusCode, StatusText: http.StatusText(resp.StatusCode), Headers: make(map[string][]string, len(resp.Header))}
+	for k, values := range resp.Header {
+		respHeader.Headers[k] = append([]string(nil), values...)
+	}
+	if err := writer.WriteResponseHeader(respHeader); err != nil {
+		return fmt.Errorf("write websocket response header: %w", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		return nil
+	}
+	log.Printf("service websocket upgraded url=%s", upURL)
+	proxyRawStream(s, conn, br)
+	return nil
+}
+
+func dialUpgradeUpstream(reqHeader *protocol.RequestHeader, upURL string) (*http.Request, net.Conn, *bufio.Reader, error) {
+	u, err := url.Parse(upURL)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	host := u.Host
+	if _, _, err := net.SplitHostPort(host); err != nil {
+		if u.Scheme == "https" || u.Scheme == "wss" {
+			host = net.JoinHostPort(host, "443")
+		} else {
+			host = net.JoinHostPort(host, "80")
+		}
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	var conn net.Conn
+	if u.Scheme == "https" || u.Scheme == "wss" {
+		conn, err = tls.DialWithDialer(dialer, "tcp", host, &tls.Config{ServerName: u.Hostname(), MinVersion: tls.VersionTLS12})
+	} else {
+		conn, err = dialer.Dial("tcp", host)
+	}
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	upReq, err := http.NewRequest(reqHeader.Method, upURL, nil)
+	if err != nil {
+		_ = conn.Close()
+		return nil, nil, nil, err
+	}
+	for k, values := range reqHeader.Headers {
+		for _, v := range values {
+			upReq.Header.Add(k, v)
+		}
+	}
+	upReq.ContentLength = 0
+	if err := upReq.Write(conn); err != nil {
+		_ = conn.Close()
+		return nil, nil, nil, err
+	}
+	return upReq, conn, bufio.NewReader(conn), nil
+}
+
+func proxyRawStream(s network.Stream, conn net.Conn, upstreamReader io.Reader) {
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(conn, s); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(s, upstreamReader); done <- struct{}{} }()
+	<-done
+	_ = conn.Close()
+	_ = s.Close()
 }
 
 // SendError sends an error frame over the stream.

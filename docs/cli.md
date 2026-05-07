@@ -48,10 +48,11 @@ tubo inspect service/lmstudio --json
 tubo watch services
 ```
 
-Equivalentemente, `attach` supporta anche la forma esplicita con flag:
+`attach` supporta sia la forma esplicita sia lo shorthand name+port:
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
+tubo attach lmstudio --port 1234
 ```
 
 ## Happy path
@@ -99,42 +100,29 @@ tubo attach http://127.0.0.1:1234 --name lmstudio -d
 tubo connect lmstudio --local 127.0.0.1:51234 -d
 ```
 
-## Init implicito e `--no-init`
+## Join/init implicito e `--no-init`
 
-Se manca la config locale di default, `attach`, `gateway` e `relay` possono fare init implicito creando:
+Se manca la config locale di default:
+
+- `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
+- questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico;
+- `attach` genera un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
+- `attach` ascolta di default su `/ip4/0.0.0.0/tcp/0` per permettere direct dial/hole punching quando la rete lo consente.
+
+File coinvolti:
 
 ```text
 ~/.config/tubo/config.yaml
 ~/.config/tubo/swarm.key
 ```
 
-Per disabilitarlo esplicitamente:
+Per disabilitare esplicitamente il comportamento implicito:
 
 ```bash
 --no-init
 ```
 
-In `CI=true`, l'init implicito e' disabilitato e il comando fallisce con next steps espliciti invece di creare state locale implicitamente.
-
-## Advanced role commands
-
-I role commands restano disponibili come compatibility / advanced layer:
-
-```bash
-tubo relay run --config relay.yaml
-tubo edge run --config edge.yaml
-tubo service run --config service.yaml
-tubo bridge run --config bridge.yaml
-```
-
-Override via flag, per esempio:
-
-```bash
-tubo service run \
-  --name lmstudio \
-  --target http://192.168.1.28:1234 \
-  --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3...
-```
+In `CI=true`, sia l'implicit public join sia l'init implicito sono disabilitati e il comando fallisce con next steps espliciti invece di creare state locale implicitamente.
 
 ## Utility
 
@@ -152,6 +140,15 @@ tubo doctor --config service.yaml
 
 `join` configura localmente questa macchina per usare uno swarm esistente. Non avvia processi in background.
 
+Modalita' default (bundle firmato rete pubblica Tubo):
+
+```bash
+tubo join
+tubo join tubo-public
+```
+
+Modalita' manuale (swarm esistente privato):
+
 ```bash
 tubo join \
   --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
@@ -167,6 +164,18 @@ tubo join \
   --json
 ```
 
+Per bundle custom:
+
+```bash
+tubo join --bundle-url https://example.com/network.bundle
+```
+
+Per test/dev prima che il bundle di default sia pubblicato davvero su GitHub Pages, puoi anche forzare l'URL usato da `tubo join` e dall'implicit public join:
+
+```bash
+export TUBO_DEFAULT_PUBLIC_BUNDLE_URL=https://example.com/tubo-public.bundle
+```
+
 Di default salva:
 
 ```text
@@ -179,6 +188,9 @@ Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, opp
 ## Connect
 
 `connect` apre un listener HTTP locale verso un servizio scoperto nello swarm.
+
+Se la config locale di default non esiste ancora, `connect` prova prima a fare implicit public join alla rete pubblica di default.
+Anche `get services`, `describe`, `inspect` e `watch` usano lo stesso bootstrap implicito.
 
 ```bash
 tubo connect lmstudio --local 127.0.0.1:51234
@@ -193,6 +205,8 @@ tubo connect lmstudio --json
 ```
 
 `connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live.
+
+HTTP normale e WebSocket (`Upgrade: websocket`) sono inoltrati sullo stesso tunnel. Se un servizio pubblicizza solo indirizzi direct loopback/unspecified (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` li ignora per il dial remoto e usa il path relayed. Il client `connect` abilita AutoRelay/hole punching quando la config contiene relay peer; il successo del direct upgrade dipende comunque da NAT/firewall e dagli indirizzi annunciati dal service. Anche quando il path iniziale e' `relayed`, libp2p puo' aprire in seguito una connessione direct tramite hole punching.
 
 ## Detached process state
 
@@ -255,21 +269,21 @@ tubo get services
 tubo get service/lmstudio
 tubo describe service/lmstudio
 tubo inspect service/lmstudio --json
-tubo watch services --timeout 10s
+tubo watch services --timeout 20s
 ```
 
 Comportamento:
 
 - se trova un edge locale gia' in ascolto sull'admin API, usa la sua cache discovery locale;
 - altrimenti prova una remote discovery query verso il primo bootstrap/relay peer disponibile;
-- se anche la query remota fallisce o non basta, avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce;
+- se anche la query remota fallisce o non basta, avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce; il default e' pensato per coprire almeno un heartbeat discovery iniziale;
 - i messaggi di output indicano esplicitamente se sta usando cache locale, query remota, observer live, o fallback tra questi.
 
 Flag utili in questo MVP:
 
 ```bash
 --config <path>
---timeout 5s
+--timeout 20s
 --live
 --cached-only
 --json
@@ -294,19 +308,6 @@ tubo attach http://127.0.0.1:11434 --name ollama -d
 tubo get services
 tubo describe service/ollama
 ```
-
-## Mapping vecchia UX -> nuova UX
-
-| Attuale | Nuova UX |
-|---|---|
-| `tubo service run --name X --target URL` | `tubo attach URL --name X` |
-| `tubo bridge run ...` | `tubo connect X --local ADDR` |
-| `tubo edge run --listen :8443` | `tubo gateway --listen :8443` |
-| `tubo relay run` | `tubo relay` |
-| config manuale per swarm esistente | `tubo join --relay ... --swarm-key ...` |
-| `tubo mesh services` | `tubo get services` |
-| `tubo mesh inspect X` | `tubo describe X` / `tubo inspect X --json` |
-| `tubo mesh watch` | `tubo watch services` |
 
 ## Init
 

@@ -1,8 +1,10 @@
 package bridge
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -11,10 +13,15 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
-type Config struct{ Listen, Seed, P2PListen, ServiceAddr, ServiceSeed, ServiceP2PListen, PrivateKeyFile, PrivateKeyB64 string }
+type Config struct {
+	Listen, Seed, P2PListen, ServiceAddr, ServiceSeed, ServiceP2PListen, PrivateKeyFile, PrivateKeyB64 string
+	RelayPeers                                                                                         []string
+	Autorelay, HolePunching                                                                            bool
+}
 type App struct {
 	cfg        Config
 	host       host.Host
@@ -44,13 +51,24 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	h, err := p2p.NewHostWithSeedAndPSK(cfg.P2PListen, cfg.Seed, psk)
+	relays := parseAddrInfos(cfg.RelayPeers)
+	var opts []libp2p.Option
+	if len(relays) > 0 && cfg.Autorelay {
+		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(relays))
+	}
+	if cfg.HolePunching {
+		opts = append(opts, libp2p.EnableHolePunching())
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions(cfg.P2PListen, cfg.Seed, psk, opts...)
 	if err != nil {
 		return nil, err
 	}
 	p2p.LogNetworkEvents(h, "bridge")
 	if using {
 		log.Printf("libp2p private network enabled")
+	}
+	if cfg.HolePunching {
+		log.Printf("bridge hole punching enabled relay_peers=%d autorelay=%t", len(relays), cfg.Autorelay)
 	}
 	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -103,6 +121,10 @@ func (a *App) mux() *http.ServeMux {
 		for k, v := range r.Header {
 			headers[k] = v
 		}
+		if isWebSocketRequest(r) {
+			a.serveWebSocket(w, r, s, headers)
+			return
+		}
 		resp, err := p2p.HandleClientRequest(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
@@ -119,6 +141,80 @@ func (a *App) mux() *http.ServeMux {
 	})
 	return m
 }
+func (a *App) serveWebSocket(w http.ResponseWriter, r *http.Request, s network.Stream, headers map[string][]string) {
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "websocket hijack unsupported", http.StatusInternalServerError)
+		return
+	}
+	respHeader, err := p2p.StartClientWebSocketUpgrade(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	conn, rw, err := hj.Hijack()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if rw.Reader.Buffered() > 0 {
+		log.Printf("bridge websocket hijack had %d buffered client bytes", rw.Reader.Buffered())
+	}
+	resp := &http.Response{
+		StatusCode: respHeader.StatusCode,
+		Status:     fmt.Sprintf("%d %s", respHeader.StatusCode, http.StatusText(respHeader.StatusCode)),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     http.Header(respHeader.Headers),
+	}
+	bw := bufio.NewWriter(conn)
+	if err := resp.Write(bw); err != nil {
+		return
+	}
+	if err := bw.Flush(); err != nil {
+		return
+	}
+	if respHeader.StatusCode != http.StatusSwitchingProtocols {
+		return
+	}
+	log.Printf("bridge websocket upgraded path=%s", r.URL.Path)
+	proxyRawClient(s, conn, rw.Reader)
+}
+
+func proxyRawClient(s network.Stream, conn net.Conn, clientReader io.Reader) {
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(s, clientReader); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(conn, s); done <- struct{}{} }()
+	<-done
+	_ = s.Close()
+	_ = conn.Close()
+}
+
+func isWebSocketRequest(r *http.Request) bool {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, part := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(part), "upgrade") {
+			return true
+		}
+	}
+	return false
+}
+
+func parseAddrInfos(peers []string) []peer.AddrInfo {
+	out := make([]peer.AddrInfo, 0, len(peers))
+	for _, raw := range peers {
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			continue
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
 func first(a, b string) string {
 	if a != "" {
 		return a

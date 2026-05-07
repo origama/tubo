@@ -21,22 +21,22 @@ Tubo is designed for self-hosted, private networks: the libp2p transport is encr
 The installer downloads the latest prebuilt release for your platform, verifies `SHA256SUMS.txt` when possible, and installs `tubo` into `$HOME/.local/bin` by default.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/origama/tubo/main/install.sh | sh
+curl -fsSL https://www.tubo.click/install.sh | sh
 ```
 
 Install a specific release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/origama/tubo/main/install.sh | sh -s -- --version v0.1.3
+curl -fsSL https://www.tubo.click/install.sh | sh -s -- --version v0.1.3
 ```
 
 Install somewhere else:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/origama/tubo/main/install.sh | sh -s -- --install-dir /usr/local/bin
+curl -fsSL https://www.tubo.click/install.sh | sh -s -- --install-dir /usr/local/bin
 ```
 
-> Note: while this repository is private, the public raw URL and release download URLs are not accessible without authentication. The installer is intentionally committed now so it is ready as soon as the repository and releases are made public.
+> The same installer is also published on the GitHub Pages site under `https://www.tubo.click/install.sh`.
 
 ### Build from source
 
@@ -82,9 +82,9 @@ Copy `swarm.key` securely to the service and client hosts. Share `RELAY_ADDR` wi
 On the machine that runs the HTTP service:
 
 ```bash
-tubo join --relay "$RELAY_ADDR" --swarm-key ./swarm.key --check
+curl -fsSL https://www.tubo.click/install.sh | sh
 
-tubo attach http://127.0.0.1:1234 --name lmstudio -d
+tubo attach lmstudio --port 1234 -d
 ```
 
 The service remains published while the detached `attach` process is running.
@@ -94,7 +94,7 @@ The service remains published while the detached `attach` process is running.
 On the client machine:
 
 ```bash
-tubo join --relay "$RELAY_ADDR" --swarm-key ./swarm.key --check
+curl -fsSL https://www.tubo.click/install.sh | sh
 
 tubo get services --timeout 10s
 tubo describe service/lmstudio
@@ -116,11 +116,14 @@ curl http://127.0.0.1:51234/healthz
 # Start a relay/bootstrap node
 tubo relay -d
 
-# Join an existing Tubo swarm
+# Join an existing Tubo swarm manually
 tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 
+# Or join the default public Tubo network from a signed bundle
+tubo join
+
 # Publish a local HTTP endpoint into the swarm
-tubo attach http://127.0.0.1:1234 --name lmstudio -d
+tubo attach lmstudio --port 1234 -d
 
 # List and inspect services in the swarm
 tubo get services
@@ -137,13 +140,12 @@ tubo stop process/attach-lmstudio
 tubo rm --stale
 ```
 
-Advanced role commands are still available for explicit configuration-file based operation:
+`attach`, `connect`, and `gateway` will also auto-join the default public Tubo network on first run when no local config exists, unless `--no-init` or `CI=true` disables that behavior.
+
+During prerelease/dev testing, before the GitHub Pages site is updated, you can point both `tubo join` and the implicit public join flow at a temporary bundle URL with:
 
 ```bash
-tubo relay run --config relay.yaml
-tubo edge run --config edge.yaml
-tubo service run --config service.yaml
-tubo bridge run --config bridge.yaml
+export TUBO_DEFAULT_PUBLIC_BUNDLE_URL=https://example.com/tubo-public.bundle
 ```
 
 ## Process model

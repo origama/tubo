@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-01 04:45 UTC
+> **Last updated:** 2026-05-06 23:55 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -141,6 +141,7 @@
 | C.39 | Expose product/protocol version metadata in `tubo` | ⏳ | Added `internal/version`, `tubo version`, protocol debug endpoints, and negotiation visibility; remaining work is mainly build-time injection in release/CI artifacts and any residual cleanup from issue #16 |
 | C.40 | Add protocol 1.1 hello handshake with legacy fallback | ✅ | Added protocol 1.1 hello frame carrying `major.minor`, role, and capabilities; edge/bridge now prefer `/p2p-tunnel/1.1` and fall back to `/p2p-tunnel/1.0`, service accepts both, and real Linode multi-host smoke validated both the handshake logs and protocol debug endpoints |
 | C.41 | Add real Linode mixed-version compatibility harness | ✅ | Added `tests/smoke-terraform-linode-mixed-version.sh` and validated it on the real Linode multi-host bench against legacy ref `c9bbb1f`: current edge -> legacy service (`/p2p-tunnel/1.0` fallback), legacy edge -> current service (current service accepts legacy), and current edge -> current service (`/p2p-tunnel/1.1` hello negotiation) |
+| C.42 | Signed public onboarding + CLI UX simplification (PR #68 follow-up) | ⏳ | In progress on prerelease branch `prerelease/pr68-signed-public-onboarding`; GitHub issues opened: #69 #71 #72 #73 #74; implemented #69 + core #71 + #72 (`tubo join` bundle mode + published signed `tubo-public.bundle`/catalog/public key under `docs/.well-known/tubo/`) + #73 (implicit public join for `attach`/`connect`/`gateway`, with `TUBO_DEFAULT_PUBLIC_BUNDLE_URL` override for prerelease/dev testing) and partial #74 (legacy role commands rejected, `attach <name> --port <port>` shorthand, CLI/site/README docs updated); canonical public host corrected to `www.tubo.click` because apex `tubo.click` does not resolve; real Linode tests found and fixed the publication path: relay entry must be a full bootstrap peer and now points to the real live public relay `relay.tubo.click:4001` with peer ID `12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1`; relay startup now also auto-joins the public bundle from zero, so relay/service/client share the same swarm key by default; discovery follow-up: default `get/connect/watch` timeout raised to 20s because the old 5s live observer could miss the first 15s heartbeat; fixed live Linode discovery failure by making `get/describe/inspect/watch` auto-join the public bundle and by giving `attach` a unique generated runtime seed instead of the shared demo PeerID; fixed `connect` direct-dial UX so loopback/unspecified direct addrs are not attempted from remote machines; added WebSocket upgrade tunneling for `connect`/`attach`; follow-up polish: `connect` bridge now enables AutoRelay/hole punching, `attach` defaults to `/ip4/0.0.0.0/tcp/0` with generated PeerID seed, command help/site docs were aligned to the current UX, and installer scripts are POSIX `sh` compatible for dash; validated end-to-end on real Linode hosts with current prerelease binary: public relay `relay.tubo.click` matched the bundle swarm key, service host `172.236.202.99` attached `piweb`, client host `45.79.168.161` discovered it, `curl 127.0.0.1:9888` returned the `pi-webui` HTML, and a raw `/ws` handshake returned `101 Switching Protocols` through the relayed tunnel; previous validation also covered POST `/v1/dummy?from=linode` |
 
 ---
 
@@ -161,10 +162,11 @@ The following packages have no `_test.go` files yet:
 
 ### Now
 
-1. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)
-2. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
-3. **Issue #9 — malformed security handshake after restarts**: capire e correggere gli errori intermittenti post-restart (`bug`, `security`, `area:protocol`, `investigation`, `prio:high`)
-4. **Issue #7 / C.33 follow-up — recovery latency after service restart**: completare l'hardening del recovery sui path relayed (`bug`, `area:edge`, `area:service`, `prio:medium`)
+1. **PR #68 follow-up / C.42 — signed public onboarding + UX simplification**: implementare in sotto-step il piano (`enhancement`, `security`, `area:cli`, `area:docs`, `prio:high`)
+2. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)
+3. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
+4. **Issue #9 — malformed security handshake after restarts**: capire e correggere gli errori intermittenti post-restart (`bug`, `security`, `area:protocol`, `investigation`, `prio:high`)
+5. **Issue #7 / C.33 follow-up — recovery latency after service restart**: completare l'hardening del recovery sui path relayed (`bug`, `area:edge`, `area:service`, `prio:medium`)
 
 ### Next
 

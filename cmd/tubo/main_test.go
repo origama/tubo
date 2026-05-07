@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -21,6 +23,7 @@ import (
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	"github.com/origama/tubo/internal/p2p"
 	iversion "github.com/origama/tubo/internal/version"
+	"golang.org/x/crypto/ssh"
 )
 
 func capture(f func() error) (string, error) {
@@ -66,11 +69,11 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 		wantRole string
 		wantArgs []string
 	}{
-		{name: "legacy relay run", in: []string{"relay", "run", "--config", "relay.yaml"}, wantRole: "relay", wantArgs: []string{"--config", "relay.yaml"}},
 		{name: "short relay", in: []string{"relay", "--config", "relay.yaml"}, wantRole: "relay", wantArgs: []string{"--config", "relay.yaml"}},
 		{name: "gateway alias", in: []string{"gateway", "--listen", ":8443"}, wantRole: "edge", wantArgs: []string{"--listen", ":8443"}},
 		{name: "attach positional target", in: []string{"attach", "http://127.0.0.1:1234", "--name", "lmstudio"}, wantRole: "service", wantArgs: []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}},
 		{name: "attach explicit target flag", in: []string{"attach", "--target", "http://127.0.0.1:1234", "--name", "lmstudio"}, wantRole: "service", wantArgs: []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}},
+		{name: "attach shorthand name and port", in: []string{"attach", "dummysvc", "--port", "8080"}, wantRole: "service", wantArgs: []string{"--target", "http://127.0.0.1:8080", "--name", "dummysvc"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -84,6 +87,22 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 			if gotRole != tc.wantRole {
 				t.Fatalf("role = %q, want %q", gotRole, tc.wantRole)
 			}
+			if gotRole == "service" && !hasLongFlag(tc.in, "--seed") {
+				var seed string
+				var ok bool
+				gotArgs, seed, ok, err = consumeLongFlag(gotArgs, "--seed")
+				if err != nil || !ok || !strings.HasPrefix(seed, "attach-") {
+					t.Fatalf("attach args missing generated seed: args=%#v seed=%q ok=%t err=%v", gotArgs, seed, ok, err)
+				}
+			}
+			if gotRole == "service" && !hasLongFlag(tc.in, "--p2p-listen") {
+				var listen string
+				var ok bool
+				gotArgs, listen, ok, err = consumeLongFlag(gotArgs, "--p2p-listen")
+				if err != nil || !ok || listen != "/ip4/0.0.0.0/tcp/0" {
+					t.Fatalf("attach args missing default p2p listen: args=%#v listen=%q ok=%t err=%v", gotArgs, listen, ok, err)
+				}
+			}
 			if strings.Join(gotArgs, "\x00") != strings.Join(tc.wantArgs, "\x00") {
 				t.Fatalf("args = %#v, want %#v", gotArgs, tc.wantArgs)
 			}
@@ -91,15 +110,35 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 	}
 }
 
-func TestResolveRuntimeRoleRejectsLegacyRoleWithoutRun(t *testing.T) {
-	if _, _, _, err := resolveRuntimeRole([]string{"service", "--name", "lmstudio"}); err == nil {
-		t.Fatal("expected error for legacy service command without run")
+func TestResolveRuntimeRoleRejectsLegacyRoleCommands(t *testing.T) {
+	for _, args := range [][]string{
+		{"relay", "run", "--config", "relay.yaml"},
+		{"edge", "run", "--config", "edge.yaml"},
+		{"service", "run", "--config", "service.yaml"},
+		{"bridge", "run", "--config", "bridge.yaml"},
+	} {
+		if _, _, _, err := resolveRuntimeRole(args); err == nil {
+			t.Fatalf("expected legacy command rejection for %v", args)
+		}
 	}
 }
 
 func TestResolveRuntimeRoleRejectsDuplicateAttachTarget(t *testing.T) {
 	if _, _, _, err := resolveRuntimeRole([]string{"attach", "http://127.0.0.1:1234", "--target", "http://127.0.0.1:11434", "--name", "lmstudio"}); err == nil {
 		t.Fatal("expected duplicate attach target error")
+	}
+}
+
+func TestResolveRuntimeRoleRejectsInvalidAttachShorthand(t *testing.T) {
+	for _, args := range [][]string{
+		{"attach", "dummysvc"},
+		{"attach", "dummysvc", "--port", "8080", "--name", "other"},
+		{"attach", "http://127.0.0.1:1234", "--port", "8080"},
+		{"attach", "--port", "8080"},
+	} {
+		if _, _, _, err := resolveRuntimeRole(args); err == nil {
+			t.Fatalf("expected shorthand rejection for %v", args)
+		}
 	}
 }
 
@@ -163,6 +202,59 @@ func TestMaybeImplicitInitDisabled(t *testing.T) {
 	t.Setenv("CI", "true")
 	if err := maybeImplicitInit("service", []string{"--target", "http://127.0.0.1:1234", "--name", "lmstudio"}, false); err == nil {
 		t.Fatal("expected CI to disable implicit init")
+	}
+}
+
+func TestEnsureJoinedPublicNetworkInstallsSignedBundle(t *testing.T) {
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	for _, command := range []string{"connect", "relay"} {
+		t.Run(command, func(t *testing.T) {
+			t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+			out, err := capture(func() error { return ensureJoinedPublicNetwork(command, false) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"No Tubo network configured.", "Fetching default network bundle: tubo-public", "Signature verified: tubo-root-2026", "Joined network: tubo-public"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("output missing %q for %s: %s", want, command, out)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")); err != nil {
+				t.Fatalf("config not written: %v", err)
+			}
+		})
+	}
+}
+
+func TestEnsureJoinedPublicNetworkDisabled(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	if err := ensureJoinedPublicNetwork("connect", true); err == nil {
+		t.Fatal("expected --no-init to disable implicit public join")
+	}
+	t.Setenv("CI", "true")
+	if err := ensureJoinedPublicNetwork("connect", false); err == nil {
+		t.Fatal("expected CI to disable implicit public join")
+	}
+}
+
+func TestConnectAutoJoinsDefaultPublicNetwork(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	_, err := capture(func() error { return run([]string{"connect", "myapi", "--cached-only", "--timeout", "1ms"}) })
+	if err == nil {
+		t.Fatal("expected connect to fail after auto-join because no service is available")
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")); err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+}
+
+func TestConnectNoInitBlocksImplicitJoin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	if _, err := capture(func() error { return run([]string{"connect", "myapi", "--no-init"}) }); err == nil {
+		t.Fatal("expected --no-init to block implicit connect join")
 	}
 }
 
@@ -293,7 +385,7 @@ func TestUsageMentionsIntentCommands(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "service|bridge"} {
+	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "bundle-url"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("usage missing %q: %s", want, err)
 		}
@@ -402,6 +494,143 @@ func TestJoinRejectsInvalidInput(t *testing.T) {
 	}); err == nil {
 		t.Fatal("expected invalid swarm key error")
 	}
+}
+
+func TestJoinDefaultPublicNetworkFromSignedBundle(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	serverURL, trusted := testSignedBundleServer(t, true)
+	oldURL := joinDefaultPublicBundleURL
+	oldKeys := joinTrustedBundleSigningKey
+	joinDefaultPublicBundleURL = serverURL
+	joinTrustedBundleSigningKey = trusted
+	defer func() {
+		joinDefaultPublicBundleURL = oldURL
+		joinTrustedBundleSigningKey = oldKeys
+	}()
+
+	out, err := capture(func() error { return run([]string{"join"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "joined network bundle") || !strings.Contains(out, "network: tubo-public") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config not written: %v", err)
+	}
+}
+
+func TestJoinRejectsInvalidBundleSignature(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	serverURL, trusted := testSignedBundleServer(t, false)
+	oldURL := joinDefaultPublicBundleURL
+	oldKeys := joinTrustedBundleSigningKey
+	joinDefaultPublicBundleURL = serverURL
+	joinTrustedBundleSigningKey = trusted
+	defer func() {
+		joinDefaultPublicBundleURL = oldURL
+		joinTrustedBundleSigningKey = oldKeys
+	}()
+
+	if _, err := capture(func() error { return run([]string{"join"}) }); err == nil {
+		t.Fatal("expected invalid signature error")
+	}
+	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config should not be written on invalid signature, stat err=%v", err)
+	}
+}
+
+func TestJoinDefaultPublicNetworkUsesEnvOverrideBundleURL(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	serverURL, trusted := testSignedBundleServer(t, true)
+	oldKeys := joinTrustedBundleSigningKey
+	joinTrustedBundleSigningKey = trusted
+	defer func() { joinTrustedBundleSigningKey = oldKeys }()
+	t.Setenv("TUBO_DEFAULT_PUBLIC_BUNDLE_URL", serverURL)
+
+	out, err := capture(func() error { return run([]string{"join"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "joined network bundle") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+func useTestBundleDefaults(t *testing.T, validSignature bool) {
+	t.Helper()
+	serverURL, trusted := testSignedBundleServer(t, validSignature)
+	oldURL := joinDefaultPublicBundleURL
+	oldKeys := joinTrustedBundleSigningKey
+	joinDefaultPublicBundleURL = serverURL
+	joinTrustedBundleSigningKey = trusted
+	t.Cleanup(func() {
+		joinDefaultPublicBundleURL = oldURL
+		joinTrustedBundleSigningKey = oldKeys
+	})
+}
+
+func testSignedBundleServer(t *testing.T, validSignature bool) (string, map[string]string) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := map[string]any{
+		"name":       "tubo-public",
+		"id":         "tubo-public-v1",
+		"visibility": "public",
+		"relays":     []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"},
+		"swarm_key": map[string]any{
+			"type":     "libp2p-pnet",
+			"encoding": "text",
+			"value":    "/key/swarm/psk/1.0.0/\n/base16/\n00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
+		},
+		"network": map[string]any{
+			"autorelay":          true,
+			"hole_punching":      true,
+			"force_reachability": "private",
+		},
+		"validity": map[string]any{
+			"not_before": time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339),
+			"not_after":  time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339),
+		},
+	}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := ed25519.Sign(priv, payloadBytes)
+	if !validSignature {
+		sig = []byte("broken-signature")
+	}
+	env := map[string]any{
+		"kind":             "tubo.network.bundle",
+		"version":          1,
+		"payload_encoding": "base64url",
+		"payload":          base64.RawURLEncoding.EncodeToString(payloadBytes),
+		"signature": map[string]any{
+			"alg":    "ed25519",
+			"key_id": "tubo-root-2026",
+			"value":  base64.RawURLEncoding.EncodeToString(sig),
+		},
+	}
+	envBytes, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(envBytes)
+	}))
+	t.Cleanup(server.Close)
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trusted := map[string]string{"tubo-root-2026": strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))}
+	return server.URL, trusted
 }
 
 func TestServiceResourceFromEntry(t *testing.T) {
@@ -595,7 +824,7 @@ func TestConnectStatusMessages(t *testing.T) {
 	if got := connectRelayMessage(service, service.DirectAddresses[0], "direct"); got != "available as fallback" {
 		t.Fatalf("relay fallback message = %q", got)
 	}
-	if got := connectDirectMessage(service, []connectAttempt{{Path: "direct", Addr: service.DirectAddresses[0], Status: "failed", Error: "timeout"}, {Path: "relayed", Addr: service.RelayedAddresses[0], Status: "selected"}}, "relayed"); got != "attempted, failed" {
+	if got := connectDirectMessage(service, []connectAttempt{{Path: "direct", Addr: service.DirectAddresses[0], Status: "failed", Error: "timeout"}, {Path: "relayed", Addr: service.RelayedAddresses[0], Status: "selected"}}, "relayed"); got != "attempted, failed; relay selected and hole punching may still upgrade later" {
 		t.Fatalf("direct fallback message = %q", got)
 	}
 	relayOnly := normalizeServiceResource(serviceResource{Name: "myapi", Addresses: []string{service.RelayedAddresses[0]}})
