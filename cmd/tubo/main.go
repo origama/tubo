@@ -326,7 +326,7 @@ Usage:
   tubo share cluster/home --permission member
   tubo relay [-d]
   tubo gateway [-d]
-  tubo join [tubo-public]
+  tubo join [overlay/public|tubo-public]
 
 Common flow:
   # Machine with a local app
@@ -441,13 +441,14 @@ Flags:
 Run an HTTP ingress gateway that routes by discovered services.`)
 	case "join":
 		fmt.Println(`Usage:
-  tubo join [tubo-public]
-  tubo join --bundle-url <url>
+  tubo join [overlay/public|tubo-public]
+  tubo join overlay/manual --relay <multiaddr> --swarm-key <path>
   tubo join --relay <multiaddr> --swarm-key <path>
+  tubo join --bundle-url <url>
   tubo join cluster/<name> --token <cluster-invite>
   tubo join <cluster-invite>
 
-Install local network config, swarm key, or cluster membership. Does not start processes.`)
+Install local overlay config, swarm key, or cluster membership. Does not start processes.`)
 	case "use":
 		fmt.Println(`Usage:
   tubo use overlay/<name>
@@ -464,8 +465,9 @@ Create a copyable cluster invitation from local authority material.`)
 		fmt.Println(`Usage:
   tubo create cluster/<name>
   tubo create namespace/<name>
+  tubo create service/<name>
 
-Create local clusters and namespaces in the current config.`)
+Create local clusters, namespaces, and namespace-scoped service identities in the current config.`)
 	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
@@ -545,15 +547,31 @@ func runRole(role string, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	discoveryRuntime := c.DiscoveryRuntime()
+	cluster := c.Clusters[c.CurrentCluster]
+	serviceSeed := c.Node.Seed
+	serviceID := ""
+	serviceClaimFile := ""
+	if cluster.Namespaces != nil {
+		if namespace, ok := cluster.Namespaces[c.CurrentNamespace]; ok && namespace.Services != nil {
+			if svc, ok := namespace.Services[c.Service.Name]; ok {
+				if svc.ServiceSeed != "" {
+					serviceSeed = svc.ServiceSeed
+				}
+				serviceID = svc.ServiceID
+				serviceClaimFile = svc.ServiceClaimFile
+			}
+		}
+	}
 	switch role {
 	case "edge":
-		a, err := edge.New(ctx, edge.Config{HTTPListen: c.Edge.Listen, P2PListen: c.Node.P2PListen, Seed: c.Node.Seed, AdminListen: c.Edge.AdminListen, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, BootstrapRetryInterval: 5 * time.Second, DirectStreamTimeout: c.Edge.DirectStreamTimeout.Duration(), PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64})
+		a, err := edge.New(ctx, edge.Config{HTTPListen: c.Edge.Listen, P2PListen: c.Node.P2PListen, Seed: c.Node.Seed, AdminListen: c.Edge.AdminListen, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, BootstrapRetryInterval: 5 * time.Second, DirectStreamTimeout: c.Edge.DirectStreamTimeout.Duration(), PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, AuthorityPublicKey: cluster.AuthorityPublicKey, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID})
 		if err != nil {
 			return err
 		}
 		return a.Start(ctx)
 	case "service":
-		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: c.Node.Seed, ServiceName: c.Service.Name, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second})
+		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: serviceSeed, ServiceName: c.Service.Name, ServiceID: serviceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, MembershipCapabilityFile: cluster.MembershipCapabilityFile, ServiceClaimFile: serviceClaimFile})
 		if err != nil {
 			return err
 		}
@@ -618,6 +636,11 @@ func joinCmd(args []string) error {
 	if len(args) > 0 && (strings.HasPrefix(args[0], "cluster/") || isClusterInviteToken(args[0])) {
 		return localJoinClusterInviteCmd(args)
 	}
+	overlayName := ""
+	if len(args) > 0 && strings.HasPrefix(args[0], "overlay/") {
+		overlayName = strings.TrimPrefix(args[0], "overlay/")
+		args = args[1:]
+	}
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	var relayPeers []string
 	fs.Var(csvFlag{&relayPeers}, "relay", "")
@@ -634,6 +657,15 @@ func joinCmd(args []string) error {
 	}
 	relayPeers = uniqueStrings(relayPeers)
 	manualMode := len(relayPeers) > 0 || *swarmKeyPath != "" || *swarmKeyB64 != ""
+	if overlayName == "manual" {
+		if !manualMode {
+			return errors.New("join overlay/manual requires --relay <multiaddr> and exactly one swarm key source")
+		}
+		manualMode = true
+	}
+	if overlayName != "" && overlayName != "public" && overlayName != "manual" {
+		return fmt.Errorf("unknown overlay %q; use overlay/public or overlay/manual", overlayName)
+	}
 	_, _, inviteMode, inviteErr := parseClusterInviteJoin(fs.Args(), *token)
 	if inviteErr != nil {
 		return inviteErr
@@ -663,8 +695,11 @@ func joinCmd(args []string) error {
 		if *jsonOut {
 			return printJSON(result)
 		}
-		printJoinResult("joined swarm config", result)
+		printJoinResult(joinTitleFor(false, overlayName), result)
 		return nil
+	}
+	if overlayName == "public" {
+		networkName = joinDefaultNetworkName
 	}
 	if networkName == "" {
 		networkName = joinDefaultNetworkName
@@ -683,7 +718,7 @@ func joinCmd(args []string) error {
 	if *jsonOut {
 		return printJSON(result)
 	}
-	printJoinResult("joined network bundle", result)
+	printJoinResult(joinTitleFor(true, overlayName), result)
 	return nil
 }
 
@@ -767,6 +802,7 @@ func joinManualMode(relayPeers []string, swarmKeyPath, swarmKeyB64, configDir st
 		return joinResult{}, err
 	}
 	return joinResult{
+		NetworkName:    "manual",
 		ConfigPath:     configPath,
 		SwarmKeyPath:   installedKeyPath,
 		RelayPeers:     relayPeers,
@@ -807,6 +843,19 @@ func joinBundleMode(bundleURL, configDir string, force bool) (joinResult, error)
 		RelayPeers:     installed.RelayPeers,
 		BootstrapPeers: installed.BootstrapPeers,
 	}, nil
+}
+
+func joinTitleFor(bundle bool, overlayName string) string {
+	if bundle {
+		if overlayName == "public" || overlayName == "" {
+			return "joined public overlay"
+		}
+		return "joined overlay bundle"
+	}
+	if overlayName == "manual" || overlayName == "" {
+		return "joined manual overlay"
+	}
+	return "joined overlay"
 }
 
 func printJoinResult(title string, result joinResult) {
@@ -2380,13 +2429,24 @@ func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serv
 	if err != nil {
 		return nil, fmt.Errorf("create observer gossipsub: %w", err)
 	}
-	topic, err := ps.Join(discovery.DiscoveryTopic)
+	discoveryRuntime := cfg.DiscoveryRuntime()
+	topic, err := ps.Join(discoveryRuntime.Topic)
 	if err != nil {
 		return nil, fmt.Errorf("join discovery topic: %w", err)
 	}
 	cache := discovery.NewCache(30*time.Second, time.Second)
 	defer cache.Stop()
 	sub := discovery.NewPubSubSubscriber(topic, cache)
+	if discoveryRuntime.Mode == cfgpkg.DiscoveryModeNamespaceV2 {
+		sub = discovery.NewPubSubSubscriberWithMode(topic, cache, discovery.ModeNamespaceV2, discoveryRuntime.ClusterID, discoveryRuntime.NamespaceID)
+		if cluster, ok := cfg.Clusters[cfg.CurrentCluster]; ok && cluster.AuthorityPublicKey != "" {
+			if raw, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey); err == nil {
+				sub.SetAuthorityPublicKey(raw)
+			} else {
+				return nil, fmt.Errorf("parse authority public key: %w", err)
+			}
+		}
+	}
 	stopCh := sub.Start(ctx)
 	defer close(stopCh)
 	for _, raw := range peers {

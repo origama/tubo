@@ -116,7 +116,7 @@ func TestHandleAddRoute(t *testing.T) {
 func TestGatewayDiscoveryQueryServesCachedServices(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "")
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "", "", "", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

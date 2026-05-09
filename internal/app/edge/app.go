@@ -40,6 +40,11 @@ type Config struct {
 	DirectStreamTimeout    time.Duration
 	PrivateKeyFile         string
 	PrivateKeyB64          string
+	AuthorityPublicKey     string
+	DiscoveryTopic         string
+	DiscoveryMode          string
+	DiscoveryClusterID     string
+	DiscoveryNamespaceID   string
 }
 
 // LoadConfigFromEnv loads edge configuration from environment variables.
@@ -111,7 +116,7 @@ const (
 
 // New constructs a new edge runtime.
 func New(ctx context.Context, cfg Config) (*App, error) {
-	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64)
+	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64, cfg.AuthorityPublicKey, cfg.DiscoveryTopic, cfg.DiscoveryMode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +140,13 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 }
 
 // Start runs the edge gateway until ctx is cancelled or a server exits with an error.
+func (a *App) Host() host.Host {
+	if a == nil || a.gateway == nil {
+		return nil
+	}
+	return a.gateway.host
+}
+
 func (a *App) Start(ctx context.Context) error {
 	defer a.close()
 
@@ -218,7 +230,7 @@ func adminMux(gw *Gateway) *http.ServeMux {
 	return mux
 }
 
-func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64 string) (*Gateway, chan struct{}, error) {
+func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64, authorityPublicKey, discoveryTopic, discoveryMode, discoveryClusterID, discoveryNamespaceID string) (*Gateway, chan struct{}, error) {
 	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSK(privateKeyFile, privateKeyB64)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load private network key: %w", err)
@@ -239,14 +251,32 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		return nil, nil, fmt.Errorf("create gossipsub: %w", err)
 	}
 
-	topic, err := ps.Join(discovery.DiscoveryTopic)
+	topicName := discoveryTopic
+	if topicName == "" {
+		topicName = discovery.DiscoveryTopic
+	}
+	topic, err := ps.Join(topicName)
 	if err != nil {
 		_ = h.Close()
 		return nil, nil, fmt.Errorf("join discovery topic: %w", err)
 	}
 
 	cache := discovery.NewCache(30*time.Second, 1*time.Second)
+	mode := discovery.Mode(discoveryMode)
+	if mode == "" {
+		mode = discovery.ModeLegacyV1
+	}
 	sub := discovery.NewPubSubSubscriber(topic, cache)
+	if mode == discovery.ModeNamespaceV2 {
+		sub = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, discoveryClusterID, discoveryNamespaceID)
+		if authorityPublicKey != "" {
+			if raw, err := discovery.ParseAuthorityPublicKey(authorityPublicKey); err == nil {
+				sub.SetAuthorityPublicKey(raw)
+			} else {
+				return nil, nil, fmt.Errorf("parse authority public key: %w", err)
+			}
+		}
+	}
 
 	pubKey := h.Peerstore().PubKey(h.ID())
 	if pubKey != nil {

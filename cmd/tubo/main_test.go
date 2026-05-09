@@ -457,7 +457,7 @@ func TestJoinCreatesConfigAndInstallsSwarmKey(t *testing.T) {
 	if _, ok := cfg.Clusters["home"].Namespaces["default"]; !ok {
 		t.Fatalf("default namespace missing: %#v", cfg.Clusters)
 	}
-	if !strings.Contains(out, "joined swarm config") || !strings.Contains(out, "tubo get services") {
+	if !strings.Contains(out, "joined manual overlay") || !strings.Contains(out, "tubo get services") {
 		t.Fatalf("unexpected join output: %s", out)
 	}
 	keyBytes, err := os.ReadFile(installedKeyPath)
@@ -466,6 +466,41 @@ func TestJoinCreatesConfigAndInstallsSwarmKey(t *testing.T) {
 	}
 	if !strings.Contains(string(keyBytes), "/key/swarm/psk/1.0.0/") {
 		t.Fatalf("unexpected installed swarm key: %s", string(keyBytes))
+	}
+}
+
+func TestJoinExplicitManualOverlayWritesOverlayFields(t *testing.T) {
+	configDir := filepath.Join(t.TempDir(), "config")
+	swarmKey := filepath.Join(t.TempDir(), "input.swarm.key")
+	if err := os.WriteFile(swarmKey, []byte("/key/swarm/psk/1.0.0/\n/base16/\n00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	relayID, err := p2p.PeerIDFromSeed("join-explicit-manual-relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := fmt.Sprintf("/ip4/127.0.0.1/tcp/4001/p2p/%s", relayID)
+	out, err := capture(func() error {
+		return run([]string{"join", "overlay/manual", "--relay", relay, "--swarm-key", swarmKey, "--config-dir", configDir})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "joined manual overlay") || !strings.Contains(out, "network: manual") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	cfg, err := cfgpkg.LoadFile(filepath.Join(configDir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CurrentOverlay != "manual" || cfg.CurrentCluster != "home" || cfg.CurrentNamespace != "default" {
+		t.Fatalf("unexpected context: %#v", cfg)
+	}
+	if cfg.Network.PrivateKeyFile != filepath.Join(configDir, "swarm.key") {
+		t.Fatalf("private_key_file = %q", cfg.Network.PrivateKeyFile)
+	}
+	if got := cfg.Overlays["manual"]; got.SwarmKeyFile != filepath.Join(configDir, "swarm.key") {
+		t.Fatalf("manual overlay = %#v", got)
 	}
 }
 
@@ -541,7 +576,7 @@ func TestJoinDefaultPublicNetworkFromSignedBundle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "joined network bundle") || !strings.Contains(out, "network: tubo-public") {
+	if !strings.Contains(out, "joined public overlay") || !strings.Contains(out, "network: tubo-public") {
 		t.Fatalf("unexpected output: %s", out)
 	}
 	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
@@ -566,6 +601,37 @@ func TestJoinDefaultPublicNetworkFromSignedBundle(t *testing.T) {
 	}
 	if cfg.Network.PrivateKeyFile == "" || len(cfg.Network.BootstrapPeers) != 1 || len(cfg.Network.RelayPeers) != 1 {
 		t.Fatalf("network not materialized: %#v", cfg.Network)
+	}
+}
+
+func TestJoinExplicitPublicOverlayUsesSignedBundle(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	serverURL, trusted := testSignedBundleServer(t, true)
+	oldURL := joinDefaultPublicBundleURL
+	oldKeys := joinTrustedBundleSigningKey
+	joinDefaultPublicBundleURL = serverURL
+	joinTrustedBundleSigningKey = trusted
+	defer func() {
+		joinDefaultPublicBundleURL = oldURL
+		joinTrustedBundleSigningKey = oldKeys
+	}()
+
+	out, err := capture(func() error { return run([]string{"join", "overlay/public"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "joined public overlay") || !strings.Contains(out, "network: tubo-public") {
+		t.Fatalf("unexpected output: %s", out)
+	}
+	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"current_overlay: tubo-public", "current_cluster: home", "current_namespace: default", "overlays:", "network:"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("config yaml missing %q:\n%s", want, string(raw))
+		}
 	}
 }
 
@@ -602,7 +668,7 @@ func TestJoinDefaultPublicNetworkUsesEnvOverrideBundleURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "joined network bundle") {
+	if !strings.Contains(out, "joined public overlay") {
 		t.Fatalf("unexpected output: %s", out)
 	}
 }
@@ -1036,6 +1102,64 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if _, ok := cfg.Clusters["home"].Namespaces["observability"]; !ok {
 		t.Fatalf("namespace not added: %#v", cfg.Clusters["home"].Namespaces)
+	}
+
+	if _, err := capture(func() error { return run([]string{"use", "namespace/default", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	out, err = capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "PRIVATE KEY") {
+		t.Fatalf("create service output leaked secret material: %s", out)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultSvc, ok := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if !ok || defaultSvc.ServiceID == "" || defaultSvc.ServiceSeed == "" || defaultSvc.ServiceClaimFile == "" {
+		t.Fatalf("default namespace service not created: %#v", cfg.Clusters["home"].Namespaces)
+	}
+	defaultClaimBytes, err := os.ReadFile(defaultSvc.ServiceClaimFile)
+	if err != nil {
+		t.Fatalf("read default service claim: %v", err)
+	}
+	var defaultClaim capability.ServiceClaim
+	if err := json.Unmarshal(defaultClaimBytes, &defaultClaim); err != nil {
+		t.Fatalf("decode default service claim: %v", err)
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(defaultSvc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := capability.VerifyServiceClaim(defaultClaim, edPub, cluster.ClusterID, "default", defaultSvc.ServiceID, servicePeerID.String()); err != nil {
+		t.Fatalf("default service claim verification failed: %v", err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]; got.ServiceID != defaultSvc.ServiceID {
+		t.Fatalf("duplicate service create changed identity: %#v vs %#v", got, defaultSvc)
+	}
+	if _, err := capture(func() error { return run([]string{"use", "namespace/observability", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obsSvc, ok := cfg.Clusters["home"].Namespaces["observability"].Services["myapi"]
+	if !ok || obsSvc.ServiceID == "" || obsSvc.ServiceID == defaultSvc.ServiceID {
+		t.Fatalf("observability service identity not distinct: default=%#v observability=%#v", defaultSvc, obsSvc)
 	}
 
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err == nil {

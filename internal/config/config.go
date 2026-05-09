@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/multiformats/go-multiaddr"
+	"github.com/origama/tubo/internal/discovery"
 	"gopkg.in/yaml.v3"
 )
 
@@ -106,7 +107,31 @@ type ClusterMembershipGrant struct {
 	ExpiresAt          time.Time `yaml:"expires_at,omitempty" json:"expires_at,omitempty"`
 }
 
-type Namespace struct{}
+type Namespace struct {
+	Services map[string]NamespaceService `yaml:"services,omitempty" json:"services,omitempty"`
+}
+
+type NamespaceService struct {
+	ServiceID        string `yaml:"service_id,omitempty" json:"service_id,omitempty"`
+	ServiceSeed      string `yaml:"service_seed,omitempty" json:"service_seed,omitempty"`
+	ServiceClaimFile  string `yaml:"service_claim_file,omitempty" json:"service_claim_file,omitempty"`
+}
+
+type DiscoveryMode string
+
+const (
+	DiscoveryModeLegacyV1    DiscoveryMode = "legacy-v1"
+	DiscoveryModeNamespaceV2 DiscoveryMode = "namespace-v2"
+)
+
+func (m DiscoveryMode) String() string { return string(m) }
+
+type DiscoveryRuntime struct {
+	Mode        DiscoveryMode
+	Topic       string
+	ClusterID   string
+	NamespaceID string
+}
 
 type Duration time.Duration
 
@@ -129,6 +154,19 @@ func (d *Duration) UnmarshalYAML(v *yaml.Node) error {
 	}
 	*d = Duration(x)
 	return nil
+}
+
+func (c Config) DiscoveryRuntime() DiscoveryRuntime {
+	cluster := c.Clusters[c.CurrentCluster]
+	if c.CurrentCluster != "" && c.CurrentNamespace != "" && cluster.ClusterID != "" && cluster.AuthorityPublicKey != "" && (cluster.MembershipCapabilityFile != "" || cluster.MembershipGrant != nil) {
+		return DiscoveryRuntime{
+			Mode:        DiscoveryModeNamespaceV2,
+			Topic:       discovery.NamespaceTopic(cluster.ClusterID, c.CurrentNamespace),
+			ClusterID:   cluster.ClusterID,
+			NamespaceID: c.CurrentNamespace,
+		}
+	}
+	return DiscoveryRuntime{Mode: DiscoveryModeLegacyV1, Topic: discovery.DiscoveryTopic}
 }
 
 func Defaults(role string) Config {
@@ -242,7 +280,18 @@ func cloneCluster(in Cluster) Cluster {
 	if len(in.Namespaces) > 0 {
 		out.Namespaces = make(map[string]Namespace, len(in.Namespaces))
 		for k, v := range in.Namespaces {
-			out.Namespaces[k] = v
+			out.Namespaces[k] = cloneNamespace(v)
+		}
+	}
+	return out
+}
+
+func cloneNamespace(in Namespace) Namespace {
+	out := Namespace{}
+	if len(in.Services) > 0 {
+		out.Services = make(map[string]NamespaceService, len(in.Services))
+		for k, v := range in.Services {
+			out.Services[k] = v
 		}
 	}
 	return out

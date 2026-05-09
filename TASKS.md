@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-09 13:58 UTC
+> **Last updated:** 2026-05-09 16:25 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -148,6 +148,10 @@
 | C.46 | Issue #80 — CLI resource creation for clusters and namespaces | ✅ | Done: added local `create cluster/...` and `create namespace/...` flows with local authority keypair + membership capability persistence; verified with `go test ./...` and `./tests/smoke-compose.sh` |
 | C.47 | Issue #81 — cluster invitations and local join flow | ✅ | Done: added local share/join flows for cluster membership invites on top of #77/#78/#79/#80; verified with `go test ./...` and `./tests/smoke-compose.sh` |
 | C.48 | Issue #82 — scoped service identity and namespace-aware service commands | ✅ | Done: added `service/<name>` parsing plus current cluster/namespace resolution for `attach`, `connect`, `get`, `describe`, and `inspect`; verified with `go test ./...` and `./tests/smoke-compose.sh` |
+| C.49 | Issue #85 — overlay resource join syntax and legacy overlay compatibility | ✅ | Done: added explicit overlay join forms for public/manual overlays while keeping legacy manual join and default public join compatibility; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
+| C.50 | Issue #86 — Discovery V2 runtime on opaque namespace topics | ✅ | Done: added cluster-aware topic selection, V2 publish/subscribe path, and integration coverage for cluster-mode discovery/proxying; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
+| C.51 | Issue #87 — harden Discovery V2 validation and replay protection | ✅ | Done: added topic/auth checks, authority-backed capability validation, optional service-claim validation, bounded nonce replay protection, and invalid-message tests; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
+| C.52 | Issue #88 — service-claim lifecycle for namespace-scoped service publishing | ✅ | Done: added local `create service/<name>`, deterministic namespace-scoped service IDs, signed service-claim persistence, cluster-mode `attach`/Discovery V2 claim loading, and service claim validation keyed by `service_id`; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 
 ---
 

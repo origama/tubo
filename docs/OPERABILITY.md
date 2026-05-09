@@ -28,6 +28,7 @@ Ruoli disponibili tramite `tubo`:
 - il relay partecipa anche al topic discovery `/discovery/v1.0` come router GossipSub
 - `gateway` (ingress HTTP + discovery consumer)
 - `attach` (publisher + stream handler verso servizio origin)
+- in configurazioni cluster-aware, `gateway`/`attach`/observer selezionano un topic discovery V2 opaco derivato da `current_cluster` + `current_namespace`; le config legacy restano su `/discovery/v1.0`
 - `bridge` rimane disponibile come logica client-side, ma il comando runtime storico `bridge run` non e' piu' supportato
 
 ## 3) Quick Start locale (Docker Compose)
@@ -78,7 +79,9 @@ chmod 600 swarm.key
 
 Distribuire `swarm.key` **solo** ai nodi fidati. Non committare nel repository.
 
-Per esempi YAML completi (relay, edge, service, bridge), topology e `docker-compose.tubo.yml`, vedi [`cli.md`](./cli.md). La precedenza della configurazione e':
+Per esempi YAML completi (relay, edge, service, bridge), topology e `docker-compose.tubo.yml`, vedi [`cli.md`](./cli.md). Nei cluster-aware setup, il flusso locale consigliato e': `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, poi `tubo use ...` e `tubo attach ...`.
+
+La precedenza della configurazione e':
 
 ```text
 flag CLI > env var > config file > default > interactive

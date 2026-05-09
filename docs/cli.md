@@ -40,7 +40,8 @@ I comandi piu' comuni sono:
 
 ```bash
 tubo relay
-tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
+tubo join overlay/public
+tubo join overlay/manual --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 tubo gateway
 tubo attach http://127.0.0.1:1234 --name lmstudio
 tubo connect lmstudio --local 127.0.0.1:51234
@@ -68,7 +69,7 @@ tubo relay -d
 ### Host service
 
 ```bash
-tubo join \
+tubo join overlay/manual \
   --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
   --swarm-key ./swarm.key
 
@@ -441,7 +442,7 @@ network:
     - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 ```
 
-`current_overlay` materializza i campi overlay in `network:` quando il file usa il nuovo layout; le writers di `join` e bundle firmati scrivono entrambi i formati per compatibilità.
+`current_overlay` materializza i campi overlay in `network:` quando il file usa il nuovo layout; le writers di `join` e bundle firmati scrivono entrambi i formati per compatibilità. `tubo join overlay/public` è la forma esplicita del join pubblico; `tubo join overlay/manual --relay ... --swarm-key ...` è la forma esplicita del join manuale/legacy. Quando la config corrente porta un cluster con identity metadata (`cluster_id` + `authority_public_key` + membership grant/capability), il runtime discovery usa un topic V2 opaco derivato da `current_cluster/current_namespace` e valida topic/scope, membership capability e replay nonce; altrimenti resta su `/discovery/v1.0`.
 
 ## Local resource CLI (Phase 2a)
 
@@ -454,6 +455,7 @@ tubo get namespaces
 
 tubo create cluster/home
 tubo create namespace/observability
+tubo create service/myapi
 
 tubo share cluster/home --permission member
 tubo join cluster/home --token <cluster-invite>
@@ -473,6 +475,7 @@ Note:
 - `get namespaces` usa il `current_cluster` corrente.
 - `create cluster/...` genera un authority keypair locale, scrive un `cluster_id`, imposta `authority_public_key`, crea il namespace `default` e salva una capability di membership locale senza stampare segreti.
 - `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente e rende esplicito il nuovo `current_namespace`.
+- `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
 - `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile.
 - `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
 - `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.

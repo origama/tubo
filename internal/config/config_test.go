@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/origama/tubo/internal/discovery"
 )
 
 func TestLoadYAMLAndValidateService(t *testing.T) {
@@ -146,7 +148,9 @@ func TestMergeCombinesResourceModelWithoutAliasing(t *testing.T) {
 			"home": {
 				ClusterID:    "base-cluster",
 				Capabilities: []string{"discovery"},
-				Namespaces:   map[string]Namespace{"default": {}},
+				Namespaces: map[string]Namespace{"default": {
+					Services: map[string]NamespaceService{"myapi": {ServiceID: "svc-a", ServiceSeed: "seed-a", ServiceClaimFile: "/base/claim.json"}},
+				}},
 			},
 		},
 	}
@@ -166,7 +170,9 @@ func TestMergeCombinesResourceModelWithoutAliasing(t *testing.T) {
 				ClusterID:          "ops-cluster",
 				AuthorityPublicKey: "ops-key",
 				Capabilities:       []string{"ingress"},
-				Namespaces:         map[string]Namespace{"tenant-a": {}},
+				Namespaces: map[string]Namespace{"tenant-a": {
+					Services: map[string]NamespaceService{"myapi": {ServiceID: "svc-b", ServiceSeed: "seed-b", ServiceClaimFile: "/over/claim.json"}},
+				}},
 			},
 		},
 		Network: Network{PrivateKeyFile: "/manual/swarm.key"},
@@ -198,6 +204,14 @@ func TestMergeCombinesResourceModelWithoutAliasing(t *testing.T) {
 	if got.Overlays["manual"].Relays[0] != "/ip4/5.6.7.8/tcp/4001/p2p/manual-relay" {
 		t.Fatalf("over overlay aliased: %#v", got.Overlays["manual"])
 	}
+	base.Clusters["home"].Namespaces["default"].Services["myapi"] = NamespaceService{ServiceID: "mutated", ServiceSeed: "mutated", ServiceClaimFile: "mutated"}
+	over.Clusters["ops"].Namespaces["tenant-a"].Services["myapi"] = NamespaceService{ServiceID: "mutated", ServiceSeed: "mutated", ServiceClaimFile: "mutated"}
+	if got.Clusters["home"].Namespaces["default"].Services["myapi"].ServiceID != "svc-a" {
+		t.Fatalf("base namespace service aliased: %#v", got.Clusters["home"].Namespaces["default"].Services["myapi"])
+	}
+	if got.Clusters["ops"].Namespaces["tenant-a"].Services["myapi"].ServiceID != "svc-b" {
+		t.Fatalf("over namespace service aliased: %#v", got.Clusters["ops"].Namespaces["tenant-a"].Services["myapi"])
+	}
 }
 
 func TestEnvCSVAndMerge(t *testing.T) {
@@ -211,6 +225,41 @@ func TestEnvCSVAndMerge(t *testing.T) {
 	}
 	if c.Service.Name != "svc" {
 		t.Fatal(c.Service.Name)
+	}
+}
+
+func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T) {
+	cfg := Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "tenant-a",
+		Clusters: map[string]Cluster{
+			"home": {
+				ClusterID:                "cluster-123",
+				AuthorityPublicKey:       "ssh-ed25519 AAAA",
+				MembershipCapabilityFile: "/tmp/cap.json",
+			},
+		},
+	}
+	runtime := cfg.DiscoveryRuntime()
+	if runtime.Mode != DiscoveryModeNamespaceV2 {
+		t.Fatalf("mode = %q", runtime.Mode)
+	}
+	if runtime.Topic != discovery.NamespaceTopic("cluster-123", "tenant-a") {
+		t.Fatalf("topic = %q", runtime.Topic)
+	}
+	if runtime.ClusterID != "cluster-123" || runtime.NamespaceID != "tenant-a" {
+		t.Fatalf("runtime = %#v", runtime)
+	}
+}
+
+func TestDiscoveryRuntimeFallsBackToLegacyTopicWithoutClusterIdentity(t *testing.T) {
+	cfg := Config{CurrentCluster: "home", CurrentNamespace: "default", Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}}}
+	runtime := cfg.DiscoveryRuntime()
+	if runtime.Mode != DiscoveryModeLegacyV1 {
+		t.Fatalf("mode = %q", runtime.Mode)
+	}
+	if runtime.Topic != discovery.DiscoveryTopic {
+		t.Fatalf("topic = %q", runtime.Topic)
 	}
 }
 func TestValidateRequired(t *testing.T) {

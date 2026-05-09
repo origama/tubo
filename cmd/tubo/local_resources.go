@@ -350,7 +350,7 @@ func parseLocalResourceRef(resource string) (string, string, error) {
 		return "", "", fmt.Errorf("unsupported resource %q", resource)
 	}
 	switch parts[0] {
-	case "overlay", "cluster", "namespace":
+	case "overlay", "cluster", "namespace", "service":
 		return parts[0], parts[1], nil
 	default:
 		return "", "", fmt.Errorf("unsupported resource %q", resource)

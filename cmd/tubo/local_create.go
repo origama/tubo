@@ -22,7 +22,7 @@ import (
 
 func localCreateCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo create <cluster/name|namespace/name> [flags]")
+		return errors.New("usage: tubo create <cluster/name|namespace/name|service/name> [flags]")
 	}
 	resource := args[0]
 	fs := flag.NewFlagSet("create", flag.ContinueOnError)
@@ -39,6 +39,8 @@ func localCreateCmd(args []string) error {
 		return createLocalCluster(*configPath, name)
 	case "namespace":
 		return createLocalNamespace(*configPath, name)
+	case "service":
+		return createLocalService(*configPath, name)
 	default:
 		return fmt.Errorf("unsupported create resource %q", resource)
 	}
