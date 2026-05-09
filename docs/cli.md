@@ -408,6 +408,65 @@ bridge:
   service_p2p_listen: /ip4/127.0.0.1/tcp/40123
 ```
 
+## Config resource model (Phase 1)
+
+La configurazione supporta un modello risorse minimale per overlay, cluster e namespace, ma il runtime continua a leggere `network:` come source of truth operativo.
+
+```yaml
+current_overlay: public
+current_cluster: home
+current_namespace: default
+
+overlays:
+  public:
+    relays: []
+    bootstrap_peers: []
+    swarm_key_file: ""
+
+clusters:
+  home:
+    cluster_id: ""
+    authority_public_key: ""
+    capabilities: []
+    namespaces:
+      default: {}
+
+network:
+  private_key_file: /etc/p2p/swarm.key
+  bootstrap_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+  relay_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+```
+
+`current_overlay` materializza i campi overlay in `network:` quando il file usa il nuovo layout; le writers di `join` e bundle firmati scrivono entrambi i formati per compatibilità.
+
+## Local resource CLI (Phase 2a)
+
+Dopo il nuovo model locale puoi ispezionare e selezionare overlay, cluster e namespace già presenti nella config:
+
+```bash
+tubo get overlays
+tubo get clusters
+tubo get namespaces
+
+tubo describe overlay/public
+tubo describe cluster/home
+tubo describe namespace/default
+
+tubo use overlay/public
+tubo use cluster/home
+tubo use namespace/default
+```
+
+Note:
+
+- `get overlays` e `get clusters` leggono solo la config locale.
+- `get namespaces` usa il `current_cluster` corrente.
+- `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.
+- `use` aggiorna solo il file di config locale; non avvia o ferma processi runtime.
+- `--json` resta disponibile per `get` quando utile.
+
 ## Topology
 
 ```yaml

@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-07 00:00 UTC
+> **Last updated:** 2026-05-09 06:36 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -142,6 +142,8 @@
 | C.40 | Add protocol 1.1 hello handshake with legacy fallback | ✅ | Added protocol 1.1 hello frame carrying `major.minor`, role, and capabilities; edge/bridge now prefer `/p2p-tunnel/1.1` and fall back to `/p2p-tunnel/1.0`, service accepts both, and real Linode multi-host smoke validated both the handshake logs and protocol debug endpoints |
 | C.41 | Add real Linode mixed-version compatibility harness | ✅ | Added `tests/smoke-terraform-linode-mixed-version.sh` and validated it on the real Linode multi-host bench against legacy ref `c9bbb1f`: current edge -> legacy service (`/p2p-tunnel/1.0` fallback), legacy edge -> current service (current service accepts legacy), and current edge -> current service (`/p2p-tunnel/1.1` hello negotiation) |
 | C.42 | Signed public onboarding + CLI UX simplification (PR #68 follow-up) | ✅ | Implemented, merged to `main`, and released in v0.5.1; issues #69 #71 #72 #73 #74 are closed, PR #68 is closed, the public bundle and CLI UX are live, and real Linode validation passed end-to-end |
+| C.43 | Issue #77 — overlay/cluster/namespace config resource model (Phase 1) | ✅ | Done: added local resource model + legacy `network:` compatibility; verified with `go test ./...` and `./tests/smoke-compose.sh`; manual temp run confirmed new + legacy YAML fields stay in sync |
+| C.44 | Issue #78 — local resource CLI for overlays/clusters/namespaces (Phase 2a) | ✅ | Done: added `get`/`describe`/`use` local resource commands on top of #77 without touching runtime behavior; verified with `go test ./...`, `./tests/smoke-compose.sh`, and manual temp config run |
 
 ---
 

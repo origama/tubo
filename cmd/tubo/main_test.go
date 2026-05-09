@@ -385,7 +385,7 @@ func TestUsageMentionsIntentCommands(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "bundle-url"} {
+	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "use", "bundle-url"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("usage missing %q: %s", want, err)
 		}
@@ -415,9 +415,21 @@ func TestJoinCreatesConfigAndInstallsSwarmKey(t *testing.T) {
 	if _, err := os.Stat(installedKeyPath); err != nil {
 		t.Fatalf("swarm key not written: %v", err)
 	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"current_overlay: manual", "current_cluster: home", "current_namespace: default", "overlays:", "network:"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("config yaml missing %q:\n%s", want, string(raw))
+		}
+	}
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.CurrentOverlay != "manual" || cfg.CurrentCluster != "home" || cfg.CurrentNamespace != "default" {
+		t.Fatalf("current context = %#v", cfg)
 	}
 	if cfg.Network.PrivateKeyFile != installedKeyPath {
 		t.Fatalf("private_key_file = %q, want %q", cfg.Network.PrivateKeyFile, installedKeyPath)
@@ -427,6 +439,12 @@ func TestJoinCreatesConfigAndInstallsSwarmKey(t *testing.T) {
 	}
 	if len(cfg.Network.RelayPeers) != 1 || cfg.Network.RelayPeers[0] != relay {
 		t.Fatalf("relay_peers = %#v", cfg.Network.RelayPeers)
+	}
+	if got := cfg.Overlays["manual"]; got.SwarmKeyFile != installedKeyPath {
+		t.Fatalf("manual overlay = %#v", got)
+	}
+	if _, ok := cfg.Clusters["home"].Namespaces["default"]; !ok {
+		t.Fatalf("default namespace missing: %#v", cfg.Clusters)
 	}
 	if !strings.Contains(out, "joined swarm config") || !strings.Contains(out, "tubo get services") {
 		t.Fatalf("unexpected join output: %s", out)
@@ -519,6 +537,25 @@ func TestJoinDefaultPublicNetworkFromSignedBundle(t *testing.T) {
 	if _, err := os.Stat(configPath); err != nil {
 		t.Fatalf("config not written: %v", err)
 	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"current_overlay: tubo-public", "current_cluster: home", "current_namespace: default", "overlays:", "network:"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("config yaml missing %q:\n%s", want, string(raw))
+		}
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CurrentOverlay != "tubo-public" || cfg.CurrentCluster != "home" || cfg.CurrentNamespace != "default" {
+		t.Fatalf("current context = %#v", cfg)
+	}
+	if cfg.Network.PrivateKeyFile == "" || len(cfg.Network.BootstrapPeers) != 1 || len(cfg.Network.RelayPeers) != 1 {
+		t.Fatalf("network not materialized: %#v", cfg.Network)
+	}
 }
 
 func TestJoinRejectsInvalidBundleSignature(t *testing.T) {
@@ -556,6 +593,215 @@ func TestJoinDefaultPublicNetworkUsesEnvOverrideBundleURL(t *testing.T) {
 	}
 	if !strings.Contains(out, "joined network bundle") {
 		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+func writeLocalResourceConfig(t *testing.T) string {
+	t.Helper()
+	configHome := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configPath := filepath.Join(configHome, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	yaml := `role: service
+current_overlay: public
+current_cluster: home
+current_namespace: default
+overlays:
+  public:
+    relays:
+      - /ip4/127.0.0.1/tcp/4001/p2p/12D3KooWOverlayRelay
+    bootstrap_peers:
+      - /ip4/127.0.0.1/tcp/4001/p2p/12D3KooWOverlayBootstrap
+    swarm_key_file: /etc/p2p/swarm.key
+  staging:
+    relays: []
+    bootstrap_peers: []
+    swarm_key_file: ""
+  remote:
+    relays:
+      - /ip4/203.0.113.1/tcp/4001/p2p/12D3KooWRemoteRelay
+    bootstrap_peers:
+      - /ip4/203.0.113.1/tcp/4001/p2p/12D3KooWRemoteBootstrap
+    swarm_key_file: /etc/p2p/remote.swarm.key
+clusters:
+  home:
+    cluster_id: home-cluster
+    authority_public_key: home-pub
+    capabilities:
+      - discovery
+    namespaces:
+      default: {}
+      lab: {}
+  ops:
+    cluster_id: ops-cluster
+    authority_public_key: ops-pub
+    capabilities:
+      - ingress
+    namespaces:
+      prod: {}
+network:
+  private_key_file: /etc/p2p/swarm.key
+  bootstrap_peers:
+    - /ip4/127.0.0.1/tcp/4001/p2p/12D3KooWLegacyBootstrap
+  relay_peers:
+    - /ip4/127.0.0.1/tcp/4001/p2p/12D3KooWLegacyRelay
+service:
+  name: api
+  target: http://127.0.0.1:9000
+`
+	if err := os.WriteFile(configPath, []byte(yaml), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return configPath
+}
+
+func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
+	configPath := writeLocalResourceConfig(t)
+
+	out, err := capture(func() error { return run([]string{"get", "overlays"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"public", "staging", "*"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("get overlays output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error { return run([]string{"get", "clusters", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var clusters struct {
+		Count int           `json:"count"`
+		Items []clusterView `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &clusters); err != nil {
+		t.Fatalf("cluster json parse: %v\nout=%s", err, out)
+	}
+	if clusters.Count != 2 || len(clusters.Items) != 2 || clusters.Items[0].Name != "home" || !clusters.Items[0].Current {
+		t.Fatalf("unexpected clusters payload: %#v", clusters)
+	}
+
+	out, err = capture(func() error { return run([]string{"get", "namespaces"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"default", "lab", "*"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("get namespaces output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error { return run([]string{"describe", "overlay/public"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Name: public", "Current: true", "Swarm key file: /etc/p2p/swarm.key", "Relays:", "Bootstrap peers:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe overlay output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error { return run([]string{"describe", "cluster/home"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Cluster ID: home-cluster", "Authority public key: home-pub", "Namespaces:", "default (current)"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe cluster output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error { return run([]string{"describe", "namespace/default"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe namespace output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error { return run([]string{"use", "overlay/staging"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "updated current_overlay: staging") {
+		t.Fatalf("unexpected use overlay output: %s", out)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CurrentOverlay != "staging" {
+		t.Fatalf("current_overlay = %q, want staging", cfg.CurrentOverlay)
+	}
+	if cfg.Network.PrivateKeyFile != "/etc/p2p/swarm.key" {
+		t.Fatalf("network private_key_file changed unexpectedly: %q", cfg.Network.PrivateKeyFile)
+	}
+
+	if _, err := capture(func() error { return run([]string{"use", "overlay/remote"}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CurrentOverlay != "remote" {
+		t.Fatalf("current_overlay = %q, want remote", cfg.CurrentOverlay)
+	}
+	if cfg.Network.PrivateKeyFile != "/etc/p2p/remote.swarm.key" || len(cfg.Network.BootstrapPeers) != 1 || len(cfg.Network.RelayPeers) != 1 {
+		t.Fatalf("remote overlay not materialized in network: %#v", cfg.Network)
+	}
+
+	if _, err := capture(func() error { return run([]string{"use", "cluster/ops"}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"use", "namespace/prod"}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CurrentCluster != "ops" || cfg.CurrentNamespace != "prod" {
+		t.Fatalf("current context = %#v", cfg)
+	}
+	out, err = capture(func() error { return run([]string{"get", "namespaces"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"prod", "*", "ops"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("get namespaces after use output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestLocalResourceCommandsRejectLegacyConfig(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configPath := filepath.Join(configHome, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `role: service
+network:
+  private_key_file: /etc/p2p/swarm.key
+service:
+  name: api
+  target: http://127.0.0.1:9000
+`
+	if err := os.WriteFile(configPath, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"get", "overlays"}, {"describe", "overlay/public"}, {"use", "overlay/public"}} {
+		if _, err := capture(func() error { return run(args) }); err == nil {
+			t.Fatalf("expected legacy config to reject %v", args)
+		}
 	}
 }
 

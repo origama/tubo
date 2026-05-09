@@ -121,6 +121,8 @@ func run(args []string) error {
 			return err
 		}
 		return watchCmd(cleanArgs)
+	case "use":
+		return localUseCmd(args[1:])
 	case "logs":
 		return logsCmd(args[1:])
 	case "stop":
@@ -298,7 +300,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -309,6 +311,7 @@ Usage:
   tubo attach <service> --port <port> [-d]
   tubo connect <service> [--local 127.0.0.1:PORT]
   tubo get services
+  tubo use overlay/public
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [tubo-public]
@@ -326,6 +329,7 @@ Discovery and process management:
   tubo describe service/myapp
   tubo inspect service/myapp --json
   tubo watch services
+  tubo use overlay/public
   tubo ps
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
@@ -390,9 +394,21 @@ Path selection:
 		fmt.Println(`Usage:
   tubo get services [--json]
   tubo get service/<name> [--json]
+  tubo get overlays [--json]
+  tubo get clusters [--json]
+  tubo get namespaces [--json]
   tubo get processes [--json]
 
-Inspect local processes or services announced in the swarm.`)
+Inspect local processes, local config resources, or services announced in the swarm.`)
+	case "describe":
+		fmt.Println(`Usage:
+  tubo describe service/<name>
+  tubo describe process/<name>
+  tubo describe overlay/<name>
+  tubo describe cluster/<name>
+  tubo describe namespace/<name>
+
+Show local config metadata or discovered resource details.`)
 	case "relay":
 		fmt.Println(`Usage:
   tubo relay [-d]
@@ -416,7 +432,14 @@ Run an HTTP ingress gateway that routes by discovered services.`)
   tubo join --relay <multiaddr> --swarm-key <path>
 
 Install local network config and swarm key. Does not start processes.`)
-	case "watch", "describe", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
+	case "use":
+		fmt.Println(`Usage:
+  tubo use overlay/<name>
+  tubo use cluster/<name>
+  tubo use namespace/<name>
+
+Select a local overlay/cluster/namespace context in the config file.`)
+	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
 		return fmt.Errorf("unknown help topic %q", command)
@@ -665,13 +688,32 @@ func joinManualMode(relayPeers []string, swarmKeyPath, swarmKeyB64, configDir st
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return joinResult{}, err
 	}
-	joined := cfgpkg.Merge(existing, cfgpkg.Config{Network: cfgpkg.Network{
-		PrivateKeyFile: installedKeyPath,
-		BootstrapPeers: relayPeers,
-		RelayPeers:     relayPeers,
-		Autorelay:      true,
-		HolePunching:   true,
-	}})
+	joined := cfgpkg.Merge(existing, cfgpkg.Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays: map[string]cfgpkg.Overlay{
+			"manual": {
+				Relays:         append([]string(nil), relayPeers...),
+				BootstrapPeers: append([]string(nil), relayPeers...),
+				SwarmKeyFile:   installedKeyPath,
+			},
+		},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				Namespaces: map[string]cfgpkg.Namespace{
+					"default": {},
+				},
+			},
+		},
+		Network: cfgpkg.Network{
+			PrivateKeyFile: installedKeyPath,
+			BootstrapPeers: append([]string(nil), relayPeers...),
+			RelayPeers:     append([]string(nil), relayPeers...),
+			Autorelay:      true,
+			HolePunching:   true,
+		},
+	})
 	joined.Network.PrivateKeyB64 = ""
 	b, err := yaml.Marshal(joined)
 	if err != nil {
@@ -1752,7 +1794,7 @@ func psCmd(args []string) error {
 
 func getCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo get <services|service/name> [flags]")
+		return errors.New("usage: tubo get <services|service/name|overlays|clusters|namespaces|processes> [flags]")
 	}
 	resource := args[0]
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
@@ -1778,6 +1820,8 @@ func getCmd(args []string) error {
 		}
 		printProcessesTable(items)
 		return nil
+	case resource == "overlays" || resource == "clusters" || resource == "namespaces":
+		return localGetResource(resource, *configPath, *jsonOut)
 	}
 	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
 	if err != nil {
@@ -1821,9 +1865,17 @@ func getCmd(args []string) error {
 
 func describeCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo describe <service/name|process/name> [flags]")
+		return errors.New("usage: tubo describe <service/name|process/name|overlay/name|cluster/name|namespace/name> [flags]")
 	}
 	resource := args[0]
+	if strings.HasPrefix(resource, "overlay/") || strings.HasPrefix(resource, "cluster/") || strings.HasPrefix(resource, "namespace/") {
+		fs := flag.NewFlagSet("describe", flag.ContinueOnError)
+		configPath := fs.String("config", defaultTuboConfigPath(), "")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return localDescribeResource(resource, *configPath)
+	}
 	if strings.HasPrefix(resource, "process/") || !strings.Contains(resource, "/") {
 		state, status, err := loadProcessState(resource)
 		if err != nil {
