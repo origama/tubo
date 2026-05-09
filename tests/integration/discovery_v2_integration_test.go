@@ -153,6 +153,7 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 		DiscoveryMode:            runtime.Mode.String(),
 		DiscoveryClusterID:       runtime.ClusterID,
 		DiscoveryNamespaceID:     runtime.NamespaceID,
+		AuthorityPublicKey:       authorityKey,
 		MembershipCapabilityFile: capPath,
 		ServiceClaimFile:         claimPath,
 	})

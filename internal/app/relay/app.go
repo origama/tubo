@@ -41,6 +41,12 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		return nil, err
 	}
 	var opts []libp2p.Option
+	if allowed, configured, err := p2p.LoadAllowedPeersFromEnv(); err != nil {
+		return nil, err
+	} else if configured {
+		opts = append(opts, libp2p.ConnectionGater(p2p.NewPeerAllowlistConnectionGater(allowed)))
+		log.Printf("peer allowlist enabled peers=%d", len(allowed))
+	}
 	if cfg.EnableRelayService {
 		r := relayv2.DefaultResources()
 		r.MaxReservations = cfg.MaxReservations

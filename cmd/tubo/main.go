@@ -13,6 +13,7 @@ import (
 	"github.com/origama/tubo/internal/app/edge"
 	"github.com/origama/tubo/internal/app/relay"
 	"github.com/origama/tubo/internal/app/service"
+	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -575,7 +576,7 @@ func runRole(role string, args []string) error {
 		}
 		return a.Start(ctx)
 	case "service":
-		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: serviceSeed, ServiceName: c.Service.Name, ServiceID: serviceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, MembershipCapabilityFile: cluster.MembershipCapabilityFile, ServiceClaimFile: serviceClaimFile})
+		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: serviceSeed, ServiceName: c.Service.Name, ServiceID: serviceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: cluster.MembershipCapabilityFile, ServiceClaimFile: serviceClaimFile})
 		if err != nil {
 			return err
 		}
@@ -1721,6 +1722,15 @@ func connectCmd(args []string) error {
 	if shareToken != "" {
 		scope = shareScope
 	}
+	var connectGrant *capability.ConnectCapability
+	if shareToken != "" {
+		payload, err := parseAndVerifyServiceShareToken(shareToken)
+		if err != nil {
+			return err
+		}
+		connectGrant = &payload.Grant
+	}
+
 	result, serviceView, err := discoverService(*configPath, serviceName, *timeout, *cachedOnly, *live, scope)
 	if err != nil {
 		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", serviceName)
@@ -1739,6 +1749,7 @@ func connectCmd(args []string) error {
 		RelayPeers:     cfg.Network.RelayPeers,
 		Autorelay:      cfg.Network.Autorelay,
 		HolePunching:   cfg.Network.HolePunching,
+		ConnectGrant:   connectGrant,
 	}
 	if bridgeCfg.P2PListen == "" {
 		bridgeCfg.P2PListen = "/ip4/0.0.0.0/tcp/0"

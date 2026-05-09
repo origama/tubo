@@ -478,7 +478,7 @@ Note:
 - `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente e rende esplicito il nuovo `current_namespace`.
 - `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
 - `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile.
-- `share service/...` usa la chiave authority locale per emettere un token bearer connect-only, firma un `ConnectCapability` per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile.
+- `share service/...` usa la chiave authority locale per emettere un token connect-only, firma un `ConnectCapability` per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile; in namespace-v2 il bridge converte poi il grant in un connect proof on-stream.
 - `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
 - `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.
 - `use` aggiorna solo il file di config locale; non avvia o ferma processi runtime.

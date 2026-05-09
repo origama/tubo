@@ -68,7 +68,7 @@ func TestHandleClientRequestUsesContentLengthHeaderAsHint(t *testing.T) {
 		serverDone <- nil
 	}()
 
-	resp, err := HandleClientRequest(stream, "edge", "POST", "/v1/dummy", "", map[string][]string{"Content-Length": {"3"}}, strings.NewReader("abc"))
+	resp, err := HandleClientRequest(stream, "edge", "POST", "/v1/dummy", "", map[string][]string{"Content-Length": {"3"}}, strings.NewReader("abc"), nil)
 	if err != nil {
 		t.Fatalf("HandleClientRequest: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestHandleClientRequestSendsFinalChunkForEmptyBodyReader(t *testing.T) {
 		serverDone <- nil
 	}()
 
-	resp, err := HandleClientRequest(stream, "edge", "GET", "/v1/dummy", "", nil, strings.NewReader(""))
+	resp, err := HandleClientRequest(stream, "edge", "GET", "/v1/dummy", "", nil, strings.NewReader(""), nil)
 	if err != nil {
 		t.Fatalf("HandleClientRequest: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestHandleClientRequestLegacyProtocolSkipsHello(t *testing.T) {
 		serverDone <- nil
 	}()
 
-	resp, err := HandleClientRequest(stream, "edge", "GET", "/legacy", "", nil, nil)
+	resp, err := HandleClientRequest(stream, "edge", "GET", "/legacy", "", nil, nil, nil)
 	if err != nil {
 		t.Fatalf("HandleClientRequest legacy: %v", err)
 	}
@@ -229,7 +229,7 @@ func TestHandleClientRequestRejectsIncompatibleProtocolMajor(t *testing.T) {
 		serverDone <- writer.WriteHello(&protocol.Hello{ProtocolMajor: uint16(protocol.ProtocolMajor + 1), ProtocolMinor: 0, Role: "service", Capabilities: protocol.SupportedCapabilities()})
 	}()
 
-	_, err := HandleClientRequest(stream, "edge", "GET", "/bad", "", nil, nil)
+	_, err := HandleClientRequest(stream, "edge", "GET", "/bad", "", nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "incompatible protocol major") {
 		t.Fatalf("err=%v, want incompatible protocol major", err)
 	}

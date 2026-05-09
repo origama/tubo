@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	libp2p "github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -235,8 +236,15 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 	if err != nil {
 		return nil, nil, fmt.Errorf("load private network key: %w", err)
 	}
+	var opts []libp2p.Option
+	if allowed, configured, err := p2p.LoadAllowedPeersFromEnv(); err != nil {
+		return nil, nil, fmt.Errorf("load peer allowlist: %w", err)
+	} else if configured {
+		opts = append(opts, libp2p.ConnectionGater(p2p.NewPeerAllowlistConnectionGater(allowed)))
+		log.Printf("peer allowlist enabled peers=%d", len(allowed))
+	}
 
-	h, err := p2p.NewHostWithSeedAndPSK(p2pListen, seed, psk)
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions(p2pListen, seed, psk, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create host: %w", err)
 	}
@@ -1052,7 +1060,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		resp, err = p2p.HandleClientRequest(stream, "edge", r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader)
+		resp, err = p2p.HandleClientRequest(stream, "edge", r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader, nil)
 		if err == nil {
 			defer stream.Close()
 			break

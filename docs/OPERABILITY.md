@@ -256,14 +256,13 @@ go run ./cmd/tubo attach
 Implementato oggi:
 
 - discovery announcement firmati;
-- private swarm PSK (env key path o b64).
-- binary `relay` con relay service + AutoNAT service + router GossipSub discovery.
-- parser allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater sul relay.
+- private swarm PSK (env key path o b64);
+- binary `relay` con relay service + AutoNAT service + router GossipSub discovery;
+- parser allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater su relay, edge, service e bridge.
 
 Target ancora da implementare:
 
-- allowlist PeerID enforcement completo su edge/service/bridge;
-- binding `ServiceName -> PeerID` enforcement;
+- binding `ServiceName -> PeerID` enforcement applicativo oltre al controllo di connessione;
 - diagnostica reachability/AutoNAT completa.
 
 ## 8) Troubleshooting rapido

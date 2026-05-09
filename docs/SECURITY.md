@@ -25,6 +25,7 @@ Questo documento stabilisce i requisiti di sicurezza e le restrizioni architettu
 ### Autenticazione End-to-End
 
 * **Bearer Token Auth:** Le richieste HTTP possono includere token di autenticazione che vengono trasmessi attraverso il tunnel e validati sia dall'Edge Gateway (per l'autorizzazione al tunnel) che dal servizio origin.
+* **Connect Proof Data-Plane AuthZ:** in namespace-v2 il bridge deve presentare un connect proof firmato prima del forwarding upstream; il service verifica cluster/namespace/service, peer subject, expiry e replay prima di accettare il flusso.
 * **Peer Identity Binding:** Ogni Connector è associato a un'identità peer verificata. Gli Edge Gateway rifiutano connessioni da peer non riconosciuti o non autorizzati per il tenant richiesto.
 
 ## 🛡️ Rischi Specifici da Affrontare
@@ -32,7 +33,7 @@ Questo documento stabilisce i requisiti di sicurezza e le restrizioni architettu
 1. **Compromissione del Connector:** Se un Attaccante riesce a compromettere un Connector, questo può agire come punto di ingresso malevolo al servizio locale (Origin Service). È cruciale isolare strettamente l'accesso al `localhost` e implementare autenticazione end-to-end.
 2. **Masquerading:** L'attacco in cui un peer si spaccia per un altro. Questo viene mitigato dall'uso rigoroso di firme crittografiche basate sul Peer ID noto.
 3. **Pubsub Spam:** Un attaccante può pubblicare annunci malevoli sul topic pubsub. Mitigazione: validazione firma su ogni annuncio, rate limiting sulle pubblicazioni, verifica cross-reference tra peer ID dell'annuncio e peer ID del mittente, e per Discovery V2 verifica di topic/scope, membership capability, optional service claim legata a `service_id`, e decryption fallita.
-4. **Service Share Bearer Tokens:** i token generati da `tubo share service/...` sono connect-only, firmati dall'autorità del cluster e rifiutano token scaduti o alterati. Restano bearer token fino alla futura enforcement data-plane, quindi vanno trattati come credenziali sensibili.
+4. **Service Share Bearer Tokens:** i token generati da `tubo share service/...` sono connect-only, firmati dall'autorità del cluster e rifiutano token scaduti o alterati. Vengono convertiti in connect proof sul bridge path e vanno comunque trattati come credenziali sensibili.
 
 ## 📦 Stack Tecnologico e Dipendenze
 

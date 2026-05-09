@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/connmgr"
 	"github.com/libp2p/go-libp2p/core/control"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -39,6 +40,16 @@ func LoadAllowedPeersFromEnv() (map[peer.ID]struct{}, bool, error) {
 		return nil, true, fmt.Errorf("%s is set but contains no valid peer IDs", allowedPeersEnv)
 	}
 	return allowed, true, nil
+}
+
+// LoadPeerAllowlistOptionFromEnv returns a libp2p connection gater option when
+// LIBP2P_ALLOWED_PEERS is configured.
+func LoadPeerAllowlistOptionFromEnv() (libp2p.Option, bool, error) {
+	allowed, configured, err := LoadAllowedPeersFromEnv()
+	if err != nil || !configured {
+		return nil, configured, err
+	}
+	return libp2p.ConnectionGater(NewPeerAllowlistConnectionGater(allowed)), true, nil
 }
 
 // PeerAllowlistConnectionGater blocks secured inbound/outbound connections for peers

@@ -35,6 +35,7 @@ type Config struct {
 	DiscoveryMode                                                                                     string
 	DiscoveryClusterID                                                                                string
 	DiscoveryNamespaceID                                                                              string
+	AuthorityPublicKey                                                                                string
 	ServiceID                                                                                         string
 	MembershipCapabilityFile                                                                          string
 	ServiceClaimFile                                                                                  string
@@ -44,7 +45,7 @@ type App struct {
 	host                  host.Host
 	publisher             *discovery.Publisher
 	hb                    *discovery.HeartbeatLoop
-	discoveryMode          discovery.Mode
+	discoveryMode         discovery.Mode
 	serviceID             string
 	serviceCapabilityFile string
 	serviceClaimFile      string
@@ -78,6 +79,12 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		return nil, err
 	}
 	var opts []libp2p.Option
+	if allowed, configured, err := p2p.LoadAllowedPeersFromEnv(); err != nil {
+		return nil, err
+	} else if configured {
+		opts = append(opts, libp2p.ConnectionGater(p2p.NewPeerAllowlistConnectionGater(allowed)))
+		log.Printf("peer allowlist enabled peers=%d", len(allowed))
+	}
 	relays := parseAddrInfos(cfg.RelayPeers)
 	if len(relays) > 0 && cfg.Autorelay {
 		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(relays))
@@ -96,8 +103,21 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if using {
 		log.Printf("libp2p private network enabled")
 	}
-	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target))
-	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target))
+	mode := discovery.Mode(cfg.DiscoveryMode)
+	if mode == "" {
+		mode = discovery.ModeLegacyV1
+	}
+	var connectAuth *p2p.ConnectProofValidation
+	if mode == discovery.ModeNamespaceV2 {
+		authorityPub, err := discovery.ParseAuthorityPublicKey(cfg.AuthorityPublicKey)
+		if err != nil {
+			_ = h.Close()
+			return nil, fmt.Errorf("parse authority public key: %w", err)
+		}
+		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), Replay: p2p.NewConnectProofReplayCache(1024)}
+	}
+	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
+	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
 	gs, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
 	if err != nil {
 		_ = h.Close()
@@ -113,10 +133,6 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		return nil, err
 	}
 	cache := discovery.NewCache(30*time.Second, time.Second)
-	mode := discovery.Mode(cfg.DiscoveryMode)
-	if mode == "" {
-		mode = discovery.ModeLegacyV1
-	}
 	subscriber := discovery.NewPubSubSubscriber(topic, cache)
 	if mode == discovery.ModeNamespaceV2 {
 		subscriber = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
@@ -526,11 +542,23 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 	defer ticker.Stop()
 	lastReady := false
 
+	publish := func() {
+		if a.discoveryMode == discovery.ModeNamespaceV2 {
+			if !a.publishCurrentAnnouncementV2(ctx) {
+				log.Printf("relay-ready publish skipped: announcement not ready")
+			}
+			return
+		}
+		if a.hb != nil {
+			a.hb.PublishNow(ctx)
+		}
+	}
+
 	for {
 		ready := a.hasRelayReservation()
 		if ready && !lastReady {
 			log.Printf("relay reservation observed in host addrs; publishing refreshed announcement")
-			a.hb.PublishNow(ctx)
+			publish()
 		}
 		lastReady = ready
 
@@ -554,7 +582,7 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 				log.Printf("relay reservation ready relay=%s expires=%s addrs=%d", relayInfo.ID, reservation.Expiration.Format(time.RFC3339), len(reservation.Addrs))
 				if !lastReady {
 					log.Printf("relay reservation refreshed; publishing announcement using reserved relay path")
-					a.hb.PublishNow(ctx)
+					publish()
 				}
 				break
 			}

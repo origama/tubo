@@ -53,7 +53,7 @@ func (rc *readCloser) Close() error { return nil }
 // HandleServiceStream handles an incoming libp2p stream as a service (server side).
 // It reads the HTTP request from the peer, forwards it to the local upstream target,
 // and streams the response back. Supports streaming bodies for large responses.
-func HandleServiceStream(localTarget string) func(network.Stream) {
+func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation) func(network.Stream) {
 	return func(s network.Stream) {
 		defer s.Close()
 		start := time.Now()
@@ -64,8 +64,10 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 		reader := protocol.NewStreamReader(s)
 		writer := protocol.NewStreamWriter(s)
 
+		var peerHello *protocol.Hello
+		var err error
 		if streamUsesHello(s) {
-			peerHello, err := reader.ReadHello()
+			peerHello, err = reader.ReadHello()
 			if err != nil {
 				log.Printf("service stream read hello failed peer=%s err=%v duration=%s", remotePeer, err, time.Since(start))
 				_ = writer.WriteError(&protocol.Error{Code: 400, Message: "decode hello: " + err.Error()})
@@ -84,6 +86,31 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 			remoteProtocolVersion := fmt.Sprintf("%d.%d", peerHello.ProtocolMajor, peerHello.ProtocolMinor)
 			RecordNegotiation("service", peerHello.Role, string(s.Protocol()), remoteProtocolVersion, negotiated)
 			log.Printf("service protocol negotiated peer=%s remote_role=%s local_role=service stream_protocol_id=%s protocol=%s peer_protocol=%s capabilities=%v", remotePeer, peerHello.Role, s.Protocol(), protocol.ProtocolVersion, remoteProtocolVersion, negotiated)
+		}
+
+		if connectAuth != nil && connectAuth.Require && peerHello != nil && peerHello.Role == "bridge" {
+			if !hasCapability(peerHello.Capabilities, protocol.CapabilityConnectProofV1) {
+				_ = writer.WriteError(&protocol.Error{Code: 426, Message: "connect proof required"})
+				return
+			}
+			proof, err := reader.ReadConnectProof()
+			if err != nil {
+				log.Printf("service stream read connect proof failed peer=%s err=%v duration=%s", remotePeer, err, time.Since(start))
+				code := 400
+				msg := "decode connect proof: " + err.Error()
+				if strings.Contains(err.Error(), "expected ConnectProof") {
+					code = 428
+					msg = "connect proof required"
+				}
+				_ = writer.WriteError(&protocol.Error{Code: code, Message: msg})
+				return
+			}
+			if err := connectAuth.Validate(remotePeer, s.Conn().RemotePublicKey(), proof); err != nil {
+				log.Printf("service stream connect proof rejected peer=%s err=%v duration=%s", remotePeer, err, time.Since(start))
+				_ = writer.WriteError(&protocol.Error{Code: 403, Message: err.Error()})
+				return
+			}
+			log.Printf("service stream connect proof accepted peer=%s service=%s namespace=%s/%s duration=%s", remotePeer, connectAuth.ServiceID, connectAuth.ClusterID, connectAuth.NamespaceID, time.Since(start))
 		}
 
 		// Read request header
@@ -209,12 +236,21 @@ func HandleServiceStream(localTarget string) func(network.Stream) {
 
 // HandleClientRequest sends an HTTP request over a libp2p stream and reads the response.
 // Supports streaming bodies for both request and response.
-func HandleClientRequest(s network.Stream, role, method, path, query string, headers map[string][]string, body io.Reader) (*http.Response, error) {
+func HandleClientRequest(s network.Stream, role, method, path, query string, headers map[string][]string, body io.Reader, connectProof *protocol.ConnectProof) (*http.Response, error) {
 	writer := protocol.NewStreamWriter(s)
 	reader := protocol.NewStreamReader(s)
 
-	if err := negotiateClientHello(s, reader, writer, role); err != nil {
+	peerHello, err := negotiateClientHello(s, reader, writer, role)
+	if err != nil {
 		return nil, err
+	}
+	if connectProof != nil {
+		if peerHello == nil || !hasCapability(peerHello.Capabilities, protocol.CapabilityConnectProofV1) {
+			return nil, fmt.Errorf("remote peer does not support connect proof")
+		}
+		if err := writer.WriteConnectProof(connectProof); err != nil {
+			return nil, fmt.Errorf("write connect proof: %w", err)
+		}
 	}
 
 	// Determine content length hint
@@ -230,7 +266,7 @@ func HandleClientRequest(s network.Stream, role, method, path, query string, hea
 	}
 
 	// Write request header
-	err := writer.WriteRequestHeader(&protocol.RequestHeader{
+	err = writer.WriteRequestHeader(&protocol.RequestHeader{
 		Method:            method,
 		Path:              path,
 		Query:             query,
@@ -301,34 +337,39 @@ func HandleClientRequest(s network.Stream, role, method, path, query string, hea
 	return resp, nil
 }
 
-func negotiateClientHello(s network.Stream, reader *protocol.StreamReader, writer *protocol.StreamWriter, role string) error {
+func negotiateClientHello(s network.Stream, reader *protocol.StreamReader, writer *protocol.StreamWriter, role string) (*protocol.Hello, error) {
 	if !streamUsesHello(s) {
-		return nil
+		return nil, nil
 	}
 	if err := writer.WriteHello(localHello(role)); err != nil {
-		return fmt.Errorf("write hello: %w", err)
+		return nil, fmt.Errorf("write hello: %w", err)
 	}
 	peerHello, err := reader.ReadHello()
 	if err != nil {
-		return fmt.Errorf("read hello: %w", err)
+		return nil, fmt.Errorf("read hello: %w", err)
 	}
 	if err := validatePeerHello(peerHello); err != nil {
-		return err
+		return nil, err
 	}
 	negotiated := protocol.NegotiateCapabilities(peerHello.Capabilities)
 	remoteProtocolVersion := fmt.Sprintf("%d.%d", peerHello.ProtocolMajor, peerHello.ProtocolMinor)
 	RecordNegotiation(role, peerHello.Role, string(s.Protocol()), remoteProtocolVersion, negotiated)
 	log.Printf("client protocol negotiated remote_role=%s local_role=%s stream_protocol_id=%s protocol=%s peer_protocol=%s capabilities=%v", peerHello.Role, role, s.Protocol(), protocol.ProtocolVersion, remoteProtocolVersion, negotiated)
-	return nil
+	return peerHello, nil
 }
 
 // StartClientWebSocketUpgrade sends a websocket upgrade request and leaves the
 // libp2p stream in raw byte mode after the 101 response header.
-func StartClientWebSocketUpgrade(s network.Stream, role, method, path, query string, headers map[string][]string) (*protocol.ResponseHeader, error) {
+func StartClientWebSocketUpgrade(s network.Stream, role, method, path, query string, headers map[string][]string, connectProof *protocol.ConnectProof) (*protocol.ResponseHeader, error) {
 	writer := protocol.NewStreamWriter(s)
 	reader := protocol.NewStreamReader(s)
-	if err := negotiateClientHello(s, reader, writer, role); err != nil {
+	if _, err := negotiateClientHello(s, reader, writer, role); err != nil {
 		return nil, err
+	}
+	if connectProof != nil {
+		if err := writer.WriteConnectProof(connectProof); err != nil {
+			return nil, fmt.Errorf("write connect proof: %w", err)
+		}
 	}
 	if err := writer.WriteRequestHeader(&protocol.RequestHeader{Method: method, Path: path, Query: query, Headers: headers, ContentLengthHint: 0}); err != nil {
 		return nil, fmt.Errorf("write websocket request header: %w", err)
@@ -341,6 +382,15 @@ func StartClientWebSocketUpgrade(s network.Stream, role, method, path, query str
 		return nil, fmt.Errorf("server error (code %d): %s", errFrame.Code, errFrame.Message)
 	}
 	return respHeader, nil
+}
+
+func hasCapability(caps []string, want string) bool {
+	for _, cap := range caps {
+		if cap == want {
+			return true
+		}
+	}
+	return false
 }
 
 func isWebSocketUpgrade(headers map[string][]string) bool {

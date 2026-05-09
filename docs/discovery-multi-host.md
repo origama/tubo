@@ -117,7 +117,7 @@ Policy chiave:
 - mai committata nel repository;
 - ruotabile in caso di compromissione.
 
-### 3.2 Allowlist PeerID (parziale: relay implementato)
+### 3.2 Allowlist PeerID (connection-level: implementata su relay/edge/service/bridge)
 
 Configurazione desiderata:
 
@@ -130,14 +130,15 @@ Comportamento richiesto:
 3. rifiutare annunci discovery firmati da PeerID non allowlisted;
 4. rifiutare mapping `ServiceName -> PeerID` non previsto.
 
-Implementazione attuale/parziale:
+Implementazione attuale:
 
 - `ConnectionGater` per livello connessione;
-- parser `LIBP2P_ALLOWED_PEERS` e enforcement connessioni sul `relay`.
+- parser `LIBP2P_ALLOWED_PEERS` e enforcement connessioni su `relay`, `edge`, `service` e `bridge`.
 
 Implementazione ancora necessaria:
 
-- controlli applicativi in discovery handler e stream handler su gateway/agent.
+- controlli applicativi in discovery handler e stream handler su gateway/agent;
+- binding `ServiceName -> PeerID` oltre il semplice gate di connessione.
 
 ### 3.3 Binding ServiceName -> PeerID (target)
 

@@ -2,11 +2,14 @@ package protocol_test
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
 	"io"
 	"net/http"
 	"testing"
 	"time"
 
+	capability "github.com/origama/tubo/internal/capability"
 	"github.com/origama/tubo/internal/protocol"
 )
 
@@ -27,7 +30,7 @@ func TestHelloRoundtrip(t *testing.T) {
 		ProtocolMajor: uint16(protocol.ProtocolMajor),
 		ProtocolMinor: uint16(protocol.ProtocolMinor),
 		Role:          "edge",
-		Capabilities:  []string{protocol.CapabilityHelloV1},
+		Capabilities:  protocol.SupportedCapabilities(),
 	}
 
 	var buf bytes.Buffer
@@ -46,8 +49,43 @@ func TestHelloRoundtrip(t *testing.T) {
 	if decoded.Role != original.Role {
 		t.Fatalf("role: got %q want %q", decoded.Role, original.Role)
 	}
-	if len(decoded.Capabilities) != 1 || decoded.Capabilities[0] != protocol.CapabilityHelloV1 {
+	if len(decoded.Capabilities) != 2 || decoded.Capabilities[0] != protocol.CapabilityHelloV1 || decoded.Capabilities[1] != protocol.CapabilityConnectProofV1 {
 		t.Fatalf("capabilities=%v", decoded.Capabilities)
+	}
+}
+
+func TestConnectProofRoundtrip(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := capability.SignConnectCapability(capability.ConnectCapability{
+		ClusterID:   "cluster-a",
+		NamespaceID: "default",
+		ServiceID:   "svc-a",
+		Permissions: []string{capability.PermissionConnect},
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := protocol.NewConnectProof(grant, "12D3KooWsubject", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := protocol.EncodeFrame(&buf, &proof); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := protocol.NewStreamReader(&buf).ReadConnectProof()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ClusterID != proof.ClusterID || decoded.NamespaceID != proof.NamespaceID || decoded.ServiceID != proof.ServiceID || decoded.SubjectPeerID != proof.SubjectPeerID {
+		t.Fatalf("decoded proof scope mismatch: %#v vs %#v", decoded, proof)
+	}
+	if err := protocol.VerifyConnectProofSignature(*decoded, priv.Public().(ed25519.PublicKey)); err != nil {
+		t.Fatalf("verify signature: %v", err)
 	}
 }
 

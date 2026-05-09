@@ -16,5 +16,5 @@ Updated: 2026-05-09 18:10 UTC
 - `RUN_INTEGRATION=1 go test -v ./tests/integration`
 
 ## Notes
-- Token sharing is authorization-layer only; no data-plane connect proof enforcement yet.
-- The token carries cluster/namespace/service identity and a connect-only grant, but the service bridge path still uses the existing discovery/connect flow.
+- Token sharing now feeds the data-plane connect proof path in namespace-v2: the bridge materializes the grant into a signed connect proof before upstream forwarding.
+- The token still carries cluster/namespace/service identity and a connect-only grant, but it is now enforced by the service stream handler instead of only by discovery/connect routing.

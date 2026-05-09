@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/multiformats/go-varint"
 )
@@ -44,6 +45,9 @@ func EncodeFrame(w io.Writer, msg any) error {
 	case *Error:
 		ft = FrameTypeError
 		payload, err = encodeError(m)
+	case *ConnectProof:
+		ft = FrameTypeConnectProof
+		payload, err = encodeConnectProof(m)
 	default:
 		return fmt.Errorf("unknown frame type: %T", msg)
 	}
@@ -103,12 +107,33 @@ func decodeString(r io.Reader) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode string length: %w", err)
 	}
-	b := make([]byte, lenVal)
-	_, err = io.ReadFull(r, b)
+	b, err := decodeBytesWithLen(r, lenVal)
 	if err != nil {
-		return "", fmt.Errorf("read string data: %w", err)
+		return "", err
 	}
 	return string(b), nil
+}
+
+func encodeBytes(b []byte) []byte {
+	hdr := varint.ToUvarint(uint64(len(b)))
+	return append(hdr, b...)
+}
+
+func decodeBytes(r io.Reader) ([]byte, error) {
+	lenVal, err := readVarint(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode bytes length: %w", err)
+	}
+	return decodeBytesWithLen(r, lenVal)
+}
+
+func decodeBytesWithLen(r io.Reader, lenVal uint64) ([]byte, error) {
+	b := make([]byte, lenVal)
+	_, err := io.ReadFull(r, b)
+	if err != nil {
+		return nil, fmt.Errorf("read bytes data: %w", err)
+	}
+	return b, nil
 }
 
 // --- Headers encoding (multi-value preserved) ---
@@ -376,6 +401,60 @@ func decodeError(r io.Reader) (*Error, error) {
 	}
 
 	return &Error{Code: code, Message: message}, nil
+}
+
+func encodeConnectProof(m *ConnectProof) ([]byte, error) {
+	result := make([]byte, 0, 256)
+	result = append(result, encodeString(m.ClusterID)...)
+	result = append(result, encodeString(m.NamespaceID)...)
+	result = append(result, encodeString(m.ServiceID)...)
+	result = append(result, encodeString(m.SubjectPeerID)...)
+	result = append(result, encodeString(m.ExpiresAt.UTC().Format(time.RFC3339Nano))...)
+	result = append(result, encodeBytes(m.Nonce)...)
+	result = append(result, encodeBytes(m.Capability)...)
+	result = append(result, encodeBytes(m.Signature)...)
+	return result, nil
+}
+
+// DecodeConnectProof decodes a connect proof payload from a reader.
+func DecodeConnectProof(r io.Reader) (*ConnectProof, error) {
+	clusterID, err := decodeString(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode connect proof cluster_id: %w", err)
+	}
+	namespaceID, err := decodeString(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode connect proof namespace_id: %w", err)
+	}
+	serviceID, err := decodeString(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode connect proof service_id: %w", err)
+	}
+	subjectPeerID, err := decodeString(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode connect proof subject_peer_id: %w", err)
+	}
+	expiresAtRaw, err := decodeString(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode connect proof expires_at: %w", err)
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, expiresAtRaw)
+	if err != nil {
+		return nil, fmt.Errorf("parse connect proof expires_at: %w", err)
+	}
+	nonce, err := decodeBytes(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode connect proof nonce: %w", err)
+	}
+	capabilityBytes, err := decodeBytes(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode connect proof capability: %w", err)
+	}
+	signature, err := decodeBytes(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode connect proof signature: %w", err)
+	}
+	return &ConnectProof{ClusterID: clusterID, NamespaceID: namespaceID, ServiceID: serviceID, SubjectPeerID: subjectPeerID, ExpiresAt: expiresAt, Nonce: nonce, Capability: capabilityBytes, Signature: signature}, nil
 }
 
 // sortStrings sorts a string slice in place for deterministic encoding.

@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-09 16:25 UTC
+> **Last updated:** 2026-05-09 19:56 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -92,6 +92,7 @@
 | 7.1 | Unit tests for all packages | ✅ | protocol (12) + discovery (10) + routing (14) + forwarding (3) = 39 tests passing |
 | 7.2 | Integration tests (multi-node scenarios) | ⏳ | Added `tests/integration` with auto-discovery/proxy, large-body streaming, lease expiry, hop-by-hop header stripping, isolated-network relay fallback coverage (`TestRelayFallbackAcrossIsolatedNetworks`, `RUN_INTEGRATION=1`), plus NAT/relay stress scenarios (`TestRelayNATMixedTrafficStress`, `TestRelayNATTrafficDuringServiceRestart`) |
 | 7.3 | E2E docker-compose test suite | ⏳ | Added `tests/smoke-compose.sh`, `tests/smoke-compose-relay-nat.sh`, and `tests/smoke-compose-private-overlay-multi-service.sh`; coverage now includes isolated-network relay traffic plus a 3-service private-overlay Host-routing scenario |
+| 7.5 | Dedicated cluster-aware compose workflow smoke | ✅ | Added `docker-compose.tubo-workflow.yml` + `tests/smoke-compose-tubo-workflow.sh`; covers create/get/describe/share/connect against a fresh cluster/namespace/service setup and now passes with namespace-scoped membership + service isolation |
 | 7.4 | CI pipeline (GitHub Actions) | ✅ | `.github/workflows/ci.yml`: build + test + golangci-lint on push/PR |
 
 ---
@@ -153,6 +154,8 @@
 | C.51 | Issue #87 — harden Discovery V2 validation and replay protection | ✅ | Done: added topic/auth checks, authority-backed capability validation, optional service-claim validation, bounded nonce replay protection, and invalid-message tests; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 | C.52 | Issue #88 — service-claim lifecycle for namespace-scoped service publishing | ✅ | Done: added local `create service/<name>`, deterministic namespace-scoped service IDs, signed service-claim persistence, cluster-mode `attach`/Discovery V2 claim loading, and service claim validation keyed by `service_id`; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 | C.53 | Issue #89 — service sharing: connect-only grants for service access | ✅ | Done: added `tubo share service/<name>` and `tubo connect --token <service-share>` for connect-only bearer grants scoped to cluster/namespace/service; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
+| C.54 | Peer allowlist end-to-end across runtime binaries | ✅ | Wired `LIBP2P_ALLOWED_PEERS` into relay/edge/service/bridge host creation; added integration coverage for allowed connections and rogue-peer rejection |
+| C.55 | Issue #90 — data-plane connect proof authorization | ✅ | Added protocol connect-proof frames, service-side proof verification/replay protection, bridge proof emission from connect grants, and integration coverage for valid/missing/expired/replayed/scope-mismatched proofs; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 
 ---
 

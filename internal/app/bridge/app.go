@@ -3,12 +3,15 @@ package bridge
 import (
 	"bufio"
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	capability "github.com/origama/tubo/internal/capability"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/protocol"
 	"io"
 	"log"
 	"net"
@@ -21,6 +24,7 @@ type Config struct {
 	Listen, Seed, P2PListen, ServiceAddr, ServiceSeed, ServiceP2PListen, PrivateKeyFile, PrivateKeyB64 string
 	RelayPeers                                                                                         []string
 	Autorelay, HolePunching                                                                            bool
+	ConnectGrant                                                                                       *capability.ConnectCapability
 }
 type App struct {
 	cfg        Config
@@ -53,6 +57,12 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	relays := parseAddrInfos(cfg.RelayPeers)
 	var opts []libp2p.Option
+	if allowed, configured, err := p2p.LoadAllowedPeersFromEnv(); err != nil {
+		return nil, err
+	} else if configured {
+		opts = append(opts, libp2p.ConnectionGater(p2p.NewPeerAllowlistConnectionGater(allowed)))
+		log.Printf("peer allowlist enabled peers=%d", len(allowed))
+	}
 	if len(relays) > 0 && cfg.Autorelay {
 		opts = append(opts, libp2p.EnableAutoRelayWithStaticRelays(relays))
 	}
@@ -69,6 +79,9 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	if cfg.HolePunching {
 		log.Printf("bridge hole punching enabled relay_peers=%d autorelay=%t", len(relays), cfg.Autorelay)
+	}
+	if cfg.ConnectGrant != nil {
+		log.Printf("bridge connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)
 	}
 	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -125,7 +138,12 @@ func (a *App) mux() *http.ServeMux {
 			a.serveWebSocket(w, r, s, headers)
 			return
 		}
-		resp, err := p2p.HandleClientRequest(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body)
+		proof, err := a.connectProof()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		resp, err := p2p.HandleClientRequest(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body, proof)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return
@@ -147,7 +165,12 @@ func (a *App) serveWebSocket(w http.ResponseWriter, r *http.Request, s network.S
 		http.Error(w, "websocket hijack unsupported", http.StatusInternalServerError)
 		return
 	}
-	respHeader, err := p2p.StartClientWebSocketUpgrade(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers)
+	proof, err := a.connectProof()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	respHeader, err := p2p.StartClientWebSocketUpgrade(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, proof)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -189,6 +212,25 @@ func proxyRawClient(s network.Stream, conn net.Conn, clientReader io.Reader) {
 	<-done
 	_ = s.Close()
 	_ = conn.Close()
+}
+
+func (a *App) connectProof() (*protocol.ConnectProof, error) {
+	if a.cfg.ConnectGrant == nil {
+		return nil, nil
+	}
+	priv := a.host.Peerstore().PrivKey(a.host.ID())
+	if priv == nil {
+		return nil, fmt.Errorf("no private key for peer")
+	}
+	raw, err := priv.Raw()
+	if err != nil {
+		return nil, fmt.Errorf("raw private key: %w", err)
+	}
+	proof, err := protocol.NewConnectProof(*a.cfg.ConnectGrant, a.host.ID().String(), ed25519.PrivateKey(raw))
+	if err != nil {
+		return nil, fmt.Errorf("build connect proof: %w", err)
+	}
+	return &proof, nil
 }
 
 func isWebSocketRequest(r *http.Request) bool {
