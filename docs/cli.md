@@ -24,6 +24,7 @@ relay     = avvia un relay/bootstrap node
 join      = configura questa macchina per uno swarm esistente
 
 get       = lista o recupera risorse
+create    = crea risorse locali nella config
 describe  = mostra dettagli leggibili
 inspect   = mostra dettagli tecnici/raw
 watch     = osserva servizi nello swarm
@@ -443,12 +444,15 @@ network:
 
 ## Local resource CLI (Phase 2a)
 
-Dopo il nuovo model locale puoi ispezionare e selezionare overlay, cluster e namespace già presenti nella config:
+Dopo il nuovo model locale puoi ispezionare, creare e selezionare overlay, cluster e namespace già presenti nella config:
 
 ```bash
 tubo get overlays
 tubo get clusters
 tubo get namespaces
+
+tubo create cluster/home
+tubo create namespace/observability
 
 tubo describe overlay/public
 tubo describe cluster/home
@@ -463,6 +467,8 @@ Note:
 
 - `get overlays` e `get clusters` leggono solo la config locale.
 - `get namespaces` usa il `current_cluster` corrente.
+- `create cluster/...` genera un authority keypair locale, scrive un `cluster_id`, imposta `authority_public_key`, crea il namespace `default` e salva una capability di membership locale senza stampare segreti.
+- `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente e rende esplicito il nuovo `current_namespace`.
 - `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.
 - `use` aggiorna solo il file di config locale; non avvia o ferma processi runtime.
 - `--json` resta disponibile per `get` quando utile.

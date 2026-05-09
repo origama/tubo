@@ -85,10 +85,12 @@ type Overlay struct {
 }
 
 type Cluster struct {
-	ClusterID          string               `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
-	AuthorityPublicKey string               `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
-	Capabilities       []string             `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Namespaces         map[string]Namespace `yaml:"namespaces,omitempty" json:"namespaces,omitempty"`
+	ClusterID                string               `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
+	AuthorityPublicKey       string               `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
+	AuthorityPrivateKeyFile  string               `yaml:"authority_private_key_file,omitempty" json:"authority_private_key_file,omitempty"`
+	MembershipCapabilityFile string               `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
+	Capabilities             []string             `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Namespaces               map[string]Namespace `yaml:"namespaces,omitempty" json:"namespaces,omitempty"`
 }
 
 type Namespace struct{}
@@ -214,9 +216,11 @@ func cloneOverlayMap(in map[string]Overlay) map[string]Overlay {
 
 func cloneCluster(in Cluster) Cluster {
 	out := Cluster{
-		ClusterID:          in.ClusterID,
-		AuthorityPublicKey: in.AuthorityPublicKey,
-		Capabilities:       cloneStrings(in.Capabilities),
+		ClusterID:                in.ClusterID,
+		AuthorityPublicKey:       in.AuthorityPublicKey,
+		AuthorityPrivateKeyFile:  in.AuthorityPrivateKeyFile,
+		MembershipCapabilityFile: in.MembershipCapabilityFile,
+		Capabilities:             cloneStrings(in.Capabilities),
 	}
 	if len(in.Namespaces) > 0 {
 		out.Namespaces = make(map[string]Namespace, len(in.Namespaces))

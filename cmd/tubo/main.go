@@ -123,6 +123,8 @@ func run(args []string) error {
 		return watchCmd(cleanArgs)
 	case "use":
 		return localUseCmd(args[1:])
+	case "create":
+		return localCreateCmd(args[1:])
 	case "logs":
 		return logsCmd(args[1:])
 	case "stop":
@@ -300,7 +302,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|create|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -312,6 +314,7 @@ Usage:
   tubo connect <service> [--local 127.0.0.1:PORT]
   tubo get services
   tubo use overlay/public
+  tubo create cluster/home
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [tubo-public]
@@ -330,6 +333,7 @@ Discovery and process management:
   tubo inspect service/myapp --json
   tubo watch services
   tubo use overlay/public
+  tubo create cluster/home
   tubo ps
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
@@ -439,6 +443,12 @@ Install local network config and swarm key. Does not start processes.`)
   tubo use namespace/<name>
 
 Select a local overlay/cluster/namespace context in the config file.`)
+	case "create":
+		fmt.Println(`Usage:
+  tubo create cluster/<name>
+  tubo create namespace/<name>
+
+Create local clusters and namespaces in the current config.`)
 	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:

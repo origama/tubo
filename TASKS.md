@@ -144,7 +144,8 @@
 | C.42 | Signed public onboarding + CLI UX simplification (PR #68 follow-up) | ✅ | Implemented, merged to `main`, and released in v0.5.1; issues #69 #71 #72 #73 #74 are closed, PR #68 is closed, the public bundle and CLI UX are live, and real Linode validation passed end-to-end |
 | C.43 | Issue #77 — overlay/cluster/namespace config resource model (Phase 1) | ✅ | Done: added local resource model + legacy `network:` compatibility; verified with `go test ./...` and `./tests/smoke-compose.sh`; manual temp run confirmed new + legacy YAML fields stay in sync |
 | C.44 | Issue #78 — local resource CLI for overlays/clusters/namespaces (Phase 2a) | ✅ | Done: added `get`/`describe`/`use` local resource commands on top of #77 without touching runtime behavior; verified with `go test ./...`, `./tests/smoke-compose.sh`, and manual temp config run |
-| C.45 | Issue #79 — capability foundation (signed membership/service claim/connect) | ⏳ | In progress: add cryptographic capability primitives and deterministic sign/verify helpers without wiring them into discovery/runtime yet |
+| C.45 | Issue #79 — capability foundation (signed membership/service claim/connect) | ✅ | Done: added cryptographic capability primitives and deterministic sign/verify helpers without wiring them into discovery/runtime yet; verified with `go test ./...` |
+| C.46 | Issue #80 — CLI resource creation for clusters and namespaces | ⏳ | In progress: add local `create cluster/...` and `create namespace/...` flows on top of #77/#78/#79 |
 
 ---
 
@@ -165,7 +166,7 @@ The following packages have no `_test.go` files yet:
 
 ### Now
 
-1. **Issue #79 — capability foundation**: add signed membership/service claim/connect capability primitives and helpers without wiring them into discovery/runtime yet (`enhancement`, `security`, `area:protocol`, `prio:high`)
+1. **Issue #80 — CLI resource creation for clusters and namespaces**: add local `create cluster/...` and `create namespace/...` flows without changing runtime behavior (`enhancement`, `area:cli`, `area:docs`, `prio:medium`)
 2. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)
 3. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
 4. **Issue #9 — malformed security handshake after restarts**: capire e correggere gli errori intermittenti post-restart (`bug`, `security`, `area:protocol`, `investigation`, `prio:high`)

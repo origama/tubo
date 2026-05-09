@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -802,6 +803,120 @@ service:
 		if _, err := capture(func() error { return run(args) }); err == nil {
 			t.Fatalf("expected legacy config to reject %v", args)
 		}
+	}
+}
+
+func writeCreateClusterConfig(t *testing.T) string {
+	t.Helper()
+	configHome := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configPath := filepath.Join(configHome, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		Role:           "service",
+		CurrentOverlay: "public",
+		Overlays: map[string]cfgpkg.Overlay{
+			"public": {},
+		},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	return configPath
+}
+
+func TestCreateClusterAndNamespace(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+
+	out, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "PRIVATE KEY") {
+		t.Fatalf("create output leaked private key material: %s", out)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster, ok := cfg.Clusters["home"]
+	if !ok {
+		t.Fatalf("cluster home not created: %#v", cfg.Clusters)
+	}
+	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" {
+		t.Fatalf("cluster missing identity data: %#v", cluster)
+	}
+	if cluster.AuthorityPrivateKeyFile == "" || cluster.MembershipCapabilityFile == "" {
+		t.Fatalf("cluster missing persisted paths: %#v", cluster)
+	}
+	if cfg.CurrentCluster != "home" || cfg.CurrentNamespace != "default" {
+		t.Fatalf("unexpected current context: %#v", cfg)
+	}
+	if _, err := os.Stat(cluster.AuthorityPrivateKeyFile); err != nil {
+		t.Fatalf("private key file missing: %v", err)
+	}
+	capBytes, err := os.ReadFile(cluster.MembershipCapabilityFile)
+	if err != nil {
+		t.Fatalf("capability file missing: %v", err)
+	}
+	var membership capability.MembershipCapability
+	if err := json.Unmarshal(capBytes, &membership); err != nil {
+		t.Fatalf("capability json invalid: %v", err)
+	}
+	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(cluster.AuthorityPublicKey))
+	if err != nil {
+		t.Fatalf("parse authority public key: %v", err)
+	}
+	cryptoPub, ok := pubKey.(ssh.CryptoPublicKey)
+	if !ok {
+		t.Fatalf("authority public key does not expose crypto key: %T", pubKey)
+	}
+	edPub, ok := cryptoPub.CryptoPublicKey().(ed25519.PublicKey)
+	if !ok {
+		t.Fatalf("authority public key is not ed25519: %T", cryptoPub.CryptoPublicKey())
+	}
+	if err := capability.VerifyMembershipCapability(membership, edPub, cluster.ClusterID, "default", cluster.ClusterID); err != nil {
+		t.Fatalf("membership capability verification failed: %v", err)
+	}
+
+	out, err = capture(func() error { return run([]string{"create", "namespace/observability", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "created namespace \"observability\"") {
+		t.Fatalf("unexpected namespace create output: %s", out)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CurrentNamespace != "observability" {
+		t.Fatalf("current_namespace = %q, want observability", cfg.CurrentNamespace)
+	}
+	if _, ok := cfg.Clusters["home"].Namespaces["observability"]; !ok {
+		t.Fatalf("namespace not added: %#v", cfg.Clusters["home"].Namespaces)
+	}
+
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err == nil {
+		t.Fatal("expected duplicate cluster error")
+	}
+	if _, err := capture(func() error { return run([]string{"create", "namespace/observability", "--config", configPath}) }); err == nil {
+		t.Fatal("expected duplicate namespace error")
+	}
+
+	blankConfigHome := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", blankConfigHome)
+	blankConfigPath := filepath.Join(blankConfigHome, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(blankConfigPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(blankConfigPath, cfgpkg.Config{Role: "service"}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "namespace/ops", "--config", blankConfigPath}) }); err == nil {
+		t.Fatal("expected namespace creation to require a current cluster")
 	}
 }
 
