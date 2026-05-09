@@ -123,6 +123,8 @@ func run(args []string) error {
 		return watchCmd(cleanArgs)
 	case "use":
 		return localUseCmd(args[1:])
+	case "share":
+		return localShareCmd(args[1:])
 	case "create":
 		return localCreateCmd(args[1:])
 	case "logs":
@@ -302,7 +304,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|create|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|create|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -315,6 +317,7 @@ Usage:
   tubo get services
   tubo use overlay/public
   tubo create cluster/home
+  tubo share cluster/home --permission member
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [tubo-public]
@@ -334,6 +337,7 @@ Discovery and process management:
   tubo watch services
   tubo use overlay/public
   tubo create cluster/home
+  tubo share cluster/home --permission member
   tubo ps
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
@@ -434,8 +438,10 @@ Run an HTTP ingress gateway that routes by discovered services.`)
   tubo join [tubo-public]
   tubo join --bundle-url <url>
   tubo join --relay <multiaddr> --swarm-key <path>
+  tubo join cluster/<name> --token <cluster-invite>
+  tubo join <cluster-invite>
 
-Install local network config and swarm key. Does not start processes.`)
+Install local network config, swarm key, or cluster membership. Does not start processes.`)
 	case "use":
 		fmt.Println(`Usage:
   tubo use overlay/<name>
@@ -443,6 +449,11 @@ Install local network config and swarm key. Does not start processes.`)
   tubo use namespace/<name>
 
 Select a local overlay/cluster/namespace context in the config file.`)
+	case "share":
+		fmt.Println(`Usage:
+  tubo share cluster/<name> [--permission member] [--namespace <name>] [--expires <duration>]
+
+Create a copyable cluster invitation from local authority material.`)
 	case "create":
 		fmt.Println(`Usage:
   tubo create cluster/<name>
@@ -598,6 +609,9 @@ func effectiveDefaultPublicBundleURL() string {
 }
 
 func joinCmd(args []string) error {
+	if len(args) > 0 && (strings.HasPrefix(args[0], "cluster/") || isClusterInviteToken(args[0])) {
+		return localJoinClusterInviteCmd(args)
+	}
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	var relayPeers []string
 	fs.Var(csvFlag{&relayPeers}, "relay", "")
@@ -608,10 +622,22 @@ func joinCmd(args []string) error {
 	force := fs.Bool("force", false, "")
 	jsonOut := fs.Bool("json", false, "")
 	check := fs.Bool("check", false, "")
+	token := fs.String("token", "", "")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	relayPeers = uniqueStrings(relayPeers)
+	manualMode := len(relayPeers) > 0 || *swarmKeyPath != "" || *swarmKeyB64 != ""
+	_, _, inviteMode, inviteErr := parseClusterInviteJoin(fs.Args(), *token)
+	if inviteErr != nil {
+		return inviteErr
+	}
+	if inviteMode {
+		if manualMode || *bundleURL != "" {
+			return errors.New("cluster invite join cannot be combined with bundle/manual join flags")
+		}
+		return localJoinClusterInviteCmd(args)
+	}
 	networkName := ""
 	if fs.NArg() > 1 {
 		return errors.New("usage: tubo join [<network-name>] [--bundle-url <url>] [flags]")
@@ -619,7 +645,6 @@ func joinCmd(args []string) error {
 	if fs.NArg() == 1 {
 		networkName = fs.Arg(0)
 	}
-	manualMode := len(relayPeers) > 0 || *swarmKeyPath != "" || *swarmKeyB64 != ""
 	bundleMode := networkName != "" || *bundleURL != ""
 	if manualMode && bundleMode {
 		return errors.New("join manual flags (--relay/--swarm-key) cannot be combined with bundle mode")

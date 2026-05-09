@@ -85,12 +85,25 @@ type Overlay struct {
 }
 
 type Cluster struct {
-	ClusterID                string               `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
-	AuthorityPublicKey       string               `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
-	AuthorityPrivateKeyFile  string               `yaml:"authority_private_key_file,omitempty" json:"authority_private_key_file,omitempty"`
-	MembershipCapabilityFile string               `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
-	Capabilities             []string             `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
-	Namespaces               map[string]Namespace `yaml:"namespaces,omitempty" json:"namespaces,omitempty"`
+	ClusterID                string                  `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
+	AuthorityPublicKey       string                  `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
+	AuthorityPrivateKeyFile  string                  `yaml:"authority_private_key_file,omitempty" json:"authority_private_key_file,omitempty"`
+	MembershipCapabilityFile string                  `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
+	MembershipGrant          *ClusterMembershipGrant `yaml:"membership_grant,omitempty" json:"membership_grant,omitempty"`
+	Capabilities             []string                `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Namespaces               map[string]Namespace    `yaml:"namespaces,omitempty" json:"namespaces,omitempty"`
+}
+
+type ClusterMembershipGrant struct {
+	InviteToken        string    `yaml:"invite_token,omitempty" json:"invite_token,omitempty"`
+	InviteVersion      string    `yaml:"invite_version,omitempty" json:"invite_version,omitempty"`
+	ClusterName        string    `yaml:"cluster_name,omitempty" json:"cluster_name,omitempty"`
+	ClusterID          string    `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
+	AuthorityPublicKey string    `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
+	Namespace          string    `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	Role               string    `yaml:"role,omitempty" json:"role,omitempty"`
+	IssuedAt           time.Time `yaml:"issued_at,omitempty" json:"issued_at,omitempty"`
+	ExpiresAt          time.Time `yaml:"expires_at,omitempty" json:"expires_at,omitempty"`
 }
 
 type Namespace struct{}
@@ -221,6 +234,10 @@ func cloneCluster(in Cluster) Cluster {
 		AuthorityPrivateKeyFile:  in.AuthorityPrivateKeyFile,
 		MembershipCapabilityFile: in.MembershipCapabilityFile,
 		Capabilities:             cloneStrings(in.Capabilities),
+	}
+	if in.MembershipGrant != nil {
+		grant := *in.MembershipGrant
+		out.MembershipGrant = &grant
 	}
 	if len(in.Namespaces) > 0 {
 		out.Namespaces = make(map[string]Namespace, len(in.Namespaces))

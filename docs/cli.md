@@ -25,6 +25,7 @@ join      = configura questa macchina per uno swarm esistente
 
 get       = lista o recupera risorse
 create    = crea risorse locali nella config
+share     = crea inviti membership locali per un cluster
 describe  = mostra dettagli leggibili
 inspect   = mostra dettagli tecnici/raw
 watch     = osserva servizi nello swarm
@@ -444,7 +445,7 @@ network:
 
 ## Local resource CLI (Phase 2a)
 
-Dopo il nuovo model locale puoi ispezionare, creare e selezionare overlay, cluster e namespace già presenti nella config:
+Dopo il nuovo model locale puoi ispezionare, creare, invitare e selezionare overlay, cluster e namespace già presenti nella config:
 
 ```bash
 tubo get overlays
@@ -453,6 +454,9 @@ tubo get namespaces
 
 tubo create cluster/home
 tubo create namespace/observability
+
+tubo share cluster/home --permission member
+tubo join cluster/home --token <cluster-invite>
 
 tubo describe overlay/public
 tubo describe cluster/home
@@ -469,9 +473,11 @@ Note:
 - `get namespaces` usa il `current_cluster` corrente.
 - `create cluster/...` genera un authority keypair locale, scrive un `cluster_id`, imposta `authority_public_key`, crea il namespace `default` e salva una capability di membership locale senza stampare segreti.
 - `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente e rende esplicito il nuovo `current_namespace`.
+- `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile.
+- `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
 - `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.
 - `use` aggiorna solo il file di config locale; non avvia o ferma processi runtime.
-- `--json` resta disponibile per `get` quando utile.
+- `--json` resta disponibile per `get` e per i nuovi flussi locali quando utile.
 
 ## Topology
 

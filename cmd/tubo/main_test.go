@@ -386,7 +386,7 @@ func TestUsageMentionsIntentCommands(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "use", "bundle-url"} {
+	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "use", "share", "bundle-url"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("usage missing %q: %s", want, err)
 		}
@@ -803,6 +803,135 @@ service:
 		if _, err := capture(func() error { return run(args) }); err == nil {
 			t.Fatalf("expected legacy config to reject %v", args)
 		}
+	}
+}
+
+func extractClusterInviteToken(t *testing.T, out string) string {
+	t.Helper()
+	idx := strings.Index(out, clusterInviteTokenPrefix)
+	if idx < 0 {
+		t.Fatalf("invite token not found in output: %s", out)
+	}
+	end := idx
+	for end < len(out) {
+		if strings.ContainsRune(" \t\r\n", rune(out[end])) {
+			break
+		}
+		end++
+	}
+	token := out[idx:end]
+	if !strings.HasPrefix(token, clusterInviteTokenPrefix) {
+		t.Fatalf("invalid invite token extraction: %q", token)
+	}
+	return token
+}
+
+func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNamespace string) {
+	t.Helper()
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.CurrentCluster != "home" || cfg.CurrentNamespace != wantNamespace {
+		t.Fatalf("unexpected current context: %#v", cfg)
+	}
+	if cfg.Network.PrivateKeyFile != "" || len(cfg.Network.BootstrapPeers) != 0 || len(cfg.Network.RelayPeers) != 0 {
+		t.Fatalf("cluster invite join should not touch network config: %#v", cfg.Network)
+	}
+	cluster, ok := cfg.Clusters["home"]
+	if !ok {
+		t.Fatalf("cluster home missing after invite join: %#v", cfg.Clusters)
+	}
+	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" {
+		t.Fatalf("cluster metadata missing: %#v", cluster)
+	}
+	if cluster.MembershipGrant == nil {
+		t.Fatalf("membership grant missing: %#v", cluster)
+	}
+	grant := cluster.MembershipGrant
+	if grant.InviteToken != wantToken || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
+		t.Fatalf("unexpected membership grant: %#v", grant)
+	}
+}
+
+func TestClusterInvitationShareAndJoin(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "namespace/observability", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--namespace", "observability", "--permission", "member", "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "PRIVATE KEY") {
+		t.Fatalf("share output leaked private key material: %s", out)
+	}
+	if !strings.Contains(out, "tubo join cluster/home --token ") {
+		t.Fatalf("share output missing join command: %s", out)
+	}
+	token := extractClusterInviteToken(t, out)
+
+	joinHome := filepath.Join(t.TempDir(), "join-home")
+	t.Setenv("XDG_CONFIG_HOME", joinHome)
+	out, err = capture(func() error { return run([]string{"join", "cluster/home", "--token", token}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "joined cluster \"home\"") {
+		t.Fatalf("unexpected invite join output: %s", out)
+	}
+	assertJoinedClusterInviteConfig(t, filepath.Join(joinHome, "tubo", "config.yaml"), token, "observability")
+
+	joinPositional := filepath.Join(t.TempDir(), "join-positional")
+	t.Setenv("XDG_CONFIG_HOME", joinPositional)
+	if _, err := capture(func() error { return run([]string{"join", token}) }); err != nil {
+		t.Fatal(err)
+	}
+	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), token, "observability")
+}
+
+func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+
+	expiredOut, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "-1h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredToken := extractClusterInviteToken(t, expiredOut)
+	tamperedToken := func(token string) string {
+		parts := strings.Split(strings.TrimPrefix(token, clusterInviteTokenPrefix), ".")
+		if len(parts) != 2 {
+			t.Fatalf("unexpected token format: %s", token)
+		}
+		payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		payloadBytes = bytes.Replace(payloadBytes, []byte(`"cluster_name":"home"`), []byte(`"cluster_name":"evil"`), 1)
+		return clusterInviteTokenPrefix + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + parts[1]
+	}(expiredToken)
+
+	if _, err := capture(func() error { return run([]string{"join", expiredToken}) }); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected expired invite error, got %v", err)
+	}
+	joinHome := filepath.Join(t.TempDir(), "join-expired")
+	t.Setenv("XDG_CONFIG_HOME", joinHome)
+	if _, err := capture(func() error { return run([]string{"join", tamperedToken}) }); err == nil || !strings.Contains(err.Error(), "invalid cluster invite signature") {
+		t.Fatalf("expected tampered invite signature error, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(joinHome, "tubo", "config.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("tampered invite should not create config, stat err=%v", err)
 	}
 }
 
