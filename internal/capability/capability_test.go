@@ -135,9 +135,15 @@ func TestCapabilityFailures(t *testing.T) {
 	if err := VerifyMembershipCapability(wrongSubject, pub, "cluster-a", "default", "other-subject"); err == nil || !strings.Contains(err.Error(), "subject peer id mismatch") {
 		t.Fatalf("expected subject mismatch, got %v", err)
 	}
+	if err := VerifyMembershipCapability(signedMembership, pub, "cluster-a", "other-ns", "12D3KooWsubject"); err == nil || !strings.Contains(err.Error(), "namespace id mismatch") {
+		t.Fatalf("expected namespace mismatch, got %v", err)
+	}
 
 	if err := VerifyServiceClaim(signedServiceClaim, pub, "cluster-x", "default", "svc-a", "12D3KooWsubject"); err == nil || !strings.Contains(err.Error(), "cluster id mismatch") {
 		t.Fatalf("expected cluster mismatch, got %v", err)
+	}
+	if err := VerifyServiceClaim(signedServiceClaim, pub, "cluster-a", "other-ns", "svc-a", "12D3KooWsubject"); err == nil || !strings.Contains(err.Error(), "namespace id mismatch") {
+		t.Fatalf("expected namespace mismatch, got %v", err)
 	}
 	if err := VerifyServiceClaim(signedServiceClaim, pub, "cluster-a", "default", "svc-x", "12D3KooWsubject"); err == nil || !strings.Contains(err.Error(), "service id mismatch") {
 		t.Fatalf("expected service mismatch, got %v", err)
