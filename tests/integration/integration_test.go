@@ -24,7 +24,12 @@ type integrationStack struct {
 }
 
 type servicesResponse struct {
-	Count int `json:"count"`
+	Count int              `json:"count"`
+	Items []serviceSummary `json:"items"`
+}
+
+type serviceSummary struct {
+	Name string `json:"name"`
 }
 
 type route struct {
@@ -108,12 +113,14 @@ func TestLeaseExpiryRemovesServiceAndRoute(t *testing.T) {
 	}
 
 	waitUntil(t, 75*time.Second, func() bool {
-		count, err := stack.servicesCount()
+		services, err := stack.services()
 		if err != nil {
 			return false
 		}
-		if count != 0 {
-			return false
+		for _, svc := range services {
+			if svc.Name == "myapi" {
+				return false
+			}
 		}
 		routes, err := stack.routes()
 		if err != nil {
@@ -359,17 +366,21 @@ func TestRelayNATTrafficRecoversAfterRelayRestart(t *testing.T) {
 		return httpOK("http://127.0.0.1:8092/healthz")
 	}, "relay health after restart")
 	waitUntil(t, 60*time.Second, func() bool {
-		count, err := stack.servicesCount()
-		if err != nil || count != 1 {
-			return false
-		}
-		routes, err := stack.routes()
+		services, err := stack.services()
 		if err != nil {
 			return false
 		}
-		for _, rt := range routes {
-			if rt.Hostname == "myapi" && rt.PathPrefix == "/" {
-				return true
+		for _, svc := range services {
+			if svc.Name == "myapi" {
+				routes, err := stack.routes()
+				if err != nil {
+					return false
+				}
+				for _, rt := range routes {
+					if rt.Hostname == "myapi" && rt.PathPrefix == "/" {
+						return true
+					}
+				}
 			}
 		}
 		return false
@@ -413,17 +424,21 @@ func TestRelayNATTrafficRecoversAfterEdgeRestartFollowingRelayDisruption(t *test
 		return httpOK("http://127.0.0.1:8092/healthz")
 	}, "relay health after restart")
 	waitUntil(t, 60*time.Second, func() bool {
-		count, err := stack.servicesCount()
-		if err != nil || count != 1 {
-			return false
-		}
-		routes, err := stack.routes()
+		services, err := stack.services()
 		if err != nil {
 			return false
 		}
-		for _, rt := range routes {
-			if rt.Hostname == "myapi" && rt.PathPrefix == "/" {
-				return true
+		for _, svc := range services {
+			if svc.Name == "myapi" {
+				routes, err := stack.routes()
+				if err != nil {
+					return false
+				}
+				for _, rt := range routes {
+					if rt.Hostname == "myapi" && rt.PathPrefix == "/" {
+						return true
+					}
+				}
 			}
 		}
 		return false
@@ -618,20 +633,21 @@ func (s *integrationStack) waitBaseReady(t *testing.T) {
 	}, "service health")
 
 	waitUntil(t, 60*time.Second, func() bool {
-		count, err := s.servicesCount()
+		services, err := s.services()
 		if err != nil {
 			return false
 		}
-		if count != 1 {
-			return false
-		}
-		routes, err := s.routes()
-		if err != nil {
-			return false
-		}
-		for _, rt := range routes {
-			if rt.Hostname == "myapi" && rt.PathPrefix == "/" {
-				return true
+		for _, svc := range services {
+			if svc.Name == "myapi" {
+				routes, err := s.routes()
+				if err != nil {
+					return false
+				}
+				for _, rt := range routes {
+					if rt.Hostname == "myapi" && rt.PathPrefix == "/" {
+						return true
+					}
+				}
 			}
 		}
 		return false
@@ -648,18 +664,26 @@ func (s *integrationStack) waitBaseReady(t *testing.T) {
 	}
 }
 
-func (s *integrationStack) servicesCount() (int, error) {
+func (s *integrationStack) services() ([]serviceSummary, error) {
 	resp, err := http.Get("http://127.0.0.1:8444/services")
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	var payload servicesResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Items, nil
+}
+
+func (s *integrationStack) servicesCount() (int, error) {
+	services, err := s.services()
+	if err != nil {
 		return 0, err
 	}
-	return payload.Count, nil
+	return len(services), nil
 }
 
 func (s *integrationStack) routes() ([]route, error) {

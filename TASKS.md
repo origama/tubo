@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-09 07:56 UTC
+> **Last updated:** 2026-05-09 13:58 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -134,7 +134,7 @@
 | C.32 | Fix relay restart wedge on relay-first traffic | ⏳ | Partial progress: edge now drops stale limited conns and retries stream open for transient relay errors; service now maintains explicit circuit-v2 reservations and republishes once relay-ready, but full relay-restart failure-campaign revalidation is still pending because the distributed bench harness remains flaky |
 | C.33 | Reduce slow service restart recovery on relay-first path | ✅ | Fixed enough to make `RUN_INTEGRATION=1 go test -count=1 -run TestRelayNATTrafficDuringServiceRestart -v ./tests/integration` pass: service now republishes dynamic announcements only when relay reservation is ready, and edge retries transient `NO_RESERVATION` / dial-backoff stream-open failures |
 | C.34 | Reduce stale-route window after service loss | ⏳ | Implemented: edge discovery cache now honors per-announcement TTL and runs cleanup every 1s instead of 15s; still need explicit post-fix distributed-bench revalidation of the observed stale-route window |
-| C.35 | Harden distributed bench pid/process management | ⏳ | Partial progress: remote uploads now go through temp files and cleanup kills matching binaries before overwrite, but the 2-host harness still shows stale wrapper-process behavior during repeated restart injection and needs another cleanup pass |
+| C.35 | Harden distributed bench pid/process management | ✅ | Done: bench teardown now clears stale pidfiles/listeners, distributed smoke passes, and the failure campaign runs repeatably without manual cleanup |
 | C.36 | Preserve repeatable NAT/relay performance baselines | ⏳ | In progress: add saved per-run performance reports for both compose and distributed 2-host benches so regressions/improvements can be compared over time |
 | C.37 | Define versioning and compatibility policy | ✅ | Added `docs/VERSIONING.md` and linked it from `README.md`, `AGENTS.md`, and `docs/README.md`; policy uses one product version for the whole `tubo` binary plus separate `protocol major.minor` compatibility version |
 | C.38 | Add basic release artifacts and manual release flow | ✅ | Added root `VERSION`, `CHANGELOG.md`, and `docs/RELEASING.md`, then exercised the flow by cutting and publishing release `v0.1.1` |
@@ -147,6 +147,7 @@
 | C.45 | Issue #79 — capability foundation (signed membership/service claim/connect) | ✅ | Done: added cryptographic capability primitives and deterministic sign/verify helpers without wiring them into discovery/runtime yet; verified with `go test ./...` |
 | C.46 | Issue #80 — CLI resource creation for clusters and namespaces | ✅ | Done: added local `create cluster/...` and `create namespace/...` flows with local authority keypair + membership capability persistence; verified with `go test ./...` and `./tests/smoke-compose.sh` |
 | C.47 | Issue #81 — cluster invitations and local join flow | ✅ | Done: added local share/join flows for cluster membership invites on top of #77/#78/#79/#80; verified with `go test ./...` and `./tests/smoke-compose.sh` |
+| C.48 | Issue #82 — scoped service identity and namespace-aware service commands | ✅ | Done: added `service/<name>` parsing plus current cluster/namespace resolution for `attach`, `connect`, `get`, `describe`, and `inspect`; verified with `go test ./...` and `./tests/smoke-compose.sh` |
 
 ---
 
@@ -167,12 +168,11 @@ The following packages have no `_test.go` files yet:
 
 ### Now
 
-1. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)
-2. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
-3. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
-4. **Issue #9 — malformed security handshake after restarts**: capire e correggere gli errori intermittenti post-restart (`bug`, `security`, `area:protocol`, `investigation`, `prio:high`)
-5. **Issue #7 / C.33 follow-up — recovery latency after service restart**: completare l'hardening del recovery sui path relayed (`bug`, `area:edge`, `area:service`, `prio:medium`)
-6. **Issue #10 / C.35 — distributed bench process hardening**: rendere affidabile failure injection / restart testing sul bench distribuito (`test`, `infra`, `area:testbench`)
+1. **Issue #12 / C.36 — repeatable performance baselines**: continuare a salvare benchmark confrontabili, soprattutto sul bench Linode (`performance`, `area:testbench`, `area:linode`)
+2. **Issue #11 / C.25 — stable CI coverage for NAT/relay stress**: promuovere gli stress test a coverage stabile dopo gli ultimi fix runtime (`test`, `area:testbench`)
+3. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)
+4. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
+5. **Issue #9 — malformed security handshake after restarts**: capire e correggere gli errori intermittenti post-restart (`bug`, `security`, `area:protocol`, `investigation`, `prio:high`)
 
 ### Next
 

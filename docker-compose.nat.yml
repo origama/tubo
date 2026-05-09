@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
-    command: ["relay", "run", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
+    command: ["relay", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
     environment:
       RELAY_HEALTH_LISTEN: ":8092"
       ENABLE_RELAY_SERVICE: "true"
@@ -45,8 +45,7 @@ services:
     depends_on:
       - relay
     command:
-      - edge
-      - run
+      - gateway
       - --listen
       - :8443
       - --admin-listen
@@ -75,8 +74,7 @@ services:
       - edge
       - relay
     command:
-      - service
-      - run
+      - attach
       - --name
       - myapi
       - --target

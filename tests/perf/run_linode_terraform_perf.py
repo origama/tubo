@@ -478,7 +478,16 @@ class LinodeTerraformBench:
 
     def cleanup_processes(self):
         for host in (self.relay_ip, self.edge_ip, self.service_ip):
-            self.ssh(host, "set -e; for name in relay edge service dummy-api-server; do if [ -f /var/run/tubo/$name.pid ]; then kill $(cat /var/run/tubo/$name.pid) >/dev/null 2>&1 || true; rm -f /var/run/tubo/$name.pid; fi; done", check=False)
+            self.ssh(
+                "set -e; for name in relay edge service dummy-api-server; do "
+                "if [ -f /var/run/tubo/$name.pid ]; then kill $(cat /var/run/tubo/$name.pid) >/dev/null 2>&1 || true; rm -f /var/run/tubo/$name.pid; fi; done; "
+                "for port in 4001 8443 8444 18000 18091 18092 40123; do "
+                "for pid in $(lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill $pid >/dev/null 2>&1 || true; done; done; "
+                "sleep 1; "
+                "for port in 4001 8443 8444 18000 18091 18092 40123; do "
+                "for pid in $(lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill -9 $pid >/dev/null 2>&1 || true; done; done",
+                check=False,
+            )
 
     def wait_ready(self):
         def ok(url):
@@ -505,8 +514,14 @@ class LinodeTerraformBench:
         wait_until("service relay reservation", 120, lambda: "/p2p-circuit" in self.ssh(self.service_ip, f"curl -fsS 'http://{SERVICE_HEALTH}/debug/peer'", check=False))
 
     def restart_service(self):
-        self.ssh(self.service_ip, "if [ -f /var/run/tubo/service.pid ]; then kill $(cat /var/run/tubo/service.pid) >/dev/null 2>&1 || true; rm -f /var/run/tubo/service.pid; fi", check=False)
-        self.ssh(self.service_ip, f"nohup '{REMOTE_BASE_DIR}/tubo' service run --config /etc/tubo/service.yaml > /var/log/tubo/service.log 2>&1 & echo $! > /var/run/tubo/service.pid")
+        self.ssh(
+            f"set -e; cd '{REMOTE_BASE_DIR}' 2>/dev/null || exit 0; "
+            "if [ -f /var/run/tubo/service.pid ]; then pid=$(cat /var/run/tubo/service.pid); kill \"$pid\" >/dev/null 2>&1 || true; sleep 1; kill -9 \"$pid\" >/dev/null 2>&1 || true; rm -f /var/run/tubo/service.pid; fi; "
+            "for port in 40123 18091; do for pid in $(lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill $pid >/dev/null 2>&1 || true; done; done; "
+            "sleep 1; for port in 40123 18091; do for pid in $(lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill -9 $pid >/dev/null 2>&1 || true; done; done",
+            check=False,
+        )
+        self.ssh(self.service_ip, f"nohup '{REMOTE_BASE_DIR}/tubo' attach --config /etc/tubo/service.yaml > /var/log/tubo/service.log 2>&1 & echo $! > /var/run/tubo/service.pid")
         self.wait_ready()
 
 

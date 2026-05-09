@@ -14,22 +14,21 @@ Questo documento e' il riferimento operativo canonico per:
 
 ## 2) Componenti runtime reali
 
-Nuova UX consigliata: `tubo` con subcommand espliciti:
+Nuova UX consigliata: `tubo` con intent-based command espliciti:
 
 ```bash
-tubo relay run --config relay.yaml
-tubo edge run --config edge.yaml
-tubo service run --config service.yaml
-tubo bridge run --config bridge.yaml
+tubo relay --config relay.yaml
+tubo gateway --config edge.yaml
+tubo attach --config service.yaml
 ```
 
 Ruoli disponibili tramite `tubo`:
 
 - `relay` (bootstrap + relay v2 + health endpoint)
 - il relay partecipa anche al topic discovery `/discovery/v1.0` come router GossipSub
-- `edge` (ingress HTTP + discovery consumer)
-- `service` (publisher + stream handler verso servizio origin)
-- opzionale `bridge` (proxy client-side)
+- `gateway` (ingress HTTP + discovery consumer)
+- `attach` (publisher + stream handler verso servizio origin)
+- `bridge` rimane disponibile come logica client-side, ma il comando runtime storico `bridge run` non e' piu' supportato
 
 ## 3) Quick Start locale (Docker Compose)
 
@@ -106,7 +105,7 @@ ENABLE_DISCOVERY_PUBSUB=true \
 FORCE_REACHABILITY_PUBLIC=true \
 PRINT_RUN_COMMANDS=true \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-go run ./cmd/tubo relay run
+go run ./cmd/tubo relay
 ```
 
 Il relay stampa nei log:
@@ -141,7 +140,7 @@ EDGE_SEED=edge-seed \
 BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-go run ./cmd/tubo edge run
+go run ./cmd/tubo gateway
 ```
 
 Recuperare `peer_id` edge dai log (`edge gateway peer_id=...`).
@@ -162,7 +161,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/tubo service run
+go run ./cmd/tubo attach
 ```
 
 ### 5.4 Verifica discovery e route sul nodo edge
@@ -246,7 +245,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/tubo service run
+go run ./cmd/tubo attach
 ```
 
 ## 7) Stato sicurezza: cosa e' implementato vs target

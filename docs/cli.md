@@ -50,7 +50,7 @@ tubo inspect service/lmstudio --json
 tubo watch services
 ```
 
-`attach` supporta sia la forma esplicita sia lo shorthand name+port:
+`attach` supporta sia la forma esplicita sia lo shorthand name+port; accetta anche `service/<name>` come primo argomento:
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
@@ -206,7 +206,7 @@ Per scripting:
 tubo connect lmstudio --json
 ```
 
-`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live.
+`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live. Il nome puo' essere passato sia come `lmstudio` sia come `service/lmstudio`. Le opzioni `--cluster` e `--namespace` vengono risolte dal config corrente quando presenti; `get services` supporta anche `-n/--namespace` e `-A/--all-namespaces` per preparare i futuri lookup scoped.
 
 HTTP normale e WebSocket (`Upgrade: websocket`) sono inoltrati sullo stesso tunnel. Se un servizio pubblicizza solo indirizzi direct loopback/unspecified (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` li ignora per il dial remoto e usa il path relayed. Il client `connect` abilita AutoRelay/hole punching quando la config contiene relay peer; il successo del direct upgrade dipende comunque da NAT/firewall e dagli indirizzi annunciati dal service. Anche quando il path iniziale e' `relayed`, libp2p puo' aprire in seguito una connessione direct tramite hole punching.
 
@@ -260,7 +260,7 @@ tubo rm --stale
 ```
 
 `ps` / `get processes` riguardano i processi locali di questa macchina.
-`get services` riguarda invece le risorse discovery pubblicizzate nello swarm.
+`get services` riguarda invece le risorse discovery pubblicizzate nello swarm. Quando la config locale contiene `current_cluster` / `current_namespace`, questi valori vengono riportati nella scope risolta del comando; puoi sovrascriverli con `--cluster`, `-n/--namespace` e, per le sole liste, `-A/--all-namespaces`.
 
 ## Resource discovery
 

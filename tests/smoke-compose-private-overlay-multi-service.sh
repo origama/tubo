@@ -8,6 +8,47 @@ COMPOSE="${COMPOSE_CMD:-docker compose -f docker-compose.private-overlay-multi-s
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 
+PRIVATE_NETWORK_KEY_B64="MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+
+prepare_configs() {
+  mkdir -p generated/private-overlay-multi-service
+  cat > generated/private-overlay-multi-service/relay.yaml <<EOF
+role: relay
+network:
+  private_key_b64: "${PRIVATE_NETWORK_KEY_B64}"
+relay:
+  health_listen: ":8092"
+  enable_relay_service: true
+  enable_autonat_service: true
+  enable_discovery_pubsub: true
+  force_reachability_public: true
+  print_run_commands: false
+EOF
+  cat > generated/private-overlay-multi-service/edge.yaml <<EOF
+role: edge
+network:
+  private_key_b64: "${PRIVATE_NETWORK_KEY_B64}"
+  autorelay: true
+  hole_punching: true
+edge:
+  listen: ":8443"
+  admin_listen: ":8444"
+EOF
+  cat > generated/private-overlay-multi-service/service.yaml <<EOF
+role: service
+network:
+  private_key_b64: "${PRIVATE_NETWORK_KEY_B64}"
+  autorelay: true
+  hole_punching: true
+service:
+  name: demo-service
+  target: http://127.0.0.1:8000
+health_listen: ":8091"
+heartbeat_interval: 5s
+EOF
+  chmod 0644 generated/private-overlay-multi-service/*.yaml
+}
+
 cleanup() {
   $COMPOSE down --remove-orphans >/dev/null 2>&1 || true
 }
@@ -63,6 +104,9 @@ compose_build_serial() {
   fi
   COMPOSE_PARALLEL_LIMIT=1 $COMPOSE build
 }
+
+echo "[smoke-private-multi] preparing local config files"
+prepare_configs
 
 echo "[smoke-private-multi] docker compose build"
 compose_build_serial

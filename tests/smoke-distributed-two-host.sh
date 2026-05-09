@@ -329,8 +329,8 @@ start_remote() {
   info "starting relay + dummy origin + service on remote host"
   cleanup_remote
   ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && python3 -c \"import os, subprocess; f=open('dummy-api-server.log','ab',0); p=subprocess.Popen(['./dummy-api-server'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True, env=dict(os.environ, DUMMY_API_LISTEN='$REMOTE_DUMMY_LISTEN', DUMMY_API_INSTANCE='distributed-remote')); open('dummy-api-server.pid','w').write(str(p.pid))\""
-  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && python3 -c \"import subprocess; f=open('relay.log','ab',0); p=subprocess.Popen(['./tubo','relay','run','--config','relay.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('relay.pid','w').write(str(p.pid))\""
-  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && python3 -c \"import subprocess; f=open('service.log','ab',0); p=subprocess.Popen(['./tubo','service','run','--config','service.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('service.pid','w').write(str(p.pid))\""
+  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && python3 -c \"import subprocess; f=open('relay.log','ab',0); p=subprocess.Popen(['./tubo','relay','--config','relay.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('relay.pid','w').write(str(p.pid))\""
+  ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "cd '$REMOTE_BASE_DIR' && python3 -c \"import subprocess; f=open('service.log','ab',0); p=subprocess.Popen(['./tubo','attach','--config','service.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('service.pid','w').write(str(p.pid))\""
   assert_remote_process_started dummy-api-server
   assert_remote_process_started relay
   assert_remote_process_started service
@@ -344,7 +344,7 @@ start_remote() {
 start_local_edge() {
   info "starting edge on $EDGE_HOST_IP"
   cleanup_local
-  nohup "$RUN_DIR/tubo" edge run --config "$RUN_DIR/edge.yaml" > "$RUN_DIR/edge.log" 2>&1 &
+  nohup "$RUN_DIR/tubo" gateway --config "$RUN_DIR/edge.yaml" > "$RUN_DIR/edge.log" 2>&1 &
   echo $! > "$RUN_DIR/edge.pid"
   assert_process_started "$RUN_DIR/edge.pid" edge
 }

@@ -58,9 +58,9 @@ Il test verifica:
 
 Verifica la nuova UX con immagine unica `tubo` e config YAML:
 
-- `tubo relay run --config /etc/tubo/relay.yaml`
-- `tubo edge run --config /etc/tubo/edge.yaml`
-- `tubo service run --config /etc/tubo/service.yaml`
+- `tubo relay --config /etc/tubo/relay.yaml`
+- `tubo gateway --config /etc/tubo/edge.yaml`
+- `tubo attach --config /etc/tubo/service.yaml`
 
 Comando:
 

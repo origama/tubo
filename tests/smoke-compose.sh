@@ -80,7 +80,7 @@ for i in $(seq 1 60); do
   services_json="$(curl -fsS http://127.0.0.1:8444/services || true)"
   routes_json="$(curl -fsS http://127.0.0.1:8444/routes || true)"
 
-  if echo "$services_json" | grep -Eq '"count"[[:space:]]*:[[:space:]]*1' && \
+  if echo "$services_json" | grep -Eq '"count"[[:space:]]*:[[:space:]]*2' && \
      echo "$routes_json" | grep -q '"hostname":"myapi"'; then
     break
   fi

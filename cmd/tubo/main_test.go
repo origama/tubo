@@ -111,6 +111,16 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 	}
 }
 
+func TestEnsureAttachRuntimeDefaultsSkipsConfigMode(t *testing.T) {
+	got, err := ensureAttachRuntimeDefaults([]string{"--config", "service.yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got, "\x00") != strings.Join([]string{"--config", "service.yaml"}, "\x00") {
+		t.Fatalf("config-mode defaults changed args: %#v", got)
+	}
+}
+
 func TestResolveRuntimeRoleRejectsLegacyRoleCommands(t *testing.T) {
 	for _, args := range [][]string{
 		{"relay", "run", "--config", "relay.yaml"},
@@ -1199,7 +1209,7 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(cfgYAML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, err := discoverServices(configPath, 5*time.Second, false, false)
+	result, err := discoverServices(configPath, 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1209,7 +1219,10 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	if result.Metadata == nil || result.Metadata.ServedByRole != "relay" {
 		t.Fatalf("unexpected metadata: %#v", result.Metadata)
 	}
-	if len(result.Services) != 1 || result.Services[0].Name != "myapi" {
+	if result.Scope.Cluster != "home" || result.Scope.Namespace != "observability" {
+		t.Fatalf("unexpected scope: %#v", result.Scope)
+	}
+	if len(result.Services) != 1 || result.Services[0].Name != "myapi" || result.Services[0].Namespace != "observability" {
 		t.Fatalf("unexpected services: %#v", result.Services)
 	}
 	joined := strings.Join(result.Messages, "\n")
@@ -1247,7 +1260,7 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(cfgYAML), 0600); err != nil {
 		t.Fatal(err)
 	}
-	result, service, err := discoverService(configPath, "myapi", 5*time.Second, false, false)
+	result, service, err := discoverService(configPath, "myapi", 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1256,6 +1269,9 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	}
 	if result.Metadata == nil || result.Metadata.ServedByRole != "relay" {
 		t.Fatalf("unexpected metadata: %#v", result.Metadata)
+	}
+	if result.Scope.Cluster != "home" || result.Scope.Namespace != "observability" || service.Namespace != "observability" {
+		t.Fatalf("unexpected scope/service: %#v %#v", result.Scope, service)
 	}
 	if service.Name != "myapi" {
 		t.Fatalf("unexpected service: %#v", service)
@@ -1280,6 +1296,71 @@ func TestChooseConnectLocal(t *testing.T) {
 	}
 	if !strings.HasPrefix(listen, "127.0.0.1:") || !strings.HasPrefix(url, "http://127.0.0.1:") {
 		t.Fatalf("unexpected auto local result: %q %q", listen, url)
+	}
+}
+
+func TestParseServiceRef(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "bare", in: "grafana", want: "grafana"},
+		{name: "scoped", in: "service/grafana", want: "grafana"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseServiceRef(tc.in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseServiceRef(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestResolveServiceScope(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "observability"}
+	scope, err := resolveServiceScope(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.Cluster != "home" || scope.Namespace != "observability" || scope.AllNamespaces {
+		t.Fatalf("unexpected default scope: %#v", scope)
+	}
+	scope, err = resolveServiceScope(cfg, "ops", "metrics", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.Cluster != "ops" || scope.Namespace != "metrics" {
+		t.Fatalf("unexpected override scope: %#v", scope)
+	}
+	scope, err = resolveServiceScope(cfg, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !scope.AllNamespaces || scope.Namespace != "" {
+		t.Fatalf("unexpected all-namespaces scope: %#v", scope)
+	}
+	if _, err := resolveServiceScope(cfgpkg.Config{}, "", "metrics", false); err == nil {
+		t.Fatal("expected missing cluster context error")
+	}
+	if _, err := resolveServiceScope(cfg, "", "observability", true); err == nil {
+		t.Fatal("expected all-namespaces conflict error")
+	}
+}
+
+func TestRewriteAttachArgsAcceptsScopedServiceRef(t *testing.T) {
+	args, err := rewriteAttachArgs([]string{"service/grafana", "--port", "3000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"--target http://127.0.0.1:3000", "--name grafana"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("rewritten attach args missing %q: %v", want, args)
+		}
 	}
 }
 
