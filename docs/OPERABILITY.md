@@ -79,7 +79,7 @@ chmod 600 swarm.key
 
 Distribuire `swarm.key` **solo** ai nodi fidati. Non committare nel repository.
 
-Per esempi YAML completi (relay, edge, service, bridge), topology e `docker-compose.tubo.yml`, vedi [`cli.md`](./cli.md). Nei cluster-aware setup, il flusso locale consigliato e': `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, poi `tubo use ...` e `tubo attach ...`.
+Per esempi YAML completi (relay, edge, service, bridge), topology e `docker-compose.tubo.yml`, vedi [`cli.md`](./cli.md). Nei cluster-aware setup, il flusso locale consigliato e': `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, poi `tubo use ...`, `tubo share service/...` e `tubo attach ...` / `tubo connect --token ...`.
 
 La precedenza della configurazione e':
 

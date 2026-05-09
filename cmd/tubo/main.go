@@ -320,10 +320,12 @@ Usage:
   tubo attach <url> --name <service> [-d]
   tubo attach <service> --port <port> [-d]
   tubo connect <service> [--local 127.0.0.1:PORT]
+  tubo connect --token <service-share> [--local 127.0.0.1:PORT]
   tubo get services
   tubo use overlay/public
   tubo create cluster/home
   tubo share cluster/home --permission member
+  tubo share service/myapp --expires 1h
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [overlay/public|tubo-public]
@@ -333,7 +335,7 @@ Common flow:
   tubo attach http://127.0.0.1:8080 --name myapp -d
 
   # Another machine
-  tubo connect myapp --local 127.0.0.1:9888
+  tubo connect --token <service-share> --local 127.0.0.1:9888
   curl http://127.0.0.1:9888/
 
 Discovery and process management:
@@ -383,6 +385,7 @@ Flags:
 	case "connect":
 		fmt.Println(`Usage:
   tubo connect <service> [--local 127.0.0.1:PORT]
+  tubo connect --token <service-share> [--local 127.0.0.1:PORT]
 
 Open a local HTTP/WebSocket listener to a named service.
 
@@ -459,8 +462,9 @@ Select a local overlay/cluster/namespace context in the config file.`)
 	case "share":
 		fmt.Println(`Usage:
   tubo share cluster/<name> [--permission member] [--namespace <name>] [--expires <duration>]
+  tubo share service/<name> [--cluster <name>] [--namespace <name>] [--expires <duration>]
 
-Create a copyable cluster invitation from local authority material.`)
+Create a copyable cluster invitation or service-scoped connect token from local authority material.`)
 	case "create":
 		fmt.Println(`Usage:
   tubo create cluster/<name>
@@ -1668,6 +1672,7 @@ func connectCmd(args []string) error {
 	jsonOut := fs.Bool("json", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
+	token := fs.String("token", "", "")
 	cluster := fs.String("cluster", "", "")
 	namespace := fs.String("namespace", "", "")
 	namespaceShort := fs.String("n", "", "")
@@ -1680,18 +1685,28 @@ func connectCmd(args []string) error {
 	if err := fs.Parse(parseArgs); err != nil {
 		return err
 	}
-	if serviceName == "" {
-		if fs.NArg() != 1 {
-			return errors.New("usage: tubo connect <service-name> [--local host:port] [flags]")
-		}
-		serviceName = fs.Arg(0)
-	} else if fs.NArg() != 0 {
-		return errors.New("usage: tubo connect <service-name> [--local host:port] [flags]")
-	}
+	shareToken := strings.TrimSpace(*token)
 	if *namespace == "" {
 		*namespace = *namespaceShort
 	}
-	serviceName, err := parseServiceRef(serviceName)
+	var err error
+	serviceName, shareScope, err := connectServiceShareSetup(serviceName, shareToken, *cluster, *namespace)
+	if err != nil {
+		return err
+	}
+	if shareToken != "" {
+		*cluster = shareScope.Cluster
+		*namespace = shareScope.Namespace
+	}
+	if serviceName == "" {
+		if fs.NArg() != 1 {
+			return errors.New("usage: tubo connect [--token <service-share>] <service-name> [--local host:port] [flags]")
+		}
+		serviceName = fs.Arg(0)
+	} else if fs.NArg() != 0 {
+		return errors.New("usage: tubo connect [--token <service-share>] <service-name> [--local host:port] [flags]")
+	}
+	serviceName, err = parseServiceRef(serviceName)
 	if err != nil {
 		return err
 	}
@@ -1702,6 +1717,9 @@ func connectCmd(args []string) error {
 	scope, err := resolveServiceScope(cfg, *cluster, *namespace, false)
 	if err != nil {
 		return err
+	}
+	if shareToken != "" {
+		scope = shareScope
 	}
 	result, serviceView, err := discoverService(*configPath, serviceName, *timeout, *cachedOnly, *live, scope)
 	if err != nil {

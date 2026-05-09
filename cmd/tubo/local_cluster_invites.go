@@ -62,11 +62,12 @@ type clusterJoinResult struct {
 
 func localShareCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo share cluster/<name> [flags]")
+		return errors.New("usage: tubo share cluster/<name>|service/<name> [flags]")
 	}
 	resource := args[0]
 	fs := flag.NewFlagSet("share", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
+	clusterFlag := fs.String("cluster", "", "")
 	namespace := fs.String("namespace", "", "")
 	permission := fs.String("permission", clusterInviteDefaultRole, "")
 	expires := fs.Duration("expires", clusterInviteDefaultTTL, "")
@@ -74,11 +75,16 @@ func localShareCmd(args []string) error {
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	_ = clusterFlag
 	kind, name, err := parseLocalResourceRef(resource)
 	if err != nil {
 		return err
 	}
-	if kind != "cluster" {
+	switch kind {
+	case "cluster":
+	case "service":
+		return localShareServiceCmd(args)
+	default:
 		return fmt.Errorf("unsupported share resource %q", resource)
 	}
 	cfg, err := loadLocalConfigOrError(*configPath)

@@ -902,6 +902,63 @@ func extractClusterInviteToken(t *testing.T, out string) string {
 	return token
 }
 
+func extractServiceShareToken(t *testing.T, out string) string {
+	t.Helper()
+	idx := strings.Index(out, serviceShareTokenPrefix)
+	if idx < 0 {
+		t.Fatalf("service share token not found in output: %s", out)
+	}
+	end := idx
+	for end < len(out) {
+		if strings.ContainsRune(" \t\r\n", rune(out[end])) {
+			break
+		}
+		end++
+	}
+	token := out[idx:end]
+	if !strings.HasPrefix(token, serviceShareTokenPrefix) {
+		t.Fatalf("invalid service share token extraction: %q", token)
+	}
+	return token
+}
+
+func mustClusterAuthorityKey(t *testing.T, configPath string) ed25519.PrivateKey {
+	t.Helper()
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Clusters) == 0 {
+		t.Fatal("no clusters in config")
+	}
+	for _, cluster := range cfg.Clusters {
+		if cluster.AuthorityPrivateKeyFile == "" {
+			continue
+		}
+		key, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return key
+	}
+	t.Fatal("no authority private key file found")
+	return nil
+}
+
+func tamperTokenPayload(t *testing.T, token, prefix string, oldBytes, newBytes []byte) string {
+	t.Helper()
+	parts := strings.Split(strings.TrimPrefix(token, prefix), ".")
+	if len(parts) != 2 {
+		t.Fatalf("unexpected token format: %s", token)
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	payloadBytes = bytes.Replace(payloadBytes, oldBytes, newBytes, 1)
+	return prefix + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + parts[1]
+}
+
 func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNamespace string) {
 	t.Helper()
 	cfg, err := cfgpkg.LoadFile(configPath)
@@ -1008,6 +1065,79 @@ func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(joinHome, "tubo", "config.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("tampered invite should not create config, stat err=%v", err)
+	}
+}
+
+func TestServiceShareTokenAndConnectSetup(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "namespace/observability", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"use", "namespace/observability", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "PRIVATE KEY") {
+		t.Fatalf("share output leaked private key material: %s", out)
+	}
+	if !strings.Contains(out, "tubo connect --token ") {
+		t.Fatalf("share output missing connect command: %s", out)
+	}
+	token := extractServiceShareToken(t, out)
+	payload, err := parseAndVerifyServiceShareToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" {
+		t.Fatalf("unexpected service share scope: %#v", payload)
+	}
+	if payload.Grant.ClusterID != payload.ClusterID || payload.Grant.NamespaceID != payload.NamespaceID || payload.Grant.ServiceID != payload.ServiceID {
+		t.Fatalf("grant scope mismatch: %#v", payload.Grant)
+	}
+	if len(payload.Grant.Permissions) != 1 || payload.Grant.Permissions[0] != capability.PermissionConnect {
+		t.Fatalf("service share is not connect-only: %#v", payload.Grant.Permissions)
+	}
+	if connectName, scope, err := connectServiceShareSetup("", token, "", ""); err != nil {
+		t.Fatal(err)
+	} else if connectName != "myapi" || scope.Cluster != "home" || scope.Namespace != "default" {
+		t.Fatalf("unexpected connect setup: name=%q scope=%#v", connectName, scope)
+	}
+	if _, _, err := connectServiceShareSetup("other", token, "", ""); err == nil || !strings.Contains(err.Error(), "service share is for") {
+		t.Fatalf("expected service mismatch error, got %v", err)
+	}
+	if _, _, err := connectServiceShareSetup("", token, "other", ""); err == nil || !strings.Contains(err.Error(), "cluster") {
+		t.Fatalf("expected cluster mismatch error, got %v", err)
+	}
+	if _, _, err := connectServiceShareSetup("", token, "", "other"); err == nil || !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("expected namespace mismatch error, got %v", err)
+	}
+
+	expired := payload
+	expired.IssuedAt = time.Now().UTC().Add(-2 * time.Hour)
+	expired.ExpiresAt = time.Now().UTC().Add(-time.Hour)
+	expired.Grant.ExpiresAt = expired.ExpiresAt
+	expiredToken, err := signServiceShareToken(expired, mustClusterAuthorityKey(t, configPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseAndVerifyServiceShareToken(expiredToken); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected expired service share error, got %v", err)
+	}
+	tamperedToken := tamperTokenPayload(t, token, serviceShareTokenPrefix, []byte(`"service_name":"myapi"`), []byte(`"service_name":"evil"`))
+	if _, err := parseAndVerifyServiceShareToken(tamperedToken); err == nil || !strings.Contains(err.Error(), "invalid service share signature") {
+		t.Fatalf("expected tampered service share error, got %v", err)
 	}
 }
 

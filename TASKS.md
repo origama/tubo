@@ -152,6 +152,7 @@
 | C.50 | Issue #86 — Discovery V2 runtime on opaque namespace topics | ✅ | Done: added cluster-aware topic selection, V2 publish/subscribe path, and integration coverage for cluster-mode discovery/proxying; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 | C.51 | Issue #87 — harden Discovery V2 validation and replay protection | ✅ | Done: added topic/auth checks, authority-backed capability validation, optional service-claim validation, bounded nonce replay protection, and invalid-message tests; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 | C.52 | Issue #88 — service-claim lifecycle for namespace-scoped service publishing | ✅ | Done: added local `create service/<name>`, deterministic namespace-scoped service IDs, signed service-claim persistence, cluster-mode `attach`/Discovery V2 claim loading, and service claim validation keyed by `service_id`; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
+| C.53 | Issue #89 — service sharing: connect-only grants for service access | ✅ | Done: added `tubo share service/<name>` and `tubo connect --token <service-share>` for connect-only bearer grants scoped to cluster/namespace/service; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 
 ---
 

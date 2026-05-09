@@ -207,7 +207,7 @@ Per scripting:
 tubo connect lmstudio --json
 ```
 
-`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live. Il nome puo' essere passato sia come `lmstudio` sia come `service/lmstudio`. Le opzioni `--cluster` e `--namespace` vengono risolte dal config corrente quando presenti; `get services` supporta anche `-n/--namespace` e `-A/--all-namespaces` per preparare i futuri lookup scoped.
+`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live. Il nome puo' essere passato sia come `lmstudio` sia come `service/lmstudio`, oppure puo' arrivare da `--token <service-share>` senza fare listing dei servizi. Le opzioni `--cluster` e `--namespace` vengono risolte dal config corrente quando presenti o dal token di servizio; `get services` supporta anche `-n/--namespace` e `-A/--all-namespaces` per preparare i futuri lookup scoped.
 
 HTTP normale e WebSocket (`Upgrade: websocket`) sono inoltrati sullo stesso tunnel. Se un servizio pubblicizza solo indirizzi direct loopback/unspecified (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` li ignora per il dial remoto e usa il path relayed. Il client `connect` abilita AutoRelay/hole punching quando la config contiene relay peer; il successo del direct upgrade dipende comunque da NAT/firewall e dagli indirizzi annunciati dal service. Anche quando il path iniziale e' `relayed`, libp2p puo' aprire in seguito una connessione direct tramite hole punching.
 
@@ -458,6 +458,7 @@ tubo create namespace/observability
 tubo create service/myapi
 
 tubo share cluster/home --permission member
+tubo share service/myapi --expires 1h
 tubo join cluster/home --token <cluster-invite>
 
 tubo describe overlay/public
@@ -477,6 +478,7 @@ Note:
 - `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente e rende esplicito il nuovo `current_namespace`.
 - `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
 - `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile.
+- `share service/...` usa la chiave authority locale per emettere un token bearer connect-only, firma un `ConnectCapability` per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile.
 - `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
 - `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.
 - `use` aggiorna solo il file di config locale; non avvia o ferma processi runtime.
