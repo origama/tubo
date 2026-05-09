@@ -26,6 +26,7 @@ Questo documento stabilisce i requisiti di sicurezza e le restrizioni architettu
 
 * **Bearer Token Auth:** Le richieste HTTP possono includere token di autenticazione che vengono trasmessi attraverso il tunnel e validati sia dall'Edge Gateway (per l'autorizzazione al tunnel) che dal servizio origin.
 * **Connect Proof Data-Plane AuthZ:** in namespace-v2 il bridge deve presentare un connect proof firmato prima del forwarding upstream; il service verifica cluster/namespace/service, peer subject, expiry e replay prima di accettare il flusso.
+* **Namespace-Scoped Service Listing:** `get services`, `get service/...`, `describe`, `inspect` e `watch` richiedono membership capability valida per il namespace selezionato; `-A` funziona solo se ogni namespace è autorizzato o se la capability è broad (`NamespaceID="*"`).
 * **Peer Identity Binding:** Ogni Connector è associato a un'identità peer verificata. Gli Edge Gateway rifiutano connessioni da peer non riconosciuti o non autorizzati per il tenant richiesto.
 
 ## 🛡️ Rischi Specifici da Affrontare

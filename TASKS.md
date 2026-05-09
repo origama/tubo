@@ -156,6 +156,7 @@
 | C.53 | Issue #89 — service sharing: connect-only grants for service access | ✅ | Done: added `tubo share service/<name>` and `tubo connect --token <service-share>` for connect-only bearer grants scoped to cluster/namespace/service; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 | C.54 | Peer allowlist end-to-end across runtime binaries | ✅ | Wired `LIBP2P_ALLOWED_PEERS` into relay/edge/service/bridge host creation; added integration coverage for allowed connections and rogue-peer rejection |
 | C.55 | Issue #90 — data-plane connect proof authorization | ✅ | Added protocol connect-proof frames, service-side proof verification/replay protection, bridge proof emission from connect grants, and integration coverage for valid/missing/expired/replayed/scope-mismatched proofs; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
+| C.56 | Issue #91 — namespace-scoped service listing and query authorization | ✅ | Done: added namespace-aware auth for `get services`, `get service/...`, `describe`, `inspect`, and `watch`, including per-namespace capability checks, `-A` authorization, and scoped filtering; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 
 ---
 

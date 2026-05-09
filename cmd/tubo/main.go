@@ -1973,13 +1973,36 @@ func getCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	scope, err := resolveServiceScope(cfg, *cluster, *namespace, useAllNamespaces)
-	if err != nil {
-		return err
-	}
 	switch {
 	case resource == "services":
-		result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live, scope)
+		scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, useAllNamespaces)
+		if err != nil {
+			return err
+		}
+		if useAllNamespaces {
+			if *cachedOnly {
+				return errors.New("--cached-only is not supported with `get services -A`")
+			}
+			result, err := discoverServicesAcrossScopes(cfg, *timeout, scopes)
+			if err != nil {
+				return err
+			}
+			if *jsonOut {
+				return printJSON(struct {
+					Mode     string                   `json:"mode"`
+					Messages []string                 `json:"messages"`
+					Scope    *serviceScope            `json:"scope,omitempty"`
+					Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
+					Count    int                      `json:"count"`
+					Items    []serviceResource        `json:"items"`
+				}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
+			}
+			printMessages(result.Messages)
+			printServicesTable(result.Services)
+			return nil
+		}
+		scope := scopes[0]
+		result, err := discoverServicesWithConfig(cfg, *timeout, *cachedOnly, *live, scope)
 		if err != nil {
 			return err
 		}
@@ -2000,11 +2023,15 @@ func getCmd(args []string) error {
 		if useAllNamespaces {
 			return errors.New("--all-namespaces is only supported with `get services`")
 		}
+		scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, false)
+		if err != nil {
+			return err
+		}
 		name, err := parseServiceRef(resource)
 		if err != nil {
 			return err
 		}
-		result, service, err := discoverService(*configPath, name, *timeout, *cachedOnly, *live, scope)
+		result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
 		if err != nil {
 			return err
 		}
@@ -2067,7 +2094,7 @@ func describeCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	scope, err := resolveServiceScope(cfg, *cluster, *namespace, false)
+	scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, false)
 	if err != nil {
 		return err
 	}
@@ -2075,7 +2102,7 @@ func describeCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, service, err := discoverService(*configPath, name, *timeout, *cachedOnly, *live, scope)
+	result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
 	if err != nil {
 		return err
 	}
@@ -2121,7 +2148,7 @@ func inspectCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	scope, err := resolveServiceScope(cfg, *cluster, *namespace, false)
+	scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, false)
 	if err != nil {
 		return err
 	}
@@ -2129,7 +2156,7 @@ func inspectCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, service, err := discoverService(*configPath, name, *timeout, *cachedOnly, *live, scope)
+	result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
 	if err != nil {
 		return err
 	}
@@ -2154,16 +2181,45 @@ func watchCmd(args []string) error {
 	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
+	cluster := fs.String("cluster", "", "")
+	namespace := fs.String("namespace", "", "")
+	namespaceShort := fs.String("n", "", "")
+	allNamespaces := fs.Bool("all-namespaces", false, "")
+	allNamespacesShort := fs.Bool("A", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	if *namespace == "" {
+		*namespace = *namespaceShort
+	}
+	useAllNamespaces := *allNamespaces || *allNamespacesShort
 	cfg, err := loadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
 	}
+	scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, useAllNamespaces)
+	if err != nil {
+		return err
+	}
+	if useAllNamespaces {
+		if *cachedOnly {
+			return errors.New("--cached-only is not supported with `watch services -A`")
+		}
+		result, err := discoverServicesAcrossScopes(cfg, *timeout, scopes)
+		if err != nil {
+			return err
+		}
+		printMessages(result.Messages)
+		printServicesTable(result.Services)
+		return nil
+	}
+	scope := scopes[0]
+	scopedCfg := cfg
+	scopedCfg.CurrentCluster = scope.Cluster
+	scopedCfg.CurrentNamespace = scope.Namespace
 	fmt.Printf("watching services for %s...\n", timeout.String())
 	if !*live {
-		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
+		if services, adminAddr, err := fetchLocalServiceCache(scopedCfg); err == nil {
 			fmt.Printf("using local cache from edge admin at %s\n", adminAddr)
 			for _, service := range services {
 				fmt.Printf("CURRENT\tservice/%s\tpeer=%s\tpath=%s\n", service.Name, service.PeerID, service.Path)
@@ -2178,7 +2234,7 @@ func watchCmd(args []string) error {
 			fmt.Println("no local cache found")
 		}
 	}
-	_, err = observeServices(cfg, *timeout, func(event serviceWatchEvent) {
+	_, err = observeServices(scopedCfg, *timeout, func(event serviceWatchEvent) {
 		fmt.Printf("%s\tservice/%s\tpeer=%s\tpath=%s\n", strings.ToUpper(event.Type), event.Name, event.PeerID, event.Path)
 	})
 	return err
@@ -2189,6 +2245,10 @@ func discoverServices(configPath string, timeout time.Duration, cachedOnly, live
 	if err != nil {
 		return discoveryLookupResult{}, err
 	}
+	return discoverServicesWithConfig(cfg, timeout, cachedOnly, live, scope)
+}
+
+func discoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope serviceScope) (discoveryLookupResult, error) {
 	if !live {
 		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
 			services = applyServiceScopeToResources(services, scope)
@@ -2243,6 +2303,10 @@ func discoverService(configPath, serviceName string, timeout time.Duration, cach
 	if err != nil {
 		return discoveryLookupResult{}, serviceResource{}, err
 	}
+	return discoverServiceWithConfig(cfg, timeout, cachedOnly, live, scope, serviceName)
+}
+
+func discoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope serviceScope, serviceName string) (discoveryLookupResult, serviceResource, error) {
 	if !live {
 		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
 			service, err := requireService(services, serviceName)

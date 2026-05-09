@@ -1605,6 +1605,98 @@ func TestResolveServiceScope(t *testing.T) {
 	}
 }
 
+func TestResolveAuthorizedServiceScopes(t *testing.T) {
+	pubKey, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := ssh.NewPublicKey(pubKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
+	clusterID := "cluster-123"
+	defaultCap := mustWriteMembershipCapability(t, priv, capability.MembershipCapability{
+		ClusterID:     clusterID,
+		NamespaceID:   "default",
+		SubjectPeerID: clusterID,
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     time.Now().Add(time.Hour),
+	})
+	metricsCap := mustWriteMembershipCapability(t, priv, capability.MembershipCapability{
+		ClusterID:     clusterID,
+		NamespaceID:   "metrics",
+		SubjectPeerID: clusterID,
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     time.Now().Add(time.Hour),
+	})
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				ClusterID:                clusterID,
+				AuthorityPublicKey:       authorityKey,
+				MembershipCapabilityFile: defaultCap,
+				Namespaces: map[string]cfgpkg.Namespace{
+					"default": {MembershipCapabilityFile: defaultCap},
+					"metrics": {MembershipCapabilityFile: metricsCap},
+				},
+			},
+		},
+	}
+	scopes, err := resolveAuthorizedServiceScopes(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 1 || scopes[0].Namespace != "default" {
+		t.Fatalf("unexpected current namespace scopes: %#v", scopes)
+	}
+	scopes, err = resolveAuthorizedServiceScopes(cfg, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 2 || scopes[0].Namespace != "default" || scopes[1].Namespace != "metrics" {
+		t.Fatalf("unexpected all-namespaces scopes: %#v", scopes)
+	}
+	cfg.Clusters["home"] = cfgpkg.Cluster{
+		ClusterID:                clusterID,
+		AuthorityPublicKey:       authorityKey,
+		MembershipCapabilityFile: defaultCap,
+		Namespaces: map[string]cfgpkg.Namespace{
+			"default": {MembershipCapabilityFile: defaultCap},
+			"metrics": {},
+		},
+	}
+	if _, err := resolveAuthorizedServiceScopes(cfg, "", "", true); err == nil {
+		t.Fatal("expected all-namespaces denial for missing namespace capability")
+	}
+	legacyScopes, err := resolveAuthorizedServiceScopes(cfgpkg.Config{}, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(legacyScopes) != 1 || legacyScopes[0].Cluster != "" || legacyScopes[0].Namespace != "" {
+		t.Fatalf("unexpected legacy scopes: %#v", legacyScopes)
+	}
+}
+
+func mustWriteMembershipCapability(t *testing.T, priv ed25519.PrivateKey, cap capability.MembershipCapability) string {
+	t.Helper()
+	signed, err := capability.SignMembershipCapability(cap, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signed, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), fmt.Sprintf("%s-%s.cap.json", cap.ClusterID, cap.NamespaceID))
+	if err := os.WriteFile(path, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestRewriteAttachArgsAcceptsScopedServiceRef(t *testing.T) {
 	args, err := rewriteAttachArgs([]string{"service/grafana", "--port", "3000"})
 	if err != nil {

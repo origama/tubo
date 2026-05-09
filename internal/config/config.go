@@ -108,13 +108,14 @@ type ClusterMembershipGrant struct {
 }
 
 type Namespace struct {
-	Services map[string]NamespaceService `yaml:"services,omitempty" json:"services,omitempty"`
+	MembershipCapabilityFile string                      `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
+	Services                 map[string]NamespaceService `yaml:"services,omitempty" json:"services,omitempty"`
 }
 
 type NamespaceService struct {
 	ServiceID        string `yaml:"service_id,omitempty" json:"service_id,omitempty"`
 	ServiceSeed      string `yaml:"service_seed,omitempty" json:"service_seed,omitempty"`
-	ServiceClaimFile  string `yaml:"service_claim_file,omitempty" json:"service_claim_file,omitempty"`
+	ServiceClaimFile string `yaml:"service_claim_file,omitempty" json:"service_claim_file,omitempty"`
 }
 
 type DiscoveryMode string
@@ -287,7 +288,7 @@ func cloneCluster(in Cluster) Cluster {
 }
 
 func cloneNamespace(in Namespace) Namespace {
-	out := Namespace{}
+	out := Namespace{MembershipCapabilityFile: in.MembershipCapabilityFile}
 	if len(in.Services) > 0 {
 		out.Services = make(map[string]NamespaceService, len(in.Services))
 		for k, v := range in.Services {
