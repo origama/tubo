@@ -45,14 +45,33 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	joined := cfgpkg.Merge(existing, cfgpkg.Config{Network: cfgpkg.Network{
-		PrivateKeyFile:    swarmKeyPath,
-		BootstrapPeers:    append([]string(nil), payload.Relays...),
-		RelayPeers:        append([]string(nil), payload.Relays...),
-		Autorelay:         payload.Network.Autorelay,
-		HolePunching:      payload.Network.HolePunching,
-		ForceReachability: payload.Network.ForceReachability,
-	}})
+	joined := cfgpkg.Merge(existing, cfgpkg.Config{
+		CurrentOverlay:   payload.Name,
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays: map[string]cfgpkg.Overlay{
+			payload.Name: {
+				Relays:         append([]string(nil), payload.Relays...),
+				BootstrapPeers: append([]string(nil), payload.Relays...),
+				SwarmKeyFile:   swarmKeyPath,
+			},
+		},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				Namespaces: map[string]cfgpkg.Namespace{
+					"default": {},
+				},
+			},
+		},
+		Network: cfgpkg.Network{
+			PrivateKeyFile:    swarmKeyPath,
+			BootstrapPeers:    append([]string(nil), payload.Relays...),
+			RelayPeers:        append([]string(nil), payload.Relays...),
+			Autorelay:         payload.Network.Autorelay,
+			HolePunching:      payload.Network.HolePunching,
+			ForceReachability: payload.Network.ForceReachability,
+		},
+	})
 	joined.Network.PrivateKeyB64 = ""
 	b, err := yaml.Marshal(joined)
 	if err != nil {

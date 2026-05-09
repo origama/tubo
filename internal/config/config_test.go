@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,9 @@ heartbeat_interval: 5s
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(c.Network.BootstrapPeers) != 1 {
+		t.Fatalf("legacy bootstrap peers lost: %#v", c.Network.BootstrapPeers)
+	}
 	c = Merge(Defaults(c.Role), c)
 	if c.HeartbeatInterval.Duration() != 5*time.Second {
 		t.Fatalf("duration not parsed")
@@ -36,6 +40,166 @@ heartbeat_interval: 5s
 		t.Fatal(err)
 	}
 }
+
+func TestLoadLegacyNetworkOnlyStillProducesSameEffectiveNetwork(t *testing.T) {
+	y := `role: service
+network:
+  private_key_file: /etc/p2p/swarm.key
+  bootstrap_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWLegacyBootstrap
+  relay_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWLegacyRelay
+service:
+  name: api
+  target: http://127.0.0.1:9000
+`
+	p := t.TempDir() + "/legacy.yaml"
+	if err := osWrite(p, y); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective := Merge(Defaults(c.Role), c)
+	if effective.Network.PrivateKeyFile != "/etc/p2p/swarm.key" {
+		t.Fatalf("private_key_file = %q", effective.Network.PrivateKeyFile)
+	}
+	if !reflect.DeepEqual(effective.Network.BootstrapPeers, []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWLegacyBootstrap"}) {
+		t.Fatalf("bootstrap_peers = %#v", effective.Network.BootstrapPeers)
+	}
+	if !reflect.DeepEqual(effective.Network.RelayPeers, []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWLegacyRelay"}) {
+		t.Fatalf("relay_peers = %#v", effective.Network.RelayPeers)
+	}
+}
+
+func TestLoadOverlayMaterializesEffectiveNetwork(t *testing.T) {
+	y := `role: service
+current_overlay: public
+current_cluster: home
+current_namespace: default
+overlays:
+  public:
+    relays:
+      - /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWOverlayRelay
+    bootstrap_peers:
+      - /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWOverlayBootstrap
+    swarm_key_file: /etc/p2p/swarm.key
+clusters:
+  home:
+    cluster_id: ""
+    authority_public_key: ""
+    capabilities: []
+    namespaces:
+      default: {}
+service:
+  name: api
+  target: http://127.0.0.1:9000
+`
+	p := t.TempDir() + "/overlay.yaml"
+	if err := osWrite(p, y); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.CurrentOverlay != "public" || c.CurrentCluster != "home" || c.CurrentNamespace != "default" {
+		t.Fatalf("current context not loaded: %#v", c)
+	}
+	if c.Network.PrivateKeyFile != "/etc/p2p/swarm.key" {
+		t.Fatalf("private_key_file = %q", c.Network.PrivateKeyFile)
+	}
+	if !reflect.DeepEqual(c.Network.BootstrapPeers, []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWOverlayBootstrap"}) {
+		t.Fatalf("bootstrap_peers = %#v", c.Network.BootstrapPeers)
+	}
+	if !reflect.DeepEqual(c.Network.RelayPeers, []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWOverlayRelay"}) {
+		t.Fatalf("relay_peers = %#v", c.Network.RelayPeers)
+	}
+	if _, ok := c.Overlays["public"]; !ok {
+		t.Fatalf("overlay missing: %#v", c.Overlays)
+	}
+	if _, ok := c.Clusters["home"].Namespaces["default"]; !ok {
+		t.Fatalf("namespace missing: %#v", c.Clusters)
+	}
+}
+
+func TestMergeCombinesResourceModelWithoutAliasing(t *testing.T) {
+	base := Config{
+		Role: "service",
+		Network: Network{
+			PrivateKeyFile: "/base/swarm.key",
+			BootstrapPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/base-bootstrap"},
+			RelayPeers:     []string{"/ip4/1.2.3.4/tcp/4001/p2p/base-relay"},
+		},
+		CurrentOverlay:   "public",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays: map[string]Overlay{
+			"public": {
+				Relays:         []string{"/ip4/1.2.3.4/tcp/4001/p2p/base-relay"},
+				BootstrapPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/base-bootstrap"},
+				SwarmKeyFile:   "/base/swarm.key",
+			},
+		},
+		Clusters: map[string]Cluster{
+			"home": {
+				ClusterID:    "base-cluster",
+				Capabilities: []string{"discovery"},
+				Namespaces:   map[string]Namespace{"default": {}},
+			},
+		},
+	}
+	over := Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "ops",
+		CurrentNamespace: "tenant-a",
+		Overlays: map[string]Overlay{
+			"manual": {
+				Relays:         []string{"/ip4/5.6.7.8/tcp/4001/p2p/manual-relay"},
+				BootstrapPeers: []string{"/ip4/5.6.7.8/tcp/4001/p2p/manual-bootstrap"},
+				SwarmKeyFile:   "/manual/swarm.key",
+			},
+		},
+		Clusters: map[string]Cluster{
+			"ops": {
+				ClusterID:          "ops-cluster",
+				AuthorityPublicKey: "ops-key",
+				Capabilities:       []string{"ingress"},
+				Namespaces:         map[string]Namespace{"tenant-a": {}},
+			},
+		},
+		Network: Network{PrivateKeyFile: "/manual/swarm.key"},
+	}
+	got := Merge(base, over)
+	if got.CurrentOverlay != "manual" || got.CurrentCluster != "ops" || got.CurrentNamespace != "tenant-a" {
+		t.Fatalf("current context = %#v", got)
+	}
+	if len(got.Overlays) != 2 {
+		t.Fatalf("overlays = %#v", got.Overlays)
+	}
+	if len(got.Clusters) != 2 {
+		t.Fatalf("clusters = %#v", got.Clusters)
+	}
+	if got.Network.PrivateKeyFile != "/manual/swarm.key" {
+		t.Fatalf("network private_key_file = %q", got.Network.PrivateKeyFile)
+	}
+	if !reflect.DeepEqual(got.Network.BootstrapPeers, []string{"/ip4/1.2.3.4/tcp/4001/p2p/base-bootstrap"}) {
+		t.Fatalf("bootstrap_peers = %#v", got.Network.BootstrapPeers)
+	}
+	if !reflect.DeepEqual(got.Network.RelayPeers, []string{"/ip4/1.2.3.4/tcp/4001/p2p/base-relay"}) {
+		t.Fatalf("relay_peers = %#v", got.Network.RelayPeers)
+	}
+	base.Overlays["public"] = Overlay{Relays: []string{"mutated"}}
+	over.Overlays["manual"] = Overlay{Relays: []string{"mutated"}}
+	if got.Overlays["public"].Relays[0] != "/ip4/1.2.3.4/tcp/4001/p2p/base-relay" {
+		t.Fatalf("base overlay aliased: %#v", got.Overlays["public"])
+	}
+	if got.Overlays["manual"].Relays[0] != "/ip4/5.6.7.8/tcp/4001/p2p/manual-relay" {
+		t.Fatalf("over overlay aliased: %#v", got.Overlays["manual"])
+	}
+}
+
 func TestEnvCSVAndMerge(t *testing.T) {
 	g := func(k string) string {
 		m := map[string]string{"BOOTSTRAP_PEERS": "a, b,,c", "SERVICE_NAME": "svc"}

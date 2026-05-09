@@ -15,15 +15,20 @@ import (
 )
 
 type Config struct {
-	Role              string   `yaml:"role" json:"role"`
-	Node              Node     `yaml:"node" json:"node"`
-	Network           Network  `yaml:"network" json:"network"`
-	Service           Service  `yaml:"service" json:"service"`
-	Edge              Edge     `yaml:"edge" json:"edge"`
-	Relay             Relay    `yaml:"relay" json:"relay"`
-	Bridge            Bridge   `yaml:"bridge" json:"bridge"`
-	HealthListen      string   `yaml:"health_listen" json:"health_listen"`
-	HeartbeatInterval Duration `yaml:"heartbeat_interval" json:"heartbeat_interval"`
+	Role              string             `yaml:"role" json:"role"`
+	Node              Node               `yaml:"node" json:"node"`
+	Network           Network            `yaml:"network" json:"network"`
+	CurrentOverlay    string             `yaml:"current_overlay,omitempty" json:"current_overlay,omitempty"`
+	CurrentCluster    string             `yaml:"current_cluster,omitempty" json:"current_cluster,omitempty"`
+	CurrentNamespace  string             `yaml:"current_namespace,omitempty" json:"current_namespace,omitempty"`
+	Overlays          map[string]Overlay `yaml:"overlays,omitempty" json:"overlays,omitempty"`
+	Clusters          map[string]Cluster `yaml:"clusters,omitempty" json:"clusters,omitempty"`
+	Service           Service            `yaml:"service" json:"service"`
+	Edge              Edge               `yaml:"edge" json:"edge"`
+	Relay             Relay              `yaml:"relay" json:"relay"`
+	Bridge            Bridge             `yaml:"bridge" json:"bridge"`
+	HealthListen      string             `yaml:"health_listen" json:"health_listen"`
+	HeartbeatInterval Duration           `yaml:"heartbeat_interval" json:"heartbeat_interval"`
 }
 
 type Node struct {
@@ -72,6 +77,21 @@ type Bridge struct {
 	ServiceSeed      string `yaml:"service_seed" json:"service_seed"`
 	ServiceP2PListen string `yaml:"service_p2p_listen" json:"service_p2p_listen"`
 }
+
+type Overlay struct {
+	Relays         []string `yaml:"relays,omitempty" json:"relays,omitempty"`
+	BootstrapPeers []string `yaml:"bootstrap_peers,omitempty" json:"bootstrap_peers,omitempty"`
+	SwarmKeyFile   string   `yaml:"swarm_key_file,omitempty" json:"swarm_key_file,omitempty"`
+}
+
+type Cluster struct {
+	ClusterID          string               `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
+	AuthorityPublicKey string               `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
+	Capabilities       []string             `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Namespaces         map[string]Namespace `yaml:"namespaces,omitempty" json:"namespaces,omitempty"`
+}
+
+type Namespace struct{}
 
 type Duration time.Duration
 
@@ -151,6 +171,7 @@ func LoadFile(path string) (Config, error) {
 	if err := yaml.Unmarshal(b, &c); err != nil {
 		return Config{}, err
 	}
+	normalizeConfig(&c)
 	return c, nil
 }
 func WriteFile(path string, c Config, force bool) error {
@@ -165,8 +186,103 @@ func WriteFile(path string, c Config, force bool) error {
 	}
 	return os.WriteFile(path, b, 0600)
 }
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]string(nil), in...)
+}
+
+func cloneOverlay(in Overlay) Overlay {
+	return Overlay{
+		Relays:         cloneStrings(in.Relays),
+		BootstrapPeers: cloneStrings(in.BootstrapPeers),
+		SwarmKeyFile:   in.SwarmKeyFile,
+	}
+}
+
+func cloneOverlayMap(in map[string]Overlay) map[string]Overlay {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]Overlay, len(in))
+	for k, v := range in {
+		out[k] = cloneOverlay(v)
+	}
+	return out
+}
+
+func cloneCluster(in Cluster) Cluster {
+	out := Cluster{
+		ClusterID:          in.ClusterID,
+		AuthorityPublicKey: in.AuthorityPublicKey,
+		Capabilities:       cloneStrings(in.Capabilities),
+	}
+	if len(in.Namespaces) > 0 {
+		out.Namespaces = make(map[string]Namespace, len(in.Namespaces))
+		for k, v := range in.Namespaces {
+			out.Namespaces[k] = v
+		}
+	}
+	return out
+}
+
+func cloneClusterMap(in map[string]Cluster) map[string]Cluster {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]Cluster, len(in))
+	for k, v := range in {
+		out[k] = cloneCluster(v)
+	}
+	return out
+}
+
+func cloneNetwork(in Network) Network {
+	return Network{
+		PrivateKeyFile:    in.PrivateKeyFile,
+		PrivateKeyB64:     in.PrivateKeyB64,
+		AllowedPeers:      cloneStrings(in.AllowedPeers),
+		BootstrapPeers:    cloneStrings(in.BootstrapPeers),
+		RelayPeers:        cloneStrings(in.RelayPeers),
+		Autorelay:         in.Autorelay,
+		HolePunching:      in.HolePunching,
+		ForceReachability: in.ForceReachability,
+	}
+}
+
+func cloneConfig(in Config) Config {
+	out := in
+	out.Network = cloneNetwork(in.Network)
+	out.Overlays = cloneOverlayMap(in.Overlays)
+	out.Clusters = cloneClusterMap(in.Clusters)
+	return out
+}
+
+func normalizeConfig(c *Config) {
+	if c == nil {
+		return
+	}
+	if c.CurrentOverlay == "" || len(c.Overlays) == 0 {
+		return
+	}
+	overlay, ok := c.Overlays[c.CurrentOverlay]
+	if !ok {
+		return
+	}
+	if c.Network.PrivateKeyFile == "" && overlay.SwarmKeyFile != "" {
+		c.Network.PrivateKeyFile = overlay.SwarmKeyFile
+	}
+	if len(c.Network.BootstrapPeers) == 0 && len(overlay.BootstrapPeers) > 0 {
+		c.Network.BootstrapPeers = cloneStrings(overlay.BootstrapPeers)
+	}
+	if len(c.Network.RelayPeers) == 0 && len(overlay.Relays) > 0 {
+		c.Network.RelayPeers = cloneStrings(overlay.Relays)
+	}
+}
+
 func Merge(base, over Config) Config {
-	b := base
+	b := cloneConfig(base)
 	if over.Role != "" {
 		b.Role = over.Role
 	}
@@ -183,13 +299,13 @@ func Merge(base, over Config) Config {
 		b.Network.PrivateKeyB64 = over.Network.PrivateKeyB64
 	}
 	if len(over.Network.AllowedPeers) > 0 {
-		b.Network.AllowedPeers = over.Network.AllowedPeers
+		b.Network.AllowedPeers = cloneStrings(over.Network.AllowedPeers)
 	}
 	if len(over.Network.BootstrapPeers) > 0 {
-		b.Network.BootstrapPeers = over.Network.BootstrapPeers
+		b.Network.BootstrapPeers = cloneStrings(over.Network.BootstrapPeers)
 	}
 	if len(over.Network.RelayPeers) > 0 {
-		b.Network.RelayPeers = over.Network.RelayPeers
+		b.Network.RelayPeers = cloneStrings(over.Network.RelayPeers)
 	}
 	if over.Network.Autorelay {
 		b.Network.Autorelay = true
@@ -199,6 +315,31 @@ func Merge(base, over Config) Config {
 	}
 	if over.Network.ForceReachability != "" {
 		b.Network.ForceReachability = over.Network.ForceReachability
+	}
+	if over.CurrentOverlay != "" {
+		b.CurrentOverlay = over.CurrentOverlay
+	}
+	if over.CurrentCluster != "" {
+		b.CurrentCluster = over.CurrentCluster
+	}
+	if over.CurrentNamespace != "" {
+		b.CurrentNamespace = over.CurrentNamespace
+	}
+	if len(over.Overlays) > 0 {
+		if b.Overlays == nil {
+			b.Overlays = make(map[string]Overlay, len(over.Overlays))
+		}
+		for k, v := range over.Overlays {
+			b.Overlays[k] = cloneOverlay(v)
+		}
+	}
+	if len(over.Clusters) > 0 {
+		if b.Clusters == nil {
+			b.Clusters = make(map[string]Cluster, len(over.Clusters))
+		}
+		for k, v := range over.Clusters {
+			b.Clusters[k] = cloneCluster(v)
+		}
 	}
 	if over.Service.Name != "" {
 		b.Service.Name = over.Service.Name
@@ -278,6 +419,7 @@ func Merge(base, over Config) Config {
 	if over.Bridge.ServiceP2PListen != "" {
 		b.Bridge.ServiceP2PListen = over.Bridge.ServiceP2PListen
 	}
+	normalizeConfig(&b)
 	return b
 }
 func Env(getenv func(string) string, role string) Config {
