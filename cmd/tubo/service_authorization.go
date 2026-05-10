@@ -21,8 +21,12 @@ func resolveAuthorizedServiceScopes(cfg cfgpkg.Config, clusterFlag, namespaceFla
 	if err != nil {
 		return nil, err
 	}
-	if cfg.DiscoveryRuntime().Mode != cfgpkg.DiscoveryModeNamespaceV2 {
-		return []serviceScope{base}, nil
+	runtime, err := cfg.RequireDiscoveryRuntime()
+	if err != nil {
+		return nil, err
+	}
+	if runtime.Mode != cfgpkg.DiscoveryModeNamespaceV2 {
+		return nil, errors.New("cluster/namespace discovery is required")
 	}
 	if base.Cluster == "" {
 		return nil, errors.New("service queries require a cluster context")

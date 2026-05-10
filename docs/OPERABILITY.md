@@ -24,11 +24,11 @@ tubo attach --config service.yaml
 
 Ruoli disponibili tramite `tubo`:
 
-- `relay` (bootstrap + relay v2 + health endpoint)
-- il relay partecipa anche al topic discovery `/discovery/v1.0` come router GossipSub
+- `relay` (bootstrap + relay v2 + health endpoint); ora e' solo trasporto/bootstrap, non un router discovery
 - `gateway` (ingress HTTP + discovery consumer)
 - `attach` (publisher + stream handler verso servizio origin)
-- in configurazioni cluster-aware, `gateway`/`attach`/observer selezionano un topic discovery V2 opaco derivato da `current_cluster` + `current_namespace`; le config legacy restano su `/discovery/v1.0`
+- in configurazioni cluster-aware, `gateway`/`attach`/observer selezionano un topic discovery V2 opaco derivato da `current_cluster` + `current_namespace`
+- il vecchio discovery swarm `/discovery/v1.0` e' stato rimosso: usa solo la discovery basata su cluster/namespace + capability
 - `bridge` rimane disponibile come logica client-side, ma il comando runtime storico `bridge run` non e' piu' supportato
 
 ## 3) Quick Start locale (Docker Compose)

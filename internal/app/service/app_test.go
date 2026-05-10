@@ -2,13 +2,22 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/multiformats/go-multiaddr"
+	capability "github.com/origama/tubo/internal/capability"
+	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	"github.com/origama/tubo/internal/p2p"
+	"golang.org/x/crypto/ssh"
 )
 
 func mustParseMultiaddrs(t *testing.T, raw ...string) []multiaddr.Multiaddr {
@@ -66,7 +75,43 @@ func TestHasRelayReservationUsesTrackedExpiry(t *testing.T) {
 func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "service-query-seed", ServiceName: "myapi", Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second})
+	seed := "service-query-seed"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: servicePeerID.String(),
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +119,16 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	if app.cache == nil {
 		t.Fatal("expected service cache")
 	}
-	if _, ok := app.currentAnnouncement(); !ok {
+	ann, ok := app.currentAnnouncementV2()
+	if !ok {
 		t.Fatal("expected current announcement")
+	}
+	payload, err := ann.Payload("cluster-123", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := app.cache.Add(app.host.ID(), payload.ServiceName, payload.Addresses, 30*time.Second); err != nil {
+		t.Fatal(err)
 	}
 	client, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-query-client")
 	if err != nil {

@@ -552,7 +552,7 @@ func runRole(role string, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	discoveryRuntime := c.DiscoveryRuntime()
+	var discoveryRuntime cfgpkg.DiscoveryRuntime
 	cluster := c.Clusters[c.CurrentCluster]
 	serviceSeed := c.Node.Seed
 	serviceID := ""
@@ -570,12 +570,22 @@ func runRole(role string, args []string) error {
 	}
 	switch role {
 	case "edge":
+		runtime, err := c.RequireDiscoveryRuntime()
+		if err != nil {
+			return err
+		}
+		discoveryRuntime = runtime
 		a, err := edge.New(ctx, edge.Config{HTTPListen: c.Edge.Listen, P2PListen: c.Node.P2PListen, Seed: c.Node.Seed, AdminListen: c.Edge.AdminListen, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, BootstrapRetryInterval: 5 * time.Second, DirectStreamTimeout: c.Edge.DirectStreamTimeout.Duration(), PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, AuthorityPublicKey: cluster.AuthorityPublicKey, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID})
 		if err != nil {
 			return err
 		}
 		return a.Start(ctx)
 	case "service":
+		runtime, err := c.RequireDiscoveryRuntime()
+		if err != nil {
+			return err
+		}
+		discoveryRuntime = runtime
 		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: serviceSeed, ServiceName: c.Service.Name, ServiceID: serviceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: cluster.MembershipCapabilityFile, ServiceClaimFile: serviceClaimFile})
 		if err != nil {
 			return err
@@ -2245,10 +2255,16 @@ func discoverServices(configPath string, timeout time.Duration, cachedOnly, live
 	if err != nil {
 		return discoveryLookupResult{}, err
 	}
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
+		return discoveryLookupResult{}, err
+	}
 	return discoverServicesWithConfig(cfg, timeout, cachedOnly, live, scope)
 }
 
 func discoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope serviceScope) (discoveryLookupResult, error) {
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
+		return discoveryLookupResult{}, err
+	}
 	if !live {
 		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
 			services = applyServiceScopeToResources(services, scope)
@@ -2303,10 +2319,16 @@ func discoverService(configPath, serviceName string, timeout time.Duration, cach
 	if err != nil {
 		return discoveryLookupResult{}, serviceResource{}, err
 	}
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
 	return discoverServiceWithConfig(cfg, timeout, cachedOnly, live, scope, serviceName)
 }
 
 func discoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope serviceScope, serviceName string) (discoveryLookupResult, serviceResource, error) {
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
 	if !live {
 		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
 			service, err := requireService(services, serviceName)
@@ -2522,7 +2544,10 @@ func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serv
 	if err != nil {
 		return nil, fmt.Errorf("create observer gossipsub: %w", err)
 	}
-	discoveryRuntime := cfg.DiscoveryRuntime()
+	discoveryRuntime, err := cfg.RequireDiscoveryRuntime()
+	if err != nil {
+		return nil, fmt.Errorf("cluster discovery required: %w", err)
+	}
 	topic, err := ps.Join(discoveryRuntime.Topic)
 	if err != nil {
 		return nil, fmt.Errorf("join discovery topic: %w", err)

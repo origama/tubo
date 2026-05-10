@@ -157,12 +157,16 @@ cluster_out="$(tubo create cluster/home --config "$config_path")"
 cluster_id="$(extract_field "cluster id" "$cluster_out")"
 authority_public_key="$(extract_field "authority public key" "$cluster_out")"
 host_authority_key_file="${config_dir}/clusters/home/authority.key"
-host_tenant_a_cap_file="${config_dir}/clusters/home/namespaces/tenant-a/membership.cap.json"
-host_tenant_b_cap_file="${config_dir}/clusters/home/namespaces/tenant-b/membership.cap.json"
+host_tenant_a_cluster_cap_file="${config_dir}/clusters/home/namespaces/tenant-a/cluster.membership.cap.json"
+host_tenant_a_namespace_cap_file="${config_dir}/clusters/home/namespaces/tenant-a/membership.cap.json"
+host_tenant_b_cluster_cap_file="${config_dir}/clusters/home/namespaces/tenant-b/cluster.membership.cap.json"
+host_tenant_b_namespace_cap_file="${config_dir}/clusters/home/namespaces/tenant-b/membership.cap.json"
 host_swarm_key_file="${config_dir}/swarm.key"
 authority_key_file="${container_root}/clusters/home/authority.key"
-tenant_a_cap_file="${container_root}/clusters/home/namespaces/tenant-a/membership.cap.json"
-tenant_b_cap_file="${container_root}/clusters/home/namespaces/tenant-b/membership.cap.json"
+tenant_a_cluster_cap_file="${container_root}/clusters/home/namespaces/tenant-a/cluster.membership.cap.json"
+tenant_a_namespace_cap_file="${container_root}/clusters/home/namespaces/tenant-a/membership.cap.json"
+tenant_b_cluster_cap_file="${container_root}/clusters/home/namespaces/tenant-b/cluster.membership.cap.json"
+tenant_b_namespace_cap_file="${container_root}/clusters/home/namespaces/tenant-b/membership.cap.json"
 swarm_key_file="${container_root}/swarm.key"
 
 tubo keygen swarm --out "$host_swarm_key_file" >/dev/null
@@ -180,7 +184,9 @@ service_a_seed="$(extract_field "service seed" "$tenant_a_out")"
 host_service_a_claim_file="${config_dir}/clusters/home/namespaces/tenant-a/services/myapi.claim.json"
 service_a_claim_file="${container_root}/clusters/home/namespaces/tenant-a/services/myapi.claim.json"
 service_a_peer_id="$(tubo id from-seed "$service_a_seed" | tr -d '\n')"
-generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_tenant_a_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_tenant_a_cluster_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_tenant_a_cluster_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$cluster_id" "$host_tenant_a_namespace_cap_file"
 
 tubo create namespace/tenant-b --config "$config_path" >/dev/null
 tubo use namespace/tenant-b --config "$config_path" >/dev/null
@@ -190,7 +196,9 @@ service_b_seed="$(extract_field "service seed" "$service_b_out")"
 host_service_b_claim_file="${config_dir}/clusters/home/namespaces/tenant-b/services/myapi.claim.json"
 service_b_claim_file="${container_root}/clusters/home/namespaces/tenant-b/services/myapi.claim.json"
 service_b_peer_id="$(tubo id from-seed "$service_b_seed" | tr -d '\n')"
-generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$service_b_peer_id" "$host_tenant_b_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$service_b_peer_id" "$host_tenant_b_cluster_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$service_b_peer_id" "$host_tenant_b_cluster_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$cluster_id" "$host_tenant_b_namespace_cap_file"
 
 mapfile -t expected_a < <(service_identity "$cluster_id" tenant-a myapi)
 mapfile -t expected_b < <(service_identity "$cluster_id" tenant-b myapi)
@@ -256,15 +264,17 @@ clusters:
     cluster_id: ${cluster_id}
     authority_public_key: ${authority_public_key}
     authority_private_key_file: ${authority_key_file}
-    membership_capability_file: ${tenant_a_cap_file}
+    membership_capability_file: ${tenant_a_cluster_cap_file}
     namespaces:
       tenant-a:
+        membership_capability_file: ${tenant_a_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_a_id}
             service_seed: ${service_a_seed}
             service_claim_file: ${service_a_claim_file}
       tenant-b:
+        membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_b_id}
@@ -298,15 +308,17 @@ clusters:
     cluster_id: ${cluster_id}
     authority_public_key: ${authority_public_key}
     authority_private_key_file: ${authority_key_file}
-    membership_capability_file: ${tenant_a_cap_file}
+    membership_capability_file: ${tenant_a_cluster_cap_file}
     namespaces:
       tenant-a:
+        membership_capability_file: ${tenant_a_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_a_id}
             service_seed: ${service_a_seed}
             service_claim_file: ${service_a_claim_file}
       tenant-b:
+        membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_b_id}
@@ -340,15 +352,17 @@ clusters:
     cluster_id: ${cluster_id}
     authority_public_key: ${authority_public_key}
     authority_private_key_file: ${authority_key_file}
-    membership_capability_file: ${tenant_b_cap_file}
+    membership_capability_file: ${tenant_b_cluster_cap_file}
     namespaces:
       tenant-a:
+        membership_capability_file: ${tenant_a_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_a_id}
             service_seed: ${service_a_seed}
             service_claim_file: ${service_a_claim_file}
       tenant-b:
+        membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_b_id}
@@ -367,6 +381,14 @@ network:
     - ${relay_addr}
 edge:
   admin_listen: 127.0.0.1:8444
+current_cluster: home
+current_namespace: tenant-a
+clusters:
+  home:
+    cluster_id: ${cluster_id}
+    authority_public_key: ${authority_public_key}
+    authority_private_key_file: ${authority_key_file}
+    membership_capability_file: ${tenant_a_namespace_cap_file}
 YAML
 
 cat > "$config_path" <<YAML
@@ -385,15 +407,17 @@ clusters:
     cluster_id: ${cluster_id}
     authority_public_key: ${authority_public_key}
     authority_private_key_file: ${host_authority_key_file}
-    membership_capability_file: ${host_tenant_a_cap_file}
+    membership_capability_file: ${host_tenant_a_cluster_cap_file}
     namespaces:
       tenant-a:
+        membership_capability_file: ${host_tenant_a_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_a_id}
             service_seed: ${service_a_seed}
             service_claim_file: ${host_service_a_claim_file}
       tenant-b:
+        membership_capability_file: ${host_tenant_b_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_b_id}
@@ -403,7 +427,7 @@ YAML
 
 find "$config_dir" -type d -exec chmod 755 {} +
 find "$config_dir" -type f -exec chmod 644 {} +
-chmod 644 "$host_authority_key_file" "$host_tenant_a_cap_file" "$host_tenant_b_cap_file" "$host_service_a_claim_file" "$host_service_b_claim_file" "$host_swarm_key_file"
+chmod 644 "$host_authority_key_file" "$host_tenant_a_cluster_cap_file" "$host_tenant_a_namespace_cap_file" "$host_tenant_b_cluster_cap_file" "$host_tenant_b_namespace_cap_file" "$host_service_a_claim_file" "$host_service_b_claim_file" "$host_swarm_key_file"
 
 if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
   echo "[smoke-tubo-workflow] forcing image rebuild"

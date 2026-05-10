@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	libp2p "github.com/libp2p/go-libp2p"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/origama/tubo/internal/discovery"
@@ -125,26 +124,11 @@ func (a *App) mux() *http.ServeMux {
 	return m
 }
 func startDiscovery(ctx context.Context, h host.Host) (*discovery.Cache, chan struct{}, error) {
-	ps, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
-	if err != nil {
-		return nil, nil, err
-	}
-	topic, err := ps.Join(discovery.DiscoveryTopic)
-	if err != nil {
-		return nil, nil, err
-	}
 	cache := discovery.NewCache(30*time.Second, time.Second)
-	subscriber := discovery.NewPubSubSubscriber(topic, cache)
-	if pubKey := h.Peerstore().PubKey(h.ID()); pubKey != nil {
-		subscriber.AddPublicKey(h.ID(), pubKey)
-	}
-	stopCh := subscriber.Start(ctx)
-	log.Printf("discovery pubsub router joined topic %s", discovery.DiscoveryTopic)
-	go func() {
-		<-ctx.Done()
-		log.Printf("discovery pubsub router stopped: %v", ctx.Err())
-	}()
-	return cache, stopCh, nil
+	log.Printf("discovery pubsub router disabled; legacy swarm discovery removed")
+	_ = ctx
+	_ = h
+	return cache, nil, nil
 }
 func PrintStartupCommandHints(h host.Host, addr string) {
 	ra := RelayAdvertiseAddr(h, addr)

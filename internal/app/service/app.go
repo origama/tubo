@@ -104,8 +104,9 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		log.Printf("libp2p private network enabled")
 	}
 	mode := discovery.Mode(cfg.DiscoveryMode)
-	if mode == "" {
-		mode = discovery.ModeLegacyV1
+	if mode != discovery.ModeNamespaceV2 {
+		_ = h.Close()
+		return nil, fmt.Errorf("cluster/namespace discovery is required; legacy swarm discovery has been removed")
 	}
 	var connectAuth *p2p.ConnectProofValidation
 	if mode == discovery.ModeNamespaceV2 {
@@ -166,9 +167,6 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		serviceClaimFile:      cfg.ServiceClaimFile,
 	}
 	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
-	if mode == discovery.ModeLegacyV1 {
-		app.hb = discovery.NewHeartbeatLoopFunc(pub, cfg.HeartbeatInterval, app.currentAnnouncement)
-	}
 	app.registerRelayNotifiee()
 	return app, nil
 }

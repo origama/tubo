@@ -2,7 +2,7 @@
 
 Questo runbook copre due piani distinti:
 
-1. **stato attuale (as-is)** del progetto;
+1. **stato attuale (as-is)** del progetto, che ora richiede discovery cluster/namespace V2;
 2. **target operativo consigliato** per deployment privato NAT/NAT (LM Studio su laptop + Hermes/edge su host remoto).
 
 Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare come riferimento primario:
@@ -13,30 +13,26 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
 
 ### 1.1 Pubblicazione (service)
 
-`tubo service run` oggi:
+`tubo attach` oggi:
 
 1. crea host libp2p (`p2p.NewHostWithSeedAndPSK`);
-2. entra nel topic pubsub `"/discovery/v1.0"`;
-3. pubblica `Announcement` firmato con:
-   - `ServiceName`
-   - `PeerID`
-   - `Addresses` (da `p2p.PeerAddrs(h)`)
-   - `TTL` (impostato a `30s`)
+2. pubblica `AnnouncementV2` firmato e cifrato sul topic V2 del namespace;
+3. include `ServiceName`, `ServiceID`, `Addresses`, membership capability e, se presente, service claim;
 4. avvia heartbeat (`HEARTBEAT_INTERVAL`, default `15s`) che ripubblica lo stesso annuncio;
 5. tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 6. se configurato, abilita static AutoRelay verso `RELAY_PEERS` (`ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE`).
 
 ### 1.2 Sottoscrizione e validazione (edge)
 
-`tubo edge run` oggi:
+`tubo gateway` oggi:
 
 1. crea host libp2p;
-2. entra nello stesso topic pubsub;
+2. entra nel topic discovery V2 del namespace;
 3. usa `PubSubSubscriber` per:
    - deserializzare annuncio;
-   - verificare coerenza `sender` (`msg.GetFrom()`) vs `Announcement.PeerID`;
-   - recuperare/derivare public key del peer;
-   - verificare firma;
+   - verificare topic/cluster/namespace;
+   - verificare membership capability e replay nonce;
+   - verificare service claim, se presente;
    - aggiornare cache discovery.
 4. se configurato, tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 
@@ -59,12 +55,13 @@ Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
 4. Hole punching/AutoNAT non sono ancora completi nel progetto.
 5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge`, `service`, `bridge` e `relay`.
 6. `LIBP2P_ALLOWED_PEERS` + connection gater sono implementati nel `relay`, ma non ancora enforced end-to-end su tutti i binari.
+7. Il vecchio swarm discovery `"/discovery/v1.0"` non e' piu' supportato.
 
 ## 2) Obiettivo operativo per deployment NAT/NAT privato
 
 ### 2.1 Nodo pubblico controllato obbligatorio
 
-Per deployment con nodi potenzialmente dietro NAT, deve esistere almeno un nodo pubblico stabile gestito da noi.
+Per deployment con nodi potenzialmente dietro NAT, deve esistere almeno un nodo pubblico stabile gestito da noi. Con Discovery V2 il nodo pubblico serve come bootstrap/relay transport, non come discovery swarm router.
 
 Requisiti minimi:
 
@@ -165,8 +162,8 @@ Per questo deployment privato:
 1. non usare public DHT;
 2. non usare bootstrap peer casuali;
 3. non usare relay pubblici esterni;
-4. topic `/discovery/v1.0` deve vivere nella private swarm;
-5. discovery continua con announcement firmati.
+4. usare solo topic discovery V2 opachi derivati da cluster/namespace;
+5. discovery continua con announcement firmati e capability verificate.
 
 ## 5) Relay privato, AutoRelay e NAT reachability
 

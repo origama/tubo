@@ -2,8 +2,14 @@ package integration_test
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net/http"
 	"os"
@@ -14,6 +20,11 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	capability "github.com/origama/tubo/internal/capability"
+	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/p2p"
+	"golang.org/x/crypto/ssh"
 )
 
 const integrationEnvVar = "RUN_INTEGRATION"
@@ -542,6 +553,13 @@ func newIntegrationStackWithFiles(t *testing.T, composeFiles ...string) *integra
 	}
 	repoRoot := filepath.Clean(filepath.Join(wd, "../.."))
 	stack := &integrationStack{repoRoot: repoRoot, composeFiles: composeFiles}
+	if stack.usesComposeFile("docker-compose.nat.yml") {
+		t.Skip("docker-compose.nat.yml integration is skipped while isolated-network discovery is unsupported without legacy swarm discovery")
+	}
+
+	if err := prepareIntegrationComposeConfig(repoRoot); err != nil {
+		t.Fatalf("prepare integration config: %v", err)
+	}
 
 	_, _ = stack.compose("down", "--remove-orphans")
 
@@ -585,6 +603,251 @@ func requireIntegration(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skipf("docker not found: %v", err)
 	}
+}
+
+func prepareIntegrationComposeConfig(repoRoot string) error {
+	cfgDir := filepath.Join(repoRoot, "generated", "integration", "tubo")
+	if err := os.RemoveAll(cfgDir); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(cfgDir, "clusters", "home", "namespaces", "tenant-a", "services"), 0o755); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Join(cfgDir, "clusters", "home", "namespaces", "tenant-b", "services"), 0o755); err != nil {
+		return err
+	}
+
+	clusterID := "cluster-integration"
+	namespace := "tenant-a"
+	serviceName := "myapi"
+	serviceSeed := integrationServiceSeed(clusterID, namespace, serviceName)
+	serviceID := integrationServiceID(clusterID, namespace, serviceName)
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		return err
+	}
+
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return err
+	}
+	authorityKeyPath := filepath.Join(cfgDir, "clusters", "home", "authority.key")
+	if err := writePKCS8PrivateKey(authorityKeyPath, authorityPriv); err != nil {
+		return err
+	}
+	authorityPubKey, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		return err
+	}
+	authorityPubKeyStr := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authorityPubKey)))
+
+	clusterMembershipCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     clusterID,
+		NamespaceID:   namespace,
+		SubjectPeerID: servicePeerID.String(),
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		return err
+	}
+	clusterMembershipCapPath := filepath.Join(cfgDir, "clusters", "home", "membership.cap.json")
+	if err := writeJSONFile(clusterMembershipCapPath, clusterMembershipCap); err != nil {
+		return err
+	}
+	namespaceMembershipCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     clusterID,
+		NamespaceID:   namespace,
+		SubjectPeerID: clusterID,
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		return err
+	}
+	namespaceMembershipCapPath := filepath.Join(cfgDir, "clusters", "home", "namespaces", namespace, "membership.cap.json")
+	if err := writeJSONFile(namespaceMembershipCapPath, namespaceMembershipCap); err != nil {
+		return err
+	}
+
+	serviceClaim, err := capability.SignServiceClaim(capability.ServiceClaim{
+		ClusterID:     clusterID,
+		NamespaceID:   namespace,
+		ServiceID:     serviceID,
+		SubjectPeerID: servicePeerID.String(),
+		Permissions:   []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		return err
+	}
+	serviceClaimPath := filepath.Join(cfgDir, "clusters", "home", "namespaces", namespace, "services", serviceName+".claim.json")
+	if err := writeJSONFile(serviceClaimPath, serviceClaim); err != nil {
+		return err
+	}
+
+	swarmKeyPath := filepath.Join(cfgDir, "swarm.key")
+	if err := writeSwarmKey(swarmKeyPath); err != nil {
+		return err
+	}
+	containerRoot := "/home/nonroot/.config/tubo"
+	authorityKeyContainerPath := filepath.Join(containerRoot, "clusters", "home", "authority.key")
+	clusterMembershipCapContainerPath := filepath.Join(containerRoot, "clusters", "home", "membership.cap.json")
+	namespaceMembershipCapContainerPath := filepath.Join(containerRoot, "clusters", "home", "namespaces", namespace, "membership.cap.json")
+	serviceClaimContainerPath := filepath.Join(containerRoot, "clusters", "home", "namespaces", namespace, "services", serviceName+".claim.json")
+	swarmKeyContainerPath := filepath.Join(containerRoot, "swarm.key")
+
+	relayPeerID, err := p2p.PeerIDFromSeed("relay-demo-seed")
+	if err != nil {
+		return err
+	}
+	edgePeerID, err := p2p.PeerIDFromSeed("edge-demo-seed")
+	if err != nil {
+		return err
+	}
+	relayAddr := "/dns4/relay/tcp/4002/p2p/" + relayPeerID.String()
+	edgeAddr := "/dns4/edge/tcp/4001/p2p/" + edgePeerID.String()
+
+	relayCfg := cfgpkg.Defaults("relay")
+	relayCfg.Node.Seed = "relay-demo-seed"
+	relayCfg.Node.P2PListen = "/ip4/0.0.0.0/tcp/4002"
+	relayCfg.Network.PrivateKeyFile = swarmKeyContainerPath
+	relayCfg.Relay.HealthListen = ":8092"
+	relayCfg.Relay.EnableRelayService = true
+	relayCfg.Relay.EnableAutoNATService = true
+	relayCfg.Relay.EnableDiscoveryPubSub = true
+	relayCfg.Relay.ForceReachabilityPublic = true
+	relayCfg.Relay.PrintRunCommands = false
+
+	edgeCfg := cfgpkg.Defaults("edge")
+	edgeCfg.Node.Seed = "edge-demo-seed"
+	edgeCfg.Node.P2PListen = "/ip4/0.0.0.0/tcp/4001"
+	edgeCfg.Network.PrivateKeyFile = swarmKeyContainerPath
+	edgeCfg.Network.RelayPeers = []string{relayAddr}
+	edgeCfg.Edge.Listen = ":8443"
+	edgeCfg.Edge.AdminListen = ":8444"
+	edgeCfg.CurrentCluster = "home"
+	edgeCfg.CurrentNamespace = namespace
+	edgeCfg.Clusters = map[string]cfgpkg.Cluster{
+		"home": {
+			ClusterID:                clusterID,
+			AuthorityPublicKey:       authorityPubKeyStr,
+			AuthorityPrivateKeyFile:  authorityKeyContainerPath,
+			MembershipCapabilityFile: clusterMembershipCapContainerPath,
+			Namespaces: map[string]cfgpkg.Namespace{
+				namespace: {
+					MembershipCapabilityFile: namespaceMembershipCapContainerPath,
+					Services: map[string]cfgpkg.NamespaceService{
+						serviceName: {
+							ServiceID:        serviceID,
+							ServiceSeed:      serviceSeed,
+							ServiceClaimFile: serviceClaimContainerPath,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	serviceCfg := cfgpkg.Defaults("service")
+	serviceCfg.Node.Seed = serviceSeed
+	serviceCfg.Node.P2PListen = "/ip4/0.0.0.0/tcp/40123"
+	serviceCfg.Network.PrivateKeyFile = swarmKeyContainerPath
+	serviceCfg.Network.BootstrapPeers = []string{edgeAddr, relayAddr}
+	serviceCfg.Network.RelayPeers = []string{relayAddr}
+	serviceCfg.Network.Autorelay = true
+	serviceCfg.Network.HolePunching = true
+	serviceCfg.Service.Name = serviceName
+	serviceCfg.Service.Target = "http://dummy-api-server:8000"
+	serviceCfg.HealthListen = ":8091"
+	serviceCfg.HeartbeatInterval = cfgpkg.Duration(5 * time.Second)
+	serviceCfg.CurrentCluster = "home"
+	serviceCfg.CurrentNamespace = namespace
+	serviceCfg.Clusters = map[string]cfgpkg.Cluster{
+		"home": {
+			ClusterID:                clusterID,
+			AuthorityPublicKey:       authorityPubKeyStr,
+			AuthorityPrivateKeyFile:  authorityKeyContainerPath,
+			MembershipCapabilityFile: clusterMembershipCapContainerPath,
+			Namespaces: map[string]cfgpkg.Namespace{
+				namespace: {
+					MembershipCapabilityFile: namespaceMembershipCapContainerPath,
+					Services: map[string]cfgpkg.NamespaceService{
+						serviceName: {
+							ServiceID:        serviceID,
+							ServiceSeed:      serviceSeed,
+							ServiceClaimFile: serviceClaimContainerPath,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := cfgpkg.WriteFile(filepath.Join(cfgDir, "relay.yaml"), relayCfg, true); err != nil {
+		return err
+	}
+	if err := cfgpkg.WriteFile(filepath.Join(cfgDir, "edge.yaml"), edgeCfg, true); err != nil {
+		return err
+	}
+	if err := cfgpkg.WriteFile(filepath.Join(cfgDir, "service.yaml"), serviceCfg, true); err != nil {
+		return err
+	}
+	if err := cfgpkg.WriteFile(filepath.Join(cfgDir, "config.yaml"), serviceCfg, true); err != nil {
+		return err
+	}
+	for _, path := range []string{filepath.Join(cfgDir, "relay.yaml"), filepath.Join(cfgDir, "edge.yaml"), filepath.Join(cfgDir, "service.yaml"), filepath.Join(cfgDir, "config.yaml"), clusterMembershipCapPath, namespaceMembershipCapPath, serviceClaimPath, swarmKeyPath, authorityKeyPath} {
+		if err := os.Chmod(path, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func integrationServiceID(clusterID, namespace, name string) string {
+	sum := sha256.Sum256([]byte(clusterID + "\x00" + namespace + "\x00" + name))
+	return "service-" + hex.EncodeToString(sum[:8])
+}
+
+func integrationServiceSeed(clusterID, namespace, name string) string {
+	sum := sha256.Sum256([]byte("seed\x00" + clusterID + "\x00" + namespace + "\x00" + name))
+	return "service-" + hex.EncodeToString(sum[8:24])
+}
+
+func writeSwarmKey(path string) error {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		return err
+	}
+	content := "/key/swarm/psk/1.0.0/\n/base16/\n" + hex.EncodeToString(key) + "\n"
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func writePKCS8PrivateKey(path string, key ed25519.PrivateKey) error {
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		return err
+	}
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
+	return os.WriteFile(path, pemBytes, 0o600)
+}
+
+func writeJSONFile(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(b, '\n'), 0o600)
 }
 
 func dockerDaemonAvailable() bool {

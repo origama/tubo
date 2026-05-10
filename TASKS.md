@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-09 19:56 UTC
+> **Last updated:** 2026-05-10 10:08 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -157,6 +157,7 @@
 | C.54 | Peer allowlist end-to-end across runtime binaries | ✅ | Wired `LIBP2P_ALLOWED_PEERS` into relay/edge/service/bridge host creation; added integration coverage for allowed connections and rogue-peer rejection |
 | C.55 | Issue #90 — data-plane connect proof authorization | ✅ | Added protocol connect-proof frames, service-side proof verification/replay protection, bridge proof emission from connect grants, and integration coverage for valid/missing/expired/replayed/scope-mismatched proofs; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 | C.56 | Issue #91 — namespace-scoped service listing and query authorization | ✅ | Done: added namespace-aware auth for `get services`, `get service/...`, `describe`, `inspect`, and `watch`, including per-namespace capability checks, `-A` authorization, and scoped filtering; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
+| C.57 | Issue #93 — remove legacy swarm discovery mode | ✅ | Done: legacy swarm discovery removed from runtime/docs; cluster/namespace discovery V2 is now the only supported path |
 
 ---
 

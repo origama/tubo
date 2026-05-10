@@ -167,7 +167,15 @@ func (c Config) DiscoveryRuntime() DiscoveryRuntime {
 			NamespaceID: c.CurrentNamespace,
 		}
 	}
-	return DiscoveryRuntime{Mode: DiscoveryModeLegacyV1, Topic: discovery.DiscoveryTopic}
+	return DiscoveryRuntime{}
+}
+
+func (c Config) RequireDiscoveryRuntime() (DiscoveryRuntime, error) {
+	runtime := c.DiscoveryRuntime()
+	if runtime.Mode != DiscoveryModeNamespaceV2 {
+		return DiscoveryRuntime{}, fmt.Errorf("cluster/namespace discovery is required; run `tubo create cluster/...` and `tubo use cluster/...` first")
+	}
+	return runtime, nil
 }
 
 func Defaults(role string) Config {

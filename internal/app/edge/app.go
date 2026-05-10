@@ -271,8 +271,9 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 
 	cache := discovery.NewCache(30*time.Second, 1*time.Second)
 	mode := discovery.Mode(discoveryMode)
-	if mode == "" {
-		mode = discovery.ModeLegacyV1
+	if mode != discovery.ModeNamespaceV2 {
+		_ = h.Close()
+		return nil, nil, fmt.Errorf("cluster/namespace discovery is required; legacy swarm discovery has been removed")
 	}
 	sub := discovery.NewPubSubSubscriber(topic, cache)
 	if mode == discovery.ModeNamespaceV2 {

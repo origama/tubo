@@ -252,14 +252,14 @@ func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T)
 	}
 }
 
-func TestDiscoveryRuntimeFallsBackToLegacyTopicWithoutClusterIdentity(t *testing.T) {
+func TestDiscoveryRuntimeWithoutClusterIdentityReturnsZeroValue(t *testing.T) {
 	cfg := Config{CurrentCluster: "home", CurrentNamespace: "default", Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}}}
 	runtime := cfg.DiscoveryRuntime()
-	if runtime.Mode != DiscoveryModeLegacyV1 {
-		t.Fatalf("mode = %q", runtime.Mode)
+	if runtime != (DiscoveryRuntime{}) {
+		t.Fatalf("runtime = %#v", runtime)
 	}
-	if runtime.Topic != discovery.DiscoveryTopic {
-		t.Fatalf("topic = %q", runtime.Topic)
+	if _, err := cfg.RequireDiscoveryRuntime(); err == nil {
+		t.Fatal("expected discovery runtime requirement error")
 	}
 }
 func TestValidateRequired(t *testing.T) {

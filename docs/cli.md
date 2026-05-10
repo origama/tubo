@@ -442,7 +442,7 @@ network:
     - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 ```
 
-`current_overlay` materializza i campi overlay in `network:` quando il file usa il nuovo layout; le writers di `join` e bundle firmati scrivono entrambi i formati per compatibilità. `tubo join overlay/public` è la forma esplicita del join pubblico; `tubo join overlay/manual --relay ... --swarm-key ...` è la forma esplicita del join manuale/legacy. Quando la config corrente porta un cluster con identity metadata (`cluster_id` + `authority_public_key` + membership grant/capability), il runtime discovery usa un topic V2 opaco derivato da `current_cluster/current_namespace` e valida topic/scope, membership capability e replay nonce; altrimenti resta su `/discovery/v1.0`.
+`current_overlay` materializza i campi overlay in `network:` quando il file usa il nuovo layout; le writers di `join` e bundle firmati scrivono entrambi i formati per compatibilità. `tubo join overlay/public` è la forma esplicita del join pubblico; `tubo join overlay/manual --relay ... --swarm-key ...` è la forma esplicita del join manuale/legacy. Quando la config corrente porta un cluster con identity metadata (`cluster_id` + `authority_public_key` + membership grant/capability), il runtime discovery usa un topic V2 opaco derivato da `current_cluster/current_namespace` e valida topic/scope, membership capability e replay nonce; le config senza questi metadati non supportano più discovery runtime.
 
 ## Local resource CLI (Phase 2a)
 

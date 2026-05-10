@@ -875,7 +875,7 @@ service:
 	if err := os.WriteFile(configPath, []byte(legacy), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, args := range [][]string{{"get", "overlays"}, {"describe", "overlay/public"}, {"use", "overlay/public"}} {
+	for _, args := range [][]string{{"get", "overlays"}, {"describe", "overlay/public"}, {"use", "overlay/public"}, {"get", "services"}, {"get", "service/api"}, {"describe", "service/api"}, {"inspect", "service/api"}, {"watch", "services", "--timeout", "1s"}} {
 		if _, err := capture(func() error { return run(args) }); err == nil {
 			t.Fatalf("expected legacy config to reject %v", args)
 		}
@@ -1458,9 +1458,27 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	cfgYAML := fmt.Sprintf("network:\n  private_key_file: %s\n  bootstrap_peers:\n    - %s\nedge:\n  admin_listen: 127.0.0.1:1\n", keyPath, p2p.PeerAddrs(server)[0])
-	if err := os.WriteFile(configPath, []byte(cfgYAML), 0600); err != nil {
+	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "observability",
+		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
+		Edge:             cfgpkg.Edge{AdminListen: "127.0.0.1:1"},
+		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath}},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
 	}
 	result, err := discoverServices(configPath, 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"})
@@ -1509,9 +1527,27 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
-	cfgYAML := fmt.Sprintf("network:\n  private_key_file: %s\n  bootstrap_peers:\n    - %s\nedge:\n  admin_listen: 127.0.0.1:1\n", keyPath, p2p.PeerAddrs(server)[0])
-	if err := os.WriteFile(configPath, []byte(cfgYAML), 0600); err != nil {
+	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "observability",
+		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
+		Edge:             cfgpkg.Edge{AdminListen: "127.0.0.1:1"},
+		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath}},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
 	}
 	result, service, err := discoverService(configPath, "myapi", 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"})
@@ -1671,12 +1707,8 @@ func TestResolveAuthorizedServiceScopes(t *testing.T) {
 	if _, err := resolveAuthorizedServiceScopes(cfg, "", "", true); err == nil {
 		t.Fatal("expected all-namespaces denial for missing namespace capability")
 	}
-	legacyScopes, err := resolveAuthorizedServiceScopes(cfgpkg.Config{}, "", "", false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(legacyScopes) != 1 || legacyScopes[0].Cluster != "" || legacyScopes[0].Namespace != "" {
-		t.Fatalf("unexpected legacy scopes: %#v", legacyScopes)
+	if _, err := resolveAuthorizedServiceScopes(cfgpkg.Config{}, "", "", false); err == nil {
+		t.Fatal("expected cluster discovery requirement error")
 	}
 }
 

@@ -2,9 +2,12 @@ package edge
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +18,7 @@ import (
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/routing"
+	"golang.org/x/crypto/ssh"
 )
 
 func TestLoadConfigFromEnvDefaults(t *testing.T) {
@@ -116,7 +120,15 @@ func TestHandleAddRoute(t *testing.T) {
 func TestGatewayDiscoveryQueryServesCachedServices(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "", "", "", "", "", "")
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), discovery.NamespaceTopic("cluster-123", "default"), discovery.ModeNamespaceV2.String(), "cluster-123", "default")
 	if err != nil {
 		t.Fatal(err)
 	}
