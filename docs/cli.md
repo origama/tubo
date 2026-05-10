@@ -475,7 +475,7 @@ Note:
 - `get overlays` e `get clusters` leggono solo la config locale.
 - `get namespaces` usa il `current_cluster` corrente.
 - `create cluster/...` genera un authority keypair locale, scrive un `cluster_id`, imposta `authority_public_key`, crea il namespace `default` e salva una capability di membership locale senza stampare segreti.
-- `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente e rende esplicito il nuovo `current_namespace`. Se vuoi autorizzare anche `get services -A`, aggiungi una capability di membership per quel namespace (o una capability broad con namespace `*`) nel cluster locale.
+- `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente, rende esplicito il nuovo `current_namespace` e materializza una capability di membership firmata per quel namespace.
 - `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
 - `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile.
 - `share service/...` usa la chiave authority locale per emettere un token connect-only, firma un `ConnectCapability` per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile; in namespace-v2 il bridge converte poi il grant in un connect proof on-stream.

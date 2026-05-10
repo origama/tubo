@@ -311,13 +311,13 @@ func (a *App) currentAnnouncement() (discovery.Announcement, bool) {
 	return ann, true
 }
 
-func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, bool) {
+func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.AnnouncementV2Payload, bool) {
 	if a.discoveryMode != discovery.ModeNamespaceV2 {
-		return discovery.AnnouncementV2{}, false
+		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
 	}
 	addrs := expandUnspecifiedListenAddrs(p2p.PeerAddrs(a.host), a.cfg.Listen, a.host.ID())
 	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) && !a.hasRelayReservation() {
-		return discovery.AnnouncementV2{}, false
+		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
 	}
 	if a.requireRelayReadyAnn {
 		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
@@ -331,19 +331,22 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, bool) {
 	}
 	ann, err := discovery.NewAnnouncementV2(a.discoveryClusterID(), a.discoveryNamespaceID(), a.host.ID(), a.announcementTTL, payload)
 	if err != nil {
-		return discovery.AnnouncementV2{}, false
+		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
 	}
-	return ann, true
+	return ann, payload, true
 }
 
 func (a *App) publishCurrentAnnouncementV2(ctx context.Context) bool {
-	ann, ok := a.currentAnnouncementV2()
+	ann, payload, ok := a.currentAnnouncementV2()
 	if !ok {
 		return false
 	}
 	if err := a.publisher.PublishV2(ctx, ann); err != nil {
 		log.Printf("heartbeat immediate publish failed: %v", err)
 		return false
+	}
+	if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
+		log.Printf("heartbeat relay sync failed: %v", err)
 	}
 	log.Printf("heartbeat published discovery v2 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
 	return true
@@ -359,18 +362,44 @@ func (a *App) runAnnouncementLoopV2(ctx context.Context) {
 			log.Println("heartbeat loop: context cancelled, stopping")
 			return
 		case <-ticker.C:
-			ann, ok := a.currentAnnouncementV2()
+			ann, payload, ok := a.currentAnnouncementV2()
 			if !ok {
 				log.Printf("heartbeat skipped: service announcement not ready yet")
 				continue
 			}
 			if err := a.publisher.PublishV2(ctx, ann); err != nil {
 				log.Printf("heartbeat publish failed: %v", err)
+			} else if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
+				log.Printf("heartbeat relay sync failed: %v", err)
 			} else {
 				log.Printf("heartbeat published discovery v2 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
 			}
 		}
 	}
+}
+
+func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.AnnouncementV2Payload) error {
+	peers := append([]string(nil), a.cfg.BootstrapPeers...)
+	peers = append(peers, a.cfg.RelayPeers...)
+	seen := make(map[string]struct{}, len(peers))
+	service := discoveryquery.Service{Kind: "service", Name: payload.ServiceName, PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
+	for _, raw := range peers {
+		if raw == "" {
+			continue
+		}
+		if _, ok := seen[raw]; ok {
+			continue
+		}
+		seen[raw] = struct{}{}
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			continue
+		}
+		if _, err := discoveryquery.AnnounceService(ctx, a.host, info, service); err != nil {
+			log.Printf("discovery sync announce failed peer=%s: %v", info.ID, err)
+		}
+	}
+	return nil
 }
 
 func (a *App) loadMembershipCapabilityBytes() ([]byte, error) {

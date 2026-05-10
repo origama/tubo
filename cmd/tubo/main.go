@@ -546,7 +546,7 @@ func resolveRoleConfig(role string, args []string) (cfgpkg.Config, string, error
 }
 
 func runRole(role string, args []string) error {
-	c, _, err := resolveRoleConfig(role, args)
+	c, configPath, err := resolveRoleConfig(role, args)
 	if err != nil {
 		return err
 	}
@@ -586,7 +586,11 @@ func runRole(role string, args []string) error {
 			return err
 		}
 		discoveryRuntime = runtime
-		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: serviceSeed, ServiceName: c.Service.Name, ServiceID: serviceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: cluster.MembershipCapabilityFile, ServiceClaimFile: serviceClaimFile})
+		serviceCapabilityFile, err := ensureServiceMembershipCapabilityFile(configPath, cluster, c.CurrentCluster, c.CurrentNamespace, serviceSeed)
+		if err != nil {
+			return err
+		}
+		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: serviceSeed, ServiceName: c.Service.Name, ServiceID: serviceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: serviceCapabilityFile, ServiceClaimFile: serviceClaimFile})
 		if err != nil {
 			return err
 		}

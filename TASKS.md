@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-10 10:08 UTC
+> **Last updated:** 2026-05-10 20:30 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -158,6 +158,7 @@
 | C.55 | Issue #90 — data-plane connect proof authorization | ✅ | Added protocol connect-proof frames, service-side proof verification/replay protection, bridge proof emission from connect grants, and integration coverage for valid/missing/expired/replayed/scope-mismatched proofs; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 | C.56 | Issue #91 — namespace-scoped service listing and query authorization | ✅ | Done: added namespace-aware auth for `get services`, `get service/...`, `describe`, `inspect`, and `watch`, including per-namespace capability checks, `-A` authorization, and scoped filtering; verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 | C.57 | Issue #93 — remove legacy swarm discovery mode | ✅ | Done: legacy swarm discovery removed from runtime/docs; cluster/namespace discovery V2 is now the only supported path |
+| C.58 | Issue #94 — namespace invite bootstrap and cross-machine discovery regression | ✅ | Resolved end-to-end after deploying/restarting the public relay on `relay.tubo.click` with the current branch binary + public swarm key: clean two-machine flow (`join`, `create cluster/namespace`, `share`, `attach`, remote `join`, `get services`) now returns the attached service from relay cache (`received 1 services`) |
 
 ---
 
@@ -178,11 +179,12 @@ The following packages have no `_test.go` files yet:
 
 ### Now
 
-1. **Issue #12 / C.36 — repeatable performance baselines**: continuare a salvare benchmark confrontabili, soprattutto sul bench Linode (`performance`, `area:testbench`, `area:linode`)
-2. **Issue #11 / C.25 — stable CI coverage for NAT/relay stress**: promuovere gli stress test a coverage stabile dopo gli ultimi fix runtime (`test`, `area:testbench`)
-3. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)
-4. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
-5. **Issue #9 — malformed security handshake after restarts**: capire e correggere gli errori intermittenti post-restart (`bug`, `security`, `area:protocol`, `investigation`, `prio:high`)
+1. **Issue #94 — namespace invite bootstrap and cross-machine discovery regression**: riprodotto su `relay.tubo.click`; `create namespace`/invite flow non lascia una capability namespace subito utilizzabile e `get services` resta vuoto anche dopo `attach` + join su seconda macchina (`bug`, `area:cli`, `area:edge`, `area:service`, `prio:high`)
+2. **Issue #12 / C.36 — repeatable performance baselines**: continuare a salvare benchmark confrontabili, soprattutto sul bench Linode (`performance`, `area:testbench`, `area:linode`)
+3. **Issue #11 / C.25 — stable CI coverage for NAT/relay stress**: promuovere gli stress test a coverage stabile dopo gli ultimi fix runtime (`test`, `area:testbench`)
+4. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)
+5. **Issue #6 — stale relay circuit/backoff state**: pulire stato stale su edge dopo disruption del relay (`bug`, `area:edge`, `area:relay`, `prio:high`)
+6. **Issue #9 — malformed security handshake after restarts**: capire e correggere gli errori intermittenti post-restart (`bug`, `security`, `area:protocol`, `investigation`, `prio:high`)
 
 ### Next
 

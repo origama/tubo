@@ -43,6 +43,9 @@ func createLocalService(configPath, name string) error {
 		namespace.Services = make(map[string]cfgpkg.NamespaceService)
 	}
 	if existing, ok := namespace.Services[name]; ok && existing.ServiceID != "" && existing.ServiceSeed != "" && existing.ServiceClaimFile != "" {
+		if _, err := ensureServiceMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, existing.ServiceSeed); err != nil {
+			return err
+		}
 		fmt.Printf("service %q already exists in cluster %q namespace %q\n", name, cfg.CurrentCluster, cfg.CurrentNamespace)
 		fmt.Printf("service id: %s\n", existing.ServiceID)
 		fmt.Printf("service seed: %s\n", existing.ServiceSeed)
@@ -84,6 +87,9 @@ func createLocalService(configPath, name string) error {
 	if err := writeServiceClaimFile(claimPath, claim); err != nil {
 		return err
 	}
+	if _, err := ensureServiceMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, serviceSeed); err != nil {
+		return err
+	}
 	namespace.Services[name] = cfgpkg.NamespaceService{ServiceID: serviceID, ServiceSeed: serviceSeed, ServiceClaimFile: claimPath}
 	cluster.Namespaces[cfg.CurrentNamespace] = namespace
 	cfg.Clusters[cfg.CurrentCluster] = cluster
@@ -114,4 +120,54 @@ func writeServiceClaimFile(path string, claim capability.ServiceClaim) error {
 	}
 	b = append(b, '\n')
 	return os.WriteFile(path, b, 0600)
+}
+
+func serviceMembershipCapabilityPath(configPath, clusterName, namespaceName string) string {
+	return filepath.Join(filepath.Dir(configPath), "clusters", sanitizeProcessName(clusterName), "namespaces", sanitizeProcessName(namespaceName), "cluster.membership.cap.json")
+}
+
+func ensureServiceMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
+	capPath := serviceMembershipCapabilityPath(configPath, clusterName, namespaceName)
+	if _, err := os.Stat(capPath); err == nil {
+		return capPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" || cluster.AuthorityPrivateKeyFile == "" {
+		return "", fmt.Errorf("cluster %q is missing identity metadata", clusterName)
+	}
+	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+	if err != nil {
+		return "", fmt.Errorf("load cluster authority key: %w", err)
+	}
+	pubAuthorized, err := clusterAuthorityPublicKeyString(privKey)
+	if err != nil {
+		return "", err
+	}
+	if cluster.AuthorityPublicKey != pubAuthorized {
+		return "", fmt.Errorf("cluster %q authority public key mismatch", clusterName)
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		return "", err
+	}
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     cluster.ClusterID,
+		NamespaceID:   namespaceName,
+		SubjectPeerID: servicePeerID.String(),
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(365 * 24 * time.Hour),
+	}, privKey)
+	if err != nil {
+		return "", err
+	}
+	if err := writeCapabilityFile(capPath, membership); err != nil {
+		return "", err
+	}
+	return capPath, nil
 }

@@ -119,11 +119,13 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	if app.cache == nil {
 		t.Fatal("expected service cache")
 	}
-	ann, ok := app.currentAnnouncementV2()
+	ann, payload, ok := app.currentAnnouncementV2()
 	if !ok {
 		t.Fatal("expected current announcement")
 	}
-	payload, err := ann.Payload("cluster-123", "default")
+	if _, err := ann.Payload("cluster-123", "default"); err != nil {
+		t.Fatal(err)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

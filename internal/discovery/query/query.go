@@ -17,22 +17,25 @@ import (
 )
 
 const (
-	ProtocolID       libprotocol.ID = "/tubo/discovery/query/1.0"
-	RequestTypeList                 = "list_services"
-	RequestTypeGet                  = "get_service"
-	maxRequestBytes                 = 64 << 10
-	maxResponseBytes                = 1 << 20
-	maxServices                     = 256
+	ProtocolID          libprotocol.ID = "/tubo/discovery/query/1.0"
+	RequestTypeList                    = "list_services"
+	RequestTypeGet                     = "get_service"
+	RequestTypeAnnounce                = "announce_service"
+	maxRequestBytes                    = 64 << 10
+	maxResponseBytes                   = 1 << 20
+	maxServices                        = 256
 )
 
 type Cache interface {
 	Resolve(serviceName string) (*discovery.ServiceEntry, bool)
 	List() []*discovery.ServiceEntry
+	Add(peer.ID, string, []string, time.Duration) error
 }
 
 type Request struct {
-	Type string `json:"type"`
-	Name string `json:"name,omitempty"`
+	Type    string   `json:"type"`
+	Name    string   `json:"name,omitempty"`
+	Service *Service `json:"service,omitempty"`
 }
 
 type Metadata struct {
@@ -109,6 +112,20 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 		service := serviceFromEntry(entry)
 		resp.Service = &service
 		return resp
+	case RequestTypeAnnounce:
+		if req.Service == nil {
+			resp.Error = "missing service payload"
+			return resp
+		}
+		if cache == nil {
+			resp.Error = "discovery cache unavailable"
+			return resp
+		}
+		if err := cache.Add(peer.ID(req.Service.PeerID), req.Service.Name, append([]string(nil), req.Service.Addresses...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
+			resp.Error = fmt.Sprintf("cache announce: %v", err)
+			return resp
+		}
+		return resp
 	default:
 		resp.Error = fmt.Sprintf("unsupported request type %q", req.Type)
 		return resp
@@ -149,6 +166,10 @@ func ListServices(ctx context.Context, h host.Host, info peer.AddrInfo) (Respons
 
 func GetService(ctx context.Context, h host.Host, info peer.AddrInfo, name string) (Response, error) {
 	return Query(ctx, h, info, Request{Type: RequestTypeGet, Name: name})
+}
+
+func AnnounceService(ctx context.Context, h host.Host, info peer.AddrInfo, service Service) (Response, error) {
+	return Query(ctx, h, info, Request{Type: RequestTypeAnnounce, Service: &service})
 }
 
 func servicesFromEntries(entries []*discovery.ServiceEntry) []Service {

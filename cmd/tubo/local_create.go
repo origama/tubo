@@ -126,19 +126,50 @@ func createLocalNamespace(configPath, name string) error {
 	if !ok {
 		return fmt.Errorf("current cluster %q not found in config", cfg.CurrentCluster)
 	}
+	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" || cluster.AuthorityPrivateKeyFile == "" {
+		return fmt.Errorf("current cluster %q is missing authority material", cfg.CurrentCluster)
+	}
 	if cluster.Namespaces == nil {
 		cluster.Namespaces = make(map[string]cfgpkg.Namespace)
 	}
 	if _, exists := cluster.Namespaces[name]; exists {
 		return fmt.Errorf("namespace %q already exists in cluster %q", name, cfg.CurrentCluster)
 	}
-	cluster.Namespaces[name] = cfgpkg.Namespace{}
+	priv, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+	if err != nil {
+		return fmt.Errorf("load cluster authority key: %w", err)
+	}
+	namespaceDir := filepath.Join(filepath.Dir(configPath), "clusters", sanitizeProcessName(cfg.CurrentCluster), "namespaces", sanitizeProcessName(name))
+	if err := os.MkdirAll(namespaceDir, 0700); err != nil {
+		return err
+	}
+	capPath := filepath.Join(namespaceDir, "membership.cap.json")
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     cluster.ClusterID,
+		NamespaceID:   name,
+		SubjectPeerID: cluster.ClusterID,
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(365 * 24 * time.Hour),
+	}, priv)
+	if err != nil {
+		return err
+	}
+	if err := writeCapabilityFile(capPath, membership); err != nil {
+		return err
+	}
+	cluster.Namespaces[name] = cfgpkg.Namespace{MembershipCapabilityFile: capPath}
 	cfg.Clusters[cfg.CurrentCluster] = cluster
 	cfg.CurrentNamespace = name
 	if err := saveLocalConfig(configPath, cfg); err != nil {
 		return err
 	}
 	fmt.Printf("created namespace %q in cluster %q\n", name, cfg.CurrentCluster)
+	fmt.Printf("membership capability file: %s\n", capPath)
 	return nil
 }
 

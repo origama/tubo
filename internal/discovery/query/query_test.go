@@ -47,6 +47,24 @@ func TestResponseForRequestListAndGet(t *testing.T) {
 	}
 }
 
+func TestResponseForRequestAnnounce(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-announce-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	service := Service{Name: "myapi", PeerID: h.ID().String(), Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, TTLSeconds: 30}
+	resp := responseForRequest(h, "relay", cache, Request{Type: RequestTypeAnnounce, Service: &service})
+	if resp.Error != "" {
+		t.Fatalf("unexpected announce error: %#v", resp)
+	}
+	if got := cache.Count(); got != 1 {
+		t.Fatalf("cache count = %d, want 1", got)
+	}
+}
+
 func TestRequestResponseJSONRoundTrip(t *testing.T) {
 	buf := new(bytes.Buffer)
 	wantReq := Request{Type: RequestTypeGet, Name: "myapi"}

@@ -695,6 +695,25 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 	if err := writeJSONFile(serviceClaimPath, serviceClaim); err != nil {
 		return err
 	}
+	serviceMembershipCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     clusterID,
+		NamespaceID:   namespace,
+		SubjectPeerID: servicePeerID.String(),
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		return err
+	}
+	serviceMembershipCapPath := filepath.Join(cfgDir, "clusters", "home", "namespaces", namespace, "cluster.membership.cap.json")
+	if err := writeJSONFile(serviceMembershipCapPath, serviceMembershipCap); err != nil {
+		return err
+	}
 
 	swarmKeyPath := filepath.Join(cfgDir, "swarm.key")
 	if err := writeSwarmKey(swarmKeyPath); err != nil {
@@ -806,7 +825,7 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 	if err := cfgpkg.WriteFile(filepath.Join(cfgDir, "config.yaml"), serviceCfg, true); err != nil {
 		return err
 	}
-	for _, path := range []string{filepath.Join(cfgDir, "relay.yaml"), filepath.Join(cfgDir, "edge.yaml"), filepath.Join(cfgDir, "service.yaml"), filepath.Join(cfgDir, "config.yaml"), clusterMembershipCapPath, namespaceMembershipCapPath, serviceClaimPath, swarmKeyPath, authorityKeyPath} {
+	for _, path := range []string{filepath.Join(cfgDir, "relay.yaml"), filepath.Join(cfgDir, "edge.yaml"), filepath.Join(cfgDir, "service.yaml"), filepath.Join(cfgDir, "config.yaml"), clusterMembershipCapPath, namespaceMembershipCapPath, serviceMembershipCapPath, serviceClaimPath, swarmKeyPath, authorityKeyPath} {
 		if err := os.Chmod(path, 0o644); err != nil {
 			return err
 		}

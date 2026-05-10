@@ -74,6 +74,9 @@ func authorizeServiceNamespace(cfg cfgpkg.Config, clusterName, namespace string)
 	if !ok {
 		return fmt.Errorf("cluster %q not found", clusterName)
 	}
+	if clusterMembershipGrantAuthorizesNamespace(cluster, clusterName, namespace) {
+		return nil
+	}
 	capPath, err := namespaceMembershipCapabilityFile(cluster, namespace)
 	if err != nil {
 		return err
@@ -99,6 +102,23 @@ func authorizeServiceNamespace(cfg cfgpkg.Config, clusterName, namespace string)
 		return fmt.Errorf("membership capability for %s/%s is missing list permission", clusterName, namespace)
 	}
 	return nil
+}
+
+func clusterMembershipGrantAuthorizesNamespace(cluster cfgpkg.Cluster, clusterName, namespace string) bool {
+	grant := cluster.MembershipGrant
+	if grant == nil {
+		return false
+	}
+	if grant.ClusterName != clusterName || grant.ClusterID != cluster.ClusterID || grant.Namespace != namespace {
+		return false
+	}
+	if grant.Role != clusterInviteDefaultRole {
+		return false
+	}
+	if grant.ExpiresAt.IsZero() || time.Now().UTC().After(grant.ExpiresAt.UTC()) {
+		return false
+	}
+	return true
 }
 
 func namespaceMembershipCapabilityFile(cluster cfgpkg.Cluster, namespace string) (string, error) {

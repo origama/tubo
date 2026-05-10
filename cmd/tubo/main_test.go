@@ -1029,6 +1029,61 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), token, "observability")
 }
 
+func TestClusterInviteGrantAuthorizesNamespaceQueries(t *testing.T) {
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "pinamespace",
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				ClusterID:          "cluster-123",
+				AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))),
+				MembershipGrant: &cfgpkg.ClusterMembershipGrant{
+					InviteToken:        "tubo-invite-v1.test",
+					InviteVersion:      clusterInviteVersion,
+					ClusterName:        "home",
+					ClusterID:          "cluster-123",
+					AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))),
+					Namespace:          "pinamespace",
+					Role:               clusterInviteDefaultRole,
+					IssuedAt:           time.Now().Add(-time.Minute),
+					ExpiresAt:          time.Now().Add(time.Hour),
+				},
+			},
+		},
+	}
+	scopes, err := resolveAuthorizedServiceScopes(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scopes) != 1 || scopes[0].Cluster != "home" || scopes[0].Namespace != "pinamespace" {
+		t.Fatalf("unexpected scopes: %#v", scopes)
+	}
+}
+
+func TestNamespaceMembershipCapabilityFilePrefersNamespaceSpecificFile(t *testing.T) {
+	cluster := cfgpkg.Cluster{
+		MembershipCapabilityFile: "/tmp/cluster.cap.json",
+		Namespaces: map[string]cfgpkg.Namespace{
+			"pinamespace": {MembershipCapabilityFile: "/tmp/namespace.cap.json"},
+		},
+	}
+	path, err := namespaceMembershipCapabilityFile(cluster, "pinamespace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != "/tmp/namespace.cap.json" {
+		t.Fatalf("unexpected capability file path: %s", path)
+	}
+}
+
 func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -1230,8 +1285,23 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if cfg.CurrentNamespace != "observability" {
 		t.Fatalf("current_namespace = %q, want observability", cfg.CurrentNamespace)
 	}
-	if _, ok := cfg.Clusters["home"].Namespaces["observability"]; !ok {
+	observabilityNamespace, ok := cfg.Clusters["home"].Namespaces["observability"]
+	if !ok {
 		t.Fatalf("namespace not added: %#v", cfg.Clusters["home"].Namespaces)
+	}
+	if observabilityNamespace.MembershipCapabilityFile == "" {
+		t.Fatalf("namespace membership capability not created: %#v", observabilityNamespace)
+	}
+	observabilityCapBytes, err := os.ReadFile(observabilityNamespace.MembershipCapabilityFile)
+	if err != nil {
+		t.Fatalf("namespace capability file missing: %v", err)
+	}
+	var observabilityMembership capability.MembershipCapability
+	if err := json.Unmarshal(observabilityCapBytes, &observabilityMembership); err != nil {
+		t.Fatalf("namespace capability json invalid: %v", err)
+	}
+	if err := capability.VerifyMembershipCapability(observabilityMembership, edPub, cluster.ClusterID, "observability", cluster.ClusterID); err != nil {
+		t.Fatalf("namespace membership capability verification failed: %v", err)
 	}
 
 	if _, err := capture(func() error { return run([]string{"use", "namespace/default", "--config", configPath}) }); err != nil {
