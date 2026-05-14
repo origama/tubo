@@ -22,6 +22,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	iversion "github.com/origama/tubo/internal/version"
 	"golang.org/x/crypto/ssh"
@@ -1294,6 +1295,111 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	obsSvc := obsAuthz.Service
 	if obsSvc.ServiceID == svc.ServiceID || obsSvc.ServiceSeed == svc.ServiceSeed {
 		t.Fatalf("same service name in different namespace reused identity: default=%#v obs=%#v", svc, obsSvc)
+	}
+}
+
+func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	store := grantspkg.NewStore(storePath)
+	now := time.Now().UTC()
+	first, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-myapi", ServicePeerID: "12D3-service", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester-2", ServiceName: "other", ServiceID: "service-other", ServicePeerID: "12D3-other", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := capture(func() error { return run([]string{"grants", "pending", "--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, first.ID) || !strings.Contains(out, second.ID) {
+		t.Fatalf("pending output missing requests: %s", out)
+	}
+	out, err = capture(func() error { return run([]string{"grants", "describe", first.ID, "--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Service PeerID: 12D3-service") {
+		t.Fatalf("describe output missing peer: %s", out)
+	}
+	if _, err := capture(func() error {
+		return run([]string{"grants", "approve", first.ID, "--config", configPath, "--store", storePath, "--ttl", "168h"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	approved, ok, err := store.Get(first.ID)
+	if err != nil || !ok || approved.Status != grantspkg.StatusApproved || approved.ServiceClaim == nil {
+		t.Fatalf("approval not persisted ok=%t err=%v req=%#v", ok, err, approved)
+	}
+	edPub := mustClusterAuthorityKey(t, configPath).Public().(ed25519.PublicKey)
+	if err := capability.VerifyServiceClaim(*approved.ServiceClaim, edPub, cluster.ClusterID, "default", "service-myapi", "12D3-service"); err != nil {
+		t.Fatalf("approved claim invalid: %v", err)
+	}
+	if _, err := capture(func() error {
+		return run([]string{"grants", "deny", second.ID, "--store", storePath, "--reason", "no"})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	denied, ok, err := store.Get(second.ID)
+	if err != nil || !ok || denied.Status != grantspkg.StatusDenied || denied.ServiceClaim != nil {
+		t.Fatalf("deny not persisted ok=%t err=%v req=%#v", ok, err, denied)
+	}
+	out, err = capture(func() error { return run([]string{"grants", "history", "--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, grantspkg.StatusApproved) || !strings.Contains(out, grantspkg.StatusDenied) {
+		t.Fatalf("history missing statuses: %s", out)
+	}
+}
+
+func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	store := grantspkg.NewStore(storePath)
+	now := time.Now().UTC()
+	expired, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "expired", ServiceID: "service-expired", ServicePeerID: "12D3-expired", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error {
+		return run([]string{"grants", "approve", expired.ID, "--config", configPath, "--store", storePath})
+	}); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expected expired approval error, got %v", err)
+	}
+	pending, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-myapi", ServicePeerID: "12D3-service", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster.AuthorityPrivateKeyFile = ""
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error {
+		return run([]string{"grants", "approve", pending.ID, "--config", configPath, "--store", storePath})
+	}); err == nil || !strings.Contains(err.Error(), "missing authority private key") {
+		t.Fatalf("expected missing authority key error, got %v", err)
 	}
 }
 

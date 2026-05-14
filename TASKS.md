@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-14 22:15 UTC
+> **Last updated:** 2026-05-14 22:25 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -165,6 +165,7 @@
 | C.62 | Issue #95/#99 — Local grant request store for authority nodes | ✅ | Done: added persistent atomic grant request store with pending/list/get/approve/deny/expire/reload/dedupe/corrupt-file coverage |
 | C.63 | Issue #95/#100 — Publish Grant protocol message types and validation | ✅ | Done: added `/tubo/grants/1.0` message types, encode/decode, validation, TTL/payload/service-name/permission bounds, and tests |
 | C.64 | Issue #95/#101 — `tubo grants serve` for Publish Grant requests | ✅ | Done: added authority-side grant service handler and `tubo grants serve`; submit/poll create and return pending store entries, bind requester PeerID from stream, reject invalid scope, dedupe duplicates, and avoid auto-signing claims |
+| C.65 | Issue #95/#102 — Grants pending/approve/deny/history CLI | ✅ | Done: added local authority CLI for pending, describe, approve, deny, and history; approval signs scoped `ServiceClaim`, denial does not, expired/missing-authority cases fail clearly, and service-name collision policy rejects already-approved different peers |
 
 ---
 
@@ -185,7 +186,7 @@ The following packages have no `_test.go` files yet:
 
 ### Now
 
-1. **Issue #95/#102 — Add grants pending/approve/deny/history CLI**: prossima subissue consigliata dell'epic Publish Grant (`security`, `area:cli`, `area:service`, `prio:high`)
+1. **Issue #95/#103 — Add client-side grants request flow**: prossima subissue consigliata dell'epic Publish Grant (`security`, `area:cli`, `area:service`, `prio:high`)
 2. **Issue #12 / C.36 — repeatable performance baselines**: continuare a salvare benchmark confrontabili, soprattutto sul bench Linode (`performance`, `area:testbench`, `area:linode`)
 3. **Issue #11 / C.25 — stable CI coverage for NAT/relay stress**: promuovere gli stress test a coverage stabile dopo gli ultimi fix runtime (`test`, `area:testbench`)
 4. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)

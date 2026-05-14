@@ -490,13 +490,18 @@ Note:
 
 ## Publish Grants
 
-Authority nodes can start the MVP grant protocol listener:
+Authority nodes can start the MVP grant protocol listener and review local requests:
 
 ```bash
 tubo grants serve --cluster home --namespace default
+tubo grants pending
+tubo grants describe gr_123
+tubo grants approve gr_123 --ttl 168h
+tubo grants deny gr_123
+tubo grants history
 ```
 
-The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically.
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically. Approval is explicit and signs a service-scoped `ServiceClaim` with the local authority key.
 
 ## Topology
 
