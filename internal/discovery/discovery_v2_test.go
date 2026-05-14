@@ -24,6 +24,17 @@ func TestPubSubSubscriberV2AcceptsValidAnnouncement(t *testing.T) {
 	assertV2Accepted(t, subscriber, 1, "myapi")
 }
 
+func TestPubSubSubscriberV2AcceptsNamespaceMembershipWithServiceClaim(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:       "myapi",
+		addresses:         []string{"/ip4/127.0.0.1/tcp/8080"},
+		membershipSubject: "cluster-123",
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Accepted(t, subscriber, 1, "myapi")
+}
+
 func TestPubSubSubscriberV2RejectsReplay(t *testing.T) {
 	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
 		serviceName: "myapi",
@@ -165,6 +176,7 @@ type testV2Payload struct {
 	registeredAt             time.Time
 	ttl                      time.Duration
 	membershipPerms          []string
+	membershipSubject        string
 	omitServiceClaim         bool
 	serviceClaimServiceID    string
 	serviceClaimPeerID       string
@@ -199,10 +211,14 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 	if payload.registeredAt.IsZero() {
 		payload.registeredAt = time.Now().UTC().Add(-time.Second)
 	}
+	membershipSubject := payload.membershipSubject
+	if membershipSubject == "" {
+		membershipSubject = pid.String()
+	}
 	membership := capability.MembershipCapability{
 		ClusterID:     "cluster-123",
 		NamespaceID:   "tenant-a",
-		SubjectPeerID: pid.String(),
+		SubjectPeerID: membershipSubject,
 		Permissions:   payload.membershipPerms,
 		ExpiresAt:     time.Now().Add(time.Hour),
 	}

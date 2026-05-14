@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -9,10 +10,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/discovery"
 	"github.com/origama/tubo/internal/p2p"
 )
 
@@ -182,12 +185,6 @@ func ensureAttachServiceIdentity(configPath string, cfg cfgpkg.Config) (cfgpkg.C
 		changed = true
 	}
 
-	if cluster.AuthorityPrivateKeyFile != "" {
-		if err := ensureLocalServiceClaim(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
-			return cfg, cfgpkg.NamespaceService{}, err
-		}
-	}
-
 	if changed {
 		namespace.Services[cfg.Service.Name] = svc
 		cluster.Namespaces[cfg.CurrentNamespace] = namespace
@@ -199,11 +196,9 @@ func ensureAttachServiceIdentity(configPath string, cfg cfgpkg.Config) (cfgpkg.C
 	return cfg, svc, nil
 }
 
-func ensureLocalServiceClaim(cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) error {
-	if _, err := os.Stat(svc.ServiceClaimFile); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
+func mintLocalServiceClaim(cluster cfgpkg.Cluster, clusterName, namespaceName string, svc cfgpkg.NamespaceService) error {
+	if svc.ServiceClaimFile == "" {
+		return errors.New("service claim file is required")
 	}
 	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
 	if err != nil {
@@ -232,6 +227,86 @@ func ensureLocalServiceClaim(cluster cfgpkg.Cluster, clusterName, namespaceName,
 		return err
 	}
 	return writeServiceClaimFile(svc.ServiceClaimFile, claim)
+}
+
+type attachAuthorization struct {
+	Config                   cfgpkg.Config
+	Service                  cfgpkg.NamespaceService
+	ServicePeerID            string
+	ServiceClaimFile         string
+	MembershipCapabilityFile string
+	MintedServiceClaim       bool
+}
+
+func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAuthorization, error) {
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		return attachAuthorization{}, err
+	}
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		return attachAuthorization{}, err
+	}
+	pub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
+	if err != nil {
+		return attachAuthorization{}, fmt.Errorf("parse authority public key for cluster %q: %w", cfg.CurrentCluster, err)
+	}
+
+	if err := verifyServiceClaimFile(svc.ServiceClaimFile, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID.String()); err == nil {
+		membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		if err != nil {
+			return attachAuthorization{}, err
+		}
+		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile}, nil
+	} else if !errors.Is(err, os.ErrNotExist) && cluster.AuthorityPrivateKeyFile == "" {
+		return attachAuthorization{}, fmt.Errorf("service publish grant for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, err)
+	}
+
+	if cluster.AuthorityPrivateKeyFile != "" {
+		if err := mintLocalServiceClaim(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc); err != nil {
+			return attachAuthorization{}, err
+		}
+		membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		if err != nil {
+			return attachAuthorization{}, err
+		}
+		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile, MintedServiceClaim: true}, nil
+	}
+
+	return attachAuthorization{}, noServicePublishGrantError(cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name)
+}
+
+func verifyServiceClaimFile(path string, pub ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error {
+	if strings.TrimSpace(path) == "" {
+		return os.ErrNotExist
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var claim capability.ServiceClaim
+	if err := json.Unmarshal(b, &claim); err != nil {
+		return err
+	}
+	return capability.VerifyServiceClaim(claim, pub, clusterID, namespaceID, serviceID, servicePeerID)
+}
+
+func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
+	capPath := serviceMembershipCapabilityPath(configPath, clusterName, namespaceName)
+	if _, err := os.Stat(capPath); err == nil {
+		return capPath, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if cluster.AuthorityPrivateKeyFile != "" {
+		return ensureServiceMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
+	}
+	return namespaceMembershipCapabilityFile(cluster, namespaceName)
+}
+
+func noServicePublishGrantError(clusterName, namespaceName, serviceName string) error {
+	return fmt.Errorf("no service publish grant for cluster %q namespace %q service %q; request a grant from a cluster authority or run attach from an authority node", clusterName, namespaceName, serviceName)
 }
 
 func writeServiceClaimFile(path string, claim capability.ServiceClaim) error {

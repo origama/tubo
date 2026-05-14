@@ -1229,10 +1229,12 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	cfg.Service.Name = "myapi"
 	cfg.Service.Target = "http://127.0.0.1:8080"
 	cfg.Node.Seed = "service-demo-seed"
-	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	authz, err := resolveAttachAuthorization(configPath, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg = authz.Config
+	svc := authz.Service
 	if svc.ServiceID == "" || svc.ServiceSeed == "" || svc.ServiceClaimFile == "" {
 		t.Fatalf("service identity incomplete: %#v", svc)
 	}
@@ -1266,10 +1268,11 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	}
 	reloaded.Service.Name = "myapi"
 	reloaded.Service.Target = "http://127.0.0.1:8080"
-	_, reused, err := ensureAttachServiceIdentity(configPath, reloaded)
+	reusedAuthz, err := resolveAttachAuthorization(configPath, reloaded)
 	if err != nil {
 		t.Fatal(err)
 	}
+	reused := reusedAuthz.Service
 	if reused != svc {
 		t.Fatalf("second attach changed identity: %#v vs %#v", reused, svc)
 	}
@@ -1284,13 +1287,143 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	obsCfg.Service.Name = "myapi"
 	obsCfg.Service.Target = "http://127.0.0.1:8080"
 	obsCfg.CurrentNamespace = "observability"
-	_, obsSvc, err := ensureAttachServiceIdentity(configPath, obsCfg)
+	obsAuthz, err := resolveAttachAuthorization(configPath, obsCfg)
 	if err != nil {
 		t.Fatal(err)
 	}
+	obsSvc := obsAuthz.Service
 	if obsSvc.ServiceID == svc.ServiceID || obsSvc.ServiceSeed == svc.ServiceSeed {
 		t.Fatalf("same service name in different namespace reused identity: default=%#v obs=%#v", svc, obsSvc)
 	}
+}
+
+func TestResolveAttachAuthorizationAcceptsExistingClaimWithoutAuthority(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	cluster.AuthorityPrivateKeyFile = ""
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.MintedServiceClaim {
+		t.Fatal("non-authority resolver unexpectedly minted a claim")
+	}
+	if authz.ServicePeerID == "" || authz.ServiceClaimFile != svc.ServiceClaimFile || authz.MembershipCapabilityFile == "" {
+		t.Fatalf("unexpected authz: %#v", authz)
+	}
+}
+
+func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mutate  func(t *testing.T, cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService)
+		wantErr string
+	}{
+		{
+			name:    "missing claim",
+			wantErr: "no service publish grant",
+		},
+		{
+			name: "wrong peer claim",
+			mutate: func(t *testing.T, cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService) {
+				if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(time.Hour), "12D3KooWDifferentPeer"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "subject peer id mismatch",
+		},
+		{
+			name: "expired claim",
+			mutate: func(t *testing.T, cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService) {
+				if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "expired",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := writeCreateClusterConfig(t)
+			if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := cfgpkg.LoadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Service.Name = "myapi"
+			cfg.Service.Target = "http://127.0.0.1:8080"
+			cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cluster := cfg.Clusters["home"]
+			if tc.mutate != nil {
+				tc.mutate(t, cluster, svc)
+			}
+			cluster.AuthorityPrivateKeyFile = ""
+			cfg.Clusters["home"] = cluster
+			if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+				t.Fatal(err)
+			}
+			_, err = resolveAttachAuthorization(configPath, cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q error, got %v", tc.wantErr, err)
+			}
+			if strings.Contains(err.Error(), "missing identity metadata") {
+				t.Fatalf("ambiguous old error leaked: %v", err)
+			}
+		})
+	}
+}
+
+func writeTestServiceClaim(t *testing.T, cluster cfgpkg.Cluster, namespace string, svc cfgpkg.NamespaceService, expiresAt time.Time, subjectOverride string) error {
+	t.Helper()
+	priv, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+	if err != nil {
+		return err
+	}
+	subject := subjectOverride
+	if subject == "" {
+		peerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+		if err != nil {
+			return err
+		}
+		subject = peerID.String()
+	}
+	claim, err := capability.SignServiceClaim(capability.ServiceClaim{
+		ClusterID:     cluster.ClusterID,
+		NamespaceID:   namespace,
+		ServiceID:     svc.ServiceID,
+		SubjectPeerID: subject,
+		Permissions:   []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		ExpiresAt:     expiresAt,
+	}, priv)
+	if err != nil {
+		return err
+	}
+	return writeServiceClaimFile(svc.ServiceClaimFile, claim)
 }
 
 func TestEnsureAttachServiceIdentityRejectsInvalidConfig(t *testing.T) {
@@ -1314,7 +1447,7 @@ func TestEnsureAttachServiceIdentityRejectsInvalidConfig(t *testing.T) {
 	namespace.Services = map[string]cfgpkg.NamespaceService{"myapi": {ServiceID: "service-wrong", ServiceSeed: "existing-seed"}}
 	cluster.Namespaces[cfg.CurrentNamespace] = namespace
 	cfg.Clusters["home"] = cluster
-	if _, _, err := ensureAttachServiceIdentity(configPath, cfg); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+	if _, err := resolveAttachAuthorization(configPath, cfg); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
 		t.Fatalf("expected identity mismatch error, got %v", err)
 	}
 }

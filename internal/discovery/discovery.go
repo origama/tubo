@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"sync"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/origama/tubo/internal/capability"
 )
+
+const broadNamespaceWildcard = "*"
 
 // DiscoveryEvent is emitted when a service registration changes.
 type DiscoveryEvent struct {
@@ -250,7 +253,7 @@ func (s *PubSubSubscriber) handleMessageV2(msg *pubsub.Message) {
 	if err := json.Unmarshal(payload.MembershipCapability, &membership); err != nil {
 		return
 	}
-	if err := capability.VerifyMembershipCapability(membership, s.authorityPublicKey, s.clusterID, s.namespaceID, ann.PeerID.String()); err != nil {
+	if err := verifyAnnouncementMembership(membership, s.authorityPublicKey, s.clusterID, s.namespaceID, ann.PeerID.String()); err != nil {
 		return
 	}
 	if payload.ServiceID == "" || len(payload.ServiceClaim) == 0 {
@@ -281,4 +284,27 @@ func (s *PubSubSubscriber) handleMessageV2(msg *pubsub.Message) {
 	}
 	log.Printf("discovery v2 announcement accepted service=%q peer=%s namespace=%s/%s addrs=%d ttl=%s", payload.ServiceName, ann.PeerID, s.clusterID, s.namespaceID, len(payload.Addresses), ann.TTL)
 	s.events <- DiscoveryEvent{Type: "added", ServiceName: payload.ServiceName, PeerID: ann.PeerID}
+}
+
+func verifyAnnouncementMembership(membership capability.MembershipCapability, pub ed25519.PublicKey, clusterID, namespaceID, announcerPeerID string) error {
+	var lastErr error
+	for _, subject := range []string{announcerPeerID, clusterID} {
+		candidateNamespaces := []string{namespaceID}
+		if membership.NamespaceID == broadNamespaceWildcard {
+			candidateNamespaces = append(candidateNamespaces, broadNamespaceWildcard)
+		}
+		for _, candidateNamespace := range candidateNamespaces {
+			if err := capability.VerifyMembershipCapability(membership, pub, clusterID, candidateNamespace, subject); err != nil {
+				lastErr = err
+				continue
+			}
+			if membership.NamespaceID == namespaceID || membership.NamespaceID == broadNamespaceWildcard {
+				return nil
+			}
+		}
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return errors.New("membership capability rejected")
 }

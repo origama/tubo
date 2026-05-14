@@ -31,7 +31,7 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
 3. usa `PubSubSubscriber` per:
    - deserializzare annuncio;
    - verificare topic/cluster/namespace;
-   - verificare membership capability e replay nonce;
+   - verificare membership capability del namespace e replay nonce;
    - richiedere e verificare una `ServiceClaim` valida per `service_id`, peer, namespace e authority;
    - aggiornare cache discovery.
 4. se configurato, tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
