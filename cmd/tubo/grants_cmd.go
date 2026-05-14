@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/origama/tubo/internal/capability"
+	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 )
@@ -24,6 +26,8 @@ func grantsCmd(args []string) error {
 	switch args[0] {
 	case "serve":
 		return grantsServeCmd(args[1:])
+	case "request":
+		return grantsRequestCmd(args[1:])
 	case "pending":
 		return grantsPendingCmd(args[1:])
 	case "describe":
@@ -36,6 +40,126 @@ func grantsCmd(args []string) error {
 		return grantsHistoryCmd(args[1:])
 	default:
 		return fmt.Errorf("unknown grants command %q", args[0])
+	}
+}
+
+func grantsFirstNonEmpty(v, def string) string {
+	if v != "" {
+		return v
+	}
+	return def
+}
+
+func grantsRequestCmd(args []string) error {
+	serviceArg, flagArgs := splitGrantIDArg(args)
+	fs := flag.NewFlagSet("grants request", flag.ContinueOnError)
+	configPath := fs.String("config", "", "")
+	clusterName := fs.String("cluster", "", "")
+	namespaceName := fs.String("namespace", "", "")
+	grantPeer := fs.String("peer", "", "")
+	ttl := fs.Duration("ttl", 7*24*time.Hour, "")
+	pollOnly := fs.Bool("poll", false, "")
+	if err := fs.Parse(flagArgs); err != nil {
+		return err
+	}
+	if serviceArg == "" || !strings.HasPrefix(serviceArg, "service/") {
+		return errors.New("usage: tubo grants request service/<name> --peer <multiaddr>")
+	}
+	serviceName := strings.TrimPrefix(serviceArg, "service/")
+	cfg, err := loadLocalConfigOrError(*configPath)
+	if err != nil {
+		return err
+	}
+	if *clusterName != "" {
+		cfg.CurrentCluster = *clusterName
+	}
+	if *namespaceName != "" {
+		cfg.CurrentNamespace = *namespaceName
+	}
+	cfg.Service.Name = serviceName
+	cfg.Service.Target = "http://127.0.0.1:1"
+	cfg, svc, err := ensureAttachServiceIdentity(*configPath, cfg)
+	if err != nil {
+		return err
+	}
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	if *grantPeer == "" {
+		*grantPeer = svc.GrantServicePeer
+	}
+	if *grantPeer == "" {
+		return errors.New("missing grant service peer; pass --peer <multiaddr>")
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		return err
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
+	if err != nil {
+		return err
+	}
+	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), psk)
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+	info, err := p2p.AddrInfoFromString(*grantPeer)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var resp grantspkg.Message
+	if *pollOnly {
+		if svc.GrantRequestID == "" {
+			return errors.New("no local grant request id recorded for service")
+		}
+		resp, err = grantspkg.Poll(ctx, h, info, svc.GrantRequestID)
+	} else {
+		resp, err = grantspkg.Submit(ctx, h, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServicePeerID: servicePeerID.String(), RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64(ttl.Seconds())})
+	}
+	if err != nil {
+		return err
+	}
+	return handleGrantClientResponse(*configPath, cfg, svc, *grantPeer, resp, servicePeerID.String())
+}
+
+func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, grantPeer string, resp grantspkg.Message, servicePeerID string) error {
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	namespace := cluster.Namespaces[cfg.CurrentNamespace]
+	switch resp.Type {
+	case grantspkg.TypePending:
+		svc.GrantRequestID = resp.RequestID
+		svc.GrantServicePeer = grantPeer
+		namespace.Services[cfg.Service.Name] = svc
+		cluster.Namespaces[cfg.CurrentNamespace] = namespace
+		cfg.Clusters[cfg.CurrentCluster] = cluster
+		if err := saveLocalConfig(configPath, cfg); err != nil {
+			return err
+		}
+		fmt.Printf("Grant request sent.\nRequest ID: %s\nStatus: pending\n", resp.RequestID)
+		return nil
+	case grantspkg.TypeApproved:
+		if resp.ServiceClaim == nil {
+			return errors.New("approved grant response missing service claim")
+		}
+		pub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
+		if err != nil {
+			return err
+		}
+		if err := capability.VerifyServiceClaim(*resp.ServiceClaim, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID); err != nil {
+			return fmt.Errorf("approved service claim rejected: %w", err)
+		}
+		if err := writeServiceClaimFile(svc.ServiceClaimFile, *resp.ServiceClaim); err != nil {
+			return err
+		}
+		fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\n", resp.RequestID, svc.ServiceClaimFile)
+		return nil
+	case grantspkg.TypeDenied:
+		return fmt.Errorf("grant request %s denied: %s", resp.RequestID, resp.Reason)
+	case grantspkg.TypeExpired:
+		return fmt.Errorf("grant request %s expired: %s", resp.RequestID, resp.Reason)
+	default:
+		return fmt.Errorf("unexpected grant response type %q", resp.Type)
 	}
 }
 

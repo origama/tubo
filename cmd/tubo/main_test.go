@@ -1298,6 +1298,81 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	}
 }
 
+func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-request-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+
+	out, err := capture(func() error {
+		return run([]string{"grants", "request", "service/myapi", "--config", configPath, "--peer", grantPeer, "--ttl", "168h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Status: pending") {
+		t.Fatalf("unexpected request output: %s", out)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if svc.GrantRequestID == "" || svc.GrantServicePeer != grantPeer {
+		t.Fatalf("grant request metadata not saved: %#v", svc)
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv := mustClusterAuthorityKey(t, configPath)
+	claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: cluster.ClusterID, NamespaceID: "default", ServiceID: svc.ServiceID, SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: time.Now().Add(time.Hour)}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Approve(svc.GrantRequestID, claim); err != nil {
+		t.Fatal(err)
+	}
+	out, err = capture(func() error {
+		return run([]string{"grants", "request", "service/myapi", "--config", configPath, "--poll"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Service claim saved") {
+		t.Fatalf("unexpected poll output: %s", out)
+	}
+	claimBytes, err := os.ReadFile(svc.ServiceClaimFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved capability.ServiceClaim
+	if err := json.Unmarshal(claimBytes, &saved); err != nil {
+		t.Fatal(err)
+	}
+	edPub := priv.Public().(ed25519.PublicKey)
+	if err := capability.VerifyServiceClaim(saved, edPub, cluster.ClusterID, "default", svc.ServiceID, servicePeerID.String()); err != nil {
+		t.Fatalf("saved claim invalid: %v", err)
+	}
+}
+
 func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {

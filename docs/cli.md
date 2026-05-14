@@ -498,6 +498,9 @@ tubo grants pending
 tubo grants describe gr_123
 tubo grants approve gr_123 --ttl 168h
 tubo grants deny gr_123
+
+tubo grants request service/myapi --peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+tubo grants request service/myapi --poll
 tubo grants history
 ```
 
