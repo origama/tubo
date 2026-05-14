@@ -17,7 +17,7 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
 
 1. crea host libp2p (`p2p.NewHostWithSeedAndPSK`);
 2. pubblica `AnnouncementV2` firmato e cifrato sul topic V2 del namespace;
-3. include `ServiceName`, `ServiceID`, `Addresses`, membership capability e, se presente, service claim;
+3. include `ServiceName`, `ServiceID`, `Addresses`, membership capability e `ServiceClaim` valida;
 4. avvia heartbeat (`HEARTBEAT_INTERVAL`, default `15s`) che ripubblica lo stesso annuncio;
 5. tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 6. se configurato, abilita static AutoRelay verso `RELAY_PEERS` (`ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE`).
@@ -32,14 +32,16 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
    - deserializzare annuncio;
    - verificare topic/cluster/namespace;
    - verificare membership capability e replay nonce;
-   - verificare service claim, se presente;
+   - richiedere e verificare una `ServiceClaim` valida per `service_id`, peer, namespace e authority;
    - aggiornare cache discovery.
 4. se configurato, tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 
 ### 1.3 Cache e auto-routing
 
 - Cache keyed per `serviceName` (`internal/discovery/cache.go`).
-- TTL effettivo in cache: 30s (default gateway).
+- Gli edge aggiornano la cache tramite Discovery V2 validata; non accettano `announce_service` sul protocollo query.
+- I relay possono mantenere una cache query/sync per supportare `get services` remoti.
+- Il TTL effettivo degli annunci V2 è limitato da announcement TTL e scadenza della `ServiceClaim`.
 - Su evento `added`, il gateway crea route auto:
   - `hostname = serviceName`
   - `pathPrefix = "/"`
@@ -50,7 +52,7 @@ Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
 ### 1.4 Limiti attuali importanti
 
 1. Un solo `ServiceEntry` per `serviceName` (ultimo annuncio vince).
-2. `Announcement.TTL` non controlla direttamente TTL cache (oggi fisso lato edge).
+2. La cache query dei relay resta keyed per `serviceName` e non sostituisce la validazione Discovery V2 degli edge.
 3. Se gli indirizzi annunciati non sono raggiungibili, il dial diretto fallisce.
 4. Hole punching/AutoNAT non sono ancora completi nel progetto.
 5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge`, `service`, `bridge` e `relay`.

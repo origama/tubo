@@ -69,12 +69,62 @@ func TestPubSubSubscriberV2RejectsBadMembershipPermissions(t *testing.T) {
 	assertV2Rejected(t, subscriber)
 }
 
-func TestPubSubSubscriberV2RejectsBadServiceClaim(t *testing.T) {
+func TestPubSubSubscriberV2RejectsMissingServiceClaim(t *testing.T) {
 	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
-		serviceName:       "myapi",
-		addresses:         []string{"/ip4/127.0.0.1/tcp/8080"},
-		serviceClaimName:  "other-service",
-		serviceClaimPerms: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		serviceName:      "myapi",
+		addresses:        []string{"/ip4/127.0.0.1/tcp/8080"},
+		omitServiceClaim: true,
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Rejected(t, subscriber)
+}
+
+func TestPubSubSubscriberV2RejectsExpiredServiceClaim(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:           "myapi",
+		addresses:             []string{"/ip4/127.0.0.1/tcp/8080"},
+		serviceClaimExpiresAt: time.Now().Add(-time.Minute),
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Rejected(t, subscriber)
+}
+
+func TestPubSubSubscriberV2RejectsServiceClaimSignedByWrongAuthority(t *testing.T) {
+	_, wrongAuthorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:              "myapi",
+		addresses:                []string{"/ip4/127.0.0.1/tcp/8080"},
+		serviceClaimAuthorityKey: wrongAuthorityPriv,
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Rejected(t, subscriber)
+}
+
+func TestPubSubSubscriberV2RejectsServiceClaimForDifferentPeer(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:           "myapi",
+		addresses:             []string{"/ip4/127.0.0.1/tcp/8080"},
+		serviceClaimPeerID:    "12D3KooWDifferentPeer",
+		serviceClaimPerms:     []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		serviceClaimExpiresAt: time.Now().Add(time.Hour),
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Rejected(t, subscriber)
+}
+
+func TestPubSubSubscriberV2RejectsServiceClaimForDifferentServiceID(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:           "myapi",
+		addresses:             []string{"/ip4/127.0.0.1/tcp/8080"},
+		serviceClaimServiceID: "other-service",
+		serviceClaimPerms:     []string{capability.PermissionAttach, capability.PermissionAnnounce},
 	})
 
 	subscriber.handleMessageV2(msg)
@@ -109,13 +159,18 @@ func TestPubSubSubscriberV2RejectsCorruptedCiphertext(t *testing.T) {
 }
 
 type testV2Payload struct {
-	serviceName       string
-	addresses         []string
-	registeredAt      time.Time
-	ttl               time.Duration
-	membershipPerms   []string
-	serviceClaimName  string
-	serviceClaimPerms []string
+	serviceName              string
+	serviceID                string
+	addresses                []string
+	registeredAt             time.Time
+	ttl                      time.Duration
+	membershipPerms          []string
+	omitServiceClaim         bool
+	serviceClaimServiceID    string
+	serviceClaimPeerID       string
+	serviceClaimPerms        []string
+	serviceClaimExpiresAt    time.Time
+	serviceClaimAuthorityKey ed25519.PrivateKey
 }
 
 type testV2Harness struct {
@@ -158,20 +213,40 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 	if err != nil {
 		t.Fatal(err)
 	}
+	serviceID := payload.serviceID
+	if serviceID == "" {
+		serviceID = "service-myapi"
+	}
 	var serviceClaim []byte
-	if payload.serviceClaimName != "" || len(payload.serviceClaimPerms) > 0 {
+	if !payload.omitServiceClaim {
+		claimServiceID := payload.serviceClaimServiceID
+		if claimServiceID == "" {
+			claimServiceID = serviceID
+		}
+		claimPeerID := payload.serviceClaimPeerID
+		if claimPeerID == "" {
+			claimPeerID = pid.String()
+		}
+		claimExpiresAt := payload.serviceClaimExpiresAt
+		if claimExpiresAt.IsZero() {
+			claimExpiresAt = time.Now().Add(time.Hour)
+		}
 		claim := capability.ServiceClaim{
 			ClusterID:     "cluster-123",
 			NamespaceID:   "tenant-a",
-			ServiceID:     payload.serviceClaimName,
-			SubjectPeerID: pid.String(),
+			ServiceID:     claimServiceID,
+			SubjectPeerID: claimPeerID,
 			Permissions:   payload.serviceClaimPerms,
-			ExpiresAt:     time.Now().Add(time.Hour),
+			ExpiresAt:     claimExpiresAt,
 		}
 		if len(claim.Permissions) == 0 {
 			claim.Permissions = []string{capability.PermissionAttach, capability.PermissionAnnounce}
 		}
-		claim, err = capability.SignServiceClaim(claim, authorityPriv)
+		claimAuthorityKey := authorityPriv
+		if len(payload.serviceClaimAuthorityKey) > 0 {
+			claimAuthorityKey = payload.serviceClaimAuthorityKey
+		}
+		claim, err = capability.SignServiceClaim(claim, claimAuthorityKey)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,6 +261,7 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 	}
 	ann, err := NewAnnouncementV2("cluster-123", "tenant-a", pid, payload.ttl, AnnouncementV2Payload{
 		ServiceName:          payload.serviceName,
+		ServiceID:            serviceID,
 		Addresses:            payload.addresses,
 		MembershipCapability: membershipBytes,
 		ServiceClaim:         serviceClaim,

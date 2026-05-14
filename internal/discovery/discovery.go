@@ -253,28 +253,30 @@ func (s *PubSubSubscriber) handleMessageV2(msg *pubsub.Message) {
 	if err := capability.VerifyMembershipCapability(membership, s.authorityPublicKey, s.clusterID, s.namespaceID, ann.PeerID.String()); err != nil {
 		return
 	}
-	if len(payload.ServiceClaim) > 0 {
-		var claim capability.ServiceClaim
-		if err := json.Unmarshal(payload.ServiceClaim, &claim); err != nil {
-			return
-		}
-		serviceID := payload.ServiceID
-		if serviceID == "" {
-			serviceID = payload.ServiceName
-		}
-		if err := capability.VerifyServiceClaim(claim, s.authorityPublicKey, s.clusterID, s.namespaceID, serviceID, ann.PeerID.String()); err != nil {
-			return
-		}
+	if payload.ServiceID == "" || len(payload.ServiceClaim) == 0 {
+		return
+	}
+	var claim capability.ServiceClaim
+	if err := json.Unmarshal(payload.ServiceClaim, &claim); err != nil {
+		return
+	}
+	if err := capability.VerifyServiceClaim(claim, s.authorityPublicKey, s.clusterID, s.namespaceID, payload.ServiceID, ann.PeerID.String()); err != nil {
+		return
 	}
 	expiresAt := payload.RegisteredAt.UTC().Add(ann.TTL)
-	if time.Now().UTC().After(expiresAt) {
+	claimExpiresAt := claim.ExpiresAt.UTC()
+	if claimExpiresAt.Before(expiresAt) {
+		expiresAt = claimExpiresAt
+	}
+	cacheTTL := time.Until(expiresAt)
+	if cacheTTL <= 0 {
 		return
 	}
 	replayKey := strings.Join([]string{s.expectedTopic, ann.PeerID.String(), hex.EncodeToString(ann.Nonce)}, "|")
 	if s.replay != nil && s.replay.Seen(replayKey, expiresAt) {
 		return
 	}
-	if err := s.cache.Add(ann.PeerID, payload.ServiceName, payload.Addresses, ann.TTL); err != nil {
+	if err := s.cache.Add(ann.PeerID, payload.ServiceName, payload.Addresses, cacheTTL); err != nil {
 		return
 	}
 	log.Printf("discovery v2 announcement accepted service=%q peer=%s namespace=%s/%s addrs=%d ttl=%s", payload.ServiceName, ann.PeerID, s.clusterID, s.namespaceID, len(payload.Addresses), ann.TTL)

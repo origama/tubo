@@ -63,6 +63,28 @@ func TestResponseForRequestAnnounce(t *testing.T) {
 	if got := cache.Count(); got != 1 {
 		t.Fatalf("cache count = %d, want 1", got)
 	}
+	entry, ok := cache.Resolve("myapi")
+	if !ok || entry.PeerID != h.ID() {
+		t.Fatalf("cache peer id = %s, want %s", entry.PeerID, h.ID())
+	}
+}
+
+func TestResponseForRequestAnnounceRejectedByGateway(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-announce-gateway-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	service := Service{Name: "myapi", PeerID: h.ID().String(), Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, TTLSeconds: 30}
+	resp := responseForRequest(h, "gateway", cache, Request{Type: RequestTypeAnnounce, Service: &service})
+	if resp.Error != "announce_service is only accepted by relay caches" {
+		t.Fatalf("unexpected announce response: %#v", resp)
+	}
+	if got := cache.Count(); got != 0 {
+		t.Fatalf("cache count = %d, want 0", got)
+	}
 }
 
 func TestRequestResponseJSONRoundTrip(t *testing.T) {

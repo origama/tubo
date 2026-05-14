@@ -113,6 +113,10 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 		resp.Service = &service
 		return resp
 	case RequestTypeAnnounce:
+		if role != "relay" {
+			resp.Error = "announce_service is only accepted by relay caches"
+			return resp
+		}
 		if req.Service == nil {
 			resp.Error = "missing service payload"
 			return resp
@@ -121,7 +125,12 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 			resp.Error = "discovery cache unavailable"
 			return resp
 		}
-		if err := cache.Add(peer.ID(req.Service.PeerID), req.Service.Name, append([]string(nil), req.Service.Addresses...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
+		pID, err := peer.Decode(req.Service.PeerID)
+		if err != nil {
+			resp.Error = fmt.Sprintf("invalid service peer id: %v", err)
+			return resp
+		}
+		if err := cache.Add(pID, req.Service.Name, append([]string(nil), req.Service.Addresses...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
 			resp.Error = fmt.Sprintf("cache announce: %v", err)
 			return resp
 		}

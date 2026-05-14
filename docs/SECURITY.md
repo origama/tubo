@@ -33,7 +33,7 @@ Questo documento stabilisce i requisiti di sicurezza e le restrizioni architettu
 
 1. **Compromissione del Connector:** Se un Attaccante riesce a compromettere un Connector, questo può agire come punto di ingresso malevolo al servizio locale (Origin Service). È cruciale isolare strettamente l'accesso al `localhost` e implementare autenticazione end-to-end.
 2. **Masquerading:** L'attacco in cui un peer si spaccia per un altro. Questo viene mitigato dall'uso rigoroso di firme crittografiche basate sul Peer ID noto.
-3. **Pubsub Spam:** Un attaccante può pubblicare annunci malevoli sul topic pubsub. Mitigazione: validazione firma su ogni annuncio, rate limiting sulle pubblicazioni, verifica cross-reference tra peer ID dell'annuncio e peer ID del mittente, e per Discovery V2 verifica di topic/scope, membership capability, optional service claim legata a `service_id`, e decryption fallita.
+3. **Pubsub Spam:** Un attaccante può pubblicare annunci malevoli sul topic pubsub. Mitigazione: validazione firma su ogni annuncio, rate limiting sulle pubblicazioni, verifica cross-reference tra peer ID dell'annuncio e peer ID del mittente, e per Discovery V2 verifica di topic/scope, membership capability, `ServiceClaim` obbligatoria legata a `service_id`, e decryption fallita.
 4. **Service Share Bearer Tokens:** i token generati da `tubo share service/...` sono connect-only, firmati dall'autorità del cluster e rifiutano token scaduti o alterati. Vengono convertiti in connect proof sul bridge path e vanno comunque trattati come credenziali sensibili.
 
 ## 📦 Stack Tecnologico e Dipendenze
