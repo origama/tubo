@@ -26,6 +26,7 @@ join      = configura questa macchina per uno swarm esistente
 get       = lista o recupera risorse
 create    = crea risorse locali nella config
 share     = crea inviti membership locali per un cluster
+grants    = gestisce richieste Publish Grant
 describe  = mostra dettagli leggibili
 inspect   = mostra dettagli tecnici/raw
 watch     = osserva servizi nello swarm
@@ -486,6 +487,16 @@ Note:
 - `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.
 - `use` aggiorna solo il file di config locale; non avvia o ferma processi runtime.
 - `--json` resta disponibile per `get` e per i nuovi flussi locali quando utile.
+
+## Publish Grants
+
+Authority nodes can start the MVP grant protocol listener:
+
+```bash
+tubo grants serve --cluster home --namespace default
+```
+
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically.
 
 ## Topology
 

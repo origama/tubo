@@ -126,6 +126,8 @@ func run(args []string) error {
 		return localUseCmd(args[1:])
 	case "share":
 		return localShareCmd(args[1:])
+	case "grants":
+		return grantsCmd(args[1:])
 	case "create":
 		return localCreateCmd(args[1:])
 	case "logs":
