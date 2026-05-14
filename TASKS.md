@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-14 21:10 UTC
+> **Last updated:** 2026-05-14 21:35 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -160,6 +160,7 @@
 | C.57 | Issue #93 — remove legacy swarm discovery mode | ✅ | Done: legacy swarm discovery removed from runtime/docs; cluster/namespace discovery V2 is now the only supported path |
 | C.58 | Issue #94 — namespace invite bootstrap and cross-machine discovery regression | ✅ | Resolved end-to-end after deploying/restarting the public relay on `relay.tubo.click` with the current branch binary + public swarm key: clean two-machine flow (`join`, `create cluster/namespace`, `share`, `attach`, remote `join`, `get services`) now returns the attached service from relay cache (`received 1 services`) |
 | C.59 | Issue #95/#96 — Publish Grant prerequisite: mandatory ServiceClaim for Discovery V2 | ✅ | Done: Discovery V2 subscriber now requires non-empty `service_id` + valid authority-signed `ServiceClaim`, bounds cache TTL by claim expiry, and gateways reject query-protocol cache mutation; added adversarial unit tests for missing/expired/wrong-authority/wrong-peer/wrong-service claims plus runtime integration coverage for rejecting a claimless service; verified with `go test ./...`, `SMOKE_FORCE_BUILD=1 ./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
+| C.60 | Issue #95/#97 — Persist stable service identity for attach | ✅ | Done: `tubo attach` now materializes/reuses scoped service identity before service runtime startup, generates `service_seed` once instead of falling back to demo/ephemeral seeds in cluster mode, derives the service peer before membership/claim handling, and preserves namespace-separated identities; verified with `go test ./...`, `SMOKE_FORCE_BUILD=1 ./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration` |
 
 ---
 
@@ -180,7 +181,7 @@ The following packages have no `_test.go` files yet:
 
 ### Now
 
-1. **Issue #95/#97 — Persist stable service identity for attach**: prossima subissue consigliata dell'epic Publish Grant dopo il prerequisite Discovery V2 (`security`, `area:cli`, `area:service`, `prio:high`)
+1. **Issue #95/#98 — Introduce attach authorization resolver**: prossima subissue consigliata dell'epic Publish Grant (`security`, `area:cli`, `area:service`, `prio:high`)
 2. **Issue #12 / C.36 — repeatable performance baselines**: continuare a salvare benchmark confrontabili, soprattutto sul bench Linode (`performance`, `area:testbench`, `area:linode`)
 3. **Issue #11 / C.25 — stable CI coverage for NAT/relay stress**: promuovere gli stress test a coverage stabile dopo gli ultimi fix runtime (`test`, `area:testbench`)
 4. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)

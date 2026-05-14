@@ -1217,6 +1217,108 @@ func writeCreateClusterConfig(t *testing.T) string {
 	return configPath
 }
 
+func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg.Node.Seed = "service-demo-seed"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if svc.ServiceID == "" || svc.ServiceSeed == "" || svc.ServiceClaimFile == "" {
+		t.Fatalf("service identity incomplete: %#v", svc)
+	}
+	_, deterministicSeed := serviceIdentityFor(cfg.Clusters["home"].ClusterID, "default", "myapi")
+	if svc.ServiceSeed == "service-demo-seed" || svc.ServiceSeed == deterministicSeed {
+		t.Fatalf("attach service seed should be generated and scoped, got %q", svc.ServiceSeed)
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatalf("service peer id from seed: %v", err)
+	}
+	claimBytes, err := os.ReadFile(svc.ServiceClaimFile)
+	if err != nil {
+		t.Fatalf("claim file missing: %v", err)
+	}
+	if info, err := os.Stat(svc.ServiceClaimFile); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("claim file permissions = %v err=%v, want 0600", info.Mode().Perm(), err)
+	}
+	var claim capability.ServiceClaim
+	if err := json.Unmarshal(claimBytes, &claim); err != nil {
+		t.Fatal(err)
+	}
+	edPub := mustClusterAuthorityKey(t, configPath).Public().(ed25519.PublicKey)
+	if err := capability.VerifyServiceClaim(claim, edPub, cfg.Clusters["home"].ClusterID, "default", svc.ServiceID, servicePeerID.String()); err != nil {
+		t.Fatalf("claim verification failed: %v", err)
+	}
+
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Service.Name = "myapi"
+	reloaded.Service.Target = "http://127.0.0.1:8080"
+	_, reused, err := ensureAttachServiceIdentity(configPath, reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused != svc {
+		t.Fatalf("second attach changed identity: %#v vs %#v", reused, svc)
+	}
+
+	if _, err := capture(func() error { return run([]string{"create", "namespace/observability", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	obsCfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obsCfg.Service.Name = "myapi"
+	obsCfg.Service.Target = "http://127.0.0.1:8080"
+	obsCfg.CurrentNamespace = "observability"
+	_, obsSvc, err := ensureAttachServiceIdentity(configPath, obsCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if obsSvc.ServiceID == svc.ServiceID || obsSvc.ServiceSeed == svc.ServiceSeed {
+		t.Fatalf("same service name in different namespace reused identity: default=%#v obs=%#v", svc, obsSvc)
+	}
+}
+
+func TestEnsureAttachServiceIdentityRejectsInvalidConfig(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	cfg := cfgpkg.Config{Role: "service", Service: cfgpkg.Service{Name: "myapi", Target: "http://127.0.0.1:8080"}}
+	if _, _, err := ensureAttachServiceIdentity(configPath, cfg); err == nil || !strings.Contains(err.Error(), "no current cluster selected") {
+		t.Fatalf("expected current cluster error, got %v", err)
+	}
+
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cluster := cfg.Clusters["home"]
+	namespace := cluster.Namespaces[cfg.CurrentNamespace]
+	namespace.Services = map[string]cfgpkg.NamespaceService{"myapi": {ServiceID: "service-wrong", ServiceSeed: "existing-seed"}}
+	cluster.Namespaces[cfg.CurrentNamespace] = namespace
+	cfg.Clusters["home"] = cluster
+	if _, _, err := ensureAttachServiceIdentity(configPath, cfg); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
+		t.Fatalf("expected identity mismatch error, got %v", err)
+	}
+}
+
 func TestCreateClusterAndNamespace(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 

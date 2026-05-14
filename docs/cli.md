@@ -109,7 +109,8 @@ Se manca la config locale di default:
 
 - `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
 - questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico;
-- `attach` genera un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
+- in cluster/namespace mode, `attach` crea o riusa una identita' stabile per `(cluster, namespace, service)` (`service_id`, `service_seed`, `service_claim_file`) prima di avviare il runtime;
+- senza config esplicita, `attach` genera ancora un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
 - `attach` ascolta di default su `/ip4/0.0.0.0/tcp/0` per permettere direct dial/hole punching quando la rete lo consente.
 
 File coinvolti:
@@ -477,6 +478,7 @@ Note:
 - `create cluster/...` genera un authority keypair locale, scrive un `cluster_id`, imposta `authority_public_key`, crea il namespace `default` e salva una capability di membership locale senza stampare segreti.
 - `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente, rende esplicito il nuovo `current_namespace` e materializza una capability di membership firmata per quel namespace.
 - `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
+- `attach` in cluster/namespace mode materializza automaticamente una identita' servizio stabile se manca: il `service_id` resta deterministico per scope/nome, mentre il `service_seed` viene generato una sola volta e salvato nel config locale (`0600`).
 - `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile.
 - `share service/...` usa la chiave authority locale per emettere un token connect-only, firma un `ConnectCapability` per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile; in namespace-v2 il bridge converte poi il grant in un connect proof on-stream.
 - `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
