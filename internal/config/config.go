@@ -96,15 +96,19 @@ type Cluster struct {
 }
 
 type ClusterMembershipGrant struct {
-	InviteToken        string    `yaml:"invite_token,omitempty" json:"invite_token,omitempty"`
-	InviteVersion      string    `yaml:"invite_version,omitempty" json:"invite_version,omitempty"`
-	ClusterName        string    `yaml:"cluster_name,omitempty" json:"cluster_name,omitempty"`
-	ClusterID          string    `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
-	AuthorityPublicKey string    `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
-	Namespace          string    `yaml:"namespace,omitempty" json:"namespace,omitempty"`
-	Role               string    `yaml:"role,omitempty" json:"role,omitempty"`
-	IssuedAt           time.Time `yaml:"issued_at,omitempty" json:"issued_at,omitempty"`
-	ExpiresAt          time.Time `yaml:"expires_at,omitempty" json:"expires_at,omitempty"`
+	InviteToken          string    `yaml:"invite_token,omitempty" json:"invite_token,omitempty"`
+	InviteVersion        string    `yaml:"invite_version,omitempty" json:"invite_version,omitempty"`
+	InviteID             string    `yaml:"invite_id,omitempty" json:"invite_id,omitempty"`
+	ClusterName          string    `yaml:"cluster_name,omitempty" json:"cluster_name,omitempty"`
+	ClusterID            string    `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
+	AuthorityPublicKey   string    `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
+	Namespace            string    `yaml:"namespace,omitempty" json:"namespace,omitempty"`
+	Role                 string    `yaml:"role,omitempty" json:"role,omitempty"`
+	Permissions          []string  `yaml:"permissions,omitempty" json:"permissions,omitempty"`
+	GrantServiceProtocol string    `yaml:"grant_service_protocol,omitempty" json:"grant_service_protocol,omitempty"`
+	GrantServicePeers    []string  `yaml:"grant_service_peers,omitempty" json:"grant_service_peers,omitempty"`
+	IssuedAt             time.Time `yaml:"issued_at,omitempty" json:"issued_at,omitempty"`
+	ExpiresAt            time.Time `yaml:"expires_at,omitempty" json:"expires_at,omitempty"`
 }
 
 type Namespace struct {
@@ -286,6 +290,8 @@ func cloneCluster(in Cluster) Cluster {
 	}
 	if in.MembershipGrant != nil {
 		grant := *in.MembershipGrant
+		grant.Permissions = cloneStrings(in.MembershipGrant.Permissions)
+		grant.GrantServicePeers = cloneStrings(in.MembershipGrant.GrantServicePeers)
 		out.MembershipGrant = &grant
 	}
 	if len(in.Namespaces) > 0 {

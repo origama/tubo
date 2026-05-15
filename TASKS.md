@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-14 23:05 UTC
+> **Last updated:** 2026-05-15 05:55 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -168,6 +168,7 @@
 | C.65 | Issue #95/#102 — Grants pending/approve/deny/history CLI | ✅ | Done: added local authority CLI for pending, describe, approve, deny, and history; approval signs scoped `ServiceClaim`, denial does not, expired/missing-authority cases fail clearly, and service-name collision policy rejects already-approved different peers |
 | C.66 | Issue #95/#103 — Client-side grants request flow | ✅ | Done: added `tubo grants request service/<name>` submit/poll flow, stable identity derivation, grant request metadata persistence, approved claim validation/saving, and invalid/denied/expired response handling |
 | C.67 | Issue #95/#104 — Wire Publish Grant into service publication command | ✅ | Done: `attach` now submits/polls saved grant routes before publication, persists pending request metadata, saves approved claims, rejects denied/expired/pending states clearly, and still supports authority-local minting or existing valid claims |
+| C.68 | Issue #95/#105 — Extend cluster invite with grant-requester role | ✅ | Done: added signed `grant-requester` invites with `grant:request`, `jti`, grant service protocol/peers, join persistence, client fallback to stored grant service metadata, and tests for creation/join/tamper/expiry/no-publish-rights/request flow |
 
 ---
 
@@ -188,7 +189,7 @@ The following packages have no `_test.go` files yet:
 
 ### Now
 
-1. **Issue #95/#105 — Publish Grant docs and operator runbook**: prossima subissue consigliata dell'epic Publish Grant (`docs`, `area:docs`, `prio:medium`)
+1. **Issue #95/#106 — Harden Publish Grant flow**: prossima subissue consigliata dell'epic Publish Grant (`security`, `area:protocol`, `area:service`, `prio:high`)
 2. **Issue #12 / C.36 — repeatable performance baselines**: continuare a salvare benchmark confrontabili, soprattutto sul bench Linode (`performance`, `area:testbench`, `area:linode`)
 3. **Issue #11 / C.25 — stable CI coverage for NAT/relay stress**: promuovere gli stress test a coverage stabile dopo gli ultimi fix runtime (`test`, `area:testbench`)
 4. **Issue #5 / C.32 — relay restart recovery**: far riprendere in modo affidabile il traffico relay-first dopo restart del relay (`bug`, `area:relay`, `prio:high`)

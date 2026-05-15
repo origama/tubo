@@ -460,6 +460,7 @@ tubo create namespace/observability
 tubo create service/myapi
 
 tubo share cluster/home --permission member
+tubo share cluster/home --role grant-requester --grant-peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 tubo share service/myapi --expires 1h
 tubo join cluster/home --token <cluster-invite>
 
@@ -481,7 +482,7 @@ Note:
 - `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
 - `attach` in cluster/namespace mode materializza automaticamente una identita' servizio stabile se manca: il `service_id` resta deterministico per scope/nome, mentre il `service_seed` viene generato una sola volta e salvato nel config locale (`0600`).
 - prima di avviare il runtime, `attach` risolve l'autorizzazione di pubblicazione: usa una `ServiceClaim` valida esistente, la firma localmente se il nodo possiede `authority_private_key_file`, oppure invia/polla una Publish Grant request se il servizio ha `grant_service_peer`; la pubblicazione procede solo dopo una `ServiceClaim` valida.
-- `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile.
+- `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile; `--role grant-requester --grant-peer ...` emette un invito senza diritti publish diretti ma con metadata per richiedere una Publish Grant.
 - `share service/...` usa la chiave authority locale per emettere un token connect-only, firma un `ConnectCapability` per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile; in namespace-v2 il bridge converte poi il grant in un connect proof on-stream.
 - `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
 - `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.
@@ -501,6 +502,7 @@ tubo grants deny gr_123
 
 tubo grants request service/myapi --peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 tubo grants request service/myapi --poll
+# if joined with a grant-requester invite, --peer can be omitted
 tubo grants history
 ```
 

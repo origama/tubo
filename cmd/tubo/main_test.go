@@ -1030,6 +1030,103 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), token, "observability")
 }
 
+func TestGrantRequesterClusterInvitationShareJoinAndRequest(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-invite-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+
+	out, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--role", "grant-requester", "--grant-peer", grantPeer, "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractClusterInviteToken(t, out)
+	payload, err := parseAndVerifyClusterInviteToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.JTI == "" || payload.Grant.Role != clusterInviteGrantRequesterRole || !stringSliceEqualSet(payload.Grant.Permissions, []string{clusterInviteGrantRequestPerm}) {
+		t.Fatalf("unexpected grant-requester payload: %#v", payload)
+	}
+	if payload.GrantService.Protocol != grantspkg.ProtocolID || len(payload.GrantService.Peers) != 1 || payload.GrantService.Peers[0] != grantPeer {
+		t.Fatalf("grant service metadata missing: %#v", payload.GrantService)
+	}
+
+	joinHome := filepath.Join(t.TempDir(), "join-grant-requester")
+	if _, err := capture(func() error { return run([]string{"join", "cluster/home", "--token", token, "--config-dir", joinHome}) }); err != nil {
+		t.Fatal(err)
+	}
+	joinedPath := filepath.Join(joinHome, "config.yaml")
+	joined, err := cfgpkg.LoadFile(joinedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinedCluster := joined.Clusters["home"]
+	if joinedCluster.AuthorityPrivateKeyFile != "" {
+		t.Fatal("grant-requester invite leaked authority private key path")
+	}
+	grant := joinedCluster.MembershipGrant
+	if grant == nil || grant.Role != clusterInviteGrantRequesterRole || grant.InviteID != payload.JTI || grant.GrantServiceProtocol != grantspkg.ProtocolID || len(grant.GrantServicePeers) != 1 || grant.GrantServicePeers[0] != grantPeer {
+		t.Fatalf("joined grant metadata missing: %#v", grant)
+	}
+	if clusterMembershipGrantAuthorizesNamespace(joinedCluster, "home", "default") {
+		t.Fatal("grant-requester invite unexpectedly authorizes namespace publication/list rights")
+	}
+
+	out, err = capture(func() error {
+		return run([]string{"grants", "request", "service/myapi", "--config", joinedPath, "--ttl", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Status: pending") {
+		t.Fatalf("unexpected grant request output: %s", out)
+	}
+	joined, err = cfgpkg.LoadFile(joinedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := joined.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if svc.GrantRequestID == "" || svc.GrantServicePeer != grantPeer || svc.ServiceClaimFile == "" {
+		t.Fatalf("service grant request metadata missing: %#v", svc)
+	}
+	if _, err := os.Stat(svc.ServiceClaimFile); !os.IsNotExist(err) {
+		t.Fatalf("pending grant requester invite must not create ServiceClaim, stat err=%v", err)
+	}
+}
+
+func TestGrantRequesterInviteRequiresGrantPeer(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	_, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--role", "grant-requester"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "requires --grant-peer") {
+		t.Fatalf("expected grant-peer requirement, got %v", err)
+	}
+}
+
 func TestClusterInviteGrantAuthorizesNamespaceQueries(t *testing.T) {
 	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

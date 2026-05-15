@@ -276,7 +276,12 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile, MintedServiceClaim: true}, nil
 	}
 
-	if svc.GrantServicePeer != "" {
+	grantPeer := svc.GrantServicePeer
+	if grantPeer == "" {
+		grantPeer = clusterGrantServicePeer(cluster)
+	}
+	if grantPeer != "" {
+		svc.GrantServicePeer = grantPeer
 		updatedCfg, updatedSvc, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
 		if err != nil {
 			return attachAuthorization{}, err

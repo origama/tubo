@@ -50,6 +50,18 @@ func grantsFirstNonEmpty(v, def string) string {
 	return def
 }
 
+func clusterGrantServicePeer(cluster cfgpkg.Cluster) string {
+	if cluster.MembershipGrant == nil || cluster.MembershipGrant.GrantServiceProtocol != grantspkg.ProtocolID {
+		return ""
+	}
+	for _, peer := range cluster.MembershipGrant.GrantServicePeers {
+		if strings.TrimSpace(peer) != "" {
+			return strings.TrimSpace(peer)
+		}
+	}
+	return ""
+}
+
 func grantsRequestCmd(args []string) error {
 	serviceArg, flagArgs := splitGrantIDArg(args)
 	fs := flag.NewFlagSet("grants request", flag.ContinueOnError)
@@ -85,6 +97,9 @@ func grantsRequestCmd(args []string) error {
 	cluster := cfg.Clusters[cfg.CurrentCluster]
 	if *grantPeer == "" {
 		*grantPeer = svc.GrantServicePeer
+	}
+	if *grantPeer == "" {
+		*grantPeer = clusterGrantServicePeer(cluster)
 	}
 	if *grantPeer == "" {
 		return errors.New("missing grant service peer; pass --peer <multiaddr>")

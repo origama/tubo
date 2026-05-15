@@ -2,8 +2,10 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -16,15 +18,18 @@ import (
 	"time"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"golang.org/x/crypto/ssh"
 )
 
 const (
-	clusterInviteTokenPrefix = "tubo-invite-v1."
-	clusterInviteKind        = "cluster-invite"
-	clusterInviteVersion     = "v1"
-	clusterInviteDefaultTTL  = 7 * 24 * time.Hour
-	clusterInviteDefaultRole = "member"
+	clusterInviteTokenPrefix        = "tubo-invite-v1."
+	clusterInviteKind               = "cluster-invite"
+	clusterInviteVersion            = "v1"
+	clusterInviteDefaultTTL         = 7 * 24 * time.Hour
+	clusterInviteDefaultRole        = "member"
+	clusterInviteGrantRequesterRole = "grant-requester"
+	clusterInviteGrantRequestPerm   = "grant:request"
 )
 
 type clusterInviteGrant struct {
@@ -32,16 +37,23 @@ type clusterInviteGrant struct {
 	Permissions []string `json:"permissions"`
 }
 
+type clusterInviteGrantService struct {
+	Protocol string   `json:"protocol"`
+	Peers    []string `json:"peers"`
+}
+
 type clusterInvitePayload struct {
-	Version            string             `json:"version"`
-	Kind               string             `json:"kind"`
-	ClusterName        string             `json:"cluster_name"`
-	ClusterID          string             `json:"cluster_id"`
-	AuthorityPublicKey string             `json:"authority_public_key"`
-	Namespace          string             `json:"namespace"`
-	Grant              clusterInviteGrant `json:"grant"`
-	IssuedAt           time.Time          `json:"issued_at"`
-	ExpiresAt          time.Time          `json:"expires_at"`
+	Version            string                    `json:"version"`
+	Kind               string                    `json:"kind"`
+	JTI                string                    `json:"jti"`
+	ClusterName        string                    `json:"cluster_name"`
+	ClusterID          string                    `json:"cluster_id"`
+	AuthorityPublicKey string                    `json:"authority_public_key"`
+	Namespace          string                    `json:"namespace"`
+	Grant              clusterInviteGrant        `json:"grant"`
+	GrantService       clusterInviteGrantService `json:"grant_service,omitempty"`
+	IssuedAt           time.Time                 `json:"issued_at"`
+	ExpiresAt          time.Time                 `json:"expires_at"`
 }
 
 type clusterShareResult struct {
@@ -70,6 +82,8 @@ func localShareCmd(args []string) error {
 	clusterFlag := fs.String("cluster", "", "")
 	namespace := fs.String("namespace", "", "")
 	permission := fs.String("permission", clusterInviteDefaultRole, "")
+	role := fs.String("role", "", "")
+	grantPeer := fs.String("grant-peer", "", "")
 	expires := fs.Duration("expires", clusterInviteDefaultTTL, "")
 	jsonOut := fs.Bool("json", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -113,20 +127,40 @@ func localShareCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	grant, err := invitationGrantForPermission(*permission)
+	requestedRole := *permission
+	if *role != "" {
+		requestedRole = *role
+	}
+	grant, err := invitationGrantForPermission(requestedRole)
 	if err != nil {
 		return err
 	}
+	grantPeers, err := parseGrantServicePeers(*grantPeer)
+	if err != nil {
+		return err
+	}
+	if grant.Role == clusterInviteGrantRequesterRole && len(grantPeers) == 0 {
+		return errors.New("grant-requester cluster invite requires --grant-peer <multiaddr>")
+	}
+	jti, err := newClusterInviteJTI()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC()
 	payload := clusterInvitePayload{
 		Version:            clusterInviteVersion,
 		Kind:               clusterInviteKind,
+		JTI:                jti,
 		ClusterName:        name,
 		ClusterID:          cluster.ClusterID,
 		AuthorityPublicKey: cluster.AuthorityPublicKey,
 		Namespace:          selectedNamespace,
 		Grant:              grant,
-		IssuedAt:           time.Now().UTC(),
-		ExpiresAt:          time.Now().UTC().Add(*expires),
+		IssuedAt:           now,
+		ExpiresAt:          now.Add(*expires),
+	}
+	if len(grantPeers) > 0 {
+		payload.GrantService = clusterInviteGrantService{Protocol: grantspkg.ProtocolID, Peers: grantPeers}
 	}
 	token, err := signClusterInviteToken(payload, privKey)
 	if err != nil {
@@ -243,15 +277,19 @@ func localJoinClusterInviteCmd(args []string) error {
 		ClusterName: payload.ClusterName,
 		Namespace:   payload.Namespace,
 		Grant: cfgpkg.ClusterMembershipGrant{
-			InviteToken:        token,
-			InviteVersion:      payload.Version,
-			ClusterName:        payload.ClusterName,
-			ClusterID:          payload.ClusterID,
-			AuthorityPublicKey: payload.AuthorityPublicKey,
-			Namespace:          payload.Namespace,
-			Role:               payload.Grant.Role,
-			IssuedAt:           payload.IssuedAt,
-			ExpiresAt:          payload.ExpiresAt,
+			InviteToken:          token,
+			InviteVersion:        payload.Version,
+			InviteID:             payload.JTI,
+			ClusterName:          payload.ClusterName,
+			ClusterID:            payload.ClusterID,
+			AuthorityPublicKey:   payload.AuthorityPublicKey,
+			Namespace:            payload.Namespace,
+			Role:                 payload.Grant.Role,
+			Permissions:          append([]string(nil), payload.Grant.Permissions...),
+			GrantServiceProtocol: payload.GrantService.Protocol,
+			GrantServicePeers:    append([]string(nil), payload.GrantService.Peers...),
+			IssuedAt:             payload.IssuedAt,
+			ExpiresAt:            payload.ExpiresAt,
 		},
 	}
 	if *jsonOut {
@@ -312,15 +350,19 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	cluster.AuthorityPublicKey = payload.AuthorityPublicKey
 	cluster.Namespaces[payload.Namespace] = cfgpkg.Namespace{}
 	cluster.MembershipGrant = &cfgpkg.ClusterMembershipGrant{
-		InviteToken:        token,
-		InviteVersion:      payload.Version,
-		ClusterName:        payload.ClusterName,
-		ClusterID:          payload.ClusterID,
-		AuthorityPublicKey: payload.AuthorityPublicKey,
-		Namespace:          payload.Namespace,
-		Role:               payload.Grant.Role,
-		IssuedAt:           payload.IssuedAt,
-		ExpiresAt:          payload.ExpiresAt,
+		InviteToken:          token,
+		InviteVersion:        payload.Version,
+		InviteID:             payload.JTI,
+		ClusterName:          payload.ClusterName,
+		ClusterID:            payload.ClusterID,
+		AuthorityPublicKey:   payload.AuthorityPublicKey,
+		Namespace:            payload.Namespace,
+		Role:                 payload.Grant.Role,
+		Permissions:          append([]string(nil), payload.Grant.Permissions...),
+		GrantServiceProtocol: payload.GrantService.Protocol,
+		GrantServicePeers:    append([]string(nil), payload.GrantService.Peers...),
+		IssuedAt:             payload.IssuedAt,
+		ExpiresAt:            payload.ExpiresAt,
 	}
 	joined.Clusters[payload.ClusterName] = cluster
 	joined.CurrentCluster = payload.ClusterName
@@ -340,9 +382,41 @@ func invitationGrantForPermission(permission string) (clusterInviteGrant, error)
 				"connect",
 			},
 		}, nil
+	case clusterInviteGrantRequesterRole:
+		return clusterInviteGrant{
+			Role:        clusterInviteGrantRequesterRole,
+			Permissions: []string{clusterInviteGrantRequestPerm},
+		}, nil
 	default:
 		return clusterInviteGrant{}, fmt.Errorf("unsupported cluster invitation permission %q", permission)
 	}
+}
+
+func parseGrantServicePeers(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	peers := make([]string, 0, len(parts))
+	for _, part := range parts {
+		peer := strings.TrimSpace(part)
+		if peer == "" {
+			continue
+		}
+		if !strings.Contains(peer, "/p2p/") {
+			return nil, fmt.Errorf("grant service peer %q must include /p2p/<peer-id>", peer)
+		}
+		peers = append(peers, peer)
+	}
+	return peers, nil
+}
+
+func newClusterInviteJTI() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return "ci_" + hex.EncodeToString(b[:]), nil
 }
 
 func chooseClusterInviteNamespace(cfg cfgpkg.Config, clusterName string, cluster cfgpkg.Cluster, explicit string) (string, error) {
@@ -448,7 +522,7 @@ func parseAndVerifyClusterInviteToken(token string) (clusterInvitePayload, error
 	if payload.Kind != clusterInviteKind {
 		return clusterInvitePayload{}, fmt.Errorf("unsupported cluster invite kind %q", payload.Kind)
 	}
-	if payload.ClusterName == "" || payload.ClusterID == "" || payload.AuthorityPublicKey == "" || payload.Namespace == "" {
+	if payload.ClusterName == "" || payload.ClusterID == "" || payload.AuthorityPublicKey == "" || payload.Namespace == "" || payload.JTI == "" {
 		return clusterInvitePayload{}, errors.New("cluster invite is missing required fields")
 	}
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(payload.AuthorityPublicKey))
@@ -472,10 +546,51 @@ func parseAndVerifyClusterInviteToken(token string) (clusterInvitePayload, error
 	if !payload.IssuedAt.IsZero() && payload.ExpiresAt.Before(payload.IssuedAt) {
 		return clusterInvitePayload{}, errors.New("cluster invite expires before it was issued")
 	}
-	if payload.Grant.Role == "" {
-		return clusterInvitePayload{}, errors.New("cluster invite is missing grant role")
+	if err := validateClusterInviteGrant(payload); err != nil {
+		return clusterInvitePayload{}, err
 	}
 	return payload, nil
+}
+
+func validateClusterInviteGrant(payload clusterInvitePayload) error {
+	switch payload.Grant.Role {
+	case clusterInviteDefaultRole:
+		if !stringSliceEqualSet(payload.Grant.Permissions, []string{"subscribe", "list", "publish", "connect"}) {
+			return errors.New("cluster invite member grant has invalid permissions")
+		}
+	case clusterInviteGrantRequesterRole:
+		if !stringSliceEqualSet(payload.Grant.Permissions, []string{clusterInviteGrantRequestPerm}) {
+			return errors.New("cluster invite grant-requester has invalid permissions")
+		}
+		if payload.GrantService.Protocol != grantspkg.ProtocolID || len(payload.GrantService.Peers) == 0 {
+			return errors.New("cluster invite grant-requester is missing grant service metadata")
+		}
+		for _, peer := range payload.GrantService.Peers {
+			if !strings.Contains(peer, "/p2p/") {
+				return fmt.Errorf("cluster invite grant service peer %q is invalid", peer)
+			}
+		}
+	default:
+		return errors.New("cluster invite is missing grant role")
+	}
+	return nil
+}
+
+func stringSliceEqualSet(have, want []string) bool {
+	if len(have) != len(want) {
+		return false
+	}
+	seen := make(map[string]int, len(have))
+	for _, v := range have {
+		seen[v]++
+	}
+	for _, v := range want {
+		seen[v]--
+		if seen[v] < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 func isClusterInviteToken(token string) bool {
