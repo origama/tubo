@@ -1114,6 +1114,28 @@ func TestGrantRequesterClusterInvitationShareJoinAndRequest(t *testing.T) {
 	}
 }
 
+func TestClusterInviteReuseRejectedLocally(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return run([]string{"share", "cluster/home", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractClusterInviteToken(t, out)
+	joinDir := t.TempDir()
+	if _, err := capture(func() error { return run([]string{"join", "cluster/home", "--token", token, "--config-dir", joinDir}) }); err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(func() error {
+		return run([]string{"join", "cluster/home", "--token", token, "--config-dir", joinDir, "--force"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "already used locally") {
+		t.Fatalf("expected local invite reuse rejection, got %v", err)
+	}
+}
+
 func TestGrantRequesterInviteRequiresGrantPeer(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {

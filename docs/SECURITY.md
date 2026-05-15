@@ -35,6 +35,7 @@ Questo documento stabilisce i requisiti di sicurezza e le restrizioni architettu
 2. **Masquerading:** L'attacco in cui un peer si spaccia per un altro. Questo viene mitigato dall'uso rigoroso di firme crittografiche basate sul Peer ID noto.
 3. **Pubsub Spam:** Un attaccante può pubblicare annunci malevoli sul topic pubsub. Mitigazione: validazione firma su ogni annuncio, rate limiting sulle pubblicazioni, verifica cross-reference tra peer ID dell'annuncio e peer ID del mittente, e per Discovery V2 verifica di topic/scope, membership capability, `ServiceClaim` obbligatoria legata a `service_id`, e decryption fallita.
 4. **Service Share Bearer Tokens:** i token generati da `tubo share service/...` sono connect-only, firmati dall'autorità del cluster e rifiutano token scaduti o alterati. Vengono convertiti in connect proof sul bridge path e vanno comunque trattati come credenziali sensibili.
+5. **Publish Grant Flooding / Conflicts:** il protocollo `/tubo/grants/1.0` limita dimensione payload e TTL, restringe i nomi servizio ad ASCII lowercase/digit/dash, deduplica richieste equivalenti, applica limiti ai pending globali/per-requester/per-servizio e rifiuta collisioni attive dello stesso service name per peer diversi. Gli inviti `grant-requester` hanno `jti` e vengono tracciati localmente per evitare riuso accidentale sullo stesso nodo.
 
 ## 📦 Stack Tecnologico e Dipendenze
 

@@ -66,6 +66,58 @@ func TestGrantServerSubmitPollInvalidScopeAndRequesterBinding(t *testing.T) {
 	}
 }
 
+func TestGrantServerPendingLimitsAndServiceCollision(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: store, Now: func() time.Time { return now }, MaxPendingRequests: 2, MaxPendingPerRequester: 1, MaxPendingPerService: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := peer.ID("12D3-requester")
+	first := server.HandleMessage(validSubmit(), requester)
+	if first.Type != TypePending {
+		t.Fatalf("expected pending first request: %#v", first)
+	}
+	second := validSubmit()
+	second.ServiceName = "other"
+	second.ServiceID = "service-other"
+	second.ServicePeerID = "12D3-other"
+	limitedRequester := server.HandleMessage(second, requester)
+	if limitedRequester.Type != TypeDenied || limitedRequester.Reason == "" {
+		t.Fatalf("expected requester rate limit denial: %#v", limitedRequester)
+	}
+	conflict := validSubmit()
+	conflict.ServiceID = "service-conflict"
+	conflict.ServicePeerID = "12D3-conflict"
+	conflictResp := server.HandleMessage(conflict, peer.ID("12D3-other-requester"))
+	if conflictResp.Type != TypeDenied || conflictResp.Reason == "" {
+		t.Fatalf("expected service collision denial: %#v", conflictResp)
+	}
+}
+
+func TestGrantServerGlobalPendingLimit(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: store, Now: func() time.Time { return now }, MaxPendingRequests: 1, MaxPendingPerRequester: 10, MaxPendingPerService: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := server.HandleMessage(validSubmit(), peer.ID("12D3-requester-1"))
+	if first.Type != TypePending {
+		t.Fatalf("expected pending first request: %#v", first)
+	}
+	second := validSubmit()
+	second.ServiceName = "other"
+	second.ServiceID = "service-other"
+	second.ServicePeerID = "12D3-other"
+	limited := server.HandleMessage(second, peer.ID("12D3-requester-2"))
+	if limited.Type != TypeDenied || limited.Reason == "" {
+		t.Fatalf("expected global rate limit denial: %#v", limited)
+	}
+}
+
 func TestGrantServerDuplicateRequest(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
 	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)

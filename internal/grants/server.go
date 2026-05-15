@@ -10,12 +10,21 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+const (
+	DefaultMaxPendingRequests     = 1024
+	DefaultMaxPendingPerRequester = 16
+	DefaultMaxPendingPerService   = 4
+)
+
 type ServerConfig struct {
-	ClusterName string
-	ClusterID   string
-	NamespaceID string
-	Store       *Store
-	Now         func() time.Time
+	ClusterName            string
+	ClusterID              string
+	NamespaceID            string
+	Store                  *Store
+	Now                    func() time.Time
+	MaxPendingRequests     int
+	MaxPendingPerRequester int
+	MaxPendingPerService   int
 }
 
 type Server struct {
@@ -31,6 +40,15 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if cfg.MaxPendingRequests <= 0 {
+		cfg.MaxPendingRequests = DefaultMaxPendingRequests
+	}
+	if cfg.MaxPendingPerRequester <= 0 {
+		cfg.MaxPendingPerRequester = DefaultMaxPendingPerRequester
+	}
+	if cfg.MaxPendingPerService <= 0 {
+		cfg.MaxPendingPerService = DefaultMaxPendingPerService
 	}
 	return &Server{cfg: cfg}, nil
 }
@@ -68,7 +86,7 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: "grant request scope does not match authority server"}
 	}
 	now := s.cfg.Now().UTC()
-	req, err := s.cfg.Store.CreatePending(Request{
+	req := Request{
 		ClusterName:          s.cfg.ClusterName,
 		ClusterID:            msg.ClusterID,
 		NamespaceID:          msg.NamespaceID,
@@ -80,11 +98,53 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 		RequestedTTLSeconds:  msg.RequestedTTLSeconds,
 		RequestedAt:          now,
 		ExpiresAt:            now.Add(24 * time.Hour),
-	})
+	}
+	if err := s.enforcePendingPolicy(req); err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
+	}
+	req, err := s.cfg.Store.CreatePending(req)
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
 	}
 	return PendingMessage(req)
+}
+
+func (s *Server) enforcePendingPolicy(req Request) error {
+	requests, err := s.cfg.Store.ListAll()
+	if err != nil {
+		return err
+	}
+	pendingTotal := 0
+	pendingRequester := 0
+	pendingService := 0
+	for _, existing := range requests {
+		if existing.Status == StatusPending && equivalentActive(existing, req) {
+			return nil
+		}
+		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceName == req.ServiceName && existing.Status != StatusDenied && existing.Status != StatusExpired && existing.ServicePeerID != req.ServicePeerID {
+			return fmt.Errorf("service name %q already has an active grant request or claim for a different peer", req.ServiceName)
+		}
+		if existing.Status != StatusPending {
+			continue
+		}
+		pendingTotal++
+		if existing.RequesterPeerID == req.RequesterPeerID {
+			pendingRequester++
+		}
+		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceName == req.ServiceName {
+			pendingService++
+		}
+	}
+	if pendingTotal >= s.cfg.MaxPendingRequests {
+		return fmt.Errorf("too many pending grant requests: limit %d", s.cfg.MaxPendingRequests)
+	}
+	if pendingRequester >= s.cfg.MaxPendingPerRequester {
+		return fmt.Errorf("too many pending grant requests for requester: limit %d", s.cfg.MaxPendingPerRequester)
+	}
+	if pendingService >= s.cfg.MaxPendingPerService {
+		return fmt.Errorf("too many pending grant requests for service %q: limit %d", req.ServiceName, s.cfg.MaxPendingPerService)
+	}
+	return nil
 }
 
 func (s *Server) handlePoll(msg Message) Message {

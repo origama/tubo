@@ -319,6 +319,13 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	if err := os.MkdirAll(configDir, 0700); err != nil {
 		return err
 	}
+	registry, err := loadClusterInviteRegistry(configDir)
+	if err != nil {
+		return err
+	}
+	if registry[payload.JTI] {
+		return fmt.Errorf("cluster invite %q was already used locally", payload.JTI)
+	}
 	existing, err := cfgpkg.LoadFile(configPath)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
@@ -367,7 +374,44 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	joined.Clusters[payload.ClusterName] = cluster
 	joined.CurrentCluster = payload.ClusterName
 	joined.CurrentNamespace = payload.Namespace
-	return cfgpkg.WriteFile(configPath, joined, true)
+	if err := cfgpkg.WriteFile(configPath, joined, true); err != nil {
+		return err
+	}
+	registry[payload.JTI] = true
+	return saveClusterInviteRegistry(configDir, registry)
+}
+
+func loadClusterInviteRegistry(configDir string) (map[string]bool, error) {
+	path := filepath.Join(configDir, "invite-registry.json")
+	b, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return make(map[string]bool), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	if err := json.Unmarshal(b, &ids); err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
+}
+
+func saveClusterInviteRegistry(configDir string, registry map[string]bool) error {
+	ids := make([]string, 0, len(registry))
+	for id := range registry {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	b, err := json.MarshalIndent(ids, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(configDir, "invite-registry.json"), append(b, '\n'), 0600)
 }
 
 func invitationGrantForPermission(permission string) (clusterInviteGrant, error) {

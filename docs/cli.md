@@ -506,7 +506,7 @@ tubo grants request service/myapi --poll
 tubo grants history
 ```
 
-The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically. Approval is explicit and signs a service-scoped `ServiceClaim` with the local authority key. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; denied, expired, or still-pending grants stop publication.
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically. Approval is explicit and signs a service-scoped `ServiceClaim` with the local authority key. The grant server bounds pending requests globally/per requester/per service and rejects active service-name collisions for a different service peer. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; denied, expired, or still-pending grants stop publication.
 
 ## Topology
 
