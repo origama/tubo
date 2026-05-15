@@ -480,7 +480,7 @@ Note:
 - `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente, rende esplicito il nuovo `current_namespace` e materializza una capability di membership firmata per quel namespace.
 - `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
 - `attach` in cluster/namespace mode materializza automaticamente una identita' servizio stabile se manca: il `service_id` resta deterministico per scope/nome, mentre il `service_seed` viene generato una sola volta e salvato nel config locale (`0600`).
-- prima di avviare il runtime, `attach` risolve l'autorizzazione di pubblicazione: usa una `ServiceClaim` valida esistente, oppure la firma localmente se il nodo possiede `authority_private_key_file`; un membro senza claim riceve un errore esplicito che chiede un publish grant o un nodo authority.
+- prima di avviare il runtime, `attach` risolve l'autorizzazione di pubblicazione: usa una `ServiceClaim` valida esistente, la firma localmente se il nodo possiede `authority_private_key_file`, oppure invia/polla una Publish Grant request se il servizio ha `grant_service_peer`; la pubblicazione procede solo dopo una `ServiceClaim` valida.
 - `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile.
 - `share service/...` usa la chiave authority locale per emettere un token connect-only, firma un `ConnectCapability` per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile; in namespace-v2 il bridge converte poi il grant in un connect proof on-stream.
 - `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
@@ -504,7 +504,7 @@ tubo grants request service/myapi --poll
 tubo grants history
 ```
 
-The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically. Approval is explicit and signs a service-scoped `ServiceClaim` with the local authority key.
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically. Approval is explicit and signs a service-scoped `ServiceClaim` with the local authority key. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; denied, expired, or still-pending grants stop publication.
 
 ## Topology
 

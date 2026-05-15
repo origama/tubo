@@ -1515,6 +1515,167 @@ func TestResolveAttachAuthorizationAcceptsExistingClaimWithoutAuthority(t *testi
 	}
 }
 
+func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-route-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	svc.GrantServicePeer = p2p.PeerAddrs(serverHost)[0]
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cluster.AuthorityPrivateKeyFile = ""
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = resolveAttachAuthorization(configPath, cfg)
+	if err == nil || !strings.Contains(err.Error(), "is pending") {
+		t.Fatalf("expected pending error, got %v", err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc = reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if svc.GrantRequestID == "" {
+		t.Fatal("pending grant request id was not persisted")
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: cluster.ClusterID, NamespaceID: "default", ServiceID: svc.ServiceID, SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Approve(svc.GrantRequestID, claim); err != nil {
+		t.Fatal(err)
+	}
+	authz, err := resolveAttachAuthorization(configPath, reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.ServiceClaimFile == "" || authz.ServicePeerID != servicePeerID.String() {
+		t.Fatalf("unexpected approved authz: %#v", authz)
+	}
+}
+
+func TestResolveAttachAuthorizationHandlesDeniedAndExpiredGrantRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		finish  func(*testing.T, *grantspkg.Store, string)
+		wantErr string
+	}{
+		{name: "denied", finish: func(t *testing.T, store *grantspkg.Store, id string) {
+			_, err := store.Deny(id, "no")
+			if err != nil {
+				t.Fatal(err)
+			}
+		}, wantErr: "denied"},
+		{name: "expired", finish: func(t *testing.T, store *grantspkg.Store, id string) {
+			b, err := os.ReadFile(store.Path())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var state struct {
+				Requests []grantspkg.Request `json:"requests"`
+			}
+			if err := json.Unmarshal(b, &state); err != nil {
+				t.Fatal(err)
+			}
+			for i := range state.Requests {
+				if state.Requests[i].ID == id {
+					state.Requests[i].Status = grantspkg.StatusExpired
+				}
+			}
+			b, err = json.MarshalIndent(state, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(store.Path(), append(b, '\n'), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}, wantErr: "expired"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := writeCreateClusterConfig(t)
+			if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := cfgpkg.LoadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Service.Name = "myapi"
+			cfg.Service.Target = "http://127.0.0.1:8080"
+			cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cluster := cfg.Clusters["home"]
+			serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-route-"+tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer serverHost.Close()
+			store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+			server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store})
+			if err != nil {
+				t.Fatal(err)
+			}
+			server.Register(serverHost)
+			svc.GrantServicePeer = p2p.PeerAddrs(serverHost)[0]
+			ns := cluster.Namespaces["default"]
+			ns.Services["myapi"] = svc
+			cluster.Namespaces["default"] = ns
+			cluster.AuthorityPrivateKeyFile = ""
+			cfg.Clusters["home"] = cluster
+			if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+				t.Fatal(err)
+			}
+			_, err = resolveAttachAuthorization(configPath, cfg)
+			if err == nil || !strings.Contains(err.Error(), "pending") {
+				t.Fatalf("expected pending, got %v", err)
+			}
+			reloaded, err := cfgpkg.LoadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			reqID := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"].GrantRequestID
+			tc.finish(t, store, reqID)
+			_, err = resolveAttachAuthorization(configPath, reloaded)
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -16,6 +17,7 @@ import (
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 )
 
@@ -274,7 +276,72 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile, MintedServiceClaim: true}, nil
 	}
 
+	if svc.GrantServicePeer != "" {
+		updatedCfg, updatedSvc, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
+		if err != nil {
+			return attachAuthorization{}, err
+		}
+		cfg = updatedCfg
+		svc = updatedSvc
+		cluster = cfg.Clusters[cfg.CurrentCluster]
+		if err := verifyServiceClaimFile(svc.ServiceClaimFile, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID.String()); err == nil {
+			membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+			if err != nil {
+				return attachAuthorization{}, err
+			}
+			return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile}, nil
+		}
+		return attachAuthorization{}, fmt.Errorf("publish grant request %q is pending; publication requires an approved ServiceClaim", svc.GrantRequestID)
+	}
+
 	return attachAuthorization{}, noServicePublishGrantError(cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name)
+}
+
+func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
+	if err != nil {
+		return cfg, svc, err
+	}
+	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), psk)
+	if err != nil {
+		return cfg, svc, err
+	}
+	defer h.Close()
+	info, err := p2p.AddrInfoFromString(svc.GrantServicePeer)
+	if err != nil {
+		return cfg, svc, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var resp grantspkg.Message
+	if svc.GrantRequestID != "" {
+		resp, err = grantspkg.Poll(ctx, h, info, svc.GrantRequestID)
+	} else {
+		resp, err = grantspkg.Submit(ctx, h, info, grantspkg.Message{
+			Type:                 grantspkg.TypeSubmit,
+			Version:              grantspkg.VersionV1,
+			ClusterID:            cluster.ClusterID,
+			NamespaceID:          cfg.CurrentNamespace,
+			ServiceName:          cfg.Service.Name,
+			ServiceID:            svc.ServiceID,
+			ServicePeerID:        servicePeerID,
+			RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+			RequestedTTLSeconds:  int64((30 * 24 * time.Hour).Seconds()),
+		})
+	}
+	if err != nil {
+		return cfg, svc, err
+	}
+	if err := handleGrantClientResponse(configPath, cfg, svc, svc.GrantServicePeer, resp, servicePeerID); err != nil {
+		return cfg, svc, err
+	}
+	updated, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		return cfg, svc, err
+	}
+	updatedSvc := updated.Clusters[updated.CurrentCluster].Namespaces[updated.CurrentNamespace].Services[updated.Service.Name]
+	return updated, updatedSvc, nil
 }
 
 func verifyServiceClaimFile(path string, pub ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error {
