@@ -304,26 +304,24 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 
 func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
 	cluster := cfg.Clusters[cfg.CurrentCluster]
-	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), PrivateKeyFile: cfg.Network.PrivateKeyFile, PrivateKeyB64: cfg.Network.PrivateKeyB64, BootstrapPeers: cfg.Network.BootstrapPeers, RelayPeers: cfg.Network.RelayPeers, Autorelay: cfg.Network.Autorelay, HolePunching: cfg.Network.HolePunching, ForceReachability: cfg.Network.ForceReachability, Component: "grants-client"})
 	if err != nil {
 		return cfg, svc, err
 	}
-	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), psk)
-	if err != nil {
-		return cfg, svc, err
-	}
-	defer h.Close()
+	defer overlay.Close()
 	info, err := p2p.AddrInfoFromString(svc.GrantServicePeer)
 	if err != nil {
 		return cfg, svc, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	overlay.StartBootstrapRetry(ctx, 5*time.Second)
+	overlay.StartRelayReservations(ctx)
 	var resp grantspkg.Message
 	if svc.GrantRequestID != "" {
-		resp, err = grantspkg.Poll(ctx, h, info, svc.GrantRequestID)
+		resp, err = grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
 	} else {
-		resp, err = grantspkg.Submit(ctx, h, info, grantspkg.Message{
+		resp, err = grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{
 			Type:                 grantspkg.TypeSubmit,
 			Version:              grantspkg.VersionV1,
 			ClusterID:            cluster.ClusterID,

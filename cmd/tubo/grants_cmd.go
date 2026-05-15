@@ -108,29 +108,27 @@ func grantsRequestCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), PrivateKeyFile: cfg.Network.PrivateKeyFile, PrivateKeyB64: cfg.Network.PrivateKeyB64, BootstrapPeers: cfg.Network.BootstrapPeers, RelayPeers: cfg.Network.RelayPeers, Autorelay: cfg.Network.Autorelay, HolePunching: cfg.Network.HolePunching, ForceReachability: cfg.Network.ForceReachability, Component: "grants-client"})
 	if err != nil {
 		return err
 	}
-	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), psk)
-	if err != nil {
-		return err
-	}
-	defer h.Close()
+	defer overlay.Close()
 	info, err := p2p.AddrInfoFromString(*grantPeer)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	overlay.StartBootstrapRetry(ctx, 5*time.Second)
+	overlay.StartRelayReservations(ctx)
 	var resp grantspkg.Message
 	if *pollOnly {
 		if svc.GrantRequestID == "" {
 			return errors.New("no local grant request id recorded for service")
 		}
-		resp, err = grantspkg.Poll(ctx, h, info, svc.GrantRequestID)
+		resp, err = grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
 	} else {
-		resp, err = grantspkg.Submit(ctx, h, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServicePeerID: servicePeerID.String(), RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64(ttl.Seconds())})
+		resp, err = grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServicePeerID: servicePeerID.String(), RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64(ttl.Seconds())})
 	}
 	if err != nil {
 		return err
@@ -406,26 +404,29 @@ func grantsServeCmd(args []string) error {
 	if *seed == "" {
 		*seed = "grants-" + cluster.ClusterID
 	}
-	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: *listen, Seed: *seed, PrivateKeyFile: cfg.Network.PrivateKeyFile, PrivateKeyB64: cfg.Network.PrivateKeyB64, BootstrapPeers: cfg.Network.BootstrapPeers, RelayPeers: cfg.Network.RelayPeers, Autorelay: cfg.Network.Autorelay, HolePunching: cfg.Network.HolePunching, ForceReachability: cfg.Network.ForceReachability, Component: "grants"})
 	if err != nil {
 		return err
 	}
-	host, err := p2p.NewHostWithSeedAndPSK(*listen, *seed, psk)
-	if err != nil {
-		return err
-	}
-	defer host.Close()
+	defer overlay.Close()
+	host := overlay.Host
 	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath)})
 	if err != nil {
 		return err
 	}
 	server.Register(host)
-	fmt.Printf("grant service listening peer=%s protocol=%s store=%s\n", host.ID(), grantspkg.ProtocolID, *storePath)
-	for _, addr := range p2p.PeerAddrs(host) {
-		fmt.Printf("addr: %s\n", addr)
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	overlay.StartBootstrapRetry(ctx, 5*time.Second)
+	overlay.StartRelayReservations(ctx)
+	fmt.Printf("grant service listening peer=%s protocol=%s store=%s\n", host.ID(), grantspkg.ProtocolID, *storePath)
+	for _, addr := range overlay.ReachableAddrs() {
+		if strings.Contains(addr, "/p2p-circuit") {
+			fmt.Printf("relay addr: %s\n", addr)
+			continue
+		}
+		fmt.Printf("addr: %s\n", addr)
+	}
 	<-ctx.Done()
 	time.Sleep(50 * time.Millisecond)
 	return nil

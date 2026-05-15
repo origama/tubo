@@ -495,6 +495,7 @@ Authority nodes can start the MVP grant protocol listener and review local reque
 
 ```bash
 tubo grants serve --cluster home --namespace default
+# prints direct addr plus relay addr when relay peers are configured
 tubo grants pending
 tubo grants describe gr_123
 tubo grants approve gr_123 --ttl 168h
@@ -506,7 +507,7 @@ tubo grants request service/myapi --poll
 tubo grants history
 ```
 
-The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically. Approval is explicit and signs a service-scoped `ServiceClaim` with the local authority key. The grant server bounds pending requests globally/per requester/per service and rejects active service-name collisions for a different service peer. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; denied, expired, or still-pending grants stop publication.
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and prints relay-aware `/p2p-circuit` addresses for signed invites; it does not publish itself in Discovery V2. Approval is explicit and signs a service-scoped `ServiceClaim` with the local authority key. The grant server bounds pending requests globally/per requester/per service and rejects active service-name collisions for a different service peer. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; denied, expired, or still-pending grants stop publication.
 
 ## Topology
 
