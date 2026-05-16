@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	libp2p "github.com/libp2p/go-libp2p"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -40,6 +41,11 @@ type Config struct {
 	DirectStreamTimeout    time.Duration
 	PrivateKeyFile         string
 	PrivateKeyB64          string
+	AuthorityPublicKey     string
+	DiscoveryTopic         string
+	DiscoveryMode          string
+	DiscoveryClusterID     string
+	DiscoveryNamespaceID   string
 }
 
 // LoadConfigFromEnv loads edge configuration from environment variables.
@@ -111,7 +117,7 @@ const (
 
 // New constructs a new edge runtime.
 func New(ctx context.Context, cfg Config) (*App, error) {
-	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64)
+	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64, cfg.AuthorityPublicKey, cfg.DiscoveryTopic, cfg.DiscoveryMode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -135,6 +141,13 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 }
 
 // Start runs the edge gateway until ctx is cancelled or a server exits with an error.
+func (a *App) Host() host.Host {
+	if a == nil || a.gateway == nil {
+		return nil
+	}
+	return a.gateway.host
+}
+
 func (a *App) Start(ctx context.Context) error {
 	defer a.close()
 
@@ -218,13 +231,20 @@ func adminMux(gw *Gateway) *http.ServeMux {
 	return mux
 }
 
-func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64 string) (*Gateway, chan struct{}, error) {
+func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64, authorityPublicKey, discoveryTopic, discoveryMode, discoveryClusterID, discoveryNamespaceID string) (*Gateway, chan struct{}, error) {
 	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSK(privateKeyFile, privateKeyB64)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load private network key: %w", err)
 	}
+	var opts []libp2p.Option
+	if allowed, configured, err := p2p.LoadAllowedPeersFromEnv(); err != nil {
+		return nil, nil, fmt.Errorf("load peer allowlist: %w", err)
+	} else if configured {
+		opts = append(opts, libp2p.ConnectionGater(p2p.NewPeerAllowlistConnectionGater(allowed)))
+		log.Printf("peer allowlist enabled peers=%d", len(allowed))
+	}
 
-	h, err := p2p.NewHostWithSeedAndPSK(p2pListen, seed, psk)
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions(p2pListen, seed, psk, opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create host: %w", err)
 	}
@@ -239,14 +259,33 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		return nil, nil, fmt.Errorf("create gossipsub: %w", err)
 	}
 
-	topic, err := ps.Join(discovery.DiscoveryTopic)
+	topicName := discoveryTopic
+	if topicName == "" {
+		topicName = discovery.DiscoveryTopic
+	}
+	topic, err := ps.Join(topicName)
 	if err != nil {
 		_ = h.Close()
 		return nil, nil, fmt.Errorf("join discovery topic: %w", err)
 	}
 
 	cache := discovery.NewCache(30*time.Second, 1*time.Second)
+	mode := discovery.Mode(discoveryMode)
+	if mode != discovery.ModeNamespaceV2 {
+		_ = h.Close()
+		return nil, nil, fmt.Errorf("cluster/namespace discovery is required; legacy swarm discovery has been removed")
+	}
 	sub := discovery.NewPubSubSubscriber(topic, cache)
+	if mode == discovery.ModeNamespaceV2 {
+		sub = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, discoveryClusterID, discoveryNamespaceID)
+		if authorityPublicKey != "" {
+			if raw, err := discovery.ParseAuthorityPublicKey(authorityPublicKey); err == nil {
+				sub.SetAuthorityPublicKey(raw)
+			} else {
+				return nil, nil, fmt.Errorf("parse authority public key: %w", err)
+			}
+		}
+	}
 
 	pubKey := h.Peerstore().PubKey(h.ID())
 	if pubKey != nil {
@@ -1022,7 +1061,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		resp, err = p2p.HandleClientRequest(stream, "edge", r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader)
+		resp, err = p2p.HandleClientRequest(stream, "edge", r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader, nil)
 		if err == nil {
 			defer stream.Close()
 			break

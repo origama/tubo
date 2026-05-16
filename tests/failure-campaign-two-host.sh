@@ -18,31 +18,144 @@ req() {
   local query="$1"
   local payload="${2:-x}"
   local body="$ARTIFACT_DIR/resp.tmp"
+  local request_body="$ARTIFACT_DIR/req.tmp"
   local code
-  code="$(curl -sS --max-time 20 -o "$body" -w '%{http_code}' -H "Host: $SERVICE_NAME" --data-binary "$payload" "$EDGE/v1/dummy?$query" || true)"
+  printf '%s' "$payload" > "$request_body"
+  code="$(curl -sS --max-time 20 -o "$body" -w '%{http_code}' -H "Host: $SERVICE_NAME" --data-binary @"$request_body" "$EDGE/v1/dummy?$query" || true)"
   printf '%s\n' "$code"
 }
 req_body() { cat "$ARTIFACT_DIR/resp.tmp" 2>/dev/null || true; }
 admin_get() { curl -fsS "$ADMIN/$1"; }
 remote_exec() { ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" "$1"; }
+
+kill_local_pidfile() {
+  local pidfile="$1"
+  if [[ -f "$pidfile" ]]; then
+    local pid
+    pid="$(cat "$pidfile")"
+    kill "$pid" >/dev/null 2>&1 || true
+    sleep 1
+    kill -9 "$pid" >/dev/null 2>&1 || true
+    rm -f "$pidfile"
+  fi
+}
+
+kill_local_ports() {
+  local ports="$1" port pid
+  for port in $ports; do
+    for pid in $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u); do
+      kill "$pid" >/dev/null 2>&1 || true
+    done
+  done
+  sleep 1
+  for port in $ports; do
+    for pid in $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u); do
+      kill -9 "$pid" >/dev/null 2>&1 || true
+    done
+  done
+}
+
+wait_local_ports_clear() {
+  local ports="$1" tries="${2:-20}" port pid busy i
+  for i in $(seq 1 "$tries"); do
+    busy=0
+    for port in $ports; do
+      if lsof -tiTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+        busy=1
+        break
+      fi
+    done
+    if [[ "$busy" -eq 0 ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+remote_kill_pidfile() {
+  local pidfile="$1"
+  remote_exec "cd '$REMOTE_DIR' 2>/dev/null || exit 0; if [ -f '$pidfile' ]; then pid=\$(cat '$pidfile'); kill \"\$pid\" >/dev/null 2>&1 || true; sleep 1; kill -9 \"\$pid\" >/dev/null 2>&1 || true; rm -f '$pidfile'; fi"
+}
+
 remote_kill_ports() {
   local ports="$1"
   remote_exec "for port in $ports; do for pid in \$(lsof -tiTCP:\$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill \$pid >/dev/null 2>&1 || true; done; done; sleep 1; for port in $ports; do for pid in \$(lsof -tiTCP:\$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill -9 \$pid >/dev/null 2>&1 || true; done; done"
 }
-stop_relay() { remote_exec "rm -f '$REMOTE_DIR/relay.pid'"; remote_kill_ports "4001 18092"; }
-start_relay() { stop_relay; remote_exec "cd '$REMOTE_DIR' && python3 -c \"import subprocess; f=open('relay.log','ab',0); p=subprocess.Popen(['./tubo','relay','run','--config','relay.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('relay.pid','w').write(str(p.pid))\""; }
-stop_service() { remote_exec "rm -f '$REMOTE_DIR/service.pid'"; remote_kill_ports "40123 18091"; }
-start_service() { stop_service; remote_exec "cd '$REMOTE_DIR' && python3 -c \"import subprocess; f=open('service.log','ab',0); p=subprocess.Popen(['./tubo','service','run','--config','service.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('service.pid','w').write(str(p.pid))\""; }
-stop_dummy() { remote_exec "rm -f '$REMOTE_DIR/dummy-api-server.pid'"; remote_kill_ports "18000"; }
-start_dummy() { stop_dummy; remote_exec "cd '$REMOTE_DIR' && python3 -c \"import os, subprocess; f=open('dummy-api-server.log','ab',0); p=subprocess.Popen(['./dummy-api-server'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True, env=dict(os.environ, DUMMY_API_LISTEN='127.0.0.1:18000', DUMMY_API_INSTANCE='distributed-remote')); open('dummy-api-server.pid','w').write(str(p.pid))\""; }
-stop_edge() { kill "$(cat "$RUN_DIR/edge.pid")" >/dev/null 2>&1 || true; for port in 18443 18444 4001; do for pid in $(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u); do kill "$pid" >/dev/null 2>&1 || true; done; done; }
-start_edge() { stop_edge; nohup "$RUN_DIR/tubo" edge run --config "$RUN_DIR/edge.yaml" > "$RUN_DIR/edge.log" 2>&1 < /dev/null & echo $! > "$RUN_DIR/edge.pid"; }
+
+wait_remote_ports_clear() {
+  local ports="$1" tries="${2:-20}" i port busy
+  for i in $(seq 1 "$tries"); do
+    busy=0
+    for port in $ports; do
+      if remote_exec "lsof -tiTCP:\$port -sTCP:LISTEN >/dev/null 2>&1" >/dev/null 2>&1; then
+        busy=1
+        break
+      fi
+    done
+    if [[ "$busy" -eq 0 ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+stop_relay() {
+  remote_kill_pidfile relay.pid
+  remote_kill_ports "4001 18092"
+  remote_exec "rm -f '$REMOTE_DIR/relay.pid'"
+}
+
+start_relay() {
+  stop_relay
+  wait_remote_ports_clear "4001 18092" || true
+  remote_exec "cd '$REMOTE_DIR' && python3 -c \"import subprocess; f=open('relay.log','ab',0); p=subprocess.Popen(['./tubo','relay','--config','relay.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('relay.pid','w').write(str(p.pid))\""
+}
+
+stop_service() {
+  remote_kill_pidfile service.pid
+  remote_kill_ports "40123 18091"
+  remote_exec "rm -f '$REMOTE_DIR/service.pid'"
+}
+
+start_service() {
+  stop_service
+  wait_remote_ports_clear "40123 18091" || true
+  remote_exec "cd '$REMOTE_DIR' && python3 -c \"import subprocess; f=open('service.log','ab',0); p=subprocess.Popen(['./tubo','attach','--config','service.yaml'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True); open('service.pid','w').write(str(p.pid))\""
+}
+
+stop_dummy() {
+  remote_kill_pidfile dummy-api-server.pid
+  remote_kill_ports "18000"
+  remote_exec "rm -f '$REMOTE_DIR/dummy-api-server.pid'"
+}
+
+start_dummy() {
+  stop_dummy
+  wait_remote_ports_clear "18000" || true
+  remote_exec "cd '$REMOTE_DIR' && python3 -c \"import os, subprocess; f=open('dummy-api-server.log','ab',0); p=subprocess.Popen(['./dummy-api-server'], stdin=subprocess.DEVNULL, stdout=f, stderr=subprocess.STDOUT, start_new_session=True, env=dict(os.environ, DUMMY_API_LISTEN='127.0.0.1:18000', DUMMY_API_INSTANCE='distributed-remote')); open('dummy-api-server.pid','w').write(str(p.pid))\""
+}
+
+stop_edge() {
+  kill_local_pidfile "$RUN_DIR/edge.pid"
+  kill_local_ports "18443 18444 4001"
+}
+
+start_edge() {
+  stop_edge
+  wait_local_ports_clear "18443 18444 4001" || true
+  nohup "$RUN_DIR/tubo" gateway --config "$RUN_DIR/edge.yaml" > "$RUN_DIR/edge.log" 2>&1 < /dev/null & echo $! > "$RUN_DIR/edge.pid"
+}
 wait_http() { local url="$1"; local tries="${2:-60}"; for i in $(seq 1 "$tries"); do curl -fsS "$url" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
 wait_remote_http() { local url="$1"; local tries="${2:-60}"; for i in $(seq 1 "$tries"); do remote_exec "curl -fsS '$url' >/dev/null" >/dev/null 2>&1 && return 0; sleep 1; done; return 1; }
 wait_route() { for i in $(seq 1 90); do local s r; s="$(admin_get services || true)"; r="$(admin_get routes || true)"; if echo "$s" | grep -Eq '"count"[[:space:]]*:[[:space:]]*1' && echo "$r" | grep -q '"hostname":"'$SERVICE_NAME'"'; then return 0; fi; sleep 1; done; return 1; }
 setup_bench() { KEEP_RUNNING=1 "$ROOT_DIR/tests/smoke-distributed-two-host.sh" >/dev/null; }
 teardown_bench() {
   stop_edge || true
+  stop_relay || true
+  stop_service || true
+  stop_dummy || true
   rm -f "$RUN_DIR/edge.pid" >/dev/null 2>&1 || true
   remote_exec "cd '$REMOTE_DIR' 2>/dev/null || exit 0; rm -f ./*.pid" >/dev/null 2>&1 || true
   remote_kill_ports "18000 18091 18092 4001 40123" >/dev/null 2>&1 || true

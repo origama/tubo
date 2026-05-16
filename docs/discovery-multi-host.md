@@ -2,7 +2,7 @@
 
 Questo runbook copre due piani distinti:
 
-1. **stato attuale (as-is)** del progetto;
+1. **stato attuale (as-is)** del progetto, che ora richiede discovery cluster/namespace V2;
 2. **target operativo consigliato** per deployment privato NAT/NAT (LM Studio su laptop + Hermes/edge su host remoto).
 
 Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare come riferimento primario:
@@ -13,37 +13,35 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
 
 ### 1.1 Pubblicazione (service)
 
-`tubo service run` oggi:
+`tubo attach` oggi:
 
 1. crea host libp2p (`p2p.NewHostWithSeedAndPSK`);
-2. entra nel topic pubsub `"/discovery/v1.0"`;
-3. pubblica `Announcement` firmato con:
-   - `ServiceName`
-   - `PeerID`
-   - `Addresses` (da `p2p.PeerAddrs(h)`)
-   - `TTL` (impostato a `30s`)
+2. pubblica `AnnouncementV2` firmato e cifrato sul topic V2 del namespace;
+3. include `ServiceName`, `ServiceID`, `Addresses`, membership capability e `ServiceClaim` valida;
 4. avvia heartbeat (`HEARTBEAT_INTERVAL`, default `15s`) che ripubblica lo stesso annuncio;
 5. tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 6. se configurato, abilita static AutoRelay verso `RELAY_PEERS` (`ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE`).
 
 ### 1.2 Sottoscrizione e validazione (edge)
 
-`tubo edge run` oggi:
+`tubo gateway` oggi:
 
 1. crea host libp2p;
-2. entra nello stesso topic pubsub;
+2. entra nel topic discovery V2 del namespace;
 3. usa `PubSubSubscriber` per:
    - deserializzare annuncio;
-   - verificare coerenza `sender` (`msg.GetFrom()`) vs `Announcement.PeerID`;
-   - recuperare/derivare public key del peer;
-   - verificare firma;
+   - verificare topic/cluster/namespace;
+   - verificare membership capability del namespace e replay nonce;
+   - richiedere e verificare una `ServiceClaim` valida per `service_id`, peer, namespace e authority;
    - aggiornare cache discovery.
 4. se configurato, tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 
 ### 1.3 Cache e auto-routing
 
 - Cache keyed per `serviceName` (`internal/discovery/cache.go`).
-- TTL effettivo in cache: 30s (default gateway).
+- Gli edge aggiornano la cache tramite Discovery V2 validata; non accettano `announce_service` sul protocollo query.
+- I relay possono mantenere una cache query/sync per supportare `get services` remoti.
+- Il TTL effettivo degli annunci V2 è limitato da announcement TTL e scadenza della `ServiceClaim`.
 - Su evento `added`, il gateway crea route auto:
   - `hostname = serviceName`
   - `pathPrefix = "/"`
@@ -54,17 +52,18 @@ Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
 ### 1.4 Limiti attuali importanti
 
 1. Un solo `ServiceEntry` per `serviceName` (ultimo annuncio vince).
-2. `Announcement.TTL` non controlla direttamente TTL cache (oggi fisso lato edge).
+2. La cache query dei relay resta keyed per `serviceName` e non sostituisce la validazione Discovery V2 degli edge.
 3. Se gli indirizzi annunciati non sono raggiungibili, il dial diretto fallisce.
 4. Hole punching/AutoNAT non sono ancora completi nel progetto.
 5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge`, `service`, `bridge` e `relay`.
 6. `LIBP2P_ALLOWED_PEERS` + connection gater sono implementati nel `relay`, ma non ancora enforced end-to-end su tutti i binari.
+7. Il vecchio swarm discovery `"/discovery/v1.0"` non e' piu' supportato.
 
 ## 2) Obiettivo operativo per deployment NAT/NAT privato
 
 ### 2.1 Nodo pubblico controllato obbligatorio
 
-Per deployment con nodi potenzialmente dietro NAT, deve esistere almeno un nodo pubblico stabile gestito da noi.
+Per deployment con nodi potenzialmente dietro NAT, deve esistere almeno un nodo pubblico stabile gestito da noi. Con Discovery V2 il nodo pubblico serve come bootstrap/relay transport, non come discovery swarm router.
 
 Requisiti minimi:
 
@@ -117,7 +116,7 @@ Policy chiave:
 - mai committata nel repository;
 - ruotabile in caso di compromissione.
 
-### 3.2 Allowlist PeerID (parziale: relay implementato)
+### 3.2 Allowlist PeerID (connection-level: implementata su relay/edge/service/bridge)
 
 Configurazione desiderata:
 
@@ -130,14 +129,15 @@ Comportamento richiesto:
 3. rifiutare annunci discovery firmati da PeerID non allowlisted;
 4. rifiutare mapping `ServiceName -> PeerID` non previsto.
 
-Implementazione attuale/parziale:
+Implementazione attuale:
 
 - `ConnectionGater` per livello connessione;
-- parser `LIBP2P_ALLOWED_PEERS` e enforcement connessioni sul `relay`.
+- parser `LIBP2P_ALLOWED_PEERS` e enforcement connessioni su `relay`, `edge`, `service` e `bridge`.
 
 Implementazione ancora necessaria:
 
-- controlli applicativi in discovery handler e stream handler su gateway/agent.
+- controlli applicativi in discovery handler e stream handler su gateway/agent;
+- binding `ServiceName -> PeerID` oltre il semplice gate di connessione.
 
 ### 3.3 Binding ServiceName -> PeerID (target)
 
@@ -164,8 +164,8 @@ Per questo deployment privato:
 1. non usare public DHT;
 2. non usare bootstrap peer casuali;
 3. non usare relay pubblici esterni;
-4. topic `/discovery/v1.0` deve vivere nella private swarm;
-5. discovery continua con announcement firmati.
+4. usare solo topic discovery V2 opachi derivati da cluster/namespace;
+5. discovery continua con announcement firmati e capability verificate.
 
 ## 5) Relay privato, AutoRelay e NAT reachability
 

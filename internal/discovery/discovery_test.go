@@ -1,6 +1,8 @@
 package discovery_test
 
 import (
+	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +10,93 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/origama/tubo/internal/discovery"
 )
+
+// --- Announcement signing and verification ---
+
+func TestNamespaceTopicIsOpaqueAndStable(t *testing.T) {
+	topicA := discovery.NamespaceTopic("cluster-a", "tenant-a")
+	topicB := discovery.NamespaceTopic("cluster-a", "tenant-a")
+	topicC := discovery.NamespaceTopic("cluster-a", "tenant-b")
+	if topicA != topicB {
+		t.Fatalf("topic not stable: %q != %q", topicA, topicB)
+	}
+	if topicA == topicC {
+		t.Fatalf("topic should differ for a different namespace: %q", topicA)
+	}
+	if !strings.HasPrefix(topicA, "/discovery/v2/") {
+		t.Fatalf("topic prefix = %q", topicA)
+	}
+	if strings.Contains(topicA, "cluster-a") || strings.Contains(topicA, "tenant-a") {
+		t.Fatalf("topic leaks cleartext scope: %q", topicA)
+	}
+}
+
+func TestAnnouncementV2SignVerifyAndDecrypt(t *testing.T) {
+	privKey, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	pid, err := peer.IDFromPrivateKey(privKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := discovery.AnnouncementV2Payload{
+		ServiceName:          "my-api",
+		ServiceID:            "service-123",
+		Addresses:            []string{"/ip4/127.0.0.1/tcp/8080"},
+		MembershipCapability: []byte("membership-capability-bytes"),
+		ServiceClaim:         []byte("service-claim-bytes"),
+		RegisteredAt:         time.Now().UTC().Truncate(time.Second),
+	}
+	ann, err := discovery.NewAnnouncementV2("cluster-123", "tenant-a", pid, 45*time.Second, payload)
+	if err != nil {
+		t.Fatalf("new announcement v2: %v", err)
+	}
+	if err := ann.Sign(privKey); err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	pubKey := privKey.GetPublic()
+	ok, err := ann.Verify(pubKey)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected valid v2 signature")
+	}
+	raw, err := ann.Marshal()
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(raw, []byte("my-api")) {
+		t.Fatalf("cleartext service name leaked in v2 payload: %s", raw)
+	}
+	var got discovery.AnnouncementV2
+	if err := got.Unmarshal(raw); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	decoded, err := got.Payload("cluster-123", "tenant-a")
+	if err != nil {
+		t.Fatalf("payload decrypt: %v", err)
+	}
+	if decoded.ServiceName != payload.ServiceName {
+		t.Fatalf("service name = %q want %q", decoded.ServiceName, payload.ServiceName)
+	}
+	if decoded.ServiceID != payload.ServiceID {
+		t.Fatalf("service id = %q want %q", decoded.ServiceID, payload.ServiceID)
+	}
+	if len(decoded.Addresses) != 1 || decoded.Addresses[0] != payload.Addresses[0] {
+		t.Fatalf("addresses = %#v want %#v", decoded.Addresses, payload.Addresses)
+	}
+	if !bytes.Equal(decoded.MembershipCapability, payload.MembershipCapability) {
+		t.Fatalf("membership capability bytes mismatch")
+	}
+	if !bytes.Equal(decoded.ServiceClaim, payload.ServiceClaim) {
+		t.Fatalf("service claim bytes mismatch")
+	}
+	if _, err := got.Payload("cluster-123", "other-namespace"); err == nil {
+		t.Fatal("expected namespace mismatch to fail")
+	}
+}
 
 // --- Announcement signing and verification ---
 

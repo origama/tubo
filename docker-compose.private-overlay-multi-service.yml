@@ -11,7 +11,9 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
-    command: ["relay", "run", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
+    command: ["relay", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
+    volumes:
+      - ./generated/private-overlay-multi-service/relay.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     environment:
       RELAY_HEALTH_LISTEN: ":8092"
       ENABLE_RELAY_SERVICE: "true"
@@ -36,8 +38,7 @@ services:
     depends_on:
       - relay
     command:
-      - edge
-      - run
+      - gateway
       - --listen
       - :8443
       - --admin-listen
@@ -52,6 +53,8 @@ services:
       - /dns4/relay/tcp/4002/p2p/12D3KooWCM2WEy79ibaqQKsM3YK46WKvQBQSE3hd21dzcmhvf4ic
     environment:
       LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    volumes:
+      - ./generated/private-overlay-multi-service/edge.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     ports:
       - "8443:8443"
       - "8444:8444"
@@ -92,8 +95,7 @@ services:
       - edge
       - relay
     command:
-      - service
-      - run
+      - attach
       - --p2p-listen
       - /ip4/0.0.0.0/tcp/40123
       - --heartbeat-interval
@@ -108,7 +110,14 @@ services:
       - http://dummy-api-server-one:8000
       - --seed
       - service-one-demo-seed
-    environment: *service-env
+    environment:
+      SERVICE_HEALTH_LISTEN: ":8091"
+      ENABLE_AUTORELAY: "true"
+      ENABLE_HOLE_PUNCHING: "true"
+      FORCE_REACHABILITY_PRIVATE: "true"
+      LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    volumes:
+      - ./generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     networks:
       - service-one-private
 
@@ -138,8 +147,7 @@ services:
       - edge
       - relay
     command:
-      - service
-      - run
+      - attach
       - --p2p-listen
       - /ip4/0.0.0.0/tcp/40123
       - --heartbeat-interval
@@ -154,7 +162,14 @@ services:
       - http://dummy-api-server-two:8000
       - --seed
       - service-two-demo-seed
-    environment: *service-env
+    environment:
+      SERVICE_HEALTH_LISTEN: ":8091"
+      ENABLE_AUTORELAY: "true"
+      ENABLE_HOLE_PUNCHING: "true"
+      FORCE_REACHABILITY_PRIVATE: "true"
+      LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    volumes:
+      - ./generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     networks:
       - service-two-private
 
@@ -184,8 +199,7 @@ services:
       - edge
       - relay
     command:
-      - service
-      - run
+      - attach
       - --p2p-listen
       - /ip4/0.0.0.0/tcp/40123
       - --heartbeat-interval
@@ -200,7 +214,14 @@ services:
       - http://dummy-api-server-three:8000
       - --seed
       - service-three-demo-seed
-    environment: *service-env
+    environment:
+      SERVICE_HEALTH_LISTEN: ":8091"
+      ENABLE_AUTORELAY: "true"
+      ENABLE_HOLE_PUNCHING: "true"
+      FORCE_REACHABILITY_PRIVATE: "true"
+      LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
+    volumes:
+      - ./generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     networks:
       - service-three-private
 

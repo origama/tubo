@@ -77,6 +77,20 @@ func (s *StreamReader) ReadResponseHeader() (*ResponseHeader, error) {
 	return decodeResponseHeader(r)
 }
 
+// ReadConnectProof reads a ConnectProof frame.
+func (s *StreamReader) ReadConnectProof() (*ConnectProof, error) {
+	length, ft, err := s.readFrameHeader()
+	if err != nil {
+		return nil, err
+	}
+	if ft != FrameTypeConnectProof {
+		return nil, fmt.Errorf("expected ConnectProof (0x%02x), got frame type 0x%02x", FrameTypeConnectProof, ft)
+	}
+
+	r := &io.LimitedReader{R: s.r, N: int64(length)}
+	return DecodeConnectProof(r)
+}
+
 // ReadResponseHeaderOrError reads the next frame as either a ResponseHeader or
 // an Error frame. This avoids consuming an Error frame as a wrong response type
 // and then blocking while trying to read another frame.
@@ -211,6 +225,11 @@ func (s *StreamWriter) WriteRequestHeader(m *RequestHeader) error {
 
 // WriteResponseHeader encodes and writes a ResponseHeader frame.
 func (s *StreamWriter) WriteResponseHeader(m *ResponseHeader) error {
+	return EncodeFrame(s.w, m)
+}
+
+// WriteConnectProof encodes and writes a ConnectProof frame.
+func (s *StreamWriter) WriteConnectProof(m *ConnectProof) error {
 	return EncodeFrame(s.w, m)
 }
 

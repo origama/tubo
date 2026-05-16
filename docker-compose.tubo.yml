@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
-    command: ["relay", "run", "--config", "/etc/tubo/relay.yaml"]
+    command: ["relay", "--config", "/etc/tubo/relay.yaml"]
     volumes:
       - ./generated/tubo-smoke/relay.yaml:/etc/tubo/relay.yaml:ro
     ports:
@@ -26,7 +26,7 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile.tubo
-    command: ["edge", "run", "--config", "/etc/tubo/edge.yaml"]
+    command: ["gateway", "--config", "/etc/tubo/edge.yaml"]
     volumes:
       - ./generated/tubo-smoke/edge.yaml:/etc/tubo/edge.yaml:ro
     ports:
@@ -43,7 +43,7 @@ services:
       - tubo-dummy-api-server
       - tubo-edge
       - tubo-relay
-    command: ["service", "run", "--config", "/etc/tubo/service.yaml"]
+    command: ["attach", "--config", "/etc/tubo/service.yaml"]
     volumes:
       - ./generated/tubo-smoke/service.yaml:/etc/tubo/service.yaml:ro
     ports:

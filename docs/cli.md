@@ -24,6 +24,9 @@ relay     = avvia un relay/bootstrap node
 join      = configura questa macchina per uno swarm esistente
 
 get       = lista o recupera risorse
+create    = crea risorse locali nella config
+share     = crea inviti membership locali per un cluster
+grants    = gestisce richieste Publish Grant
 describe  = mostra dettagli leggibili
 inspect   = mostra dettagli tecnici/raw
 watch     = osserva servizi nello swarm
@@ -38,7 +41,8 @@ I comandi piu' comuni sono:
 
 ```bash
 tubo relay
-tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
+tubo join overlay/public
+tubo join overlay/manual --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 tubo gateway
 tubo attach http://127.0.0.1:1234 --name lmstudio
 tubo connect lmstudio --local 127.0.0.1:51234
@@ -48,7 +52,7 @@ tubo inspect service/lmstudio --json
 tubo watch services
 ```
 
-`attach` supporta sia la forma esplicita sia lo shorthand name+port:
+`attach` supporta sia la forma esplicita sia lo shorthand name+port; accetta anche `service/<name>` come primo argomento:
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
@@ -66,7 +70,7 @@ tubo relay -d
 ### Host service
 
 ```bash
-tubo join \
+tubo join overlay/manual \
   --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
   --swarm-key ./swarm.key
 
@@ -104,9 +108,10 @@ tubo connect lmstudio --local 127.0.0.1:51234 -d
 
 Se manca la config locale di default:
 
-- `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
+- `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato; il bundle pubblico installa anche i metadata del cluster `home/default` (cluster ID, authority public key e grant-service peers), cosi' `tubo attach`/`tubo connect` possono partire da config pulita senza un `join cluster/home` esplicito;
 - questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico;
-- `attach` genera un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
+- in cluster/namespace mode, `attach` crea o riusa una identita' stabile per `(cluster, namespace, service)` (`service_id`, `service_seed`, `service_claim_file`) prima di avviare il runtime;
+- senza config esplicita, `attach` genera ancora un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
 - `attach` ascolta di default su `/ip4/0.0.0.0/tcp/0` per permettere direct dial/hole punching quando la rete lo consente.
 
 File coinvolti:
@@ -204,7 +209,7 @@ Per scripting:
 tubo connect lmstudio --json
 ```
 
-`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live.
+`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live. Il nome puo' essere passato sia come `lmstudio` sia come `service/lmstudio`, oppure puo' arrivare da `--token <service-share>` senza fare listing dei servizi. Se manca la config locale, `connect` fa implicit public join prima di risolvere il token. Le opzioni `--cluster` e `--namespace` vengono risolte dal config corrente quando presenti o dal token di servizio; `get services` supporta anche `-n/--namespace` e `-A/--all-namespaces` per preparare i futuri lookup scoped.
 
 HTTP normale e WebSocket (`Upgrade: websocket`) sono inoltrati sullo stesso tunnel. Se un servizio pubblicizza solo indirizzi direct loopback/unspecified (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` li ignora per il dial remoto e usa il path relayed. Il client `connect` abilita AutoRelay/hole punching quando la config contiene relay peer; il successo del direct upgrade dipende comunque da NAT/firewall e dagli indirizzi annunciati dal service. Anche quando il path iniziale e' `relayed`, libp2p puo' aprire in seguito una connessione direct tramite hole punching.
 
@@ -258,7 +263,7 @@ tubo rm --stale
 ```
 
 `ps` / `get processes` riguardano i processi locali di questa macchina.
-`get services` riguarda invece le risorse discovery pubblicizzate nello swarm.
+`get services` riguarda invece le risorse discovery pubblicizzate nello swarm. Quando la config locale contiene `current_cluster` / `current_namespace`, questi valori vengono riportati nella scope risolta del comando; puoi sovrascriverli con `--cluster`, `-n/--namespace` e, per le sole liste, `-A/--all-namespaces`. In cluster-mode, la query e la lista sono consentite solo se la capability di membership del namespace lo permette; `-A` richiede capability per ogni namespace o una capability broad con namespace `*`.
 
 ## Resource discovery
 
@@ -407,6 +412,102 @@ bridge:
   service_seed: service-lmstudio-seed
   service_p2p_listen: /ip4/127.0.0.1/tcp/40123
 ```
+
+## Config resource model (Phase 1)
+
+La configurazione supporta un modello risorse minimale per overlay, cluster e namespace, ma il runtime continua a leggere `network:` come source of truth operativo.
+
+```yaml
+current_overlay: public
+current_cluster: home
+current_namespace: default
+
+overlays:
+  public:
+    relays: []
+    bootstrap_peers: []
+    swarm_key_file: ""
+
+clusters:
+  home:
+    cluster_id: ""
+    authority_public_key: ""
+    capabilities: []
+    namespaces:
+      default: {}
+
+network:
+  private_key_file: /etc/p2p/swarm.key
+  bootstrap_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+  relay_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+```
+
+`current_overlay` materializza i campi overlay in `network:` quando il file usa il nuovo layout; le writers di `join` e bundle firmati scrivono entrambi i formati per compatibilità. `tubo join overlay/public` è la forma esplicita del join pubblico; `tubo join overlay/manual --relay ... --swarm-key ...` è la forma esplicita del join manuale/legacy. Quando la config corrente porta un cluster con identity metadata (`cluster_id` + `authority_public_key` + membership grant/capability), il runtime discovery usa un topic V2 opaco derivato da `current_cluster/current_namespace` e valida topic/scope, membership capability e replay nonce; le config senza questi metadati non supportano più discovery runtime.
+
+## Local resource CLI (Phase 2a)
+
+Dopo il nuovo model locale puoi ispezionare, creare, invitare e selezionare overlay, cluster e namespace già presenti nella config:
+
+```bash
+tubo get overlays
+tubo get clusters
+tubo get namespaces
+
+tubo create cluster/home
+tubo create namespace/observability
+tubo create service/myapi
+
+tubo share cluster/home --permission member
+tubo share cluster/home --role grant-requester --grant-peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+tubo share service/myapi --expires 1h
+tubo join cluster/home --token <cluster-invite>
+
+tubo describe overlay/public
+tubo describe cluster/home
+tubo describe namespace/default
+
+tubo use overlay/public
+tubo use cluster/home
+tubo use namespace/default
+```
+
+Note:
+
+- `get overlays` e `get clusters` leggono solo la config locale.
+- `get namespaces` usa il `current_cluster` corrente.
+- `create cluster/...` genera un authority keypair locale, scrive un `cluster_id`, imposta `authority_public_key`, crea il namespace `default` e salva una capability di membership locale senza stampare segreti.
+- `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente, rende esplicito il nuovo `current_namespace` e materializza una capability di membership firmata per quel namespace.
+- `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
+- `attach` in cluster/namespace mode materializza automaticamente una identita' servizio stabile se manca: il `service_id` resta deterministico per scope/nome, mentre il `service_seed` viene generato una sola volta e salvato nel config locale (`0600`).
+- prima di avviare il runtime, `attach` risolve l'autorizzazione di pubblicazione: usa una `ServiceClaim` valida esistente, la firma localmente se il nodo possiede `authority_private_key_file`, oppure invia/polla una Publish Grant request se il servizio ha `grant_service_peer`; quando disponibile stampa anche un `service_share_token` connect-only copiabile per Bob (`tubo connect --token ...`). Se il token non puo' essere generato, `attach` spiega il motivo e suggerisce il comando `tubo share service/...` da eseguire su un nodo authority.
+- `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile; `--role grant-requester --grant-peer ...` emette un invito senza diritti publish diretti ma con metadata per richiedere una Publish Grant.
+- `share service/...` usa la chiave authority locale per emettere un token connect-only, firma un `ConnectCapability` bearer per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile; il token include cluster/namespace/service/authority metadata ma non autorizza listing generico.
+- `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
+- `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti.
+- `use` aggiorna solo il file di config locale; non avvia o ferma processi runtime.
+- `--json` resta disponibile per `get` e per i nuovi flussi locali quando utile.
+
+## Publish Grants
+
+Authority nodes can start the grant protocol listener and review local requests. Per il bundle pubblico, `grants serve --public-auto-approve` usa l'authority key del cluster pubblico e approva automaticamente le richieste di publish per il flusso attach/connect semplificato:
+
+```bash
+tubo grants serve --cluster home --namespace default --public-auto-approve
+# prints direct addr plus relay addr when relay peers are configured
+tubo grants pending
+tubo grants describe gr_123
+tubo grants approve gr_123 --ttl 168h
+tubo grants deny gr_123
+
+tubo grants request service/myapi --peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+tubo grants request service/myapi --poll
+# if joined with a grant-requester invite, --peer can be omitted
+tubo grants history
+```
+
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs a `ServiceClaim` automatically. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and prints relay-aware `/p2p-circuit` addresses for signed invites; it does not publish itself in Discovery V2. Approval is explicit and signs a service-scoped `ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server bounds pending requests globally/per requester/per service, clamps share TTL, and rejects active service-name collisions for a different service peer. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, or still-pending grants stop publication.
 
 ## Topology
 

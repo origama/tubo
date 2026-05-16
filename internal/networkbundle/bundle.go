@@ -16,15 +16,25 @@ type BundleSignature struct {
 	Value string `json:"value"`
 }
 
+type PublicClusterPayload struct {
+	Name                 string   `json:"name"`
+	ClusterID            string   `json:"cluster_id"`
+	AuthorityPublicKey   string   `json:"authority_public_key"`
+	DefaultNamespace     string   `json:"default_namespace"`
+	GrantServiceProtocol string   `json:"grant_service_protocol"`
+	GrantServicePeers    []string `json:"grant_service_peers"`
+}
+
 type NetworkPayload struct {
-	Name        string          `json:"name"`
-	ID          string          `json:"id"`
-	Visibility  string          `json:"visibility,omitempty"`
-	Description string          `json:"description,omitempty"`
-	Relays      []string        `json:"relays"`
-	SwarmKey    SwarmKeyPayload `json:"swarm_key"`
-	Network     NetworkOptions  `json:"network"`
-	Validity    ValidityWindow  `json:"validity"`
+	Name          string                `json:"name"`
+	ID            string                `json:"id"`
+	Visibility    string                `json:"visibility,omitempty"`
+	Description   string                `json:"description,omitempty"`
+	Relays        []string              `json:"relays"`
+	SwarmKey      SwarmKeyPayload       `json:"swarm_key"`
+	Network       NetworkOptions        `json:"network"`
+	PublicCluster *PublicClusterPayload `json:"public_cluster,omitempty"`
+	Validity      ValidityWindow        `json:"validity"`
 }
 
 type SwarmKeyPayload struct {

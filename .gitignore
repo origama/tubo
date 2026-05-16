@@ -3,6 +3,8 @@ bin/
 *.exe
 *.test
 tubo
+!cmd/tubo/
+!cmd/tubo/*.go
 dummy-api-server
 !docs/.well-known/
 !docs/.well-known/tubo/

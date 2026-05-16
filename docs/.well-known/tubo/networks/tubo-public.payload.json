@@ -16,6 +16,16 @@
     "hole_punching": true,
     "force_reachability": "private"
   },
+  "public_cluster": {
+    "name": "home",
+    "cluster_id": "cluster-public-2026",
+    "authority_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM1ipCV7A9VUR4/Tyrb4S1fuoXIjJULgh9UZLfrck2JK root@localhost",
+    "default_namespace": "default",
+    "grant_service_protocol": "/tubo/grants/1.0",
+    "grant_service_peers": [
+      "/dns4/grants.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"
+    ]
+  },
   "validity": {
     "not_before": "2026-05-06T00:00:00Z",
     "not_after": "2027-05-06T00:00:00Z"

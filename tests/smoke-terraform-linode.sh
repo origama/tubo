@@ -267,9 +267,13 @@ remote_stop() {
     for name in relay edge service dummy-api-server; do
       if [ -f "/var/run/tubo/$name.pid" ]; then
         kill "$(cat "/var/run/tubo/$name.pid")" >/dev/null 2>&1 || true
+        sleep 1
+        kill -9 "$(cat "/var/run/tubo/$name.pid")" >/dev/null 2>&1 || true
         rm -f "/var/run/tubo/$name.pid"
       fi
     done
+    pkill -x tubo >/dev/null 2>&1 || true
+    pkill -x dummy-api-server >/dev/null 2>&1 || true
   ' >/dev/null 2>&1 || true
 }
 
@@ -301,20 +305,20 @@ start_remote_processes() {
   info "starting relay"
   remote_stop "$RELAY_HOST"
   ssh "${SSH_OPTS[@]}" "$RELAY_HOST" "
-    nohup '$REMOTE_BASE_DIR/tubo' relay run --config /etc/tubo/relay.yaml > /var/log/tubo/relay.log 2>&1 & echo \$! > /var/run/tubo/relay.pid
+    nohup '$REMOTE_BASE_DIR/tubo' relay --config /etc/tubo/relay.yaml > /var/log/tubo/relay.log 2>&1 & echo \$! > /var/run/tubo/relay.pid
   "
 
   info "starting edge"
   remote_stop "$EDGE_HOST"
   ssh "${SSH_OPTS[@]}" "$EDGE_HOST" "
-    nohup '$REMOTE_BASE_DIR/tubo' edge run --config /etc/tubo/edge.yaml > /var/log/tubo/edge.log 2>&1 & echo \$! > /var/run/tubo/edge.pid
+    nohup '$REMOTE_BASE_DIR/tubo' gateway --config /etc/tubo/edge.yaml > /var/log/tubo/edge.log 2>&1 & echo \$! > /var/run/tubo/edge.pid
   "
 
   info "starting service + dummy origin"
   remote_stop "$SERVICE_HOST"
   ssh "${SSH_OPTS[@]}" "$SERVICE_HOST" "
     nohup env DUMMY_API_LISTEN='$DUMMY_API_LISTEN' DUMMY_API_INSTANCE='linode-terraform-remote' '$REMOTE_BASE_DIR/dummy-api-server' > /var/log/tubo/dummy-api-server.log 2>&1 & echo \$! > /var/run/tubo/dummy-api-server.pid
-    nohup '$REMOTE_BASE_DIR/tubo' service run --config /etc/tubo/service.yaml > /var/log/tubo/service.log 2>&1 & echo \$! > /var/run/tubo/service.pid
+    nohup '$REMOTE_BASE_DIR/tubo' attach --config /etc/tubo/service.yaml > /var/log/tubo/service.log 2>&1 & echo \$! > /var/run/tubo/service.pid
   "
 }
 

@@ -191,6 +191,8 @@ While running the campaign, the helper scripts exposed a separate automation pro
 
 This is mostly a bench/harness bug, not necessarily a product/runtime bug.
 
+The current bench scripts now clean up by both pidfile and command-line match, and they wait for listeners to drain before relaunching a restarted process so repeated restart injection stays deterministic.
+
 Severity: low
 
 ---

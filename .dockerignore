@@ -1,0 +1,25 @@
+# Large generated artifacts that do not belong in image build context
+generated/
+infra/
+logs/
+tests/perf/results/
+
+# Local build outputs
+bin/
+tubo
+dummy-api-server
+*.test
+*.out
+*.cover
+coverage.out
+
+# VCS metadata and editor junk
+.git/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Docker/CI scratch
+*.log

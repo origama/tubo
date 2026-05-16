@@ -1,6 +1,10 @@
 package protocol
 
-import iversion "github.com/origama/tubo/internal/version"
+import (
+	"time"
+
+	iversion "github.com/origama/tubo/internal/version"
+)
 
 // Protocol version identifier
 const (
@@ -19,6 +23,7 @@ const (
 	FrameTypeResponseHeader byte = 0x02
 	FrameTypeBodyChunk      byte = 0x03
 	FrameTypeError          byte = 0x04
+	FrameTypeConnectProof   byte = 0x05
 )
 
 type Hello struct {
@@ -28,10 +33,13 @@ type Hello struct {
 	Capabilities  []string
 }
 
-const CapabilityHelloV1 = "hello-v1"
+const (
+	CapabilityHelloV1        = "hello-v1"
+	CapabilityConnectProofV1 = "connect-proof-v1"
+)
 
 func SupportedCapabilities() []string {
-	return []string{CapabilityHelloV1}
+	return []string{CapabilityHelloV1, CapabilityConnectProofV1}
 }
 
 func NegotiateCapabilities(remote []string) []string {
@@ -75,4 +83,16 @@ type BodyChunk struct {
 type Error struct {
 	Code    int
 	Message string
+}
+
+// ConnectProof carries a signed connect authorization proof from the client peer.
+type ConnectProof struct {
+	ClusterID     string    `json:"cluster_id"`
+	NamespaceID   string    `json:"namespace_id"`
+	ServiceID     string    `json:"service_id"`
+	SubjectPeerID string    `json:"subject_peer_id"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	Nonce         []byte    `json:"nonce"`
+	Capability    []byte    `json:"capability"`
+	Signature     []byte    `json:"signature,omitempty"`
 }

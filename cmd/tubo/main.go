@@ -13,6 +13,7 @@ import (
 	"github.com/origama/tubo/internal/app/edge"
 	"github.com/origama/tubo/internal/app/relay"
 	"github.com/origama/tubo/internal/app/service"
+	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -121,6 +122,14 @@ func run(args []string) error {
 			return err
 		}
 		return watchCmd(cleanArgs)
+	case "use":
+		return localUseCmd(args[1:])
+	case "share":
+		return localShareCmd(args[1:])
+	case "grants":
+		return grantsCmd(args[1:])
+	case "create":
+		return localCreateCmd(args[1:])
 	case "logs":
 		return logsCmd(args[1:])
 	case "stop":
@@ -177,6 +186,9 @@ func resolveRuntimeRole(args []string) (string, []string, bool, error) {
 
 func ensureAttachRuntimeDefaults(args []string) ([]string, error) {
 	out := append([]string{}, args...)
+	if hasLongFlag(out, "--config") {
+		return out, nil
+	}
 	if !hasLongFlag(out, "--seed") {
 		buf := make([]byte, 16)
 		if _, err := rand.Read(buf); err != nil {
@@ -203,6 +215,9 @@ func rewriteAttachArgs(args []string) ([]string, error) {
 		return args, nil
 	}
 	first := args[0]
+	if strings.HasPrefix(first, "service/") {
+		first = strings.TrimPrefix(first, "service/")
+	}
 	if isHTTPURL(first) {
 		if hasPort {
 			return nil, errors.New("attach cannot combine a positional URL target with --port")
@@ -298,7 +313,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|create|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -308,17 +323,22 @@ Usage:
   tubo attach <url> --name <service> [-d]
   tubo attach <service> --port <port> [-d]
   tubo connect <service> [--local 127.0.0.1:PORT]
+  tubo connect --token <service-share> [--local 127.0.0.1:PORT]
   tubo get services
+  tubo use overlay/public
+  tubo create cluster/home
+  tubo share cluster/home --permission member
+  tubo share service/myapp --expires 1h
   tubo relay [-d]
   tubo gateway [-d]
-  tubo join [tubo-public]
+  tubo join [overlay/public|tubo-public]
 
 Common flow:
   # Machine with a local app
   tubo attach http://127.0.0.1:8080 --name myapp -d
 
   # Another machine
-  tubo connect myapp --local 127.0.0.1:9888
+  tubo connect --token <service-share> --local 127.0.0.1:9888
   curl http://127.0.0.1:9888/
 
 Discovery and process management:
@@ -326,6 +346,9 @@ Discovery and process management:
   tubo describe service/myapp
   tubo inspect service/myapp --json
   tubo watch services
+  tubo use overlay/public
+  tubo create cluster/home
+  tubo share cluster/home --permission member
   tubo ps
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
@@ -365,6 +388,7 @@ Flags:
 	case "connect":
 		fmt.Println(`Usage:
   tubo connect <service> [--local 127.0.0.1:PORT]
+  tubo connect --token <service-share> [--local 127.0.0.1:PORT]
 
 Open a local HTTP/WebSocket listener to a named service.
 
@@ -390,9 +414,21 @@ Path selection:
 		fmt.Println(`Usage:
   tubo get services [--json]
   tubo get service/<name> [--json]
+  tubo get overlays [--json]
+  tubo get clusters [--json]
+  tubo get namespaces [--json]
   tubo get processes [--json]
 
-Inspect local processes or services announced in the swarm.`)
+Inspect local processes, local config resources, or services announced in the swarm.`)
+	case "describe":
+		fmt.Println(`Usage:
+  tubo describe service/<name>
+  tubo describe process/<name>
+  tubo describe overlay/<name>
+  tubo describe cluster/<name>
+  tubo describe namespace/<name>
+
+Show local config metadata or discovered resource details.`)
 	case "relay":
 		fmt.Println(`Usage:
   tubo relay [-d]
@@ -411,12 +447,35 @@ Flags:
 Run an HTTP ingress gateway that routes by discovered services.`)
 	case "join":
 		fmt.Println(`Usage:
-  tubo join [tubo-public]
-  tubo join --bundle-url <url>
+  tubo join [overlay/public|tubo-public]
+  tubo join overlay/manual --relay <multiaddr> --swarm-key <path>
   tubo join --relay <multiaddr> --swarm-key <path>
+  tubo join --bundle-url <url>
+  tubo join cluster/<name> --token <cluster-invite>
+  tubo join <cluster-invite>
 
-Install local network config and swarm key. Does not start processes.`)
-	case "watch", "describe", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
+Install local overlay config, swarm key, or cluster membership. Does not start processes.`)
+	case "use":
+		fmt.Println(`Usage:
+  tubo use overlay/<name>
+  tubo use cluster/<name>
+  tubo use namespace/<name>
+
+Select a local overlay/cluster/namespace context in the config file.`)
+	case "share":
+		fmt.Println(`Usage:
+  tubo share cluster/<name> [--permission member] [--namespace <name>] [--expires <duration>]
+  tubo share service/<name> [--cluster <name>] [--namespace <name>] [--expires <duration>]
+
+Create a copyable cluster invitation or service-scoped connect token from local authority material.`)
+	case "create":
+		fmt.Println(`Usage:
+  tubo create cluster/<name>
+  tubo create namespace/<name>
+  tubo create service/<name>
+
+Create local clusters, namespaces, and namespace-scoped service identities in the current config.`)
+	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
 		return fmt.Errorf("unknown help topic %q", command)
@@ -489,21 +548,41 @@ func resolveRoleConfig(role string, args []string) (cfgpkg.Config, string, error
 }
 
 func runRole(role string, args []string) error {
-	c, _, err := resolveRoleConfig(role, args)
+	c, configPath, err := resolveRoleConfig(role, args)
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var discoveryRuntime cfgpkg.DiscoveryRuntime
+	cluster := c.Clusters[c.CurrentCluster]
 	switch role {
 	case "edge":
-		a, err := edge.New(ctx, edge.Config{HTTPListen: c.Edge.Listen, P2PListen: c.Node.P2PListen, Seed: c.Node.Seed, AdminListen: c.Edge.AdminListen, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, BootstrapRetryInterval: 5 * time.Second, DirectStreamTimeout: c.Edge.DirectStreamTimeout.Duration(), PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64})
+		runtime, err := c.RequireDiscoveryRuntime()
+		if err != nil {
+			return err
+		}
+		discoveryRuntime = runtime
+		a, err := edge.New(ctx, edge.Config{HTTPListen: c.Edge.Listen, P2PListen: c.Node.P2PListen, Seed: c.Node.Seed, AdminListen: c.Edge.AdminListen, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, BootstrapRetryInterval: 5 * time.Second, DirectStreamTimeout: c.Edge.DirectStreamTimeout.Duration(), PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, AuthorityPublicKey: cluster.AuthorityPublicKey, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID})
 		if err != nil {
 			return err
 		}
 		return a.Start(ctx)
 	case "service":
-		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: c.Node.Seed, ServiceName: c.Service.Name, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second})
+		runtime, err := c.RequireDiscoveryRuntime()
+		if err != nil {
+			return err
+		}
+		discoveryRuntime = runtime
+		authz, err := resolveAttachAuthorization(configPath, c)
+		if err != nil {
+			return err
+		}
+		c = authz.Config
+		cluster = c.Clusters[c.CurrentCluster]
+		svc := authz.Service
+		printAttachShareHint(c, authz.ServiceShareToken)
+		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: svc.ServiceSeed, ServiceName: c.Service.Name, ServiceID: svc.ServiceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: authz.MembershipCapabilityFile, ServiceClaimFile: authz.ServiceClaimFile})
 		if err != nil {
 			return err
 		}
@@ -565,6 +644,14 @@ func effectiveDefaultPublicBundleURL() string {
 }
 
 func joinCmd(args []string) error {
+	if len(args) > 0 && (strings.HasPrefix(args[0], "cluster/") || isClusterInviteToken(args[0])) {
+		return localJoinClusterInviteCmd(args)
+	}
+	overlayName := ""
+	if len(args) > 0 && strings.HasPrefix(args[0], "overlay/") {
+		overlayName = strings.TrimPrefix(args[0], "overlay/")
+		args = args[1:]
+	}
 	fs := flag.NewFlagSet("join", flag.ContinueOnError)
 	var relayPeers []string
 	fs.Var(csvFlag{&relayPeers}, "relay", "")
@@ -575,10 +662,31 @@ func joinCmd(args []string) error {
 	force := fs.Bool("force", false, "")
 	jsonOut := fs.Bool("json", false, "")
 	check := fs.Bool("check", false, "")
+	token := fs.String("token", "", "")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	relayPeers = uniqueStrings(relayPeers)
+	manualMode := len(relayPeers) > 0 || *swarmKeyPath != "" || *swarmKeyB64 != ""
+	if overlayName == "manual" {
+		if !manualMode {
+			return errors.New("join overlay/manual requires --relay <multiaddr> and exactly one swarm key source")
+		}
+		manualMode = true
+	}
+	if overlayName != "" && overlayName != "public" && overlayName != "manual" {
+		return fmt.Errorf("unknown overlay %q; use overlay/public or overlay/manual", overlayName)
+	}
+	_, _, inviteMode, inviteErr := parseClusterInviteJoin(fs.Args(), *token)
+	if inviteErr != nil {
+		return inviteErr
+	}
+	if inviteMode {
+		if manualMode || *bundleURL != "" {
+			return errors.New("cluster invite join cannot be combined with bundle/manual join flags")
+		}
+		return localJoinClusterInviteCmd(args)
+	}
 	networkName := ""
 	if fs.NArg() > 1 {
 		return errors.New("usage: tubo join [<network-name>] [--bundle-url <url>] [flags]")
@@ -586,7 +694,6 @@ func joinCmd(args []string) error {
 	if fs.NArg() == 1 {
 		networkName = fs.Arg(0)
 	}
-	manualMode := len(relayPeers) > 0 || *swarmKeyPath != "" || *swarmKeyB64 != ""
 	bundleMode := networkName != "" || *bundleURL != ""
 	if manualMode && bundleMode {
 		return errors.New("join manual flags (--relay/--swarm-key) cannot be combined with bundle mode")
@@ -599,8 +706,11 @@ func joinCmd(args []string) error {
 		if *jsonOut {
 			return printJSON(result)
 		}
-		printJoinResult("joined swarm config", result)
+		printJoinResult(joinTitleFor(false, overlayName), result)
 		return nil
+	}
+	if overlayName == "public" {
+		networkName = joinDefaultNetworkName
 	}
 	if networkName == "" {
 		networkName = joinDefaultNetworkName
@@ -619,7 +729,7 @@ func joinCmd(args []string) error {
 	if *jsonOut {
 		return printJSON(result)
 	}
-	printJoinResult("joined network bundle", result)
+	printJoinResult(joinTitleFor(true, overlayName), result)
 	return nil
 }
 
@@ -665,13 +775,32 @@ func joinManualMode(relayPeers []string, swarmKeyPath, swarmKeyB64, configDir st
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return joinResult{}, err
 	}
-	joined := cfgpkg.Merge(existing, cfgpkg.Config{Network: cfgpkg.Network{
-		PrivateKeyFile: installedKeyPath,
-		BootstrapPeers: relayPeers,
-		RelayPeers:     relayPeers,
-		Autorelay:      true,
-		HolePunching:   true,
-	}})
+	joined := cfgpkg.Merge(existing, cfgpkg.Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays: map[string]cfgpkg.Overlay{
+			"manual": {
+				Relays:         append([]string(nil), relayPeers...),
+				BootstrapPeers: append([]string(nil), relayPeers...),
+				SwarmKeyFile:   installedKeyPath,
+			},
+		},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				Namespaces: map[string]cfgpkg.Namespace{
+					"default": {},
+				},
+			},
+		},
+		Network: cfgpkg.Network{
+			PrivateKeyFile: installedKeyPath,
+			BootstrapPeers: append([]string(nil), relayPeers...),
+			RelayPeers:     append([]string(nil), relayPeers...),
+			Autorelay:      true,
+			HolePunching:   true,
+		},
+	})
 	joined.Network.PrivateKeyB64 = ""
 	b, err := yaml.Marshal(joined)
 	if err != nil {
@@ -684,6 +813,7 @@ func joinManualMode(relayPeers []string, swarmKeyPath, swarmKeyB64, configDir st
 		return joinResult{}, err
 	}
 	return joinResult{
+		NetworkName:    "manual",
 		ConfigPath:     configPath,
 		SwarmKeyPath:   installedKeyPath,
 		RelayPeers:     relayPeers,
@@ -724,6 +854,19 @@ func joinBundleMode(bundleURL, configDir string, force bool) (joinResult, error)
 		RelayPeers:     installed.RelayPeers,
 		BootstrapPeers: installed.BootstrapPeers,
 	}, nil
+}
+
+func joinTitleFor(bundle bool, overlayName string) string {
+	if bundle {
+		if overlayName == "public" || overlayName == "" {
+			return "joined public overlay"
+		}
+		return "joined overlay bundle"
+	}
+	if overlayName == "manual" || overlayName == "" {
+		return "joined manual overlay"
+	}
+	return "joined overlay"
 }
 
 func printJoinResult(title string, result joinResult) {
@@ -858,9 +1001,17 @@ type detachedSpec struct {
 }
 
 func detachRoleCommand(commandName, role string, args []string) error {
-	cfg, _, err := resolveRoleConfig(role, args)
+	cfg, configPath, err := resolveRoleConfig(role, args)
 	if err != nil {
 		return err
+	}
+	if commandName == "attach" {
+		authz, err := resolveAttachAuthorization(configPath, cfg)
+		if err != nil {
+			return err
+		}
+		cfg = authz.Config
+		printAttachShareHint(cfg, authz.ServiceShareToken)
 	}
 	spec, err := buildDetachedSpec(commandName, cfg, args)
 	if err != nil {
@@ -1452,6 +1603,8 @@ func rmCmd(args []string) error {
 
 type serviceResource struct {
 	Kind             string   `json:"kind"`
+	Cluster          string   `json:"cluster,omitempty"`
+	Namespace        string   `json:"namespace,omitempty"`
 	Name             string   `json:"name"`
 	PeerID           string   `json:"peer_id"`
 	Addresses        []string `json:"addresses"`
@@ -1469,6 +1622,7 @@ type discoveryLookupResult struct {
 	Services []serviceResource        `json:"services"`
 	Messages []string                 `json:"messages"`
 	Mode     string                   `json:"mode"`
+	Scope    *serviceScope            `json:"scope,omitempty"`
 	Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
 }
 
@@ -1511,6 +1665,7 @@ type connectResult struct {
 	Service  string           `json:"service"`
 	Local    string           `json:"local"`
 	Path     string           `json:"path"`
+	Scope    *serviceScope    `json:"scope,omitempty"`
 	Selected string           `json:"selected_addr,omitempty"`
 	Direct   string           `json:"direct,omitempty"`
 	Relay    string           `json:"relay,omitempty"`
@@ -1532,6 +1687,10 @@ func connectCmd(args []string) error {
 	jsonOut := fs.Bool("json", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
+	token := fs.String("token", "", "")
+	cluster := fs.String("cluster", "", "")
+	namespace := fs.String("namespace", "", "")
+	namespaceShort := fs.String("n", "", "")
 	serviceName := ""
 	parseArgs := args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -1541,24 +1700,61 @@ func connectCmd(args []string) error {
 	if err := fs.Parse(parseArgs); err != nil {
 		return err
 	}
+	shareToken := strings.TrimSpace(*token)
+	if *namespace == "" {
+		*namespace = *namespaceShort
+	}
+	var err error
+	serviceName, shareScope, err := connectServiceShareSetup(serviceName, shareToken, *cluster, *namespace)
+	if err != nil {
+		return err
+	}
+	if shareToken != "" {
+		*cluster = shareScope.Cluster
+		*namespace = shareScope.Namespace
+	}
 	if serviceName == "" {
 		if fs.NArg() != 1 {
-			return errors.New("usage: tubo connect <service-name> [--local host:port] [flags]")
+			return errors.New("usage: tubo connect [--token <service-share>] <service-name> [--local host:port] [flags]")
 		}
 		serviceName = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		return errors.New("usage: tubo connect <service-name> [--local host:port] [flags]")
+		return errors.New("usage: tubo connect [--token <service-share>] <service-name> [--local host:port] [flags]")
 	}
-	result, serviceView, err := discoverService(*configPath, serviceName, *timeout, *cachedOnly, *live)
+	serviceName, err = parseServiceRef(serviceName)
+	if err != nil {
+		return err
+	}
+	cfg, err := loadDiscoveryConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	var connectGrant *capability.ConnectCapability
+	if shareToken != "" {
+		payload, err := parseAndVerifyServiceShareToken(shareToken)
+		if err != nil {
+			return err
+		}
+		cfg = importServiceShareDiscoveryContext(cfg, payload)
+		*cluster = payload.ClusterName
+		*namespace = payload.Namespace
+		shareScope = serviceScope{Cluster: payload.ClusterName, Namespace: payload.Namespace}
+		connectGrant = &payload.Grant
+	}
+	scope, err := resolveServiceScope(cfg, *cluster, *namespace, false)
+	if err != nil {
+		return err
+	}
+	if shareToken != "" {
+		scope = shareScope
+	}
+
+	result, serviceView, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName)
 	if err != nil {
 		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", serviceName)
 	}
 	serviceView = normalizeServiceResource(serviceView)
 	listenAddr, localURL, err := chooseConnectLocal(*local)
-	if err != nil {
-		return err
-	}
-	cfg, err := loadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -1571,6 +1767,7 @@ func connectCmd(args []string) error {
 		RelayPeers:     cfg.Network.RelayPeers,
 		Autorelay:      cfg.Network.Autorelay,
 		HolePunching:   cfg.Network.HolePunching,
+		ConnectGrant:   connectGrant,
 	}
 	if bridgeCfg.P2PListen == "" {
 		bridgeCfg.P2PListen = "/ip4/0.0.0.0/tcp/0"
@@ -1583,7 +1780,7 @@ func connectCmd(args []string) error {
 	}
 	directMsg := connectDirectMessage(serviceView, attempts, selectedPath)
 	relayMsg := connectRelayMessage(serviceView, selectedAddr, selectedPath)
-	output := connectResult{Service: serviceName, Local: localURL, Path: selectedPath, Selected: selectedAddr, Direct: directMsg, Relay: relayMsg, Attempts: attempts}
+	output := connectResult{Service: serviceName, Local: localURL, Path: selectedPath, Scope: serviceScopePtr(scope), Selected: selectedAddr, Direct: directMsg, Relay: relayMsg, Attempts: attempts}
 	if *jsonOut {
 		if err := printJSON(output); err != nil {
 			return err
@@ -1752,7 +1949,7 @@ func psCmd(args []string) error {
 
 func getCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo get <services|service/name> [flags]")
+		return errors.New("usage: tubo get <services|service/name|overlays|clusters|namespaces|processes> [flags]")
 	}
 	resource := args[0]
 	fs := flag.NewFlagSet("get", flag.ContinueOnError)
@@ -1761,9 +1958,18 @@ func getCmd(args []string) error {
 	jsonOut := fs.Bool("json", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
+	cluster := fs.String("cluster", "", "")
+	namespace := fs.String("namespace", "", "")
+	namespaceShort := fs.String("n", "", "")
+	allNamespaces := fs.Bool("all-namespaces", false, "")
+	allNamespacesShort := fs.Bool("A", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	if *namespace == "" {
+		*namespace = *namespaceShort
+	}
+	useAllNamespaces := *allNamespaces || *allNamespacesShort
 	switch {
 	case resource == "processes":
 		items, err := listProcessViews(false)
@@ -1778,28 +1984,43 @@ func getCmd(args []string) error {
 		}
 		printProcessesTable(items)
 		return nil
+	case resource == "overlays" || resource == "clusters" || resource == "namespaces":
+		return localGetResource(resource, *configPath, *jsonOut)
 	}
-	result, err := discoverServices(*configPath, *timeout, *cachedOnly, *live)
+	cfg, err := loadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
 	}
 	switch {
 	case resource == "services":
-		if *jsonOut {
-			return printJSON(struct {
-				Mode     string                   `json:"mode"`
-				Messages []string                 `json:"messages"`
-				Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
-				Count    int                      `json:"count"`
-				Items    []serviceResource        `json:"items"`
-			}{Mode: result.Mode, Messages: result.Messages, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
+		scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, useAllNamespaces)
+		if err != nil {
+			return err
 		}
-		printMessages(result.Messages)
-		printServicesTable(result.Services)
-		return nil
-	case strings.HasPrefix(resource, "service/"):
-		name := strings.TrimPrefix(resource, "service/")
-		result, service, err := discoverService(*configPath, name, *timeout, *cachedOnly, *live)
+		if useAllNamespaces {
+			if *cachedOnly {
+				return errors.New("--cached-only is not supported with `get services -A`")
+			}
+			result, err := discoverServicesAcrossScopes(cfg, *timeout, scopes)
+			if err != nil {
+				return err
+			}
+			if *jsonOut {
+				return printJSON(struct {
+					Mode     string                   `json:"mode"`
+					Messages []string                 `json:"messages"`
+					Scope    *serviceScope            `json:"scope,omitempty"`
+					Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
+					Count    int                      `json:"count"`
+					Items    []serviceResource        `json:"items"`
+				}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
+			}
+			printMessages(result.Messages)
+			printServicesTable(result.Services)
+			return nil
+		}
+		scope := scopes[0]
+		result, err := discoverServicesWithConfig(cfg, *timeout, *cachedOnly, *live, scope)
 		if err != nil {
 			return err
 		}
@@ -1807,9 +2028,39 @@ func getCmd(args []string) error {
 			return printJSON(struct {
 				Mode     string                   `json:"mode"`
 				Messages []string                 `json:"messages"`
+				Scope    *serviceScope            `json:"scope,omitempty"`
+				Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
+				Count    int                      `json:"count"`
+				Items    []serviceResource        `json:"items"`
+			}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
+		}
+		printMessages(result.Messages)
+		printServicesTable(result.Services)
+		return nil
+	case strings.HasPrefix(resource, "service/"):
+		if useAllNamespaces {
+			return errors.New("--all-namespaces is only supported with `get services`")
+		}
+		scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, false)
+		if err != nil {
+			return err
+		}
+		name, err := parseServiceRef(resource)
+		if err != nil {
+			return err
+		}
+		result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
+		if err != nil {
+			return err
+		}
+		if *jsonOut {
+			return printJSON(struct {
+				Mode     string                   `json:"mode"`
+				Messages []string                 `json:"messages"`
+				Scope    *serviceScope            `json:"scope,omitempty"`
 				Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
 				Item     serviceResource          `json:"item"`
-			}{Mode: result.Mode, Messages: result.Messages, Metadata: result.Metadata, Item: service})
+			}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Item: service})
 		}
 		printMessages(result.Messages)
 		printServicesTable([]serviceResource{service})
@@ -1821,9 +2072,17 @@ func getCmd(args []string) error {
 
 func describeCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo describe <service/name|process/name> [flags]")
+		return errors.New("usage: tubo describe <service/name|process/name|overlay/name|cluster/name|namespace/name> [flags]")
 	}
 	resource := args[0]
+	if strings.HasPrefix(resource, "overlay/") || strings.HasPrefix(resource, "cluster/") || strings.HasPrefix(resource, "namespace/") {
+		fs := flag.NewFlagSet("describe", flag.ContinueOnError)
+		configPath := fs.String("config", defaultTuboConfigPath(), "")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		return localDescribeResource(resource, *configPath)
+	}
 	if strings.HasPrefix(resource, "process/") || !strings.Contains(resource, "/") {
 		state, status, err := loadProcessState(resource)
 		if err != nil {
@@ -1840,10 +2099,28 @@ func describeCmd(args []string) error {
 	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
+	cluster := fs.String("cluster", "", "")
+	namespace := fs.String("namespace", "", "")
+	namespaceShort := fs.String("n", "", "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	result, service, err := discoverService(*configPath, strings.TrimPrefix(resource, "service/"), *timeout, *cachedOnly, *live)
+	if *namespace == "" {
+		*namespace = *namespaceShort
+	}
+	cfg, err := loadDiscoveryConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, false)
+	if err != nil {
+		return err
+	}
+	name, err := parseServiceRef(resource)
+	if err != nil {
+		return err
+	}
+	result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
 	if err != nil {
 		return err
 	}
@@ -1875,20 +2152,39 @@ func inspectCmd(args []string) error {
 	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
+	cluster := fs.String("cluster", "", "")
+	namespace := fs.String("namespace", "", "")
+	namespaceShort := fs.String("n", "", "")
 	_ = fs.Bool("json", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
-	result, service, err := discoverService(*configPath, strings.TrimPrefix(resource, "service/"), *timeout, *cachedOnly, *live)
+	if *namespace == "" {
+		*namespace = *namespaceShort
+	}
+	cfg, err := loadDiscoveryConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, false)
+	if err != nil {
+		return err
+	}
+	name, err := parseServiceRef(resource)
+	if err != nil {
+		return err
+	}
+	result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
 	if err != nil {
 		return err
 	}
 	return printJSON(struct {
 		Mode     string                   `json:"mode"`
 		Messages []string                 `json:"messages"`
+		Scope    *serviceScope            `json:"scope,omitempty"`
 		Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
 		Item     serviceResource          `json:"item"`
-	}{Mode: result.Mode, Messages: result.Messages, Metadata: result.Metadata, Item: service})
+	}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Item: service})
 }
 
 func watchCmd(args []string) error {
@@ -1903,16 +2199,45 @@ func watchCmd(args []string) error {
 	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
+	cluster := fs.String("cluster", "", "")
+	namespace := fs.String("namespace", "", "")
+	namespaceShort := fs.String("n", "", "")
+	allNamespaces := fs.Bool("all-namespaces", false, "")
+	allNamespacesShort := fs.Bool("A", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	if *namespace == "" {
+		*namespace = *namespaceShort
+	}
+	useAllNamespaces := *allNamespaces || *allNamespacesShort
 	cfg, err := loadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
 	}
+	scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, useAllNamespaces)
+	if err != nil {
+		return err
+	}
+	if useAllNamespaces {
+		if *cachedOnly {
+			return errors.New("--cached-only is not supported with `watch services -A`")
+		}
+		result, err := discoverServicesAcrossScopes(cfg, *timeout, scopes)
+		if err != nil {
+			return err
+		}
+		printMessages(result.Messages)
+		printServicesTable(result.Services)
+		return nil
+	}
+	scope := scopes[0]
+	scopedCfg := cfg
+	scopedCfg.CurrentCluster = scope.Cluster
+	scopedCfg.CurrentNamespace = scope.Namespace
 	fmt.Printf("watching services for %s...\n", timeout.String())
 	if !*live {
-		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
+		if services, adminAddr, err := fetchLocalServiceCache(scopedCfg); err == nil {
 			fmt.Printf("using local cache from edge admin at %s\n", adminAddr)
 			for _, service := range services {
 				fmt.Printf("CURRENT\tservice/%s\tpeer=%s\tpath=%s\n", service.Name, service.PeerID, service.Path)
@@ -1927,23 +2252,35 @@ func watchCmd(args []string) error {
 			fmt.Println("no local cache found")
 		}
 	}
-	_, err = observeServices(cfg, *timeout, func(event serviceWatchEvent) {
+	_, err = observeServices(scopedCfg, *timeout, func(event serviceWatchEvent) {
 		fmt.Printf("%s\tservice/%s\tpeer=%s\tpath=%s\n", strings.ToUpper(event.Type), event.Name, event.PeerID, event.Path)
 	})
 	return err
 }
 
-func discoverServices(configPath string, timeout time.Duration, cachedOnly, live bool) (discoveryLookupResult, error) {
+func discoverServices(configPath string, timeout time.Duration, cachedOnly, live bool, scope serviceScope) (discoveryLookupResult, error) {
 	cfg, err := loadDiscoveryConfig(configPath)
 	if err != nil {
 		return discoveryLookupResult{}, err
 	}
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
+		return discoveryLookupResult{}, err
+	}
+	return discoverServicesWithConfig(cfg, timeout, cachedOnly, live, scope)
+}
+
+func discoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope serviceScope) (discoveryLookupResult, error) {
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
+		return discoveryLookupResult{}, err
+	}
 	if !live {
 		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
+			services = applyServiceScopeToResources(services, scope)
 			return discoveryLookupResult{
 				Services: services,
 				Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)},
 				Mode:     "cache",
+				Scope:    serviceScopePtr(scope),
 			}, nil
 		}
 		if cachedOnly {
@@ -1951,46 +2288,61 @@ func discoverServices(configPath string, timeout time.Duration, cachedOnly, live
 		}
 		if services, metadata, messages, err := fetchRemoteServiceCache(cfg, timeout); err == nil {
 			messages = append([]string{"no local cache found"}, messages...)
+			services = applyServiceScopeToResources(services, scope)
 			if len(services) > 0 {
-				return discoveryLookupResult{Services: services, Messages: messages, Mode: "remote-query", Metadata: metadata}, nil
+				return discoveryLookupResult{Services: services, Messages: messages, Mode: "remote-query", Scope: serviceScopePtr(scope), Metadata: metadata}, nil
 			}
 			services, obsErr := observeServices(cfg, timeout, nil)
 			if obsErr != nil {
 				return discoveryLookupResult{}, obsErr
 			}
+			services = applyServiceScopeToResources(services, scope)
 			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
-			return discoveryLookupResult{Services: services, Messages: messages, Mode: "live"}, nil
+			return discoveryLookupResult{Services: services, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, nil
 		} else {
 			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
 			services, obsErr := observeServices(cfg, timeout, nil)
 			if obsErr != nil {
 				return discoveryLookupResult{}, obsErr
 			}
+			services = applyServiceScopeToResources(services, scope)
 			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
-			return discoveryLookupResult{Services: services, Messages: messages, Mode: "live"}, nil
+			return discoveryLookupResult{Services: services, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, nil
 		}
 	}
 	services, err := observeServices(cfg, timeout, nil)
 	if err != nil {
 		return discoveryLookupResult{}, err
 	}
+	services = applyServiceScopeToResources(services, scope)
 	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
 	if !live {
 		messages = append([]string{"no local cache found"}, messages...)
 	}
-	return discoveryLookupResult{Services: services, Messages: messages, Mode: "live"}, nil
+	return discoveryLookupResult{Services: services, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, nil
 }
 
-func discoverService(configPath, serviceName string, timeout time.Duration, cachedOnly, live bool) (discoveryLookupResult, serviceResource, error) {
+func discoverService(configPath, serviceName string, timeout time.Duration, cachedOnly, live bool, scope serviceScope) (discoveryLookupResult, serviceResource, error) {
 	cfg, err := loadDiscoveryConfig(configPath)
 	if err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
+	return discoverServiceWithConfig(cfg, timeout, cachedOnly, live, scope, serviceName)
+}
+
+func discoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope serviceScope, serviceName string) (discoveryLookupResult, serviceResource, error) {
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
 		return discoveryLookupResult{}, serviceResource{}, err
 	}
 	if !live {
 		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
 			service, err := requireService(services, serviceName)
 			if err == nil {
-				return discoveryLookupResult{Services: []serviceResource{service}, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache"}, service, nil
+				service = applyServiceScope(service, scope)
+				return discoveryLookupResult{Services: []serviceResource{service}, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache", Scope: serviceScopePtr(scope)}, service, nil
 			}
 		}
 		if cachedOnly {
@@ -1998,7 +2350,8 @@ func discoverService(configPath, serviceName string, timeout time.Duration, cach
 		}
 		if service, metadata, messages, err := fetchRemoteService(cfg, serviceName, timeout); err == nil {
 			messages = append([]string{"no local cache found"}, messages...)
-			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "remote-query", Metadata: metadata}, service, nil
+			service = applyServiceScope(service, scope)
+			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "remote-query", Scope: serviceScopePtr(scope), Metadata: metadata}, service, nil
 		} else {
 			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
 			services, obsErr := observeServices(cfg, timeout, nil)
@@ -2010,7 +2363,8 @@ func discoverService(configPath, serviceName string, timeout time.Duration, cach
 				return discoveryLookupResult{}, serviceResource{}, obsErr
 			}
 			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
-			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live"}, service, nil
+			service = applyServiceScope(service, scope)
+			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, service, nil
 		}
 	}
 	services, err := observeServices(cfg, timeout, nil)
@@ -2025,7 +2379,8 @@ func discoverService(configPath, serviceName string, timeout time.Duration, cach
 	if !live {
 		messages = append([]string{"no local cache found"}, messages...)
 	}
-	return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live"}, service, nil
+	service = applyServiceScope(service, scope)
+	return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, service, nil
 }
 
 func loadDiscoveryConfig(path string) (cfgpkg.Config, error) {
@@ -2197,13 +2552,27 @@ func observeServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(serv
 	if err != nil {
 		return nil, fmt.Errorf("create observer gossipsub: %w", err)
 	}
-	topic, err := ps.Join(discovery.DiscoveryTopic)
+	discoveryRuntime, err := cfg.RequireDiscoveryRuntime()
+	if err != nil {
+		return nil, fmt.Errorf("cluster discovery required: %w", err)
+	}
+	topic, err := ps.Join(discoveryRuntime.Topic)
 	if err != nil {
 		return nil, fmt.Errorf("join discovery topic: %w", err)
 	}
 	cache := discovery.NewCache(30*time.Second, time.Second)
 	defer cache.Stop()
 	sub := discovery.NewPubSubSubscriber(topic, cache)
+	if discoveryRuntime.Mode == cfgpkg.DiscoveryModeNamespaceV2 {
+		sub = discovery.NewPubSubSubscriberWithMode(topic, cache, discovery.ModeNamespaceV2, discoveryRuntime.ClusterID, discoveryRuntime.NamespaceID)
+		if cluster, ok := cfg.Clusters[cfg.CurrentCluster]; ok && cluster.AuthorityPublicKey != "" {
+			if raw, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey); err == nil {
+				sub.SetAuthorityPublicKey(raw)
+			} else {
+				return nil, fmt.Errorf("parse authority public key: %w", err)
+			}
+		}
+	}
 	stopCh := sub.Start(ctx)
 	defer close(stopCh)
 	for _, raw := range peers {
@@ -2355,6 +2724,9 @@ func printServiceDescription(service serviceResource, messages []string) {
 	service = normalizeServiceResource(service)
 	fmt.Printf("Name: %s\n", service.Name)
 	fmt.Printf("Kind: %s\n", service.Kind)
+	if service.Cluster != "" || service.Namespace != "" {
+		fmt.Printf("Scope: %s/%s\n", service.Cluster, service.Namespace)
+	}
 	fmt.Printf("Status: %s\n", service.Status)
 	fmt.Printf("Peer ID: %s\n", service.PeerID)
 	fmt.Printf("Path: %s\n", service.Path)
@@ -2568,7 +2940,14 @@ func topology(args []string) error {
 	}
 	if args[0] == "commands" {
 		for name, n := range t.Nodes {
-			fmt.Printf("tubo %s run --config generated/%s.yaml\n", n["role"], name)
+			role := n["role"]
+			switch role {
+			case "edge":
+				role = "gateway"
+			case "service":
+				role = "attach"
+			}
+			fmt.Printf("tubo %s --config generated/%s.yaml\n", role, name)
 		}
 		return nil
 	}

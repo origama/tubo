@@ -513,8 +513,11 @@ class DistributedBench:
             f"set -e; cd '{remote}' 2>/dev/null || exit 0; "
             "for name in edge relay service dummy-api-server; do "
             "if [ -f \"$name.pid\" ]; then kill \"$(cat \"$name.pid\")\" >/dev/null 2>&1 || true; rm -f \"$name.pid\"; fi; done; "
-            f"pkill -f '{remote}/tubo .*run --config' >/dev/null 2>&1 || true; "
-            f"pkill -f '{remote}/dummy-api-server' >/dev/null 2>&1 || true",
+            "for port in 18000 18091 18092 4001 40123 8443 8444; do "
+            "for pid in $(lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill $pid >/dev/null 2>&1 || true; done; done; "
+            "sleep 1; "
+            "for port in 18000 18091 18092 4001 40123 8443 8444; do "
+            "for pid in $(lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill -9 $pid >/dev/null 2>&1 || true; done; done",
             check=False,
         )
 
@@ -556,8 +559,14 @@ class DistributedBench:
 
     def restart_service(self):
         remote = self.env["REMOTE_BASE_DIR"]
-        self.ssh(f"cd '{remote}' && if [ -f service.pid ]; then kill $(cat service.pid) >/dev/null 2>&1 || true; rm -f service.pid; fi", check=False)
-        self.ssh(f"cd '{remote}' && nohup ./tubo service run --config service.yaml > service.log 2>&1 < /dev/null & echo $! > service.pid")
+        self.ssh(
+            f"set -e; cd '{remote}' 2>/dev/null || exit 0; "
+            "if [ -f service.pid ]; then pid=$(cat service.pid); kill \"$pid\" >/dev/null 2>&1 || true; sleep 1; kill -9 \"$pid\" >/dev/null 2>&1 || true; rm -f service.pid; fi; "
+            "for port in 40123 18091; do for pid in $(lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill $pid >/dev/null 2>&1 || true; done; done; "
+            "sleep 1; for port in 40123 18091; do for pid in $(lsof -tiTCP:$port -sTCP:LISTEN 2>/dev/null | sort -u); do kill -9 $pid >/dev/null 2>&1 || true; done; done",
+            check=False,
+        )
+        self.ssh(f"cd '{remote}' && nohup ./tubo attach --config service.yaml > service.log 2>&1 < /dev/null & echo $! > service.pid")
         self.wait_ready()
 
 

@@ -14,22 +14,22 @@ Questo documento e' il riferimento operativo canonico per:
 
 ## 2) Componenti runtime reali
 
-Nuova UX consigliata: `tubo` con subcommand espliciti:
+Nuova UX consigliata: `tubo` con intent-based command espliciti:
 
 ```bash
-tubo relay run --config relay.yaml
-tubo edge run --config edge.yaml
-tubo service run --config service.yaml
-tubo bridge run --config bridge.yaml
+tubo relay --config relay.yaml
+tubo gateway --config edge.yaml
+tubo attach --config service.yaml
 ```
 
 Ruoli disponibili tramite `tubo`:
 
-- `relay` (bootstrap + relay v2 + health endpoint)
-- il relay partecipa anche al topic discovery `/discovery/v1.0` come router GossipSub
-- `edge` (ingress HTTP + discovery consumer)
-- `service` (publisher + stream handler verso servizio origin)
-- opzionale `bridge` (proxy client-side)
+- `relay` (bootstrap + relay v2 + health endpoint); ora e' solo trasporto/bootstrap, non un router discovery
+- `gateway` (ingress HTTP + discovery consumer)
+- `attach` (publisher + stream handler verso servizio origin)
+- in configurazioni cluster-aware, `gateway`/`attach`/observer selezionano un topic discovery V2 opaco derivato da `current_cluster` + `current_namespace`
+- il vecchio discovery swarm `/discovery/v1.0` e' stato rimosso: usa solo la discovery basata su cluster/namespace + capability
+- `bridge` rimane disponibile come logica client-side, ma il comando runtime storico `bridge run` non e' piu' supportato
 
 ## 3) Quick Start locale (Docker Compose)
 
@@ -79,7 +79,9 @@ chmod 600 swarm.key
 
 Distribuire `swarm.key` **solo** ai nodi fidati. Non committare nel repository.
 
-Per esempi YAML completi (relay, edge, service, bridge), topology e `docker-compose.tubo.yml`, vedi [`cli.md`](./cli.md). La precedenza della configurazione e':
+Per esempi YAML completi (relay, edge, service, bridge), topology e `docker-compose.tubo.yml`, vedi [`cli.md`](./cli.md). Nei cluster-aware setup, il flusso locale consigliato e': `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, poi `tubo use ...`, `tubo share service/...` e `tubo attach ...` / `tubo connect --token ...`. Per il bundle pubblico, `tubo join`/`tubo attach`/`tubo connect` da config pulita installano `home/default` e i metadata del cluster pubblico, cosi' il publish grant listener puo' auto-approvare il flusso semplificato senza richiedere un join cluster esplicito. Il token service-share e' bearer connect-only: non autorizza listing generico e non sostituisce la membership capability. Per `get services -A` o namespace aggiuntivi, assicurati che ogni namespace abbia la sua `membership_capability_file` (oppure una capability broad con namespace `*`). I join via invite salvano anche un grant firmato che autorizza le query sul nodo remoto.
+
+La precedenza della configurazione e':
 
 ```text
 flag CLI > env var > config file > default > interactive
@@ -106,7 +108,7 @@ ENABLE_DISCOVERY_PUBSUB=true \
 FORCE_REACHABILITY_PUBLIC=true \
 PRINT_RUN_COMMANDS=true \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-go run ./cmd/tubo relay run
+go run ./cmd/tubo relay
 ```
 
 Il relay stampa nei log:
@@ -141,7 +143,7 @@ EDGE_SEED=edge-seed \
 BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-go run ./cmd/tubo edge run
+go run ./cmd/tubo gateway
 ```
 
 Recuperare `peer_id` edge dai log (`edge gateway peer_id=...`).
@@ -162,7 +164,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/tubo service run
+go run ./cmd/tubo attach
 ```
 
 ### 5.4 Verifica discovery e route sul nodo edge
@@ -246,7 +248,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/tubo service run
+go run ./cmd/tubo attach
 ```
 
 ## 7) Stato sicurezza: cosa e' implementato vs target
@@ -254,14 +256,13 @@ go run ./cmd/tubo service run
 Implementato oggi:
 
 - discovery announcement firmati;
-- private swarm PSK (env key path o b64).
-- binary `relay` con relay service + AutoNAT service + router GossipSub discovery.
-- parser allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater sul relay.
+- private swarm PSK (env key path o b64);
+- binary `relay` con relay service + AutoNAT service + router GossipSub discovery;
+- parser allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater su relay, edge, service e bridge.
 
 Target ancora da implementare:
 
-- allowlist PeerID enforcement completo su edge/service/bridge;
-- binding `ServiceName -> PeerID` enforcement;
+- binding `ServiceName -> PeerID` enforcement applicativo oltre al controllo di connessione;
 - diagnostica reachability/AutoNAT completa.
 
 ## 8) Troubleshooting rapido
