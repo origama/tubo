@@ -13,8 +13,28 @@ BOB_PORT="18888"
 
 mkdir -p "$E2E_LOG_DIR" "$E2E_ARTIFACTS_DIR"
 
-generate_swarm_key
+python3 - "$E2E_REPO_ROOT/docs/.well-known/tubo/networks/tubo-public.payload.json" "$E2E_ARTIFACTS_DIR/swarm.key" <<'PY'
+import json
+import sys
+from pathlib import Path
+payload = json.loads(Path(sys.argv[1]).read_text())
+Path(sys.argv[2]).write_text(payload['swarm_key']['value'])
+PY
 copy_swarm_key_to_actors
+
+docker run -d \
+  --name bundle-server \
+  --network "$E2E_NETWORK_NAME" \
+  -v "$E2E_REPO_ROOT/docs/.well-known/tubo/networks:/srv:ro" \
+  -w /srv \
+  python:3-alpine python -m http.server 8080 --bind 0.0.0.0 >/dev/null
+export TUBO_DEFAULT_PUBLIC_BUNDLE_URL="http://bundle-server:8080/tubo-public.bundle"
+for i in $(seq 1 30); do
+  if docker exec bundle-server sh -lc 'wget -qO- http://127.0.0.1:8080/tubo-public.bundle >/dev/null'; then
+    break
+  fi
+  sleep 1
+done
 
 cat > "$(actor_home admin)/config.yaml" <<EOF
 role: relay
@@ -63,8 +83,6 @@ heartbeat_interval: 15s
 EOF
 
 start_actor admin
-start_actor alice
-start_actor bob
 
 admin_ip="$(actor_ip admin)"
 relay_peer_id="$($E2E_WORK_DIR/bin/tubo id from-seed public-relay-seed | tr -d '\n')"
@@ -73,6 +91,10 @@ log "relay addr: $relay_addr"
 
 exec_actor_bg admin sh -lc "cd /work && exec tubo relay --config /work/config.yaml > /work/logs/admin-relay.out 2>&1"
 wait_http_ok_in_actor admin http://127.0.0.1:8092/healthz 90 || fail "admin relay did not become healthy"
+
+export E2E_EXTRA_HOSTS="relay.tubo.click:${admin_ip} grants.tubo.click:${admin_ip}"
+start_actor alice
+start_actor bob
 
 exec_actor alice sh -lc "cd /work && tubo init service --out /work/config.yaml --force"
 exec_actor alice sh -lc "cd /work && tubo create cluster/home --config /work/config.yaml"
@@ -90,8 +112,6 @@ dst['current_namespace'] = src.get('current_namespace', dst.get('current_namespa
 dst.setdefault('clusters', {})['home'] = src['clusters']['home']
 dst_path.write_text(yaml.safe_dump(dst, sort_keys=False))
 PY
-invite_token="$(exec_actor alice sh -lc "cd /work && tubo share cluster/home --config /work/config.yaml --permission member | awk '/tubo-invite-v1\./ {print \$NF; exit}'")"
-[[ -n "$invite_token" ]] || fail "failed to extract cluster invite token"
 exec_actor_bg alice sh -lc "cd /work && DUMMY_API_LISTEN=127.0.0.1:${DUMMY_PORT} DUMMY_API_INSTANCE=alice exec dummy-api-server > /work/logs/alice-dummy-api.out 2>&1"
 wait_http_ok_in_actor alice http://127.0.0.1:${DUMMY_PORT}/healthz 60 || fail "alice dummy api did not become healthy"
 exec_actor_bg alice sh -lc "cd /work && exec tubo attach http://127.0.0.1:${DUMMY_PORT} --name ${SERVICE_NAME} --config /work/config.yaml --heartbeat-interval 1s > /work/logs/alice-attach.out 2>&1"
@@ -109,15 +129,7 @@ share_output="$(exec_actor alice sh -lc "cd /work && tubo share service/${SERVIC
 share_token="$(printf '%s\n' "$share_output" | awk '/tubo-service-share-v1\./ {print $NF; exit}')"
 [[ -n "$share_token" ]] || fail "failed to extract service share token"
 
-exec_actor bob sh -lc "cd /work && tubo init service --out /work/config.yaml --force"
-exec_actor bob sh -lc "cd /work && tubo join overlay/manual --config-dir /work --relay '$relay_addr' --swarm-key /work/swarm.key --force"
-exec_actor bob sh -lc "cd /work && tubo join cluster/home --token '$invite_token' --config-dir /work --force"
-
-bob_services="$(exec_actor bob sh -lc "cd /work && tubo get services --config /work/config.yaml --timeout 30s")"
-printf '%s\n' "$bob_services" > "$E2E_LOG_DIR/bob-get-services.out"
-assert_contains "$bob_services" "$SERVICE_NAME" "bob did not see published service"
-
-exec_actor_bg bob sh -lc "cd /work && exec tubo connect --token '$share_token' --config /work/config.yaml --local 127.0.0.1:${BOB_PORT} > /work/logs/bob-connect.out 2>&1"
+exec_actor_bg bob sh -lc "cd /work && exec tubo connect --token '$share_token' --local 127.0.0.1:${BOB_PORT} > /work/logs/bob-connect.out 2>&1"
 
 response=""
 for i in $(seq 1 60); do

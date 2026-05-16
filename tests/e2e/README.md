@@ -35,4 +35,4 @@ Il primo scenario valida il happy path base:
 
 - relay container `admin`;
 - Alice pubblica un servizio `e2e-echo` e genera il token `tubo share service/...`;
-- Bob scopre il servizio tramite query di discovery e ci accede con `tubo connect --token`.
+- Bob parte da config pulita, fa implicit public join e si collega direttamente con `tubo connect --token`, senza `tubo join cluster/home`.

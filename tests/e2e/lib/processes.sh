@@ -14,5 +14,6 @@ start_bg_process() {
     -e XDG_CONFIG_HOME=/work/config \
     -e XDG_DATA_HOME=/work/data \
     -e XDG_CACHE_HOME=/work/cache \
+    -e TUBO_DEFAULT_PUBLIC_BUNDLE_URL="${TUBO_DEFAULT_PUBLIC_BUNDLE_URL:-}" \
     "$name" sh -lc "$* > /work/logs/${log_name}.out 2>&1"
 }

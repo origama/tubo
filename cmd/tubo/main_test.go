@@ -1633,6 +1633,47 @@ func TestResolveAttachAuthorizationAcceptsExistingClaimWithoutAuthority(t *testi
 	if authz.ServicePeerID == "" || authz.ServiceClaimFile != svc.ServiceClaimFile || authz.MembershipCapabilityFile == "" {
 		t.Fatalf("unexpected authz: %#v", authz)
 	}
+	if authz.ServiceShareToken != "" {
+		t.Fatalf("expected no share token without authority key, got %q", authz.ServiceShareToken)
+	}
+}
+
+func TestResolveAttachAuthorizationGeneratesShareTokenWithAuthorityKey(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.ServiceShareToken == "" {
+		t.Fatal("expected authority node to generate a service share token")
+	}
+	payload, err := parseAndVerifyServiceShareToken(authz.ServiceShareToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" {
+		t.Fatalf("unexpected token payload: %#v", payload)
+	}
 }
 
 func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
@@ -1702,6 +1743,62 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	}
 	if authz.ServiceClaimFile == "" || authz.ServicePeerID != servicePeerID.String() {
 		t.Fatalf("unexpected approved authz: %#v", authz)
+	}
+}
+
+func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-route-auto-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store, AutoApprove: true, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	svc.GrantServicePeer = p2p.PeerAddrs(serverHost)[0]
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cluster.AuthorityPrivateKeyFile = ""
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.ServiceShareToken == "" {
+		t.Fatal("expected approved grant to return a service share token")
+	}
+	payload, err := parseAndVerifyServiceShareToken(authz.ServiceShareToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" {
+		t.Fatalf("unexpected token payload: %#v", payload)
+	}
+	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" {
+		t.Fatalf("expected approved authz to save claim and membership: %#v", authz)
 	}
 }
 

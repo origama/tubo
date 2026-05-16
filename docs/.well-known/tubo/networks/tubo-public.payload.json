@@ -19,7 +19,7 @@
   "public_cluster": {
     "name": "home",
     "cluster_id": "cluster-public-2026",
-    "authority_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIEA8cMzoOQb4clMnL7m4Rrp0RzAQXXCCT40PY1DYBOd root@localhost",
+    "authority_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM1ipCV7A9VUR4/Tyrb4S1fuoXIjJULgh9UZLfrck2JK root@localhost",
     "default_namespace": "default",
     "grant_service_protocol": "/tubo/grants/1.0",
     "grant_service_peers": [

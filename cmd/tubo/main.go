@@ -581,13 +581,7 @@ func runRole(role string, args []string) error {
 		c = authz.Config
 		cluster = c.Clusters[c.CurrentCluster]
 		svc := authz.Service
-		if authz.ServiceShareToken != "" {
-			overlayLabel := c.CurrentOverlay
-			if overlayLabel == joinDefaultNetworkName {
-				overlayLabel = "public"
-			}
-			fmt.Printf("attached service %q\nscope: %s/%s/%s\nshare with a friend:\n\n  tubo connect --token %s --local 127.0.0.1:18888\n\n", c.Service.Name, overlayLabel, c.CurrentCluster, c.CurrentNamespace, authz.ServiceShareToken)
-		}
+		printAttachShareHint(c, authz.ServiceShareToken)
 		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: svc.ServiceSeed, ServiceName: c.Service.Name, ServiceID: svc.ServiceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: authz.MembershipCapabilityFile, ServiceClaimFile: authz.ServiceClaimFile})
 		if err != nil {
 			return err
@@ -1007,9 +1001,17 @@ type detachedSpec struct {
 }
 
 func detachRoleCommand(commandName, role string, args []string) error {
-	cfg, _, err := resolveRoleConfig(role, args)
+	cfg, configPath, err := resolveRoleConfig(role, args)
 	if err != nil {
 		return err
+	}
+	if commandName == "attach" {
+		authz, err := resolveAttachAuthorization(configPath, cfg)
+		if err != nil {
+			return err
+		}
+		cfg = authz.Config
+		printAttachShareHint(cfg, authz.ServiceShareToken)
 	}
 	spec, err := buildDetachedSpec(commandName, cfg, args)
 	if err != nil {
@@ -1727,6 +1729,18 @@ func connectCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	var connectGrant *capability.ConnectCapability
+	if shareToken != "" {
+		payload, err := parseAndVerifyServiceShareToken(shareToken)
+		if err != nil {
+			return err
+		}
+		cfg = importServiceShareDiscoveryContext(cfg, payload)
+		*cluster = payload.ClusterName
+		*namespace = payload.Namespace
+		shareScope = serviceScope{Cluster: payload.ClusterName, Namespace: payload.Namespace}
+		connectGrant = &payload.Grant
+	}
 	scope, err := resolveServiceScope(cfg, *cluster, *namespace, false)
 	if err != nil {
 		return err
@@ -1734,16 +1748,8 @@ func connectCmd(args []string) error {
 	if shareToken != "" {
 		scope = shareScope
 	}
-	var connectGrant *capability.ConnectCapability
-	if shareToken != "" {
-		payload, err := parseAndVerifyServiceShareToken(shareToken)
-		if err != nil {
-			return err
-		}
-		connectGrant = &payload.Grant
-	}
 
-	result, serviceView, err := discoverService(*configPath, serviceName, *timeout, *cachedOnly, *live, scope)
+	result, serviceView, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName)
 	if err != nil {
 		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", serviceName)
 	}

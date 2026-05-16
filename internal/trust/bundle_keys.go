@@ -6,5 +6,5 @@ const (
 )
 
 var BundleSigningKeys = map[string]string{
-	"tubo-root-2026": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIEA8cMzoOQb4clMnL7m4Rrp0RzAQXXCCT40PY1DYBOd root@localhost",
+	"tubo-root-2026": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM1ipCV7A9VUR4/Tyrb4S1fuoXIjJULgh9UZLfrck2JK root@localhost",
 }

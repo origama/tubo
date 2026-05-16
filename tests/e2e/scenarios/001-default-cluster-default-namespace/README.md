@@ -4,4 +4,4 @@ Happy path base del runner E2E:
 
 - relay container `admin`
 - Alice crea un cluster locale, pubblica `e2e-echo` e genera un token `tubo share service/...`
-- Bob si unisce al cluster, scopre il servizio via discovery e ci si connette con `tubo connect --token`
+- Bob parte da config pulita, fa implicit public join e si connette con `tubo connect --token`, senza `tubo join cluster/home`

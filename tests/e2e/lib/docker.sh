@@ -28,13 +28,22 @@ start_actor() {
   local actor="$1"
   local name
   name="$(actor_container_name "$actor")"
-  docker run -d \
-    --name "$name" \
-    --hostname "$actor" \
-    --network "$E2E_NETWORK_NAME" \
-    -v "$(actor_home "$actor"):/work" \
-    -w /work \
-    "$E2E_IMAGE_NAME" >/dev/null
+  local run_args=(
+    -d
+    --name "$name"
+    --hostname "$actor"
+    --network "$E2E_NETWORK_NAME"
+    -e "TUBO_DEFAULT_PUBLIC_BUNDLE_URL=${TUBO_DEFAULT_PUBLIC_BUNDLE_URL:-}"
+    -v "$(actor_home "$actor"):/work"
+    -w /work
+  )
+  if [[ -n "${E2E_EXTRA_HOSTS:-}" ]]; then
+    for host in ${E2E_EXTRA_HOSTS}; do
+      run_args+=(--add-host "$host")
+    done
+  fi
+  run_args+=("$E2E_IMAGE_NAME")
+  docker run "${run_args[@]}" >/dev/null
 }
 
 stop_actor() {
@@ -58,6 +67,7 @@ exec_actor() {
     -e XDG_CONFIG_HOME=/work/config \
     -e XDG_DATA_HOME=/work/data \
     -e XDG_CACHE_HOME=/work/cache \
+    -e TUBO_DEFAULT_PUBLIC_BUNDLE_URL="${TUBO_DEFAULT_PUBLIC_BUNDLE_URL:-}" \
     "$(actor_container_name "$actor")" "$@"
 }
 
@@ -68,7 +78,8 @@ exec_actor_bg() {
     -e XDG_CONFIG_HOME=/work/config \
     -e XDG_DATA_HOME=/work/data \
     -e XDG_CACHE_HOME=/work/cache \
-    "$(actor_container_name "$actor")" "$@"
+    -e TUBO_DEFAULT_PUBLIC_BUNDLE_URL="${TUBO_DEFAULT_PUBLIC_BUNDLE_URL:-}" \
+    "$(actor_container_name "$actor")" sh -lc "$*"
 }
 
 container_logs() {
@@ -89,4 +100,5 @@ cleanup_containers() {
   for actor in bob alice admin; do
     stop_actor "$actor"
   done
+  docker rm -f bundle-server >/dev/null 2>&1 || true
 }

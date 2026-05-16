@@ -18,6 +18,7 @@ const (
 	ServiceShareKind        = "service-share"
 	ServiceShareVersion     = "v1"
 	ServiceShareDefaultTTL  = time.Hour
+	MaxServiceShareTTL      = 24 * time.Hour
 )
 
 type ServiceSharePayload struct {
@@ -33,6 +34,11 @@ type ServiceSharePayload struct {
 	Grant              capability.ConnectCapability `json:"grant"`
 	IssuedAt           time.Time                    `json:"issued_at"`
 	ExpiresAt          time.Time                    `json:"expires_at"`
+}
+
+type ServiceShareArtifacts struct {
+	Payload ServiceSharePayload
+	Token   string
 }
 
 func IsServiceShareToken(token string) bool {
@@ -51,6 +57,26 @@ func SignServiceShareToken(payload ServiceSharePayload, priv ed25519.PrivateKey)
 	}
 	sig := ed25519.Sign(priv, payloadBytes)
 	return ServiceShareTokenPrefix + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + base64.RawURLEncoding.EncodeToString(sig), nil
+}
+
+func BuildServiceShareArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID string, shareTTL time.Duration) (ServiceShareArtifacts, error) {
+	payload, err := buildServiceSharePayload(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, shareTTL)
+	if err != nil {
+		return ServiceShareArtifacts{}, err
+	}
+	token, err := SignServiceShareToken(payload, priv)
+	if err != nil {
+		return ServiceShareArtifacts{}, err
+	}
+	return ServiceShareArtifacts{Payload: payload, Token: token}, nil
+}
+
+func BuildServiceShareToken(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID string, shareTTL time.Duration) (string, error) {
+	artifacts, err := BuildServiceShareArtifacts(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, shareTTL)
+	if err != nil {
+		return "", err
+	}
+	return artifacts.Token, nil
 }
 
 func ParseAndVerifyServiceShareToken(token string) (ServiceSharePayload, error) {
@@ -120,9 +146,9 @@ func ParseAndVerifyServiceShareToken(token string) (ServiceSharePayload, error) 
 }
 
 type ApprovalArtifacts struct {
-	ServiceClaim          capability.ServiceClaim
-	MembershipCapability  capability.MembershipCapability
-	ServiceShareToken     string
+	ServiceClaim         capability.ServiceClaim
+	MembershipCapability capability.MembershipCapability
+	ServiceShareToken    string
 }
 
 func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID string, claimTTL, shareTTL time.Duration) (ApprovalArtifacts, error) {
@@ -132,9 +158,8 @@ func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, nam
 	if shareTTL <= 0 {
 		shareTTL = ServiceShareDefaultTTL
 	}
-	pubAuthorized, err := authorityPublicKeyString(priv)
-	if err != nil {
-		return ApprovalArtifacts{}, err
+	if shareTTL > claimTTL {
+		shareTTL = claimTTL
 	}
 	claim, err := capability.SignServiceClaim(capability.ServiceClaim{
 		ClusterID:     clusterID,
@@ -161,18 +186,40 @@ func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, nam
 	if err != nil {
 		return ApprovalArtifacts{}, err
 	}
-	shareGrant, err := capability.SignConnectCapability(capability.ConnectCapability{
+	shareArtifacts, err := BuildServiceShareArtifacts(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, shareTTL)
+	if err != nil {
+		return ApprovalArtifacts{}, err
+	}
+	return ApprovalArtifacts{ServiceClaim: claim, MembershipCapability: membership, ServiceShareToken: shareArtifacts.Token}, nil
+}
+
+func buildServiceSharePayload(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID string, shareTTL time.Duration) (ServiceSharePayload, error) {
+	if len(priv) == 0 {
+		return ServiceSharePayload{}, errors.New("private key is required")
+	}
+	if shareTTL <= 0 {
+		shareTTL = ServiceShareDefaultTTL
+	}
+	if shareTTL > MaxServiceShareTTL {
+		shareTTL = MaxServiceShareTTL
+	}
+	pubAuthorized, err := authorityPublicKeyString(priv)
+	if err != nil {
+		return ServiceSharePayload{}, err
+	}
+	now := time.Now().UTC()
+	grant, err := capability.SignConnectCapability(capability.ConnectCapability{
 		ClusterID:     clusterID,
 		NamespaceID:   namespaceID,
 		ServiceID:     serviceID,
 		SubjectPeerID: "",
 		Permissions:   []string{capability.PermissionConnect},
-		ExpiresAt:     time.Now().UTC().Add(shareTTL),
+		ExpiresAt:     now.Add(shareTTL),
 	}, priv)
 	if err != nil {
-		return ApprovalArtifacts{}, err
+		return ServiceSharePayload{}, err
 	}
-	shareToken, err := SignServiceShareToken(ServiceSharePayload{
+	return ServiceSharePayload{
 		ClusterName:        clusterName,
 		ClusterID:          clusterID,
 		AuthorityPublicKey: pubAuthorized,
@@ -180,14 +227,10 @@ func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, nam
 		NamespaceID:        namespaceID,
 		ServiceName:        serviceName,
 		ServiceID:          serviceID,
-		Grant:              shareGrant,
-		IssuedAt:           time.Now().UTC(),
-		ExpiresAt:          shareGrant.ExpiresAt,
-	}, priv)
-	if err != nil {
-		return ApprovalArtifacts{}, err
-	}
-	return ApprovalArtifacts{ServiceClaim: claim, MembershipCapability: membership, ServiceShareToken: shareToken}, nil
+		Grant:              grant,
+		IssuedAt:           now,
+		ExpiresAt:          grant.ExpiresAt,
+	}, nil
 }
 
 func authorityPublicKeyString(priv ed25519.PrivateKey) (string, error) {

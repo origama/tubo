@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-16 10:05 UTC
+> **Last updated:** 2026-05-16 11:58 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -172,7 +172,7 @@
 | C.68 | Issue #95/#105 — Extend cluster invite with grant-requester role | ✅ | Done: added signed `grant-requester` invites with `grant:request`, `jti`, grant service protocol/peers, join persistence, client fallback to stored grant service metadata, and tests for creation/join/tamper/expiry/no-publish-rights/request flow |
 | C.69 | Issue #95/#106 — Harden Publish Grant flow | ✅ | Done: added local invite reuse tracking by `jti`, server pending limits globally/per requester/per service, active service-name collision rejection, and tests for duplicate invites, flooding bounds, and duplicate service names; documented existing payload size/name restrictions and denial policy |
 | C.70 | Issue #95/#107 — Relay-aware Grant Service without discovery | ✅ | Done: added shared overlay host/reachability helper, wired `grants serve` and grant clients to configured bootstrap/relay/autorelay/hole-punching/private reachability, relay reservation maintenance, relay-aware printed addresses, and tests for relayed address generation/direct-only failure plus stored invite grant metadata request flow |
-| C.71 | Public attach/connect UX on the public bundle | ✅ | Done: extended `tubo-public` bundle metadata with `home/default`, cluster authority public key, and grant-service peers; added public auto-approve grant service mode, clean-config `attach`/`connect` bootstrap notes, and docs updates for the simplified share/connect flow |
+| C.71 | Public attach/connect UX on the public bundle | ✅ | Done: extended `tubo-public` bundle metadata with `home/default`, cluster authority public key, and grant-service peers; added public auto-approve grant service mode, clean-config `attach`/`connect` bootstrap notes, and docs updates for the simplified share/connect flow. Fresh-config Bob connect is now exercised end-to-end in the deterministic e2e harness. |
 
 ---
 

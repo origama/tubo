@@ -125,7 +125,7 @@ func samplePayload(notBefore, notAfter time.Time) NetworkPayload {
 		PublicCluster: &PublicClusterPayload{
 			Name:                 "home",
 			ClusterID:            "cluster-public-123",
-			AuthorityPublicKey:   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIEA8cMzoOQb4clMnL7m4Rrp0RzAQXXCCT40PY1DYBOd root@localhost",
+			AuthorityPublicKey:   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM1ipCV7A9VUR4/Tyrb4S1fuoXIjJULgh9UZLfrck2JK root@localhost",
 			DefaultNamespace:     "default",
 			GrantServiceProtocol: "/tubo/grants/1.0",
 			GrantServicePeers:    []string{"/dns4/grants.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"},

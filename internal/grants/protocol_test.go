@@ -15,7 +15,7 @@ func TestGrantMessagesRoundTrip(t *testing.T) {
 		validSubmit(),
 		{Type: TypePoll, Version: VersionV1, RequestID: "gr_123"},
 		{Type: TypePending, Version: VersionV1, RequestID: "gr_123", ExpiresAt: time.Now().Add(time.Hour)},
-		{Type: TypeApproved, Version: VersionV1, RequestID: "gr_123", ServiceClaim: claim},
+		{Type: TypeApproved, Version: VersionV1, RequestID: "gr_123", ServiceClaim: claim, ServiceShareToken: "tubo-service-share-v1.token"},
 		{Type: TypeDenied, Version: VersionV1, RequestID: "gr_123", Reason: "no"},
 		{Type: TypeExpired, Version: VersionV1, RequestID: "gr_123", Reason: "expired"},
 	} {
@@ -30,6 +30,9 @@ func TestGrantMessagesRoundTrip(t *testing.T) {
 			}
 			if got.Type != msg.Type || got.Version != msg.Version {
 				t.Fatalf("roundtrip = %#v want %#v", got, msg)
+			}
+			if msg.Type == TypeApproved && got.ServiceShareToken != msg.ServiceShareToken {
+				t.Fatalf("service share token roundtrip mismatch: got %q want %q", got.ServiceShareToken, msg.ServiceShareToken)
 			}
 		})
 	}

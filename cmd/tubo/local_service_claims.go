@@ -261,7 +261,11 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 		if err != nil {
 			return attachAuthorization{}, err
 		}
-		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile}, nil
+		shareToken, err := buildAttachServiceShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+		if err != nil {
+			return attachAuthorization{}, err
+		}
+		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
 	} else if !errors.Is(err, os.ErrNotExist) && cluster.AuthorityPrivateKeyFile == "" {
 		return attachAuthorization{}, fmt.Errorf("service publish grant for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, err)
 	}
@@ -274,7 +278,11 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 		if err != nil {
 			return attachAuthorization{}, err
 		}
-		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile, MintedServiceClaim: true}, nil
+		shareToken, err := buildAttachServiceShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+		if err != nil {
+			return attachAuthorization{}, err
+		}
+		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken, MintedServiceClaim: true}, nil
 	}
 
 	grantPeer := svc.GrantServicePeer
@@ -375,6 +383,38 @@ func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Clu
 		return ensureServiceMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
 	}
 	return namespaceMembershipCapabilityFile(cluster, namespaceName)
+}
+
+func buildAttachServiceShareToken(cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) (string, error) {
+	if cluster.AuthorityPrivateKeyFile == "" {
+		return "", nil
+	}
+	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+	if err != nil {
+		return "", fmt.Errorf("load cluster authority key: %w", err)
+	}
+	pubAuthorized, err := clusterAuthorityPublicKeyString(privKey)
+	if err != nil {
+		return "", err
+	}
+	if cluster.AuthorityPublicKey != pubAuthorized {
+		return "", fmt.Errorf("cluster %q authority public key mismatch", clusterName)
+	}
+	return grantspkg.BuildServiceShareToken(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL)
+}
+
+func printAttachShareHint(cfg cfgpkg.Config, token string) {
+	overlayLabel := cfg.CurrentOverlay
+	if overlayLabel == joinDefaultNetworkName {
+		overlayLabel = "public"
+	}
+	fmt.Printf("attached service %q\nscope: %s/%s/%s\n", cfg.Service.Name, overlayLabel, cfg.CurrentCluster, cfg.CurrentNamespace)
+	if strings.TrimSpace(token) != "" {
+		fmt.Printf("share:\n  tubo connect --token %s --local 127.0.0.1:18888\n\n", token)
+		return
+	}
+	fmt.Printf("share: unavailable (no authority key available to sign a service share token)\n")
+	fmt.Printf("hint: run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token\n\n", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace)
 }
 
 func noServicePublishGrantError(clusterName, namespaceName, serviceName string) error {
