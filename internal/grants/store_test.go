@@ -42,7 +42,7 @@ func TestStoreCreateReloadApproveDenyExpireAndDedupe(t *testing.T) {
 		t.Fatalf("unexpected pending after reload: %#v", pending)
 	}
 
-	approved, err := reloaded.Approve(created.ID, capability.ServiceClaim{ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceID: req.ServiceID, SubjectPeerID: req.ServicePeerID, Permissions: req.RequestedPermissions, ExpiresAt: base.Add(time.Hour), Signature: []byte("sig")})
+	approved, err := reloaded.Approve(created.ID, capability.ServiceClaim{ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceID: req.ServiceID, SubjectPeerID: req.ServicePeerID, Permissions: req.RequestedPermissions, ExpiresAt: base.Add(time.Hour), Signature: []byte("sig")}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestStoreCreateReloadApproveDenyExpireAndDedupe(t *testing.T) {
 	if changed != 1 {
 		t.Fatalf("expired count = %d, want 1", changed)
 	}
-	if _, err := reloaded.Approve(createdExpiring.ID, capability.ServiceClaim{}); err == nil || !strings.Contains(err.Error(), "expired") {
+	if _, err := reloaded.Approve(createdExpiring.ID, capability.ServiceClaim{}, nil, ""); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired approval error, got %v", err)
 	}
 }

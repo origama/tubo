@@ -133,10 +133,11 @@ func grantsRequestCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	return handleGrantClientResponse(*configPath, cfg, svc, *grantPeer, resp, servicePeerID.String())
+	_, err = handleGrantClientResponse(*configPath, cfg, svc, *grantPeer, resp, servicePeerID.String())
+	return err
 }
 
-func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, grantPeer string, resp grantspkg.Message, servicePeerID string) error {
+func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, grantPeer string, resp grantspkg.Message, servicePeerID string) (string, error) {
 	cluster := cfg.Clusters[cfg.CurrentCluster]
 	namespace := cluster.Namespaces[cfg.CurrentNamespace]
 	switch resp.Type {
@@ -147,32 +148,49 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 		cluster.Namespaces[cfg.CurrentNamespace] = namespace
 		cfg.Clusters[cfg.CurrentCluster] = cluster
 		if err := saveLocalConfig(configPath, cfg); err != nil {
-			return err
+			return "", err
 		}
 		fmt.Printf("Grant request sent.\nRequest ID: %s\nStatus: pending\n", resp.RequestID)
-		return nil
+		return "", nil
 	case grantspkg.TypeApproved:
 		if resp.ServiceClaim == nil {
-			return errors.New("approved grant response missing service claim")
+			return "", errors.New("approved grant response missing service claim")
 		}
 		pub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if err := capability.VerifyServiceClaim(*resp.ServiceClaim, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID); err != nil {
-			return fmt.Errorf("approved service claim rejected: %w", err)
+			return "", fmt.Errorf("approved service claim rejected: %w", err)
 		}
 		if err := writeServiceClaimFile(svc.ServiceClaimFile, *resp.ServiceClaim); err != nil {
-			return err
+			return "", err
 		}
-		fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\n", resp.RequestID, svc.ServiceClaimFile)
-		return nil
+		svc.GrantServicePeer = grantPeer
+		namespace.Services[cfg.Service.Name] = svc
+		cluster.Namespaces[cfg.CurrentNamespace] = namespace
+		cfg.Clusters[cfg.CurrentCluster] = cluster
+		if err := saveLocalConfig(configPath, cfg); err != nil {
+			return "", err
+		}
+		if resp.MembershipCapability != nil {
+			membershipPath := serviceMembershipCapabilityPath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace)
+			if err := writeCapabilityFile(membershipPath, *resp.MembershipCapability); err != nil {
+				return "", err
+			}
+		}
+		if resp.ServiceShareToken != "" {
+			fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService share token: %s\n", resp.RequestID, svc.ServiceClaimFile, resp.ServiceShareToken)
+		} else {
+			fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\n", resp.RequestID, svc.ServiceClaimFile)
+		}
+		return resp.ServiceShareToken, nil
 	case grantspkg.TypeDenied:
-		return fmt.Errorf("grant request %s denied: %s", resp.RequestID, resp.Reason)
+		return "", fmt.Errorf("grant request %s denied: %s", resp.RequestID, resp.Reason)
 	case grantspkg.TypeExpired:
-		return fmt.Errorf("grant request %s expired: %s", resp.RequestID, resp.Reason)
+		return "", fmt.Errorf("grant request %s expired: %s", resp.RequestID, resp.Reason)
 	default:
-		return fmt.Errorf("unexpected grant response type %q", resp.Type)
+		return "", fmt.Errorf("unexpected grant response type %q", resp.Type)
 	}
 }
 
@@ -289,22 +307,18 @@ func grantsApproveCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)
 	}
-	claim, err := capability.SignServiceClaim(capability.ServiceClaim{
-		ClusterID:     req.ClusterID,
-		NamespaceID:   req.NamespaceID,
-		ServiceID:     req.ServiceID,
-		SubjectPeerID: req.ServicePeerID,
-		Permissions:   []string{capability.PermissionAttach, capability.PermissionAnnounce},
-		ExpiresAt:     time.Now().UTC().Add(*ttl),
-	}, priv)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(priv, req.ClusterName, req.ClusterID, req.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, *ttl, grantspkg.ServiceShareDefaultTTL)
 	if err != nil {
 		return err
 	}
-	approved, err := store.Approve(req.ID, claim)
+	approved, err := store.Approve(req.ID, artifacts.ServiceClaim, &artifacts.MembershipCapability, artifacts.ServiceShareToken)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("approved grant request %s\n", approved.ID)
+	if artifacts.ServiceShareToken != "" {
+		fmt.Printf("service share token: %s\n", artifacts.ServiceShareToken)
+	}
 	return nil
 }
 
@@ -369,6 +383,9 @@ func grantsServeCmd(args []string) error {
 	listen := fs.String("p2p-listen", "", "")
 	seed := fs.String("seed", "", "")
 	storePath := fs.String("store", grantspkg.DefaultStorePath(), "")
+	autoApprove := fs.Bool("public-auto-approve", false, "")
+	claimTTL := fs.Duration("claim-ttl", 24*time.Hour, "")
+	shareTTL := fs.Duration("share-ttl", time.Hour, "")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -410,7 +427,11 @@ func grantsServeCmd(args []string) error {
 	}
 	defer overlay.Close()
 	host := overlay.Host
-	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath)})
+	priv, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+	if err != nil {
+		return fmt.Errorf("load cluster authority key: %w", err)
+	}
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL})
 	if err != nil {
 		return err
 	}

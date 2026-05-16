@@ -84,7 +84,6 @@ func createLocalCluster(configPath, name string) error {
 			capability.PermissionSubscribe,
 			capability.PermissionList,
 			capability.PermissionPublish,
-			capability.PermissionConnect,
 		},
 		ExpiresAt: time.Now().Add(365 * 24 * time.Hour),
 	}, priv)
@@ -152,7 +151,6 @@ func createLocalNamespace(configPath, name string) error {
 			capability.PermissionSubscribe,
 			capability.PermissionList,
 			capability.PermissionPublish,
-			capability.PermissionConnect,
 		},
 		ExpiresAt: time.Now().Add(365 * 24 * time.Hour),
 	}, priv)

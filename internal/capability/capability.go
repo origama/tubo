@@ -245,7 +245,7 @@ func validateMembershipScope(cap MembershipCapability, clusterID, namespaceID, s
 	if cap.SubjectPeerID != subjectPeerID {
 		return fmt.Errorf("subject peer id mismatch: got %q want %q", cap.SubjectPeerID, subjectPeerID)
 	}
-	if !hasAllPermissions(cap.Permissions, []string{PermissionSubscribe, PermissionList, PermissionPublish, PermissionConnect}) {
+	if !hasAllPermissions(cap.Permissions, []string{PermissionSubscribe, PermissionList, PermissionPublish}) {
 		return fmt.Errorf("missing required permissions")
 	}
 	return nil

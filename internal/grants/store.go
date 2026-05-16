@@ -22,22 +22,24 @@ const (
 )
 
 type Request struct {
-	ID                   string                   `json:"id"`
-	ClusterName          string                   `json:"cluster_name"`
-	ClusterID            string                   `json:"cluster_id"`
-	NamespaceID          string                   `json:"namespace_id"`
-	RequesterPeerID      string                   `json:"requester_peer_id"`
-	ServiceName          string                   `json:"service_name"`
-	ServiceID            string                   `json:"service_id"`
-	ServicePeerID        string                   `json:"service_peer_id"`
-	RequestedPermissions []string                 `json:"requested_permissions"`
-	RequestedTTLSeconds  int64                    `json:"requested_ttl_seconds,omitempty"`
-	Status               string                   `json:"status"`
-	RequestedAt          time.Time                `json:"requested_at"`
-	ExpiresAt            time.Time                `json:"expires_at"`
-	DecidedAt            time.Time                `json:"decided_at,omitempty"`
-	DenialReason         string                   `json:"denial_reason,omitempty"`
-	ServiceClaim         *capability.ServiceClaim `json:"service_claim,omitempty"`
+	ID                   string                           `json:"id"`
+	ClusterName          string                           `json:"cluster_name"`
+	ClusterID            string                           `json:"cluster_id"`
+	NamespaceID          string                           `json:"namespace_id"`
+	RequesterPeerID      string                           `json:"requester_peer_id"`
+	ServiceName          string                           `json:"service_name"`
+	ServiceID            string                           `json:"service_id"`
+	ServicePeerID        string                           `json:"service_peer_id"`
+	RequestedPermissions []string                         `json:"requested_permissions"`
+	RequestedTTLSeconds  int64                            `json:"requested_ttl_seconds,omitempty"`
+	Status               string                           `json:"status"`
+	RequestedAt          time.Time                        `json:"requested_at"`
+	ExpiresAt            time.Time                        `json:"expires_at"`
+	DecidedAt            time.Time                        `json:"decided_at,omitempty"`
+	DenialReason         string                           `json:"denial_reason,omitempty"`
+	ServiceClaim         *capability.ServiceClaim         `json:"service_claim,omitempty"`
+	MembershipCapability *capability.MembershipCapability `json:"membership_capability,omitempty"`
+	ServiceShareToken    string                           `json:"service_share_token,omitempty"`
 }
 
 type fileState struct {
@@ -150,7 +152,7 @@ func (s *Store) Get(id string) (Request, bool, error) {
 	return Request{}, false, nil
 }
 
-func (s *Store) Approve(id string, claim capability.ServiceClaim) (Request, error) {
+func (s *Store) Approve(id string, claim capability.ServiceClaim, membership *capability.MembershipCapability, serviceShareToken string) (Request, error) {
 	state, err := s.load()
 	if err != nil {
 		return Request{}, err
@@ -172,6 +174,8 @@ func (s *Store) Approve(id string, claim capability.ServiceClaim) (Request, erro
 		state.Requests[i].Status = StatusApproved
 		state.Requests[i].DecidedAt = now
 		state.Requests[i].ServiceClaim = &claim
+		state.Requests[i].MembershipCapability = membership
+		state.Requests[i].ServiceShareToken = serviceShareToken
 		if err := s.save(state); err != nil {
 			return Request{}, err
 		}

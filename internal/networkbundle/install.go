@@ -4,7 +4,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 
+	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"gopkg.in/yaml.v3"
 )
@@ -45,10 +47,44 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	clusterName := "home"
+	namespaceName := "default"
+	cluster := cfgpkg.Cluster{
+		Namespaces: map[string]cfgpkg.Namespace{
+			namespaceName: {},
+		},
+	}
+	if payload.PublicCluster != nil {
+		clusterName = payload.PublicCluster.Name
+		namespaceName = payload.PublicCluster.DefaultNamespace
+		cluster = cfgpkg.Cluster{
+			ClusterID:          payload.PublicCluster.ClusterID,
+			AuthorityPublicKey: payload.PublicCluster.AuthorityPublicKey,
+			Namespaces: map[string]cfgpkg.Namespace{
+				namespaceName: {},
+			},
+			MembershipGrant: &cfgpkg.ClusterMembershipGrant{
+				ClusterName:        payload.PublicCluster.Name,
+				ClusterID:          payload.PublicCluster.ClusterID,
+				AuthorityPublicKey: payload.PublicCluster.AuthorityPublicKey,
+				Namespace:          namespaceName,
+				Role:               "member",
+				Permissions: []string{
+					capability.PermissionSubscribe,
+					capability.PermissionList,
+					capability.PermissionPublish,
+				},
+				GrantServiceProtocol: payload.PublicCluster.GrantServiceProtocol,
+				GrantServicePeers:    append([]string(nil), payload.PublicCluster.GrantServicePeers...),
+				IssuedAt:             mustParseTime(payload.Validity.NotBefore),
+				ExpiresAt:            mustParseTime(payload.Validity.NotAfter),
+			},
+		}
+	}
 	joined := cfgpkg.Merge(existing, cfgpkg.Config{
 		CurrentOverlay:   payload.Name,
-		CurrentCluster:   "home",
-		CurrentNamespace: "default",
+		CurrentCluster:   clusterName,
+		CurrentNamespace: namespaceName,
 		Overlays: map[string]cfgpkg.Overlay{
 			payload.Name: {
 				Relays:         append([]string(nil), payload.Relays...),
@@ -57,11 +93,7 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 			},
 		},
 		Clusters: map[string]cfgpkg.Cluster{
-			"home": {
-				Namespaces: map[string]cfgpkg.Namespace{
-					"default": {},
-				},
-			},
+			clusterName: cluster,
 		},
 		Network: cfgpkg.Network{
 			PrivateKeyFile:    swarmKeyPath,
@@ -91,4 +123,12 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 		RelayPeers:     append([]string(nil), payload.Relays...),
 		BootstrapPeers: append([]string(nil), payload.Relays...),
 	}, nil
+}
+
+func mustParseTime(value string) time.Time {
+	t, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		panic(err)
+	}
+	return t.UTC()
 }

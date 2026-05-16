@@ -98,8 +98,8 @@ func authorizeServiceNamespace(cfg cfgpkg.Config, clusterName, namespace string)
 	if cap.NamespaceID != namespace && cap.NamespaceID != broadNamespaceWildcard {
 		return fmt.Errorf("membership capability for %s/%s does not authorize namespace %q", clusterName, namespace, namespace)
 	}
-	if !containsAllStrings(cap.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
-		return fmt.Errorf("membership capability for %s/%s is missing list permission", clusterName, namespace)
+	if !containsAllStrings(cap.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}) {
+		return fmt.Errorf("membership capability for %s/%s is missing discovery permissions", clusterName, namespace)
 	}
 	return nil
 }
@@ -113,6 +113,9 @@ func clusterMembershipGrantAuthorizesNamespace(cluster cfgpkg.Cluster, clusterNa
 		return false
 	}
 	if grant.Role != clusterInviteDefaultRole {
+		return false
+	}
+	if !containsAllStrings(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}) {
 		return false
 	}
 	if grant.ExpiresAt.IsZero() || time.Now().UTC().After(grant.ExpiresAt.UTC()) {

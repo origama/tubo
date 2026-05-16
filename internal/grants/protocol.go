@@ -31,21 +31,23 @@ const (
 var serviceNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 type Message struct {
-	Type                 string                   `json:"type"`
-	Version              string                   `json:"version"`
-	Token                string                   `json:"token,omitempty"`
-	ClusterID            string                   `json:"cluster_id,omitempty"`
-	NamespaceID          string                   `json:"namespace_id,omitempty"`
-	ServiceName          string                   `json:"service_name,omitempty"`
-	ServiceID            string                   `json:"service_id,omitempty"`
-	ServicePeerID        string                   `json:"service_peer_id,omitempty"`
-	RequestedPermissions []string                 `json:"requested_permissions,omitempty"`
-	RequestedTTLSeconds  int64                    `json:"requested_ttl_seconds,omitempty"`
-	RequestID            string                   `json:"request_id,omitempty"`
-	ExpiresAt            time.Time                `json:"expires_at,omitempty"`
-	Message              string                   `json:"message,omitempty"`
-	Reason               string                   `json:"reason,omitempty"`
-	ServiceClaim         *capability.ServiceClaim `json:"service_claim,omitempty"`
+	Type                 string                           `json:"type"`
+	Version              string                           `json:"version"`
+	Token                string                           `json:"token,omitempty"`
+	ClusterID            string                           `json:"cluster_id,omitempty"`
+	NamespaceID          string                           `json:"namespace_id,omitempty"`
+	ServiceName          string                           `json:"service_name,omitempty"`
+	ServiceID            string                           `json:"service_id,omitempty"`
+	ServicePeerID        string                           `json:"service_peer_id,omitempty"`
+	RequestedPermissions []string                         `json:"requested_permissions,omitempty"`
+	RequestedTTLSeconds  int64                            `json:"requested_ttl_seconds,omitempty"`
+	RequestID            string                           `json:"request_id,omitempty"`
+	ExpiresAt            time.Time                        `json:"expires_at,omitempty"`
+	Message              string                           `json:"message,omitempty"`
+	Reason               string                           `json:"reason,omitempty"`
+	ServiceClaim         *capability.ServiceClaim         `json:"service_claim,omitempty"`
+	MembershipCapability *capability.MembershipCapability `json:"membership_capability,omitempty"`
+	ServiceShareToken    string                           `json:"service_share_token,omitempty"`
 }
 
 func EncodeMessage(w io.Writer, msg Message) error {
@@ -157,7 +159,7 @@ func PendingMessage(req Request) Message {
 func ResponseForRequest(req Request) Message {
 	switch req.Status {
 	case StatusApproved:
-		return Message{Type: TypeApproved, Version: VersionV1, RequestID: req.ID, ServiceClaim: req.ServiceClaim}
+		return Message{Type: TypeApproved, Version: VersionV1, RequestID: req.ID, ServiceClaim: req.ServiceClaim, MembershipCapability: req.MembershipCapability, ServiceShareToken: req.ServiceShareToken}
 	case StatusDenied:
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: req.DenialReason}
 	case StatusExpired:

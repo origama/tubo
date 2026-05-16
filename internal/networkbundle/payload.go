@@ -45,6 +45,11 @@ func ValidatePayloadAt(payload *NetworkPayload, now time.Time) error {
 			return fmt.Errorf("invalid relay bootstrap peer %q: %w", relay, err)
 		}
 	}
+	if payload.PublicCluster != nil {
+		if err := validatePublicClusterPayload(payload.PublicCluster); err != nil {
+			return err
+		}
+	}
 	if payload.SwarmKey.Type != "libp2p-pnet" {
 		return fmt.Errorf("unsupported swarm_key.type %q", payload.SwarmKey.Type)
 	}
@@ -70,6 +75,37 @@ func ValidatePayloadAt(payload *NetworkPayload, now time.Time) error {
 	}
 	if now.After(notAfter) {
 		return errors.New("bundle validity expired")
+	}
+	return nil
+}
+
+func validatePublicClusterPayload(publicCluster *PublicClusterPayload) error {
+	if publicCluster.Name == "" {
+		return errors.New("public_cluster.name is required")
+	}
+	if publicCluster.ClusterID == "" {
+		return errors.New("public_cluster.cluster_id is required")
+	}
+	if publicCluster.AuthorityPublicKey == "" {
+		return errors.New("public_cluster.authority_public_key is required")
+	}
+	if publicCluster.DefaultNamespace == "" {
+		return errors.New("public_cluster.default_namespace is required")
+	}
+	if publicCluster.GrantServiceProtocol == "" {
+		return errors.New("public_cluster.grant_service_protocol is required")
+	}
+	if len(publicCluster.GrantServicePeers) == 0 {
+		return errors.New("public_cluster.grant_service_peers must not be empty")
+	}
+	for _, peerAddr := range publicCluster.GrantServicePeers {
+		maddr, err := multiaddr.NewMultiaddr(peerAddr)
+		if err != nil {
+			return fmt.Errorf("invalid public_cluster grant_service_peer %q: %w", peerAddr, err)
+		}
+		if _, err := peer.AddrInfoFromP2pAddr(maddr); err != nil {
+			return fmt.Errorf("invalid public_cluster grant_service_peer %q: %w", peerAddr, err)
+		}
 	}
 	return nil
 }

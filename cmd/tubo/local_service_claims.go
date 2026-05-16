@@ -237,6 +237,7 @@ type attachAuthorization struct {
 	ServicePeerID            string
 	ServiceClaimFile         string
 	MembershipCapabilityFile string
+	ServiceShareToken        string
 	MintedServiceClaim       bool
 }
 
@@ -282,7 +283,7 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 	}
 	if grantPeer != "" {
 		svc.GrantServicePeer = grantPeer
-		updatedCfg, updatedSvc, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
+		updatedCfg, updatedSvc, shareToken, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
 		if err != nil {
 			return attachAuthorization{}, err
 		}
@@ -294,7 +295,7 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 			if err != nil {
 				return attachAuthorization{}, err
 			}
-			return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile}, nil
+			return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
 		}
 		return attachAuthorization{}, fmt.Errorf("publish grant request %q is pending; publication requires an approved ServiceClaim", svc.GrantRequestID)
 	}
@@ -302,16 +303,16 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 	return attachAuthorization{}, noServicePublishGrantError(cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name)
 }
 
-func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
+func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
 	cluster := cfg.Clusters[cfg.CurrentCluster]
 	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), PrivateKeyFile: cfg.Network.PrivateKeyFile, PrivateKeyB64: cfg.Network.PrivateKeyB64, BootstrapPeers: cfg.Network.BootstrapPeers, RelayPeers: cfg.Network.RelayPeers, Autorelay: cfg.Network.Autorelay, HolePunching: cfg.Network.HolePunching, ForceReachability: cfg.Network.ForceReachability, Component: "grants-client"})
 	if err != nil {
-		return cfg, svc, err
+		return cfg, svc, "", err
 	}
 	defer overlay.Close()
 	info, err := p2p.AddrInfoFromString(svc.GrantServicePeer)
 	if err != nil {
-		return cfg, svc, err
+		return cfg, svc, "", err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -334,17 +335,18 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 		})
 	}
 	if err != nil {
-		return cfg, svc, err
+		return cfg, svc, "", err
 	}
-	if err := handleGrantClientResponse(configPath, cfg, svc, svc.GrantServicePeer, resp, servicePeerID); err != nil {
-		return cfg, svc, err
+	shareToken, err := handleGrantClientResponse(configPath, cfg, svc, svc.GrantServicePeer, resp, servicePeerID)
+	if err != nil {
+		return cfg, svc, "", err
 	}
 	updated, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
-		return cfg, svc, err
+		return cfg, svc, "", err
 	}
 	updatedSvc := updated.Clusters[updated.CurrentCluster].Namespaces[updated.CurrentNamespace].Services[updated.Service.Name]
-	return updated, updatedSvc, nil
+	return updated, updatedSvc, shareToken, nil
 }
 
 func verifyServiceClaimFile(path string, pub ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error {
@@ -428,7 +430,6 @@ func ensureServiceMembershipCapabilityFile(configPath string, cluster cfgpkg.Clu
 			capability.PermissionSubscribe,
 			capability.PermissionList,
 			capability.PermissionPublish,
-			capability.PermissionConnect,
 		},
 		ExpiresAt: time.Now().Add(365 * 24 * time.Hour),
 	}, privKey)

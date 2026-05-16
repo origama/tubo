@@ -37,6 +37,9 @@ func TestParseAndVerifyValidBundle(t *testing.T) {
 	if err := ValidatePayload(decoded); err != nil {
 		t.Fatal(err)
 	}
+	if decoded.PublicCluster == nil || decoded.PublicCluster.Name != "home" {
+		t.Fatalf("expected public cluster metadata, got %#v", decoded.PublicCluster)
+	}
 }
 
 func TestVerifyRejectsUnknownKey(t *testing.T) {
@@ -119,6 +122,14 @@ func samplePayload(notBefore, notAfter time.Time) NetworkPayload {
 			Value:    "/key/swarm/psk/1.0.0/\n/base16/\n00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\n",
 		},
 		Network: NetworkOptions{Autorelay: true, HolePunching: true, ForceReachability: "private"},
+		PublicCluster: &PublicClusterPayload{
+			Name:                 "home",
+			ClusterID:            "cluster-public-123",
+			AuthorityPublicKey:   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIEA8cMzoOQb4clMnL7m4Rrp0RzAQXXCCT40PY1DYBOd root@localhost",
+			DefaultNamespace:     "default",
+			GrantServiceProtocol: "/tubo/grants/1.0",
+			GrantServicePeers:    []string{"/dns4/grants.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"},
+		},
 		Validity: ValidityWindow{
 			NotBefore: notBefore.UTC().Format(time.RFC3339),
 			NotAfter:  notAfter.UTC().Format(time.RFC3339),

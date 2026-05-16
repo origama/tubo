@@ -581,6 +581,13 @@ func runRole(role string, args []string) error {
 		c = authz.Config
 		cluster = c.Clusters[c.CurrentCluster]
 		svc := authz.Service
+		if authz.ServiceShareToken != "" {
+			overlayLabel := c.CurrentOverlay
+			if overlayLabel == joinDefaultNetworkName {
+				overlayLabel = "public"
+			}
+			fmt.Printf("attached service %q\nscope: %s/%s/%s\nshare with a friend:\n\n  tubo connect --token %s --local 127.0.0.1:18888\n\n", c.Service.Name, overlayLabel, c.CurrentCluster, c.CurrentNamespace, authz.ServiceShareToken)
+		}
 		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: svc.ServiceSeed, ServiceName: c.Service.Name, ServiceID: svc.ServiceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: authz.MembershipCapabilityFile, ServiceClaimFile: authz.ServiceClaimFile})
 		if err != nil {
 			return err

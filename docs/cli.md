@@ -108,7 +108,7 @@ tubo connect lmstudio --local 127.0.0.1:51234 -d
 
 Se manca la config locale di default:
 
-- `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato;
+- `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato; il bundle pubblico installa anche i metadata del cluster `home/default` (cluster ID, authority public key e grant-service peers), cosi' `tubo attach`/`tubo connect` possono partire da config pulita senza un `join cluster/home` esplicito;
 - questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico;
 - in cluster/namespace mode, `attach` crea o riusa una identita' stabile per `(cluster, namespace, service)` (`service_id`, `service_seed`, `service_claim_file`) prima di avviare il runtime;
 - senza config esplicita, `attach` genera ancora un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
@@ -491,10 +491,10 @@ Note:
 
 ## Publish Grants
 
-Authority nodes can start the MVP grant protocol listener and review local requests:
+Authority nodes can start the grant protocol listener and review local requests. Per il bundle pubblico, `grants serve --public-auto-approve` usa l'authority key del cluster pubblico e approva automaticamente le richieste di publish per il flusso attach/connect semplificato:
 
 ```bash
-tubo grants serve --cluster home --namespace default
+tubo grants serve --cluster home --namespace default --public-auto-approve
 # prints direct addr plus relay addr when relay peers are configured
 tubo grants pending
 tubo grants describe gr_123

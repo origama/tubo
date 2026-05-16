@@ -2,6 +2,7 @@ package grants
 
 import (
 	"context"
+	"crypto/ed25519"
 	"fmt"
 	"time"
 
@@ -25,6 +26,10 @@ type ServerConfig struct {
 	MaxPendingRequests     int
 	MaxPendingPerRequester int
 	MaxPendingPerService   int
+	AutoApprove            bool
+	AuthorityPrivateKey    ed25519.PrivateKey
+	ClaimTTL               time.Duration
+	ServiceShareTTL        time.Duration
 }
 
 type Server struct {
@@ -106,7 +111,32 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
 	}
-	return PendingMessage(req)
+	if !s.cfg.AutoApprove {
+		return PendingMessage(req)
+	}
+	if len(s.cfg.AuthorityPrivateKey) == 0 {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: "auto-approve requires an authority private key"}
+	}
+	claimTTL := time.Duration(req.RequestedTTLSeconds) * time.Second
+	if s.cfg.ClaimTTL > 0 && claimTTL > s.cfg.ClaimTTL {
+		claimTTL = s.cfg.ClaimTTL
+	}
+	shareTTL := s.cfg.ServiceShareTTL
+	if shareTTL <= 0 {
+		shareTTL = ServiceShareDefaultTTL
+	}
+	if claimTTL > 0 && shareTTL > claimTTL {
+		shareTTL = claimTTL
+	}
+	artifacts, err := BuildApprovalArtifacts(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: err.Error()}
+	}
+	approved, err := s.cfg.Store.Approve(req.ID, artifacts.ServiceClaim, &artifacts.MembershipCapability, artifacts.ServiceShareToken)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: err.Error()}
+	}
+	return ResponseForRequest(approved)
 }
 
 func (s *Server) enforcePendingPolicy(req Request) error {

@@ -1173,6 +1173,7 @@ func TestClusterInviteGrantAuthorizesNamespaceQueries(t *testing.T) {
 					AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))),
 					Namespace:          "pinamespace",
 					Role:               clusterInviteDefaultRole,
+					Permissions:        []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish},
 					IssuedAt:           time.Now().Add(-time.Minute),
 					ExpiresAt:          time.Now().Add(time.Hour),
 				},
@@ -1466,7 +1467,7 @@ func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Approve(svc.GrantRequestID, claim); err != nil {
+	if _, err := store.Approve(svc.GrantRequestID, claim, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	out, err = capture(func() error {
@@ -1692,7 +1693,7 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Approve(svc.GrantRequestID, claim); err != nil {
+	if _, err := store.Approve(svc.GrantRequestID, claim, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	authz, err := resolveAttachAuthorization(configPath, reloaded)

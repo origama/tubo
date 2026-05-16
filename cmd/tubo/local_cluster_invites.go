@@ -423,7 +423,6 @@ func invitationGrantForPermission(permission string) (clusterInviteGrant, error)
 				"subscribe",
 				"list",
 				"publish",
-				"connect",
 			},
 		}, nil
 	case clusterInviteGrantRequesterRole:
@@ -599,7 +598,7 @@ func parseAndVerifyClusterInviteToken(token string) (clusterInvitePayload, error
 func validateClusterInviteGrant(payload clusterInvitePayload) error {
 	switch payload.Grant.Role {
 	case clusterInviteDefaultRole:
-		if !stringSliceEqualSet(payload.Grant.Permissions, []string{"subscribe", "list", "publish", "connect"}) {
+		if !stringSliceEqualSet(payload.Grant.Permissions, []string{"subscribe", "list", "publish"}) {
 			return errors.New("cluster invite member grant has invalid permissions")
 		}
 	case clusterInviteGrantRequesterRole:
