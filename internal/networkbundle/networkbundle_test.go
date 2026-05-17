@@ -125,10 +125,10 @@ func samplePayload(notBefore, notAfter time.Time) NetworkPayload {
 		PublicCluster: &PublicClusterPayload{
 			Name:                 "home",
 			ClusterID:            "cluster-public-123",
-			AuthorityPublicKey:   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM1ipCV7A9VUR4/Tyrb4S1fuoXIjJULgh9UZLfrck2JK root@localhost",
+			AuthorityPublicKey:   "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEMmu4uNA2C/KKW1VX/1Cr/PSasaa8bvi9ExjBhNqltQ bettersafethansorry@tubo.click",
 			DefaultNamespace:     "default",
 			GrantServiceProtocol: "/tubo/grants/1.0",
-			GrantServicePeers:    []string{"/dns4/grants.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"},
+			GrantServicePeers:    []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1/p2p-circuit/p2p/12D3KooWGff8e1gxWh4F6C1ePp69bJ4bPnedkEAfRUJdv4KtD2PN"},
 		},
 		Validity: ValidityWindow{
 			NotBefore: notBefore.UTC().Format(time.RFC3339),

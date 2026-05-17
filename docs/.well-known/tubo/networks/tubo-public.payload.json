@@ -19,11 +19,11 @@
   "public_cluster": {
     "name": "home",
     "cluster_id": "cluster-public-2026",
-    "authority_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM1ipCV7A9VUR4/Tyrb4S1fuoXIjJULgh9UZLfrck2JK root@localhost",
+    "authority_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEMmu4uNA2C/KKW1VX/1Cr/PSasaa8bvi9ExjBhNqltQ bettersafethansorry@tubo.click",
     "default_namespace": "default",
     "grant_service_protocol": "/tubo/grants/1.0",
     "grant_service_peers": [
-      "/dns4/grants.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1"
+      "/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1/p2p-circuit/p2p/12D3KooWGff8e1gxWh4F6C1ePp69bJ4bPnedkEAfRUJdv4KtD2PN"
     ]
   },
   "validity": {
