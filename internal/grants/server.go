@@ -200,7 +200,8 @@ func Query(ctx context.Context, h host.Host, info peer.AddrInfo, msg Message) (M
 	if err := h.Connect(ctx, info); err != nil {
 		return Message{}, err
 	}
-	stream, err := h.NewStream(ctx, info.ID, ProtocolID)
+	streamCtx := network.WithAllowLimitedConn(ctx, "grant protocol stream")
+	stream, err := h.NewStream(streamCtx, info.ID, ProtocolID)
 	if err != nil {
 		return Message{}, err
 	}
