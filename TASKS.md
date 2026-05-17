@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-16 11:58 UTC
+> **Last updated:** 2026-05-17 10:10 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -209,7 +209,8 @@ The following packages have no `_test.go` files yet:
 
 8. **Issue #23 — release workflow v1 automation**: script di bump/tag/release per rendere meccaniche le prossime release (`release`, `planning`)
 9. **Issue #24 — shared public relay security/capacity model**: documentare bene security, abuse resistance e sizing per relay pubblici su swarm condivisa (`docs`, `security`, `area:relay`)
-10. **Versioning/release maintenance**: keep release workflow/docs in sync with the current `v0.5.1` state
+10. **Versioning/release maintenance**: keep release workflow/docs in sync with the current `v0.6.0` state
+11. **Release v0.6.0**: ✅ Done on `main` (tag prep, changelog/version bump, `go test ./...`, `SMOKE_FORCE_BUILD=1 ./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, and `tests/e2e/run.sh 001-default-cluster-default-namespace` all passed)
 
 ### Keep on radar (not yet mapped to an issue here)
 

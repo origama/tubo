@@ -21,6 +21,34 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.6.0] - 2026-05-17
+
+Scoped discovery/grants and public quick-share release.
+
+### Added
+- Mandatory authority-signed `ServiceClaim` validation for Discovery V2 service publication, plus stable attach-side scoped service identities and claim persistence.
+- Authority-side publish-grant workflow: `/tubo/grants/1.0`, persistent grant request store, `tubo grants serve`, and authority CLI for `pending`, `describe`, `approve`, `deny`, and `history`.
+- Client-side publish-grant request flow integrated into `tubo attach`, including saved request metadata, polling, approved-claim persistence, and service-share token output.
+- Signed public bundle metadata for `home/default`, including cluster authority key and grant-service relay metadata used by clean-config public attach/connect.
+- Deterministic end-to-end harness under `tests/e2e/` covering the default-cluster/default-namespace quick-share flow.
+
+### Changed
+- Public attach/connect UX is now zero-config on the default public bundle: `tubo attach http://... --name ...` bootstraps the public overlay, obtains a publish grant, and prints a copyable `tubo connect --token ...` command.
+- `tubo connect --token ...` now imports discovery context from the service-share token so clean clients can connect without manual `join cluster/home` setup.
+- Cluster invite/grant-requester metadata, membership scopes, and grant-service addressing were narrowed and hardened for the public flow.
+- The public grant service is now expected to be relay-aware/non-discoverable, with clients dialing it through configured relay/circuit metadata instead of Discovery V2.
+
+### Fixed
+- Relayed grant protocol streams now open correctly with limited relay connections, fixing live public `attach` grant requests over `/p2p-circuit`.
+- Public bundle trust/key metadata and live grant-service relay address were aligned so GitHub Pages onboarding assets match the deployed public infrastructure.
+- Fresh-config Bob connect is now covered end-to-end, including discovery-context import and signed public swarm-key bootstrap.
+
+### Compatibility
+- Product version: v0.6.0
+- Protocol version: 1.1
+- Protocol compatibility change: none; this is a backward-compatible feature release on top of protocol 1.1
+- Operator action required: update public relay/grant-service/client binaries and public bundle assets to get scoped publish grants, ServiceClaim-enforced discovery, and zero-config public quick-share UX
+
 ## [v0.5.1] - 2026-05-07
 
 CI/smoke hotfix for the signed public onboarding release.
