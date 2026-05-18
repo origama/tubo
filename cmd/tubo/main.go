@@ -1742,7 +1742,10 @@ func connectCmd(args []string) error {
 		if err := ensureShareInviteAvailable(filepath.Dir(*configPath), payload); err != nil {
 			return err
 		}
-		cfg = importServiceShareDiscoveryContext(cfg, payload)
+		cfg, err = importServiceShareDiscoveryContext(cfg, payload)
+		if err != nil {
+			return err
+		}
 		if err := markShareInviteUsed(filepath.Dir(*configPath), payload); err != nil {
 			return err
 		}

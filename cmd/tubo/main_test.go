@@ -1286,6 +1286,21 @@ func TestServiceShareTokenAndConnectSetup(t *testing.T) {
 	if len(payload.Grant.Permissions) != 1 || payload.Grant.Permissions[0] != capability.PermissionConnect {
 		t.Fatalf("service share is not connect-only: %#v", payload.Grant.Permissions)
 	}
+	_, roguePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rogue, err := grantspkg.BuildServiceShareArtifacts(roguePriv, "home", payload.ClusterID, payload.Namespace, payload.ServiceName, payload.TargetServiceID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := importServiceShareDiscoveryContext(cfg, rogue.Payload); err == nil || !strings.Contains(err.Error(), "issuer mismatch") {
+		t.Fatalf("expected issuer mismatch, got %v", err)
+	}
 	if connectName, serviceID, scope, err := connectServiceShareSetup("", token, "", ""); err != nil {
 		t.Fatal(err)
 	} else if connectName != "myapi" || serviceID != payload.TargetServiceID || scope.Cluster != "home" || scope.Namespace != "default" {

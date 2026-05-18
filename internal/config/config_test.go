@@ -250,6 +250,10 @@ func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T)
 	if runtime.ClusterID != "cluster-123" || runtime.NamespaceID != "tenant-a" {
 		t.Fatalf("runtime = %#v", runtime)
 	}
+	issuer, ok := cfg.ScopeIssuer("home", "tenant-a")
+	if !ok || issuer.AuthorityPublicKey != "ssh-ed25519 AAAA" || issuer.ClusterName != "home" || issuer.NamespaceName != "tenant-a" {
+		t.Fatalf("issuer = %#v ok=%t", issuer, ok)
+	}
 }
 
 func TestDiscoveryRuntimeWithoutClusterIdentityReturnsZeroValue(t *testing.T) {

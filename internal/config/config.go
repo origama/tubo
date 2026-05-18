@@ -165,6 +165,20 @@ func (d *Duration) UnmarshalYAML(v *yaml.Node) error {
 	return nil
 }
 
+type ScopeIssuer struct {
+	ClusterName        string
+	NamespaceName      string
+	AuthorityPublicKey string
+}
+
+func (c Config) ScopeIssuer(clusterName, namespaceName string) (ScopeIssuer, bool) {
+	cluster, ok := c.Clusters[clusterName]
+	if !ok || cluster.AuthorityPublicKey == "" {
+		return ScopeIssuer{}, false
+	}
+	return ScopeIssuer{ClusterName: clusterName, NamespaceName: namespaceName, AuthorityPublicKey: cluster.AuthorityPublicKey}, true
+}
+
 func (c Config) DiscoveryRuntime() DiscoveryRuntime {
 	cluster := c.Clusters[c.CurrentCluster]
 	if c.CurrentCluster != "" && c.CurrentNamespace != "" && cluster.ClusterID != "" && cluster.AuthorityPublicKey != "" && (cluster.MembershipCapabilityFile != "" || cluster.MembershipGrant != nil) {

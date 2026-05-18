@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	serviceShareTokenPrefix    = grantspkg.ServiceShareTokenPrefix
+	serviceShareTokenPrefix     = grantspkg.ServiceShareTokenPrefix
 	shareInviteRegistryFileName = "share-invite-registry.json"
 )
 
@@ -291,13 +291,18 @@ func markShareInviteUsed(configDir string, payload serviceSharePayload) error {
 	return saveShareInviteRegistry(configDir, registry)
 }
 
-func importServiceShareDiscoveryContext(cfg cfgpkg.Config, payload serviceSharePayload) cfgpkg.Config {
+func importServiceShareDiscoveryContext(cfg cfgpkg.Config, payload serviceSharePayload) (cfgpkg.Config, error) {
 	if cfg.Clusters == nil {
 		cfg.Clusters = make(map[string]cfgpkg.Cluster)
 	}
+	if issuer, ok := cfg.ScopeIssuer(payload.ClusterName, payload.Namespace); ok && issuer.AuthorityPublicKey != payload.AuthorityPublicKey {
+		return cfgpkg.Config{}, fmt.Errorf("share invite issuer mismatch for scope %s/%s: got %q want %q", payload.ClusterName, payload.Namespace, payload.AuthorityPublicKey, issuer.AuthorityPublicKey)
+	}
 	cluster := cfg.Clusters[payload.ClusterName]
 	cluster.ClusterID = payload.ClusterID
-	cluster.AuthorityPublicKey = payload.AuthorityPublicKey
+	if cluster.AuthorityPublicKey == "" {
+		cluster.AuthorityPublicKey = payload.AuthorityPublicKey
+	}
 	if cluster.Namespaces == nil {
 		cluster.Namespaces = make(map[string]cfgpkg.Namespace)
 	}
@@ -305,7 +310,7 @@ func importServiceShareDiscoveryContext(cfg cfgpkg.Config, payload serviceShareP
 	cluster.MembershipGrant = &cfgpkg.ClusterMembershipGrant{
 		ClusterName:        payload.ClusterName,
 		ClusterID:          payload.ClusterID,
-		AuthorityPublicKey: payload.AuthorityPublicKey,
+		AuthorityPublicKey: cluster.AuthorityPublicKey,
 		Namespace:          payload.Namespace,
 		Role:               "member",
 		Permissions: []string{
@@ -319,5 +324,5 @@ func importServiceShareDiscoveryContext(cfg cfgpkg.Config, payload serviceShareP
 	cfg.Clusters[payload.ClusterName] = cluster
 	cfg.CurrentCluster = payload.ClusterName
 	cfg.CurrentNamespace = payload.Namespace
-	return cfg
+	return cfg, nil
 }

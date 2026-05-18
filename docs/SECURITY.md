@@ -34,6 +34,7 @@ Equivalent rule:
 ```text
 Local trust roots decide whether the public bundle is accepted.
 Public tokens do not create trust roots by themselves.
+Public invites cannot redefine the issuer for an already pinned scope.
 ```
 
 ### 2.2 Public relays are transport, not authority
