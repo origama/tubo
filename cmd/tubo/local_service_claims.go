@@ -366,6 +366,8 @@ type attachAuthorization struct {
 	ServicePublishLeaseFile  string
 	MembershipCapabilityFile string
 	ServiceShareToken        string
+	ShareRecoveryHint        string
+	PublishLeaseReused       bool
 	MintedServiceClaim       bool
 }
 
@@ -393,22 +395,15 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 		if err != nil {
 			return attachAuthorization{}, err
 		}
+		shareHint := ""
 		grantPeer := svc.GrantServicePeer
 		if grantPeer == "" {
 			grantPeer = clusterGrantServicePeer(cluster)
 		}
-		if grantPeer != "" {
-			updatedCfg, updatedSvc, refreshedShareToken, refreshErr := renewAttachPublishAuthorization(configPath, cfg, svc, servicePeerID.String())
-			if refreshErr == nil {
-				cfg = updatedCfg
-				svc = updatedSvc
-				shareToken = refreshedShareToken
-				cluster = cfg.Clusters[cfg.CurrentCluster]
-			} else if shareToken == "" {
-				return attachAuthorization{}, refreshErr
-			}
+		if shareToken == "" {
+			shareHint = attachShareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
 		}
-		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
+		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken, ShareRecoveryHint: shareHint, PublishLeaseReused: true}, nil
 	} else if errors.Is(err, os.ErrNotExist) {
 		if claimErr := verifyServiceClaimFile(svc.ServiceClaimFile, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID.String()); claimErr == nil {
 			membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
@@ -631,22 +626,40 @@ func buildAttachServiceShareToken(cluster cfgpkg.Cluster, clusterName, namespace
 	return grantspkg.BuildServiceShareToken(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL)
 }
 
-func printAttachShareHint(cfg cfgpkg.Config, svc cfgpkg.NamespaceService, token string) {
+func printAttachShareHint(cfg cfgpkg.Config, authz attachAuthorization) {
 	overlayLabel := cfg.CurrentOverlay
 	if overlayLabel == joinDefaultNetworkName {
 		overlayLabel = "public"
 	}
 	fmt.Printf("attached service %q\n", cfg.Service.Name)
-	if svc.ServiceID != "" {
-		fmt.Printf("service id: %s\n", svc.ServiceID)
+	if authz.Service.ServiceID != "" {
+		fmt.Printf("service id: %s\n", authz.Service.ServiceID)
 	}
 	fmt.Printf("scope: %s/%s/%s\n", overlayLabel, cfg.CurrentCluster, cfg.CurrentNamespace)
-	if strings.TrimSpace(token) != "" {
-		fmt.Printf("share:\n  tubo connect --token %s --local 127.0.0.1:18888\n\n", token)
+	if authz.PublishLeaseReused {
+		fmt.Printf("publish lease: reused\n")
+	}
+	if strings.TrimSpace(authz.ServiceShareToken) != "" {
+		fmt.Printf("share:\n  tubo connect --token %s --local 127.0.0.1:18888\n\n", authz.ServiceShareToken)
+		return
+	}
+	if strings.TrimSpace(authz.ShareRecoveryHint) != "" {
+		fmt.Printf("share: unavailable locally (no authority key available to sign a share invite)\n")
+		fmt.Printf("hint: %s\n\n", authz.ShareRecoveryHint)
 		return
 	}
 	fmt.Printf("share: unavailable (no authority key available to sign a share invite)\n")
 	fmt.Printf("hint: run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token\n\n", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace)
+}
+
+func attachShareRecoveryHint(serviceName, clusterName, namespaceName, grantPeer, grantRequestID string) string {
+	if strings.TrimSpace(grantPeer) == "" {
+		return fmt.Sprintf("run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token", serviceName, clusterName, namespaceName)
+	}
+	if strings.TrimSpace(grantRequestID) != "" {
+		return fmt.Sprintf("reprint the token with `tubo grants request service/%s --poll --peer %s --cluster %s --namespace %s` (request %s)", serviceName, grantPeer, clusterName, namespaceName, grantRequestID)
+	}
+	return fmt.Sprintf("request or poll the grant with `tubo grants request service/%s --peer %s --cluster %s --namespace %s`", serviceName, grantPeer, clusterName, namespaceName)
 }
 
 func noServicePublishGrantError(clusterName, namespaceName, serviceName string) error {

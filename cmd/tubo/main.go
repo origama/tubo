@@ -584,7 +584,7 @@ func runRole(role string, args []string) error {
 		c = authz.Config
 		cluster = c.Clusters[c.CurrentCluster]
 		svc := authz.Service
-		printAttachShareHint(c, svc, authz.ServiceShareToken)
+		printAttachShareHint(c, authz)
 		startAttachPublishLeaseRenewal(ctx, configPath, c, svc, authz.ServicePeerID)
 		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: svc.ServiceSeed, ServiceName: c.Service.Name, ServiceID: svc.ServiceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: authz.MembershipCapabilityFile, ServiceClaimFile: authz.ServiceClaimFile, ServicePublishLeaseFile: authz.ServicePublishLeaseFile})
 		if err != nil {
@@ -1071,7 +1071,7 @@ func detachRoleCommand(commandName, role string, args []string) error {
 		}
 		cfg = authz.Config
 		serviceID = authz.Service.ServiceID
-		printAttachShareHint(cfg, authz.Service, authz.ServiceShareToken)
+		printAttachShareHint(cfg, authz)
 	}
 	spec, err := buildDetachedSpec(commandName, cfg, args)
 	if err != nil {

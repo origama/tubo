@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-18 21:25 UTC
+> **Last updated:** 2026-05-18 21:40 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -195,6 +195,7 @@ The following packages have no `_test.go` files yet:
 
 1. **Issue #95 — Publish Grant epic review/merge prep**: subissue #96–#107 implementate su branch; prossimo step review finale PR/merge (`security`, `area:service`, `area:cli`, `prio:high`)
 2. **Issue #129 — expired approved grants should not block reattach**: ✅ Done on `0.7.0.b0`; grant store now expires approved grants using their effective claim/lease expiry, collision checks ignore stale approved records, and tests cover expired vs active approved grants plus the CLI request path (`security`, `area:service`, `area:cli`, `prio:high`)
+3. **Issue #130 — attach restart loses service share token UX after grant approval**: ✅ Done on `0.7.0.b0`; `attach` now makes publish-lease reuse explicit and, when grant metadata is present but no authority key is available, prints a concrete `tubo grants request service/... --poll --peer ...` recovery hint instead of the generic authority-only message (`security`, `area:service`, `area:cli`, `prio:high`)
 3. **Issue #119 — attach publish lease renewal / reprint**: ✅ Done on `0.7.0.b0`; attach rinnova il publish lease quando disponibile, re-stampa token validi, e i percorsi e2e `001-default-cluster-default-namespace`, `public_attach_reprint_share_token`, e `public_revoke_invite` sono verdi dopo il fix del seed/config Bob per gli scenari manual-overlay (`security`, `area:service`, `area:cli`, `prio:high`)
 2. **Issue #12 / C.36 — repeatable performance baselines**: continuare a salvare benchmark confrontabili, soprattutto sul bench Linode (`performance`, `area:testbench`, `area:linode`)
 3. **Issue #11 / C.25 — stable CI coverage for NAT/relay stress**: promuovere gli stress test a coverage stabile dopo gli ultimi fix runtime (`test`, `area:testbench`)

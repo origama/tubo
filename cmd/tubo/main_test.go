@@ -1816,6 +1816,88 @@ func TestResolveAttachAuthorizationAcceptsExistingClaimWithoutAuthority(t *testi
 	}
 }
 
+func TestResolveAttachAuthorizationReusedLeaseReportsGrantRecoveryHint(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	leaseAuthz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = leaseAuthz.Config
+	svc = leaseAuthz.Service
+	grantHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-restart-hint")
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantPeer := p2p.PeerAddrs(grantHost)[0]
+	grantHost.Close()
+	svc.GrantRequestID = "gr_reprint"
+	svc.GrantServicePeer = grantPeer
+	cluster.AuthorityPrivateKeyFile = ""
+	cluster.Namespaces["default"] = cfgpkg.Namespace{MembershipCapabilityFile: cluster.Namespaces["default"].MembershipCapabilityFile, Services: map[string]cfgpkg.NamespaceService{"myapi": svc}}
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Service.Name = "myapi"
+	reloaded.Service.Target = "http://127.0.0.1:8080"
+	authz, err := resolveAttachAuthorization(configPath, reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authz.PublishLeaseReused {
+		t.Fatalf("expected reused publish lease, got %#v", authz)
+	}
+	if authz.ServiceShareToken != "" {
+		t.Fatalf("expected no local token without authority key, got %q", authz.ServiceShareToken)
+	}
+	if !strings.Contains(authz.ShareRecoveryHint, "tubo grants request service/myapi --poll --peer") || !strings.Contains(authz.ShareRecoveryHint, "gr_reprint") {
+		t.Fatalf("unexpected recovery hint: %q", authz.ShareRecoveryHint)
+	}
+	out, err := capture(func() error {
+		printAttachShareHint(authz.Config, authz)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "publish lease: reused") || !strings.Contains(out, "tubo grants request service/myapi --poll --peer") {
+		t.Fatalf("unexpected attach output: %s", out)
+	}
+}
+
+func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Service: cfgpkg.Service{Name: "myapi"}}
+	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, ServiceShareToken: "tubo-service-share-v1.test-token"}
+	out, err := capture(func() error {
+		printAttachShareHint(cfg, authz)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "tubo connect --token tubo-service-share-v1.test-token") {
+		t.Fatalf("unexpected attach token output: %s", out)
+	}
+}
+
 func TestResolveAttachAuthorizationGeneratesShareTokenWithAuthorityKey(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
