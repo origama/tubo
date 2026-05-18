@@ -23,6 +23,7 @@ import (
 	iversion "github.com/origama/tubo/internal/version"
 	"gopkg.in/yaml.v3"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -583,7 +584,8 @@ func runRole(role string, args []string) error {
 		c = authz.Config
 		cluster = c.Clusters[c.CurrentCluster]
 		svc := authz.Service
-		printAttachShareHint(c, authz.ServiceShareToken)
+		printAttachShareHint(c, svc, authz.ServiceShareToken)
+		startAttachPublishLeaseRenewal(ctx, configPath, c, svc, authz.ServicePeerID)
 		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: svc.ServiceSeed, ServiceName: c.Service.Name, ServiceID: svc.ServiceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: authz.MembershipCapabilityFile, ServiceClaimFile: authz.ServiceClaimFile, ServicePublishLeaseFile: authz.ServicePublishLeaseFile})
 		if err != nil {
 			return err
@@ -605,12 +607,66 @@ func runRole(role string, args []string) error {
 	return nil
 }
 
+func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) {
+	if strings.TrimSpace(svc.ServicePublishLeaseFile) == "" {
+		return
+	}
+	go func() {
+		backoff := 5 * time.Second
+		for {
+			lease, err := readPublishLeaseFile(svc.ServicePublishLeaseFile)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("publish lease renewal: read failed: %v", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				continue
+			}
+			renewBefore := attachPublishLeaseRenewBefore(time.Until(lease.ExpiresAt.UTC()))
+			wait := time.Until(lease.ExpiresAt.UTC().Add(-renewBefore))
+			if wait > 0 {
+				timer := time.NewTimer(wait)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+			}
+			nextCfg, nextSvc, shareToken, err := renewAttachPublishAuthorization(configPath, cfg, svc, servicePeerID)
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				log.Printf("publish lease renewal failed: %v", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(backoff):
+				}
+				continue
+			}
+			cfg = nextCfg
+			svc = nextSvc
+			if shareToken != "" {
+				log.Printf("share invite refreshed for service %q", cfg.Service.Name)
+			}
+		}
+	}()
+}
+
 type detachedProcessState struct {
 	ID        string `json:"id"`
 	Kind      string `json:"kind"`
 	Command   string `json:"command"`
 	Name      string `json:"name"`
 	Service   string `json:"service,omitempty"`
+	ServiceID string `json:"service_id,omitempty"`
 	Local     string `json:"local,omitempty"`
 	Target    string `json:"target,omitempty"`
 	PID       int    `json:"pid"`
@@ -1007,17 +1063,22 @@ func detachRoleCommand(commandName, role string, args []string) error {
 	if err != nil {
 		return err
 	}
+	serviceID := ""
 	if commandName == "attach" {
 		authz, err := resolveAttachAuthorization(configPath, cfg)
 		if err != nil {
 			return err
 		}
 		cfg = authz.Config
-		printAttachShareHint(cfg, authz.ServiceShareToken)
+		serviceID = authz.Service.ServiceID
+		printAttachShareHint(cfg, authz.Service, authz.ServiceShareToken)
 	}
 	spec, err := buildDetachedSpec(commandName, cfg, args)
 	if err != nil {
 		return err
+	}
+	if serviceID != "" {
+		spec.State.ServiceID = serviceID
 	}
 	if err := os.MkdirAll(filepath.Dir(spec.State.StateFile), 0700); err != nil {
 		return err
@@ -1293,6 +1354,9 @@ func printDetachedSummary(commandName string, state detachedProcessState) {
 	switch commandName {
 	case "attach":
 		fmt.Printf("attached service %q\n", state.Service)
+		if state.ServiceID != "" {
+			fmt.Printf("service id: %s\n", state.ServiceID)
+		}
 	case "gateway":
 		fmt.Println("gateway running")
 	case "relay":

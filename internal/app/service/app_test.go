@@ -16,7 +16,9 @@ import (
 	capability "github.com/origama/tubo/internal/capability"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -72,6 +74,50 @@ func TestHasRelayReservationUsesTrackedExpiry(t *testing.T) {
 	}
 }
 
+func writeTestPublishLease(t *testing.T, path string, authorityPriv ed25519.PrivateKey, clusterID, namespaceID, serviceName, serviceSeed string, expiresAt time.Time) string {
+	t.Helper()
+	owner, err := serviceidentity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{
+		ClusterID:        clusterID,
+		NamespaceID:      namespaceID,
+		ServiceID:        owner.ServiceID,
+		ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey),
+		PublisherPeerID:  servicePeerID.String(),
+		RequestedCapabilities: []string{
+			capability.PermissionAttach,
+			capability.PermissionAnnounce,
+			capability.PermissionShareMint,
+		},
+		Nonce: "lease-test-nonce",
+	}, owner.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildApprovalArtifacts(authorityPriv, "home", clusterID, namespaceID, serviceName, owner.ServiceID, servicePeerID.String(), time.Hour, time.Hour, req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease := artifacts.PublishLease
+	if !expiresAt.IsZero() {
+		lease.ExpiresAt = expiresAt
+	}
+	b, err := json.MarshalIndent(lease, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return owner.ServiceID
+}
+
 func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -111,7 +157,9 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
-	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath})
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,5 +195,45 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	}
 	if resp.Metadata.ServedByRole != "attach" || resp.Service == nil || resp.Service.Name != "myapi" {
 		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func TestServiceDiscoveryQuerySuspendsWithoutValidPublishLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seed := "service-query-seed-expired"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Now().Add(-time.Minute))
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	if _, _, ok := app.currentAnnouncementV2(); ok {
+		t.Fatal("expected suspended announcement")
 	}
 }

@@ -209,7 +209,7 @@ func (a *App) Start(ctx context.Context) error {
 	go a.maintainRelayReservations(ctx)
 	if a.discoveryMode == discovery.ModeNamespaceV2 {
 		if !a.publishCurrentAnnouncementV2(ctx) {
-			log.Printf("initial announcement deferred: relay reservation not ready yet")
+			log.Printf("initial announcement deferred: publish lease unavailable or relay reservation not ready yet")
 		}
 		go a.runAnnouncementLoopV2(ctx)
 	} else {
@@ -332,13 +332,13 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.Annou
 	if capBytes, err := a.loadMembershipCapabilityBytes(); err == nil && len(capBytes) > 0 {
 		payload.MembershipCapability = capBytes
 	}
-	if leaseBytes, lease, err := a.loadPublishLeaseBytes(); err == nil && len(leaseBytes) > 0 {
-		payload.PublishLease = leaseBytes
-		payload.ServicePublicKey = lease.ServicePublicKey
-		if claimBytes, err := json.Marshal(lease.ServiceClaim); err == nil {
-			payload.ServiceClaim = claimBytes
-		}
-	} else if claimBytes, err := a.loadServiceClaimBytes(); err == nil && len(claimBytes) > 0 {
+	leaseBytes, lease, err := a.loadPublishLeaseBytes()
+	if err != nil || len(leaseBytes) == 0 {
+		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
+	}
+	payload.PublishLease = leaseBytes
+	payload.ServicePublicKey = lease.ServicePublicKey
+	if claimBytes, err := json.Marshal(lease.ServiceClaim); err == nil {
 		payload.ServiceClaim = claimBytes
 	}
 	ann, err := discovery.NewAnnouncementV2(a.discoveryClusterID(), a.discoveryNamespaceID(), a.host.ID(), a.announcementTTL, payload)
@@ -376,7 +376,7 @@ func (a *App) runAnnouncementLoopV2(ctx context.Context) {
 		case <-ticker.C:
 			ann, payload, ok := a.currentAnnouncementV2()
 			if !ok {
-				log.Printf("heartbeat skipped: service announcement not ready yet")
+				log.Printf("heartbeat skipped: publish lease unavailable or expired; service remains running but is not advertised")
 				continue
 			}
 			if err := a.publisher.PublishV2(ctx, ann); err != nil {

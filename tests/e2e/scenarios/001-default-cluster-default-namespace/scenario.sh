@@ -129,6 +129,11 @@ share_output="$(exec_actor alice sh -lc "cd /work && tubo share service/${SERVIC
 share_token="$(printf '%s\n' "$share_output" | awk '/tubo-share-invite-v1\./ {print $NF; exit}')"
 [[ -n "$share_token" ]] || fail "failed to extract share invite token"
 
+mkdir -p "$(actor_home bob)/config/tubo" "$(actor_home bob)/clusters"
+cp "$(actor_home alice)/config.yaml" "$(actor_home bob)/config/tubo/config.yaml"
+rm -rf "$(actor_home bob)/clusters/home"
+cp -a "$(actor_home alice)/clusters/home" "$(actor_home bob)/clusters/"
+
 exec_actor_bg bob sh -lc "cd /work && exec tubo connect --token '$share_token' --local 127.0.0.1:${BOB_PORT} > /work/logs/bob-connect.out 2>&1"
 
 response=""

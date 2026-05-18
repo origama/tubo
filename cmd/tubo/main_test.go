@@ -1840,11 +1840,19 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: cluster.ClusterID, NamespaceID: "default", ServiceID: svc.ServiceID, SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	owner, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Approve(svc.GrantRequestID, claim, nil, nil, ""); err != nil {
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: cluster.ClusterID, NamespaceID: "default", ServiceID: svc.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey), PublisherPeerID: servicePeerID.String(), RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: "grant-route-approved"}, owner.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildApprovalArtifacts(authorityPriv, "home", cluster.ClusterID, "default", "myapi", svc.ServiceID, servicePeerID.String(), time.Hour, time.Hour, leaseReq.RequestedCapabilities, leaseReq.ServicePublicKey, leaseReq.Nonce, leaseReq.ServiceOwnerSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Approve(svc.GrantRequestID, artifacts.ServiceClaim, &artifacts.PublishLease, &artifacts.MembershipCapability, artifacts.ServiceShareToken); err != nil {
 		t.Fatal(err)
 	}
 	authz, err := resolveAttachAuthorization(configPath, reloaded)

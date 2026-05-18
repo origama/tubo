@@ -306,7 +306,7 @@ func mintLocalServicePublishLease(cluster cfgpkg.Cluster, clusterName, namespace
 	if err != nil {
 		return err
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), 365*24*time.Hour, grantspkg.ServiceShareDefaultTTL, req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), 365*24*time.Hour, attachPublishLeaseTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return err
 	}
@@ -317,6 +317,45 @@ func mintLocalServicePublishLease(cluster cfgpkg.Cluster, clusterName, namespace
 		return err
 	}
 	return nil
+}
+
+func attachPublishLeaseTTL() time.Duration {
+	if v := strings.TrimSpace(os.Getenv("TUBO_PUBLISH_LEASE_TTL")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	return grantspkg.ServiceShareDefaultTTL
+}
+
+func attachPublishLeaseRenewBefore(ttl time.Duration) time.Duration {
+	if v := strings.TrimSpace(os.Getenv("TUBO_PUBLISH_LEASE_RENEW_BEFORE")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+	}
+	if ttl <= 0 {
+		return 5 * time.Minute
+	}
+	before := ttl / 6
+	if ttl >= 30*time.Minute {
+		if before < 5*time.Minute {
+			before = 5 * time.Minute
+		}
+		if before > 10*time.Minute {
+			before = 10 * time.Minute
+		}
+	}
+	if before < time.Second {
+		before = time.Second
+	}
+	if before >= ttl {
+		before = ttl / 2
+	}
+	if before < time.Second {
+		before = time.Second
+	}
+	return before
 }
 
 type attachAuthorization struct {
@@ -354,6 +393,21 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 		if err != nil {
 			return attachAuthorization{}, err
 		}
+		grantPeer := svc.GrantServicePeer
+		if grantPeer == "" {
+			grantPeer = clusterGrantServicePeer(cluster)
+		}
+		if grantPeer != "" {
+			updatedCfg, updatedSvc, refreshedShareToken, refreshErr := renewAttachPublishAuthorization(configPath, cfg, svc, servicePeerID.String())
+			if refreshErr == nil {
+				cfg = updatedCfg
+				svc = updatedSvc
+				shareToken = refreshedShareToken
+				cluster = cfg.Clusters[cfg.CurrentCluster]
+			} else if shareToken == "" {
+				return attachAuthorization{}, refreshErr
+			}
+		}
 		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
 	} else if errors.Is(err, os.ErrNotExist) {
 		if claimErr := verifyServiceClaimFile(svc.ServiceClaimFile, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID.String()); claimErr == nil {
@@ -364,6 +418,21 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 			shareToken, err := buildAttachServiceShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
 			if err != nil {
 				return attachAuthorization{}, err
+			}
+			grantPeer := svc.GrantServicePeer
+			if grantPeer == "" {
+				grantPeer = clusterGrantServicePeer(cluster)
+			}
+			if grantPeer != "" {
+				updatedCfg, updatedSvc, refreshedShareToken, refreshErr := renewAttachPublishAuthorization(configPath, cfg, svc, servicePeerID.String())
+				if refreshErr == nil {
+					cfg = updatedCfg
+					svc = updatedSvc
+					shareToken = refreshedShareToken
+					cluster = cfg.Clusters[cfg.CurrentCluster]
+				} else if shareToken == "" {
+					return attachAuthorization{}, refreshErr
+				}
 			}
 			return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
 		} else if !errors.Is(claimErr, os.ErrNotExist) {
@@ -449,7 +518,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 			ServicePeerID:         servicePeerID,
 			RequestNonce:          leaseReq.Nonce,
 			RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
-			RequestedTTLSeconds:   int64((30 * 24 * time.Hour).Seconds()),
+			RequestedTTLSeconds:   int64(attachPublishLeaseTTL().Seconds()),
 		})
 	}
 	if err != nil {
@@ -464,7 +533,46 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 		return cfg, svc, "", err
 	}
 	updatedSvc := updated.Clusters[updated.CurrentCluster].Namespaces[updated.CurrentNamespace].Services[updated.Service.Name]
+	authorityPub, err := discovery.ParseAuthorityPublicKey(updated.Clusters[updated.CurrentCluster].AuthorityPublicKey)
+	if err != nil {
+		return updated, updatedSvc, shareToken, err
+	}
+	if err := verifyPublishLeaseFile(updatedSvc.ServicePublishLeaseFile, authorityPub, updated.Clusters[updated.CurrentCluster].ClusterID, updated.CurrentNamespace, updatedSvc.ServiceID, servicePeerID); err != nil {
+		if updatedSvc.GrantRequestID != "" {
+			return updated, updatedSvc, shareToken, fmt.Errorf("publish grant request %q is pending; publication requires an approved publish lease", updatedSvc.GrantRequestID)
+		}
+		return updated, updatedSvc, shareToken, err
+	}
 	return updated, updatedSvc, shareToken, nil
+}
+
+func renewAttachPublishAuthorization(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	grantPeer := svc.GrantServicePeer
+	if grantPeer == "" {
+		grantPeer = clusterGrantServicePeer(cluster)
+	}
+	if grantPeer != "" {
+		svc.GrantServicePeer = grantPeer
+		updatedCfg, updatedSvc, shareToken, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID)
+		if err == nil {
+			return updatedCfg, updatedSvc, shareToken, nil
+		}
+		if cluster.AuthorityPrivateKeyFile == "" {
+			return cfg, svc, "", err
+		}
+	}
+	if cluster.AuthorityPrivateKeyFile != "" {
+		if err := mintLocalServicePublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
+			return cfg, svc, "", err
+		}
+		shareToken, err := buildAttachServiceShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+		if err != nil {
+			return cfg, svc, "", err
+		}
+		return cfg, svc, shareToken, nil
+	}
+	return cfg, svc, "", fmt.Errorf("service publish lease renewal requires a grant service peer or local authority key")
 }
 
 func verifyServiceClaimFile(path string, pub ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error {
@@ -523,12 +631,16 @@ func buildAttachServiceShareToken(cluster cfgpkg.Cluster, clusterName, namespace
 	return grantspkg.BuildServiceShareToken(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL)
 }
 
-func printAttachShareHint(cfg cfgpkg.Config, token string) {
+func printAttachShareHint(cfg cfgpkg.Config, svc cfgpkg.NamespaceService, token string) {
 	overlayLabel := cfg.CurrentOverlay
 	if overlayLabel == joinDefaultNetworkName {
 		overlayLabel = "public"
 	}
-	fmt.Printf("attached service %q\nscope: %s/%s/%s\n", cfg.Service.Name, overlayLabel, cfg.CurrentCluster, cfg.CurrentNamespace)
+	fmt.Printf("attached service %q\n", cfg.Service.Name)
+	if svc.ServiceID != "" {
+		fmt.Printf("service id: %s\n", svc.ServiceID)
+	}
+	fmt.Printf("scope: %s/%s/%s\n", overlayLabel, cfg.CurrentCluster, cfg.CurrentNamespace)
 	if strings.TrimSpace(token) != "" {
 		fmt.Printf("share:\n  tubo connect --token %s --local 127.0.0.1:18888\n\n", token)
 		return
@@ -578,6 +690,21 @@ func verifyPublishLeaseFile(path string, pub ed25519.PublicKey, clusterID, names
 		return err
 	}
 	return grantspkg.VerifyPublishLease(lease, pub, clusterID, namespaceID, serviceID, servicePeerID)
+}
+
+func readPublishLeaseFile(path string) (grantspkg.PublishLease, error) {
+	if strings.TrimSpace(path) == "" {
+		return grantspkg.PublishLease{}, os.ErrNotExist
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return grantspkg.PublishLease{}, err
+	}
+	var lease grantspkg.PublishLease
+	if err := json.Unmarshal(b, &lease); err != nil {
+		return grantspkg.PublishLease{}, err
+	}
+	return lease, nil
 }
 
 func buildServicePublishLeaseRequest(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (grantspkg.PublishLeaseRequest, error) {

@@ -134,6 +134,11 @@ share_token_2="$(printf '%s\n' "$share_output_2" | awk '/tubo-share-invite-v1\./
 [[ -n "$share_token_2" ]] || fail "failed to extract second share invite token"
 [[ "$share_token_1" != "$share_token_2" ]] || fail "expected a fresh share invite token"
 
+mkdir -p "$(actor_home bob)/config/tubo" "$(actor_home bob)/clusters"
+cp "$(actor_home alice)/config.yaml" "$(actor_home bob)/config/tubo/config.yaml"
+rm -rf "$(actor_home bob)/clusters/home"
+cp -a "$(actor_home alice)/clusters/home" "$(actor_home bob)/clusters/"
+
 exec_actor_bg bob sh -lc "cd /work && exec tubo connect --token '$share_token_2' --local 127.0.0.1:${BOB_PORT} > /work/logs/bob-connect.out 2>&1"
 
 response=""

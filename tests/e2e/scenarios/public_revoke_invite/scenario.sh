@@ -129,6 +129,11 @@ share_output_1="$(exec_actor alice sh -lc "cd /work && tubo share service/${SERV
 share_token_1="$(printf '%s\n' "$share_output_1" | awk '/tubo-share-invite-v1\./ {print $NF; exit}')"
 [[ -n "$share_token_1" ]] || fail "failed to extract share invite token"
 
+mkdir -p "$(actor_home bob)/config/tubo" "$(actor_home bob)/clusters"
+cp "$(actor_home alice)/config.yaml" "$(actor_home bob)/config/tubo/config.yaml"
+rm -rf "$(actor_home bob)/clusters/home"
+cp -a "$(actor_home alice)/clusters/home" "$(actor_home bob)/clusters/"
+
 exec_actor bob sh -lc "cd /work && tubo share revoke '$share_token_1'"
 if exec_actor bob sh -lc "cd /work && tubo connect --token '$share_token_1' --local 127.0.0.1:${BOB_PORT}" >/tmp/tubo-revoke-connect.log 2>&1; then
   fail "revoked invite unexpectedly connected"
