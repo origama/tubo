@@ -2154,8 +2154,42 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" {
 		t.Fatalf("unexpected token payload: %#v", payload)
 	}
-	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" {
-		t.Fatalf("expected approved authz to save claim and membership: %#v", authz)
+	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" || authz.ServicePublishLeaseFile == "" {
+		t.Fatalf("expected approved authz to save claim, publish lease, and membership: %#v", authz)
+	}
+}
+
+func TestImportServiceShareDiscoveryContextIgnoresAuthorizedKeyCommentDifferences(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractServiceShareToken(t, out)
+	payload, err := parseAndVerifyServiceShareToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withComment := payload
+	withComment.AuthorityPublicKey = payload.AuthorityPublicKey + " bettersafethansorry@tubo.click"
+	imported, err := importServiceShareDiscoveryContext(cfg, withComment)
+	if err != nil {
+		t.Fatalf("expected issuer comment variation to be accepted, got %v", err)
+	}
+	if imported.Clusters["home"].AuthorityPublicKey == "" {
+		t.Fatalf("expected imported cluster authority key, got %#v", imported.Clusters["home"])
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/serviceidentity"
 )
@@ -295,8 +297,14 @@ func importServiceShareDiscoveryContext(cfg cfgpkg.Config, payload serviceShareP
 	if cfg.Clusters == nil {
 		cfg.Clusters = make(map[string]cfgpkg.Cluster)
 	}
-	if issuer, ok := cfg.ScopeIssuer(payload.ClusterName, payload.Namespace); ok && issuer.AuthorityPublicKey != payload.AuthorityPublicKey {
-		return cfgpkg.Config{}, fmt.Errorf("share invite issuer mismatch for scope %s/%s: got %q want %q", payload.ClusterName, payload.Namespace, payload.AuthorityPublicKey, issuer.AuthorityPublicKey)
+	if issuer, ok := cfg.ScopeIssuer(payload.ClusterName, payload.Namespace); ok {
+		match, err := authorityKeysEqual(issuer.AuthorityPublicKey, payload.AuthorityPublicKey)
+		if err != nil {
+			return cfgpkg.Config{}, err
+		}
+		if !match {
+			return cfgpkg.Config{}, fmt.Errorf("share invite issuer mismatch for scope %s/%s: got %q want %q", payload.ClusterName, payload.Namespace, payload.AuthorityPublicKey, issuer.AuthorityPublicKey)
+		}
 	}
 	cluster := cfg.Clusters[payload.ClusterName]
 	cluster.ClusterID = payload.ClusterID
@@ -325,4 +333,16 @@ func importServiceShareDiscoveryContext(cfg cfgpkg.Config, payload serviceShareP
 	cfg.CurrentCluster = payload.ClusterName
 	cfg.CurrentNamespace = payload.Namespace
 	return cfg, nil
+}
+
+func authorityKeysEqual(a, b string) (bool, error) {
+	aPub, err := discovery.ParseAuthorityPublicKey(strings.TrimSpace(a))
+	if err != nil {
+		return false, fmt.Errorf("parse authority public key %q: %w", a, err)
+	}
+	bPub, err := discovery.ParseAuthorityPublicKey(strings.TrimSpace(b))
+	if err != nil {
+		return false, fmt.Errorf("parse authority public key %q: %w", b, err)
+	}
+	return bytes.Equal(aPub, bPub), nil
 }

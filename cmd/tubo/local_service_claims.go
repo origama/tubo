@@ -474,7 +474,7 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 			if err != nil {
 				return attachAuthorization{}, err
 			}
-			return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
+			return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
 		}
 		return attachAuthorization{}, fmt.Errorf("publish grant request %q is pending; publication requires an approved publish lease", svc.GrantRequestID)
 	}
