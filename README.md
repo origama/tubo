@@ -162,11 +162,12 @@ Use `tubo ps`, `tubo logs`, `tubo stop`, and `tubo rm --stale` to inspect and ma
 
 ## Documentation
 
+- [Docs index](./docs/README.md)
 - [CLI guide](./docs/cli.md)
 - [Operational runbook](./docs/OPERABILITY.md)
 - [Security notes](./docs/SECURITY.md)
+- [Security model 0.7](./docs/security-model-0.7.md)
 - [Protocol notes](./docs/PROTOCOL.md)
-- [Architecture](./docs/ARCHITECTURE.md)
 - [Release process](./docs/RELEASING.md)
 
 ## For coding agents

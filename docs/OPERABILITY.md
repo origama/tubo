@@ -81,6 +81,8 @@ Distribuire `swarm.key` **solo** ai nodi fidati. Non committare nel repository.
 
 Per esempi YAML completi (relay, edge, service, bridge), topology e `docker-compose.tubo.yml`, vedi [`cli.md`](./cli.md). Nei cluster-aware setup, il flusso locale consigliato e': `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, poi `tubo use ...`, `tubo share service/...` e `tubo attach ...` / `tubo connect --token ...`. Per il bundle pubblico, `tubo join`/`tubo attach`/`tubo connect` da config pulita installano `home/default` e i metadata del cluster pubblico, cosi' il publish grant listener puo' auto-approvare il flusso semplificato senza richiedere un join cluster esplicito. Il token service-share e' bearer connect-only: non autorizza listing generico e non sostituisce la membership capability. Per `get services -A` o namespace aggiuntivi, assicurati che ogni namespace abbia la sua `membership_capability_file` (oppure una capability broad con namespace `*`). I join via invite salvano anche un grant firmato che autorizza le query sul nodo remoto.
 
+Nota operativa per `tubo-public`: puoi avere piu' relay pubblici senza problemi, ma oggi e' raccomandato avere **un solo Grant Service autorevole per ogni cluster/namespace pubblico** (per esempio `home/default`). I relay gestiscono solo reachability/trasporto; invece grant service multipli con store indipendenti possono approvare contemporaneamente lo stesso `service name` per peer diversi, creando split-brain e risultati discovery non deterministici. In breve: **multi-relay ok, single grant service per authority scope**.
+
 La precedenza della configurazione e':
 
 ```text

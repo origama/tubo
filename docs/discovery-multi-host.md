@@ -54,10 +54,11 @@ Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
 1. Un solo `ServiceEntry` per `serviceName` (ultimo annuncio vince).
 2. La cache query dei relay resta keyed per `serviceName` e non sostituisce la validazione Discovery V2 degli edge.
 3. Se gli indirizzi annunciati non sono raggiungibili, il dial diretto fallisce.
-4. Hole punching/AutoNAT non sono ancora completi nel progetto.
-5. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge`, `service`, `bridge` e `relay`.
-6. `LIBP2P_ALLOWED_PEERS` + connection gater sono implementati nel `relay`, ma non ancora enforced end-to-end su tutti i binari.
-7. Il vecchio swarm discovery `"/discovery/v1.0"` non e' piu' supportato.
+4. La cifratura attuale del payload Discovery V2 deriva la chiave da `cluster_id` + `namespace_id`; questo separa il payload per scope ma **non** fornisce una strong private-namespace metadata boundary se gli ID sono pubblici o indovinabili. Per il target 0.7 vedere `docs/security-model-0.7.md` e il futuro `namespace_discovery_key`.
+5. Hole punching/AutoNAT non sono ancora completi nel progetto.
+6. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge`, `service`, `bridge` e `relay`.
+7. `LIBP2P_ALLOWED_PEERS` + connection gater sono implementati nel `relay`, ma non ancora enforced end-to-end su tutti i binari.
+8. Il vecchio swarm discovery `"/discovery/v1.0"` non e' piu' supportato.
 
 ## 2) Obiettivo operativo per deployment NAT/NAT privato
 
