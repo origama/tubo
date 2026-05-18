@@ -89,6 +89,7 @@ Level 1 guarantees:
 - `service_id`-based authorization;
 - issuer-signed publish and connect material;
 - proof-of-possession-bound connect access after invite redemption;
+- `connect --token` redemption into a short-lived `ConnectAccessLease` plus bounded `ConnectRefreshLease` when the ShareInvite carries grant-service metadata;
 - clean-machine `attach` / `connect --token` bootstrap when the public bundle is trusted locally.
 
 ### Non-goals
@@ -216,6 +217,8 @@ Equivalent rule:
 Per-stream or per-session PoP is in scope.
 Per-HTTP-request PoP is out of scope unless protocol changes say otherwise.
 ```
+
+The PoP proof binds the client key, scope, `service_id`, access-lease hash, nonce/JTI, and issued-at timestamp. In `0.7.0.b0` replay protection is a local service-side cache; concurrent publisher instances for the same service need shared replay state before cross-instance replay protection can be claimed.
 
 ### 4.4 Revocation timing guarantees
 

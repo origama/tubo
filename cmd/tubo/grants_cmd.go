@@ -403,6 +403,8 @@ func grantsServeCmd(args []string) error {
 	autoApprove := fs.Bool("public-auto-approve", false, "")
 	claimTTL := fs.Duration("claim-ttl", 24*time.Hour, "")
 	shareTTL := fs.Duration("share-ttl", time.Hour, "")
+	connectAccessTTL := fs.Duration("connect-access-ttl", grantspkg.DefaultConnectAccessLeaseTTL, "")
+	connectRefreshTTL := fs.Duration("connect-refresh-ttl", grantspkg.DefaultConnectRefreshLeaseTTL, "")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -448,7 +450,7 @@ func grantsServeCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)
 	}
-	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL})
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL, GrantServicePeers: p2p.PeerAddrs(host), ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL})
 	if err != nil {
 		return err
 	}

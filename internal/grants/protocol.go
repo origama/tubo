@@ -23,6 +23,9 @@ const (
 	TypeDenied   = "grant_request.denied"
 	TypeExpired  = "grant_request.expired"
 
+	TypeShareRedeem    = "share_invite.redeem"
+	TypeConnectRefresh = "connect_lease.refresh"
+
 	MaxMessageBytes = 64 << 10
 	MinTTL          = time.Minute
 	MaxTTL          = 30 * 24 * time.Hour
@@ -53,6 +56,10 @@ type Message struct {
 	PublishLease          *PublishLease                    `json:"publish_lease,omitempty"`
 	MembershipCapability  *capability.MembershipCapability `json:"membership_capability,omitempty"`
 	ServiceShareToken     string                           `json:"service_share_token,omitempty"`
+	ShareInviteToken      string                           `json:"share_invite_token,omitempty"`
+	ClientPublicKey       string                           `json:"client_public_key,omitempty"`
+	ConnectAccessLease    *ConnectAccessLease              `json:"connect_access_lease,omitempty"`
+	ConnectRefreshLease   *ConnectRefreshLease             `json:"connect_refresh_lease,omitempty"`
 }
 
 func EncodeMessage(w io.Writer, msg Message) error {
@@ -113,6 +120,19 @@ func ValidateMessage(msg Message) error {
 		if msg.RequestID == "" {
 			return errors.New("expired response requires request_id")
 		}
+	case TypeShareRedeem:
+		if msg.ShareInviteToken != "" && msg.ClientPublicKey != "" {
+			return nil
+		}
+		if msg.ConnectAccessLease != nil && msg.ConnectRefreshLease != nil {
+			return nil
+		}
+		return errors.New("share invite redemption requires share_invite_token/client_public_key or connect leases")
+	case TypeConnectRefresh:
+		if msg.ConnectRefreshLease != nil || msg.ConnectAccessLease != nil {
+			return nil
+		}
+		return errors.New("connect lease refresh requires connect_refresh_lease or connect_access_lease")
 	default:
 		return fmt.Errorf("unsupported grant message type %q", msg.Type)
 	}

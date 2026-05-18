@@ -88,7 +88,7 @@ Do not assume immediate revocation unless the specific mechanism explicitly says
 
 ### 3.4 Current share-invite tokens are sensitive credentials
 
-Share-invite tokens are connect-scoped and time-bounded, but they are still sensitive bootstrap material and must be handled like credentials.
+Share-invite tokens are connect-scoped and time-bounded bootstrap material and must be handled like credentials. When a token is redeemed through a grant service, the running bridge uses client-key-bound connect leases; after successful redemption it no longer depends on the ShareInvite remaining valid.
 
 ## 4. 0.7.0.b0 direction
 

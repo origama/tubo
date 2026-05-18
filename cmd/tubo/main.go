@@ -17,6 +17,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/networkbundle"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/trust"
@@ -1798,6 +1799,8 @@ func connectCmd(args []string) error {
 		return err
 	}
 	var connectGrant *capability.ConnectCapability
+	var connectInviteToken string
+	var connectGrantPeers []string
 	if shareToken != "" {
 		payload, err := parseAndVerifyServiceShareToken(shareToken)
 		if err != nil {
@@ -1820,7 +1823,12 @@ func connectCmd(args []string) error {
 		if serviceName == "" {
 			serviceName = payload.DisplayNameHint
 		}
-		connectGrant = &payload.Grant
+		if payload.GrantService.Protocol == grantspkg.ProtocolID && len(payload.GrantService.Peers) > 0 {
+			connectInviteToken = shareToken
+			connectGrantPeers = append([]string(nil), payload.GrantService.Peers...)
+		} else {
+			connectGrant = &payload.Grant
+		}
 	}
 	scope, err := resolveServiceScope(cfg, *cluster, *namespace, false)
 	if err != nil {
@@ -1843,15 +1851,17 @@ func connectCmd(args []string) error {
 		return err
 	}
 	bridgeCfg := bridge.Config{
-		Listen:         listenAddr,
-		Seed:           cfg.Node.Seed,
-		P2PListen:      cfg.Node.P2PListen,
-		PrivateKeyFile: cfg.Network.PrivateKeyFile,
-		PrivateKeyB64:  cfg.Network.PrivateKeyB64,
-		RelayPeers:     cfg.Network.RelayPeers,
-		Autorelay:      cfg.Network.Autorelay,
-		HolePunching:   cfg.Network.HolePunching,
-		ConnectGrant:   connectGrant,
+		Listen:             listenAddr,
+		Seed:               cfg.Node.Seed,
+		P2PListen:          cfg.Node.P2PListen,
+		PrivateKeyFile:     cfg.Network.PrivateKeyFile,
+		PrivateKeyB64:      cfg.Network.PrivateKeyB64,
+		RelayPeers:         cfg.Network.RelayPeers,
+		Autorelay:          cfg.Network.Autorelay,
+		HolePunching:       cfg.Network.HolePunching,
+		ConnectGrant:       connectGrant,
+		ConnectInviteToken: connectInviteToken,
+		ConnectGrantPeers:  connectGrantPeers,
 	}
 	if bridgeCfg.P2PListen == "" {
 		bridgeCfg.P2PListen = "/ip4/0.0.0.0/tcp/0"

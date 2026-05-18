@@ -30,6 +30,9 @@ type ServerConfig struct {
 	AuthorityPrivateKey    ed25519.PrivateKey
 	ClaimTTL               time.Duration
 	ServiceShareTTL        time.Duration
+	GrantServicePeers      []string
+	ConnectAccessTTL       time.Duration
+	ConnectRefreshTTL      time.Duration
 }
 
 type Server struct {
@@ -54,6 +57,12 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	if cfg.MaxPendingPerService <= 0 {
 		cfg.MaxPendingPerService = DefaultMaxPendingPerService
+	}
+	if cfg.ConnectAccessTTL <= 0 {
+		cfg.ConnectAccessTTL = DefaultConnectAccessLeaseTTL
+	}
+	if cfg.ConnectRefreshTTL <= 0 {
+		cfg.ConnectRefreshTTL = DefaultConnectRefreshLeaseTTL
 	}
 	return &Server{cfg: cfg}, nil
 }
@@ -81,6 +90,10 @@ func (s *Server) HandleMessage(msg Message, requester peer.ID) Message {
 		return s.handleSubmit(msg, requester)
 	case TypePoll:
 		return s.handlePoll(msg)
+	case TypeShareRedeem:
+		return s.handleShareRedeem(msg)
+	case TypeConnectRefresh:
+		return s.handleConnectRefresh(msg)
 	default:
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestID), Reason: fmt.Sprintf("unsupported grant operation %q", msg.Type)}
 	}
@@ -134,7 +147,7 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if claimTTL > 0 && shareTTL > claimTTL {
 		shareTTL = claimTTL
 	}
-	artifacts, err := BuildApprovalArtifacts(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature)
+	artifacts, err := BuildApprovalArtifactsWithGrantService(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature, s.cfg.GrantServicePeers)
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: err.Error()}
 	}
@@ -194,12 +207,82 @@ func (s *Server) handlePoll(msg Message) Message {
 	return ResponseForRequest(req)
 }
 
+func (s *Server) handleShareRedeem(msg Message) Message {
+	if len(s.cfg.AuthorityPrivateKey) == 0 {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "share-redeem", Reason: "share invite redemption requires an authority private key"}
+	}
+	payload, err := ParseAndVerifyServiceShareToken(msg.ShareInviteToken)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "share-redeem", Reason: err.Error()}
+	}
+	if payload.ClusterID != s.cfg.ClusterID || payload.NamespaceID != s.cfg.NamespaceID {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: "share invite scope does not match authority server"}
+	}
+	serverAuthority, err := authorityPublicKeyString(s.cfg.AuthorityPrivateKey)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: err.Error()}
+	}
+	if !sameAuthorizedKeyMaterial(payload.AuthorityPublicKey, serverAuthority) {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: "share invite authority does not match server"}
+	}
+	artifacts, err := BuildConnectLeaseArtifacts(s.cfg.AuthorityPrivateKey, payload, msg.ClientPublicKey, s.cfg.ConnectAccessTTL, s.cfg.ConnectRefreshTTL)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: err.Error()}
+	}
+	return Message{Type: TypeShareRedeem, Version: VersionV1, RequestID: payload.JTI, ConnectAccessLease: &artifacts.AccessLease, ConnectRefreshLease: &artifacts.RefreshLease}
+}
+
+func (s *Server) handleConnectRefresh(msg Message) Message {
+	if len(s.cfg.AuthorityPrivateKey) == 0 {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "connect-refresh", Reason: "connect lease refresh requires an authority private key"}
+	}
+	if msg.ConnectRefreshLease == nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "connect-refresh", Reason: "connect_refresh_lease is required"}
+	}
+	if msg.ConnectRefreshLease.ClusterID != s.cfg.ClusterID || msg.ConnectRefreshLease.NamespaceID != s.cfg.NamespaceID {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, Reason: "connect refresh lease scope does not match authority server"}
+	}
+	access, err := RefreshConnectAccessLease(s.cfg.AuthorityPrivateKey, *msg.ConnectRefreshLease, s.cfg.ConnectAccessTTL)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, Reason: err.Error()}
+	}
+	return Message{Type: TypeConnectRefresh, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, ConnectAccessLease: &access}
+}
+
 func Submit(ctx context.Context, h host.Host, info peer.AddrInfo, msg Message) (Message, error) {
 	return Query(ctx, h, info, msg)
 }
 
 func Poll(ctx context.Context, h host.Host, info peer.AddrInfo, requestID string) (Message, error) {
 	return Query(ctx, h, info, Message{Type: TypePoll, Version: VersionV1, RequestID: requestID})
+}
+
+func RedeemShareInvite(ctx context.Context, h host.Host, info peer.AddrInfo, token, clientPublicKey string) (ConnectLeaseArtifacts, error) {
+	resp, err := Query(ctx, h, info, Message{Type: TypeShareRedeem, Version: VersionV1, ShareInviteToken: token, ClientPublicKey: clientPublicKey})
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	if resp.Type == TypeDenied || resp.Type == TypeExpired {
+		return ConnectLeaseArtifacts{}, fmt.Errorf("%s", resp.Reason)
+	}
+	if resp.Type != TypeShareRedeem || resp.ConnectAccessLease == nil || resp.ConnectRefreshLease == nil {
+		return ConnectLeaseArtifacts{}, fmt.Errorf("invalid share invite redemption response")
+	}
+	return ConnectLeaseArtifacts{AccessLease: *resp.ConnectAccessLease, RefreshLease: *resp.ConnectRefreshLease}, nil
+}
+
+func RefreshConnectLease(ctx context.Context, h host.Host, info peer.AddrInfo, refresh ConnectRefreshLease) (ConnectAccessLease, error) {
+	resp, err := Query(ctx, h, info, Message{Type: TypeConnectRefresh, Version: VersionV1, ConnectRefreshLease: &refresh})
+	if err != nil {
+		return ConnectAccessLease{}, err
+	}
+	if resp.Type == TypeDenied || resp.Type == TypeExpired {
+		return ConnectAccessLease{}, fmt.Errorf("%s", resp.Reason)
+	}
+	if resp.Type != TypeConnectRefresh || resp.ConnectAccessLease == nil {
+		return ConnectAccessLease{}, fmt.Errorf("invalid connect lease refresh response")
+	}
+	return *resp.ConnectAccessLease, nil
 }
 
 func Query(ctx context.Context, h host.Host, info peer.AddrInfo, msg Message) (Message, error) {

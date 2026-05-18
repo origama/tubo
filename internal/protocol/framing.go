@@ -413,6 +413,15 @@ func encodeConnectProof(m *ConnectProof) ([]byte, error) {
 	result = append(result, encodeBytes(m.Nonce)...)
 	result = append(result, encodeBytes(m.Capability)...)
 	result = append(result, encodeBytes(m.Signature)...)
+	if !m.IssuedAt.IsZero() || m.JTI != "" || len(m.AccessLeaseHash) > 0 {
+		issuedAt := ""
+		if !m.IssuedAt.IsZero() {
+			issuedAt = m.IssuedAt.UTC().Format(time.RFC3339Nano)
+		}
+		result = append(result, encodeString(issuedAt)...)
+		result = append(result, encodeString(m.JTI)...)
+		result = append(result, encodeBytes(m.AccessLeaseHash)...)
+	}
 	return result, nil
 }
 
@@ -454,7 +463,41 @@ func DecodeConnectProof(r io.Reader) (*ConnectProof, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof signature: %w", err)
 	}
-	return &ConnectProof{ClusterID: clusterID, NamespaceID: namespaceID, ServiceID: serviceID, SubjectPeerID: subjectPeerID, ExpiresAt: expiresAt, Nonce: nonce, Capability: capabilityBytes, Signature: signature}, nil
+	var issuedAt time.Time
+	var jti string
+	var accessLeaseHash []byte
+	if limitedReaderRemaining(r) > 0 {
+		issuedAtRaw, err := decodeString(r)
+		if err != nil {
+			return nil, fmt.Errorf("decode connect proof issued_at: %w", err)
+		}
+		if issuedAtRaw != "" {
+			issuedAt, err = time.Parse(time.RFC3339Nano, issuedAtRaw)
+			if err != nil {
+				return nil, fmt.Errorf("parse connect proof issued_at: %w", err)
+			}
+		}
+	}
+	if limitedReaderRemaining(r) > 0 {
+		jti, err = decodeString(r)
+		if err != nil {
+			return nil, fmt.Errorf("decode connect proof jti: %w", err)
+		}
+	}
+	if limitedReaderRemaining(r) > 0 {
+		accessLeaseHash, err = decodeBytes(r)
+		if err != nil {
+			return nil, fmt.Errorf("decode connect proof access_lease_hash: %w", err)
+		}
+	}
+	return &ConnectProof{ClusterID: clusterID, NamespaceID: namespaceID, ServiceID: serviceID, SubjectPeerID: subjectPeerID, IssuedAt: issuedAt, ExpiresAt: expiresAt, Nonce: nonce, JTI: jti, Capability: capabilityBytes, AccessLeaseHash: accessLeaseHash, Signature: signature}, nil
+}
+
+func limitedReaderRemaining(r io.Reader) int64 {
+	if lr, ok := r.(*io.LimitedReader); ok {
+		return lr.N
+	}
+	return 0
 }
 
 // sortStrings sorts a string slice in place for deterministic encoding.

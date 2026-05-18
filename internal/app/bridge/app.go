@@ -5,34 +5,47 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
-	libp2p "github.com/libp2p/go-libp2p"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	capability "github.com/origama/tubo/internal/capability"
-	"github.com/origama/tubo/internal/p2p"
-	"github.com/origama/tubo/internal/protocol"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
+
+	libp2p "github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
+	"github.com/libp2p/go-libp2p/core/peer"
+	capability "github.com/origama/tubo/internal/capability"
+	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/protocol"
+	"golang.org/x/crypto/ssh"
 )
+
+type ConnectLeaseRefresher func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error)
 
 type Config struct {
 	Listen, Seed, P2PListen, ServiceAddr, ServiceSeed, ServiceP2PListen, PrivateKeyFile, PrivateKeyB64 string
 	RelayPeers                                                                                         []string
 	Autorelay, HolePunching                                                                            bool
-	ConnectGrant                                                                                       *capability.ConnectCapability
+	ConnectGrant                                                                                       *capability.ConnectCapability // legacy bearer fallback
+	ConnectInviteToken                                                                                 string
+	ConnectGrantPeers                                                                                  []string
+	ConnectAccessLease                                                                                 *grantspkg.ConnectAccessLease
+	ConnectRefreshLease                                                                                *grantspkg.ConnectRefreshLease
+	ConnectLeaseRefresher                                                                              ConnectLeaseRefresher
 }
 type App struct {
-	cfg        Config
-	host       host.Host
-	service    peer.AddrInfo
-	server     *http.Server
-	listener   net.Listener
-	listenAddr string
+	cfg          Config
+	host         host.Host
+	service      peer.AddrInfo
+	server       *http.Server
+	listener     net.Listener
+	listenAddr   string
+	connectMu    sync.Mutex
+	connectLease *grantspkg.ConnectAccessLease
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -80,8 +93,25 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if cfg.HolePunching {
 		log.Printf("bridge hole punching enabled relay_peers=%d autorelay=%t", len(relays), cfg.Autorelay)
 	}
+	var connectLease *grantspkg.ConnectAccessLease
+	if cfg.ConnectAccessLease != nil {
+		lease := *cfg.ConnectAccessLease
+		connectLease = &lease
+		log.Printf("bridge connect access lease enabled cluster=%s namespace=%s service=%s expires_at=%s", lease.ClusterID, lease.NamespaceID, lease.ServiceID, lease.ExpiresAt.UTC().Format(time.RFC3339))
+	}
+	if cfg.ConnectInviteToken != "" && len(cfg.ConnectGrantPeers) > 0 && cfg.ConnectRefreshLease == nil {
+		artifacts, err := redeemConnectInvite(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectInviteToken)
+		if err != nil {
+			_ = h.Close()
+			return nil, err
+		}
+		cfg.ConnectAccessLease = &artifacts.AccessLease
+		cfg.ConnectRefreshLease = &artifacts.RefreshLease
+		connectLease = &artifacts.AccessLease
+		log.Printf("bridge share invite redeemed service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
+	}
 	if cfg.ConnectGrant != nil {
-		log.Printf("bridge connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)
+		log.Printf("bridge legacy connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)
 	}
 	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -89,7 +119,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		_ = h.Close()
 		return nil, fmt.Errorf("connect service peer: %w", err)
 	}
-	return &App{cfg: cfg, host: h, service: si}, nil
+	return &App{cfg: cfg, host: h, service: si, connectLease: connectLease}, nil
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
@@ -215,9 +245,6 @@ func proxyRawClient(s network.Stream, conn net.Conn, clientReader io.Reader) {
 }
 
 func (a *App) connectProof() (*protocol.ConnectProof, error) {
-	if a.cfg.ConnectGrant == nil {
-		return nil, nil
-	}
 	priv := a.host.Peerstore().PrivKey(a.host.ID())
 	if priv == nil {
 		return nil, fmt.Errorf("no private key for peer")
@@ -226,11 +253,139 @@ func (a *App) connectProof() (*protocol.ConnectProof, error) {
 	if err != nil {
 		return nil, fmt.Errorf("raw private key: %w", err)
 	}
+	if a.cfg.ConnectRefreshLease != nil || a.connectLease != nil {
+		lease, err := a.ensureConnectAccessLease(context.Background())
+		if err != nil {
+			return nil, err
+		}
+		leaseBytes, err := grantspkg.MarshalConnectAccessLease(lease)
+		if err != nil {
+			return nil, fmt.Errorf("marshal connect access lease: %w", err)
+		}
+		proof, err := protocol.NewConnectProofWithPayload(lease.ClusterID, lease.NamespaceID, lease.ServiceID, lease.ExpiresAt, leaseBytes, grantspkg.ConnectAccessLeaseHashBytes(leaseBytes), a.host.ID().String(), ed25519.PrivateKey(raw))
+		if err != nil {
+			return nil, fmt.Errorf("build connect proof: %w", err)
+		}
+		return &proof, nil
+	}
+	if a.cfg.ConnectGrant == nil {
+		return nil, nil
+	}
 	proof, err := protocol.NewConnectProof(*a.cfg.ConnectGrant, a.host.ID().String(), ed25519.PrivateKey(raw))
 	if err != nil {
 		return nil, fmt.Errorf("build connect proof: %w", err)
 	}
 	return &proof, nil
+}
+
+func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAccessLease, error) {
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	if a.connectLease != nil && !connectAccessLeaseNeedsRefresh(*a.connectLease, time.Now().UTC()) {
+		return *a.connectLease, nil
+	}
+	if a.cfg.ConnectRefreshLease == nil {
+		if a.connectLease == nil || !time.Now().UTC().Before(a.connectLease.ExpiresAt.UTC()) {
+			return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect access lease expired; ask the service owner for a fresh token/invite")
+		}
+		return *a.connectLease, nil
+	}
+	if !time.Now().UTC().Before(a.cfg.ConnectRefreshLease.ExpiresAt.UTC()) {
+		return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect refresh lease expired; ask the service owner for a fresh token/invite")
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	access, err := a.refreshConnectAccessLease(refreshCtx, *a.cfg.ConnectRefreshLease)
+	if err != nil {
+		return grantspkg.ConnectAccessLease{}, fmt.Errorf("refresh connect access lease: %w", err)
+	}
+	a.connectLease = &access
+	a.cfg.ConnectAccessLease = &access
+	log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
+	return access, nil
+}
+
+func (a *App) refreshConnectAccessLease(ctx context.Context, refresh grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+	if a.cfg.ConnectLeaseRefresher != nil {
+		return a.cfg.ConnectLeaseRefresher(ctx, refresh)
+	}
+	if len(a.cfg.ConnectGrantPeers) == 0 {
+		return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect grant service unavailable; ask the service owner for a fresh token/invite")
+	}
+	var lastErr error
+	for _, rawPeer := range a.cfg.ConnectGrantPeers {
+		info, err := p2p.AddrInfoFromString(rawPeer)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		access, err := grantspkg.RefreshConnectLease(ctx, a.host, info, refresh)
+		if err == nil {
+			return access, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return grantspkg.ConnectAccessLease{}, lastErr
+	}
+	return grantspkg.ConnectAccessLease{}, fmt.Errorf("no connect grant service peers configured")
+}
+
+func redeemConnectInvite(ctx context.Context, h host.Host, grantPeers []string, token string) (grantspkg.ConnectLeaseArtifacts, error) {
+	clientPublicKey, err := connectClientPublicKey(h)
+	if err != nil {
+		return grantspkg.ConnectLeaseArtifacts{}, err
+	}
+	redeemCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var lastErr error
+	for _, rawPeer := range grantPeers {
+		info, err := p2p.AddrInfoFromString(rawPeer)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		artifacts, err := grantspkg.RedeemShareInvite(redeemCtx, h, info, token, clientPublicKey)
+		if err == nil {
+			return artifacts, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("redeem share invite: %w", lastErr)
+	}
+	return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("redeem share invite: no grant service peers configured")
+}
+
+func connectClientPublicKey(h host.Host) (string, error) {
+	pub := h.Peerstore().PubKey(h.ID())
+	if pub == nil {
+		return "", fmt.Errorf("no public key for peer")
+	}
+	raw, err := pub.Raw()
+	if err != nil {
+		return "", fmt.Errorf("raw public key: %w", err)
+	}
+	sshPub, err := ssh.NewPublicKey(ed25519.PublicKey(raw))
+	if err != nil {
+		return "", fmt.Errorf("encode connect client public key: %w", err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub))), nil
+}
+
+func connectAccessLeaseNeedsRefresh(lease grantspkg.ConnectAccessLease, now time.Time) bool {
+	if lease.ExpiresAt.IsZero() || !now.Before(lease.ExpiresAt.UTC()) {
+		return true
+	}
+	ttl := lease.ExpiresAt.UTC().Sub(lease.IssuedAt.UTC())
+	renewBefore := ttl / 3
+	if renewBefore < time.Second {
+		renewBefore = time.Second
+	}
+	if renewBefore > 5*time.Minute {
+		renewBefore = 5 * time.Minute
+	}
+	return !now.Add(renewBefore).Before(lease.ExpiresAt.UTC())
 }
 
 func isWebSocketRequest(r *http.Request) bool {
