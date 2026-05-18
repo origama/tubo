@@ -1356,8 +1356,11 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	}
 	cfg = authz.Config
 	svc := authz.Service
-	if svc.ServiceID == "" || svc.ServiceSeed == "" || svc.ServiceClaimFile == "" {
+	if svc.ServiceID == "" || svc.ServiceSeed == "" || svc.ServiceClaimFile == "" || svc.ServiceOwnerKeyFile == "" {
 		t.Fatalf("service identity incomplete: %#v", svc)
+	}
+	if _, err := os.Stat(svc.ServiceOwnerKeyFile); err != nil {
+		t.Fatalf("service owner key missing: %v", err)
 	}
 	_, deterministicSeed := serviceIdentityFor(cfg.Clusters["home"].ClusterID, "default", "myapi")
 	if svc.ServiceSeed == "service-demo-seed" || svc.ServiceSeed == deterministicSeed {
@@ -1415,6 +1418,52 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	obsSvc := obsAuthz.Service
 	if obsSvc.ServiceID == svc.ServiceID || obsSvc.ServiceSeed == svc.ServiceSeed {
 		t.Fatalf("same service name in different namespace reused identity: default=%#v obs=%#v", svc, obsSvc)
+	}
+}
+
+func TestDeletingLocalConfigCreatesNewServiceIdentity(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg.Node.Seed = "service-demo-seed"
+	firstAuthz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID := firstAuthz.Service.ServiceID
+	configRoot := filepath.Dir(filepath.Dir(configPath))
+	if err := os.RemoveAll(configRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(configPath, cfgpkg.Config{Role: "service", CurrentOverlay: "public", Overlays: map[string]cfgpkg.Overlay{"public": {}}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg.Node.Seed = "service-demo-seed"
+	secondAuthz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondAuthz.Service.ServiceID == firstID {
+		t.Fatalf("expected new service id after deleting config, got %q", secondAuthz.Service.ServiceID)
 	}
 }
 
@@ -2003,11 +2052,11 @@ func TestEnsureAttachServiceIdentityRejectsInvalidConfig(t *testing.T) {
 	cfg.Service.Target = "http://127.0.0.1:8080"
 	cluster := cfg.Clusters["home"]
 	namespace := cluster.Namespaces[cfg.CurrentNamespace]
-	namespace.Services = map[string]cfgpkg.NamespaceService{"myapi": {ServiceID: "service-wrong", ServiceSeed: "existing-seed"}}
+	namespace.Services = map[string]cfgpkg.NamespaceService{"myapi": {ServiceID: "service-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ServiceSeed: "existing-seed"}}
 	cluster.Namespaces[cfg.CurrentNamespace] = namespace
 	cfg.Clusters["home"] = cluster
-	if _, err := resolveAttachAuthorization(configPath, cfg); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
-		t.Fatalf("expected identity mismatch error, got %v", err)
+	if _, err := resolveAttachAuthorization(configPath, cfg); err == nil || !strings.Contains(err.Error(), "service_owner_key_file") {
+		t.Fatalf("expected service owner key error, got %v", err)
 	}
 }
 

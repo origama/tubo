@@ -110,7 +110,7 @@ Se manca la config locale di default:
 
 - `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato; il bundle pubblico installa anche i metadata del cluster `home/default` (cluster ID, authority public key e grant-service peers), cosi' `tubo attach`/`tubo connect` possono partire da config pulita senza un `join cluster/home` esplicito;
 - questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico;
-- in cluster/namespace mode, `attach` crea o riusa una identita' stabile per `(cluster, namespace, service)` (`service_id`, `service_seed`, `service_claim_file`) prima di avviare il runtime;
+- in cluster/namespace mode, `attach` crea o riusa una identita' stabile per `(cluster, namespace, service)` (`service_id`, `service_owner_key_file`, `service_seed`, `service_claim_file`) prima di avviare il runtime;
 - senza config esplicita, `attach` genera ancora un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
 - `attach` ascolta di default su `/ip4/0.0.0.0/tcp/0` per permettere direct dial/hole punching quando la rete lo consente.
 
@@ -119,6 +119,7 @@ File coinvolti:
 ```text
 ~/.config/tubo/config.yaml
 ~/.config/tubo/swarm.key
+~/.config/tubo/clusters/.../namespaces/.../services/...owner.key
 ```
 
 Per disabilitare esplicitamente il comportamento implicito:
@@ -479,8 +480,8 @@ Note:
 - `get namespaces` usa il `current_cluster` corrente.
 - `create cluster/...` genera un authority keypair locale, scrive un `cluster_id`, imposta `authority_public_key`, crea il namespace `default` e salva una capability di membership locale senza stampare segreti.
 - `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente, rende esplicito il nuovo `current_namespace` e materializza una capability di membership firmata per quel namespace.
-- `create service/...` richiede un `current_cluster` e `current_namespace`, genera un `ServiceID` deterministico per `(cluster, namespace, name)`, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
-- `attach` in cluster/namespace mode materializza automaticamente una identita' servizio stabile se manca: il `service_id` resta deterministico per scope/nome, mentre il `service_seed` viene generato una sola volta e salvato nel config locale (`0600`).
+- `create service/...` richiede un `current_cluster` e `current_namespace`, materializza un `service_owner_key_file` stabile per la service identity, deriva il `service_id` da quella chiave, firma una `ServiceClaim` locale e salva il claim su disco per `attach`/Discovery V2.
+- `attach` in cluster/namespace mode materializza automaticamente una identita' servizio stabile se manca: il `service_id` deriva dalla service owner key salvata nel config locale (`0600`), mentre il `service_seed` viene generato una sola volta e salvato nel config locale (`0600`).
 - prima di avviare il runtime, `attach` risolve l'autorizzazione di pubblicazione: usa una `ServiceClaim` valida esistente, la firma localmente se il nodo possiede `authority_private_key_file`, oppure invia/polla una Publish Grant request se il servizio ha `grant_service_peer`; quando disponibile stampa anche un `service_share_token` connect-only copiabile per Bob (`tubo connect --token ...`). Se il token non puo' essere generato, `attach` spiega il motivo e suggerisce il comando `tubo share service/...` da eseguire su un nodo authority.
 - `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile; `--role grant-requester --grant-peer ...` emette un invito senza diritti publish diretti ma con metadata per richiedere una Publish Grant.
 - `share service/...` usa la chiave authority locale per emettere un token connect-only, firma un `ConnectCapability` bearer per il servizio, risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile; il token include cluster/namespace/service/authority metadata ma non autorizza listing generico.

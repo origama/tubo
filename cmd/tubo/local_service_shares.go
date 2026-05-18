@@ -10,6 +10,7 @@ import (
 
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 const serviceShareTokenPrefix = grantspkg.ServiceShareTokenPrefix
@@ -91,6 +92,13 @@ func localShareServiceCmd(args []string) error {
 		return fmt.Errorf("cluster %q authority public key mismatch", scope.Cluster)
 	}
 	serviceID := svc.ServiceID
+	if serviceID == "" && svc.ServiceOwnerKeyFile != "" {
+		identity, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
+		if err != nil {
+			return err
+		}
+		serviceID = identity.ServiceID
+	}
 	if serviceID == "" {
 		serviceID, _ = serviceIdentityFor(cluster.ClusterID, scope.Namespace, name)
 	}

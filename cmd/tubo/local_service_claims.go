@@ -19,6 +19,7 @@ import (
 	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 func createLocalService(configPath, name string) error {
@@ -49,14 +50,18 @@ func createLocalService(configPath, name string) error {
 	if namespace.Services == nil {
 		namespace.Services = make(map[string]cfgpkg.NamespaceService)
 	}
-	if existing, ok := namespace.Services[name]; ok && existing.ServiceID != "" && existing.ServiceSeed != "" && existing.ServiceClaimFile != "" {
-		if _, err := ensureServiceMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, existing.ServiceSeed); err != nil {
+	svc := namespace.Services[name]
+	if svc.ServiceID != "" && svc.ServiceSeed != "" && svc.ServiceClaimFile != "" {
+		if _, err := ensureServiceMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed); err != nil {
 			return err
 		}
 		fmt.Printf("service %q already exists in cluster %q namespace %q\n", name, cfg.CurrentCluster, cfg.CurrentNamespace)
-		fmt.Printf("service id: %s\n", existing.ServiceID)
-		fmt.Printf("service seed: %s\n", existing.ServiceSeed)
-		fmt.Printf("service claim file: %s\n", existing.ServiceClaimFile)
+		fmt.Printf("service id: %s\n", svc.ServiceID)
+		fmt.Printf("service seed: %s\n", svc.ServiceSeed)
+		fmt.Printf("service claim file: %s\n", svc.ServiceClaimFile)
+		if svc.ServiceOwnerKeyFile != "" {
+			fmt.Printf("service owner key file: %s\n", svc.ServiceOwnerKeyFile)
+		}
 		return nil
 	}
 	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
@@ -70,7 +75,35 @@ func createLocalService(configPath, name string) error {
 	if cluster.AuthorityPublicKey != pubAuthorized {
 		return fmt.Errorf("cluster %q authority public key mismatch", cfg.CurrentCluster)
 	}
-	serviceID, serviceSeed := serviceIdentityFor(cfg.Clusters[cfg.CurrentCluster].ClusterID, cfg.CurrentNamespace, name)
+	serviceSeed, err := generateServiceSeed()
+	if err != nil {
+		return err
+	}
+	serviceDir := filepath.Join(filepath.Dir(configPath), "clusters", sanitizeProcessName(cfg.CurrentCluster), "namespaces", sanitizeProcessName(cfg.CurrentNamespace), "services")
+	if err := os.MkdirAll(serviceDir, 0700); err != nil {
+		return err
+	}
+	claimPath := filepath.Join(serviceDir, sanitizeProcessName(name)+".claim.json")
+	ownerKeyPath := serviceOwnerKeyPath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace, name)
+	serviceID := svc.ServiceID
+	if serviceID == "" {
+		identity, created, err := serviceidentity.Ensure(ownerKeyPath)
+		if err != nil {
+			return err
+		}
+		serviceID = identity.ServiceID
+		if svc.ServiceOwnerKeyFile == "" || svc.ServiceOwnerKeyFile != ownerKeyPath || created {
+			svc.ServiceOwnerKeyFile = ownerKeyPath
+		}
+	} else if svc.ServiceOwnerKeyFile != "" {
+		identity, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
+		if err != nil {
+			return err
+		}
+		if identity.ServiceID != serviceID {
+			return fmt.Errorf("service %q identity mismatch in cluster %q namespace %q: service_id=%q want %q", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, serviceID, identity.ServiceID)
+		}
+	}
 	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
 	if err != nil {
 		return err
@@ -86,18 +119,13 @@ func createLocalService(configPath, name string) error {
 	if err != nil {
 		return err
 	}
-	serviceDir := filepath.Join(filepath.Dir(configPath), "clusters", sanitizeProcessName(cfg.CurrentCluster), "namespaces", sanitizeProcessName(cfg.CurrentNamespace), "services")
-	if err := os.MkdirAll(serviceDir, 0700); err != nil {
-		return err
-	}
-	claimPath := filepath.Join(serviceDir, sanitizeProcessName(name)+".claim.json")
 	if err := writeServiceClaimFile(claimPath, claim); err != nil {
 		return err
 	}
 	if _, err := ensureServiceMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, serviceSeed); err != nil {
 		return err
 	}
-	namespace.Services[name] = cfgpkg.NamespaceService{ServiceID: serviceID, ServiceSeed: serviceSeed, ServiceClaimFile: claimPath}
+	namespace.Services[name] = cfgpkg.NamespaceService{ServiceID: serviceID, ServiceSeed: serviceSeed, ServiceOwnerKeyFile: svc.ServiceOwnerKeyFile, ServiceClaimFile: claimPath}
 	cluster.Namespaces[cfg.CurrentNamespace] = namespace
 	cfg.Clusters[cfg.CurrentCluster] = cluster
 	if err := saveLocalConfig(configPath, cfg); err != nil {
@@ -106,6 +134,9 @@ func createLocalService(configPath, name string) error {
 	fmt.Printf("created service %q in cluster %q namespace %q\n", name, cfg.CurrentCluster, cfg.CurrentNamespace)
 	fmt.Printf("service id: %s\n", serviceID)
 	fmt.Printf("service seed: %s\n", serviceSeed)
+	if svc.ServiceOwnerKeyFile != "" {
+		fmt.Printf("service owner key file: %s\n", svc.ServiceOwnerKeyFile)
+	}
 	fmt.Printf("service claim file: %s\n", claimPath)
 	return nil
 }
@@ -132,6 +163,10 @@ func generateServiceSeed() (string, error) {
 
 func serviceClaimPath(configPath, clusterName, namespaceName, serviceName string) string {
 	return filepath.Join(filepath.Dir(configPath), "clusters", sanitizeProcessName(clusterName), "namespaces", sanitizeProcessName(namespaceName), "services", sanitizeProcessName(serviceName)+".claim.json")
+}
+
+func serviceOwnerKeyPath(configPath, clusterName, namespaceName, serviceName string) string {
+	return filepath.Join(filepath.Dir(configPath), "clusters", sanitizeProcessName(clusterName), "namespaces", sanitizeProcessName(namespaceName), "services", sanitizeProcessName(serviceName)+".owner.key")
 }
 
 func ensureAttachServiceIdentity(configPath string, cfg cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
@@ -162,14 +197,36 @@ func ensureAttachServiceIdentity(configPath string, cfg cfgpkg.Config) (cfgpkg.C
 		namespace.Services = make(map[string]cfgpkg.NamespaceService)
 	}
 
-	expectedServiceID := serviceIDFor(cluster.ClusterID, cfg.CurrentNamespace, cfg.Service.Name)
 	svc := namespace.Services[cfg.Service.Name]
 	changed := false
+	if svc.ServiceID != "" && svc.ServiceOwnerKeyFile == "" {
+		return cfg, cfgpkg.NamespaceService{}, fmt.Errorf("service %q is missing service_owner_key_file", cfg.Service.Name)
+	}
 	if svc.ServiceID == "" {
-		svc.ServiceID = expectedServiceID
+		ownerKeyPath := svc.ServiceOwnerKeyFile
+		if ownerKeyPath == "" {
+			ownerKeyPath = serviceOwnerKeyPath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name)
+		}
+		identity, _, err := serviceidentity.Ensure(ownerKeyPath)
+		if err != nil {
+			return cfg, cfgpkg.NamespaceService{}, err
+		}
+		svc.ServiceID = identity.ServiceID
+		svc.ServiceOwnerKeyFile = ownerKeyPath
 		changed = true
-	} else if svc.ServiceID != expectedServiceID {
-		return cfg, cfgpkg.NamespaceService{}, fmt.Errorf("service %q identity mismatch in cluster %q namespace %q: service_id=%q want %q", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceID, expectedServiceID)
+	} else {
+		if err := serviceidentity.ValidateServiceID(svc.ServiceID); err != nil {
+			return cfg, cfgpkg.NamespaceService{}, fmt.Errorf("service %q has invalid service_id: %w", cfg.Service.Name, err)
+		}
+		if svc.ServiceOwnerKeyFile != "" {
+			identity, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
+			if err != nil {
+				return cfg, cfgpkg.NamespaceService{}, err
+			}
+			if identity.ServiceID != svc.ServiceID {
+				return cfg, cfgpkg.NamespaceService{}, fmt.Errorf("service %q identity mismatch in cluster %q namespace %q: service_id=%q want %q", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceID, identity.ServiceID)
+			}
+		}
 	}
 	if svc.ServiceSeed == "" {
 		seed, err := generateServiceSeed()

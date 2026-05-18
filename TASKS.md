@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-18 00:23 UTC
+> **Last updated:** 2026-05-18 06:40 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -211,8 +211,9 @@ The following packages have no `_test.go` files yet:
 9. **Issue #24 — shared public relay security/capacity model**: documentare bene security, abuse resistance e sizing per relay pubblici su swarm condivisa (`docs`, `security`, `area:relay`); `docs/OPERABILITY.md` ora esplicita che `tubo-public` supporta multi-relay ma oggi richiede un solo Grant Service autorevole per cluster/namespace per evitare split-brain su `service name`
 10. **Issue #111 — grant service operability visibility/history UX**: chiarire `tubo ps` vs processi systemd e rendere evidente lo store effettivo di `tubo grants serve` / `tubo grants history` (`bug`, `docs`, `area:cli`, `area:service`, `prio:medium`)
 11. **Issue #113 — security guarantees, trust roots, and non-goals**: ✅ Done on `0.7.0.b0`; aggiunti `docs/security-model-0.7.md` e `docs/obsoletes/README.md`, riallineati `docs/SECURITY.md`/`docs/README.md`/`README.md`, corretta la nota Discovery V2 in `docs/discovery-multi-host.md`, spostati in `docs/obsoletes/` i documenti di architettura alternativi superseded (`cli-ux-v2.md`, `PLAN-EDGE-REVERSE-PROXY.md`, `architecture-flat-first.html`), e verificato con `go test ./...`
-12. **Versioning/release maintenance**: keep release workflow/docs in sync with the current `v0.6.0` state
-13. **Release v0.6.0**: ✅ Done on `main` (tag prep, changelog/version bump, `go test ./...`, `SMOKE_FORCE_BUILD=1 ./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, and `tests/e2e/run.sh 001-default-cluster-default-namespace` all passed)
+12. **Issue #114 — stable service identity primitives**: ✅ Done on `0.7.0.b0`; aggiunto `internal/serviceidentity`, introdotto `service_owner_key_file` nella config locale, derivato `service_id` dalla service owner key per le identita' nuove, reso esplicito il vincolo nel flusso `attach`, aggiornati test CLI/package e `docs/cli.md`
+13. **Versioning/release maintenance**: keep release workflow/docs in sync with the current `v0.6.0` state
+14. **Release v0.6.0**: ✅ Done on `main` (tag prep, changelog/version bump, `go test ./...`, `SMOKE_FORCE_BUILD=1 ./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, and `tests/e2e/run.sh 001-default-cluster-default-namespace` all passed)
 
 ### Keep on radar (not yet mapped to an issue here)
 
