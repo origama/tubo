@@ -17,7 +17,7 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
 
 1. crea host libp2p (`p2p.NewHostWithSeedAndPSK`);
 2. pubblica `AnnouncementV2` firmato e cifrato sul topic V2 del namespace;
-3. include `ServiceName`, `ServiceID`, `Addresses`, membership capability e `ServiceClaim` valida;
+3. include display name (`ServiceName`), `ServiceID`, service public key, `Addresses`, membership capability e `PublishLease` valida (con `ServiceClaim` legacy solo come compatibilità);
 4. avvia heartbeat (`HEARTBEAT_INTERVAL`, default `15s`) che ripubblica lo stesso annuncio;
 5. tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 6. se configurato, abilita static AutoRelay verso `RELAY_PEERS` (`ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE`).
@@ -32,16 +32,17 @@ Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare co
    - deserializzare annuncio;
    - verificare topic/cluster/namespace;
    - verificare membership capability del namespace e replay nonce;
-   - richiedere e verificare una `ServiceClaim` valida per `service_id`, peer, namespace e authority;
-   - aggiornare cache discovery.
+   - verificare che `service_id` corrisponda alla service public key;
+   - richiedere e verificare una `PublishLease` valida per `service_id`, peer, namespace/scope e authority;
+   - aggiornare cache discovery keyed primariamente da `service_id`.
 4. se configurato, tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 
 ### 1.3 Cache e auto-routing
 
-- Cache keyed per `serviceName` (`internal/discovery/cache.go`).
+- Cache keyed primariamente per `service_id`; `serviceName`/display name resta un indice di compatibilità e non è unico (`internal/discovery/cache.go`).
 - Gli edge aggiornano la cache tramite Discovery V2 validata; non accettano `announce_service` sul protocollo query.
 - I relay possono mantenere una cache query/sync per supportare `get services` remoti.
-- Il TTL effettivo degli annunci V2 è limitato da announcement TTL e scadenza della `ServiceClaim`.
+- Il TTL effettivo degli annunci V2 è limitato da announcement TTL e scadenza della `PublishLease`/claim incorporato.
 - Su evento `added`, il gateway crea route auto:
   - `hostname = serviceName`
   - `pathPrefix = "/"`
@@ -51,8 +52,8 @@ Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
 
 ### 1.4 Limiti attuali importanti
 
-1. Un solo `ServiceEntry` per `serviceName` (ultimo annuncio vince).
-2. La cache query dei relay resta keyed per `serviceName` e non sostituisce la validazione Discovery V2 degli edge.
+1. Display name duplicati sono accettati come record distinti quando il `service_id` differisce; le route HTTP legacy basate su hostname restano ambigue se due servizi nello stesso scope usano lo stesso display name.
+2. La cache query dei relay propaga `service_id` quando disponibile e non sostituisce la validazione Discovery V2 degli edge.
 3. Se gli indirizzi annunciati non sono raggiungibili, il dial diretto fallisce.
 4. La cifratura attuale del payload Discovery V2 deriva la chiave da `cluster_id` + `namespace_id`; questo separa il payload per scope ma **non** fornisce una strong private-namespace metadata boundary se gli ID sono pubblici o indovinabili. Per il target 0.7 vedere `docs/security-model-0.7.md` e il futuro `namespace_discovery_key`.
 5. Hole punching/AutoNAT non sono ancora completi nel progetto.

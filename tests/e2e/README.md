@@ -2,9 +2,11 @@
 
 Questo harness esegue scenari Docker-based, uno per volta, con container separati per attori e stato persistente per actor sotto `generated/e2e/<scenario>-<run-id>/`.
 
-Scenario iniziale:
+Scenari disponibili:
 
 - `001-default-cluster-default-namespace`
+- `public_duplicate_display_names`
+- `public_stolen_access_token_rejected`
 
 Uso:
 
@@ -36,3 +38,5 @@ Il primo scenario valida il happy path base:
 - relay container `admin`;
 - Alice pubblica un servizio `e2e-echo` e genera il token `tubo share service/...`;
 - Bob parte da config pulita, fa implicit public join e si collega direttamente con `tubo connect --token`, senza `tubo join cluster/home`.
+
+Gli scenari `public_*` coprono i gate security/discovery di `0.7.0.b0`: duplicate display name accettate solo come record distinti per `service_id`, lease non valide respinte, e connect proof rubati/scaduti/replay respinti.

@@ -1606,6 +1606,8 @@ type serviceResource struct {
 	Cluster          string   `json:"cluster,omitempty"`
 	Namespace        string   `json:"namespace,omitempty"`
 	Name             string   `json:"name"`
+	ServiceID        string   `json:"service_id,omitempty"`
+	ServicePublicKey string   `json:"service_public_key,omitempty"`
 	PeerID           string   `json:"peer_id"`
 	Addresses        []string `json:"addresses"`
 	DirectAddresses  []string `json:"direct_addresses"`
@@ -2625,6 +2627,8 @@ func serviceResourceFromEntry(entry *discovery.ServiceEntry) serviceResource {
 	return normalizeServiceResource(serviceResource{
 		Kind:             "service",
 		Name:             entry.ServiceName,
+		ServiceID:        entry.ServiceID,
+		ServicePublicKey: entry.ServicePublicKey,
 		PeerID:           entry.PeerID.String(),
 		Addresses:        append([]string(nil), entry.Addresses...),
 		Status:           "online",
@@ -2639,6 +2643,8 @@ func serviceResourceFromQueryService(service discoveryquery.Service) serviceReso
 	return normalizeServiceResource(serviceResource{
 		Kind:             service.Kind,
 		Name:             service.Name,
+		ServiceID:        service.ServiceID,
+		ServicePublicKey: service.ServicePublicKey,
 		PeerID:           service.PeerID,
 		Addresses:        append([]string(nil), service.Addresses...),
 		DirectAddresses:  append([]string(nil), service.DirectAddresses...),

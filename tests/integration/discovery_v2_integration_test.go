@@ -24,7 +24,9 @@ import (
 	"github.com/origama/tubo/internal/app/service"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -52,7 +54,12 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	authorityKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH)))
-	serviceID, serviceSeed := serviceIdentityForTest("cluster-123", namespaceName, "myapi")
+	serviceOwnerPub, serviceOwnerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(serviceOwnerPub)
+	_, serviceSeed := serviceIdentityForTest("cluster-123", namespaceName, "myapi")
 	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +106,30 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 	if err := os.WriteFile(claimPath, append(claimBytes, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{
+		ClusterID:             "cluster-123",
+		NamespaceID:           namespaceName,
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(serviceOwnerPub),
+		PublisherPeerID:       servicePeerID.String(),
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		Nonce:                 "discovery-v2-integration-lease",
+	}, serviceOwnerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseArtifacts, err := grantspkg.BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "myapi", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseBytes, err := json.MarshalIndent(leaseArtifacts.Lease, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "service.publish-lease.json")
+	if err := os.WriteFile(leasePath, append(leaseBytes, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
 
 	cfg := cfgpkg.Config{
 		CurrentCluster:   clusterName,
@@ -109,7 +140,7 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 				AuthorityPublicKey:       authorityKey,
 				MembershipCapabilityFile: capPath,
 				Namespaces: map[string]cfgpkg.Namespace{namespaceName: {Services: map[string]cfgpkg.NamespaceService{
-					"myapi": {ServiceID: serviceID, ServiceSeed: serviceSeed, ServiceClaimFile: claimPath},
+					"myapi": {ServiceID: serviceID, ServiceSeed: serviceSeed, ServiceClaimFile: claimPath, ServicePublishLeaseFile: leasePath},
 				}}},
 			},
 		},
@@ -145,6 +176,7 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 		Listen:                   fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", serviceP2P),
 		Seed:                     serviceSeed,
 		ServiceName:              "myapi",
+		ServiceID:                serviceID,
 		Target:                   dummy.URL,
 		HealthListen:             fmt.Sprintf("127.0.0.1:%d", serviceHealth),
 		HeartbeatInterval:        500 * time.Millisecond,
@@ -156,6 +188,7 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 		AuthorityPublicKey:       authorityKey,
 		MembershipCapabilityFile: capPath,
 		ServiceClaimFile:         claimPath,
+		ServicePublishLeaseFile:  leasePath,
 	})
 	if err != nil {
 		t.Fatal(err)

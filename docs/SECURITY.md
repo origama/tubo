@@ -16,7 +16,7 @@ Implemented today:
 
 - signed network bundle verification for the public bootstrap flow;
 - local trust root pinning for the public bundle signing key;
-- namespace-scoped Discovery V2 validation with mandatory authority-signed `ServiceClaim` for service publication;
+- namespace-scoped Discovery V2 validation keyed by `service_id`, with service public key matching and mandatory authority-signed `PublishLease` for service publication;
 - membership capability checks for namespace-scoped discovery/listing;
 - connect-proof validation on the service side for tunneled traffic;
 - optional private swarm PSK support across runtime roles;

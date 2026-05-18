@@ -176,6 +176,12 @@ func VerifyPublishLease(lease PublishLease, authorityPub ed25519.PublicKey, clus
 	if err := serviceidentity.MatchServiceID(pub, serviceID); err != nil {
 		return err
 	}
+	if lease.ExpiresAt.IsZero() {
+		return errors.New("publish lease expires_at is required")
+	}
+	if time.Now().UTC().After(lease.ExpiresAt.UTC()) {
+		return errors.New("publish lease expired")
+	}
 	if err := capability.VerifyServiceClaim(lease.ServiceClaim, authorityPub, clusterID, namespaceID, serviceID, servicePeerID); err != nil {
 		return err
 	}

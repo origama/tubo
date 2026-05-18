@@ -128,7 +128,11 @@ func createLocalService(configPath, name string) error {
 	if _, err := ensureServiceMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, serviceSeed); err != nil {
 		return err
 	}
-	namespace.Services[name] = cfgpkg.NamespaceService{ServiceID: serviceID, ServiceSeed: serviceSeed, ServiceOwnerKeyFile: svc.ServiceOwnerKeyFile, ServiceClaimFile: claimPath, ServicePublishLeaseFile: servicePublishLeasePath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace, name)}
+	svc = cfgpkg.NamespaceService{ServiceID: serviceID, ServiceSeed: serviceSeed, ServiceOwnerKeyFile: svc.ServiceOwnerKeyFile, ServiceClaimFile: claimPath, ServicePublishLeaseFile: servicePublishLeasePath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace, name)}
+	if err := mintLocalServicePublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, name, svc); err != nil {
+		return err
+	}
+	namespace.Services[name] = svc
 	cluster.Namespaces[cfg.CurrentNamespace] = namespace
 	cfg.Clusters[cfg.CurrentCluster] = cluster
 	if err := saveLocalConfig(configPath, cfg); err != nil {

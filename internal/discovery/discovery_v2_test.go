@@ -12,6 +12,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	capability "github.com/origama/tubo/internal/capability"
+	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 func TestPubSubSubscriberV2AcceptsValidAnnouncement(t *testing.T) {
@@ -85,6 +87,7 @@ func TestPubSubSubscriberV2RejectsMissingServiceClaim(t *testing.T) {
 		serviceName:      "myapi",
 		addresses:        []string{"/ip4/127.0.0.1/tcp/8080"},
 		omitServiceClaim: true,
+		omitPublishLease: true,
 	})
 
 	subscriber.handleMessageV2(msg)
@@ -96,6 +99,7 @@ func TestPubSubSubscriberV2RejectsExpiredServiceClaim(t *testing.T) {
 		serviceName:           "myapi",
 		addresses:             []string{"/ip4/127.0.0.1/tcp/8080"},
 		serviceClaimExpiresAt: time.Now().Add(-time.Minute),
+		omitPublishLease:      true,
 	})
 
 	subscriber.handleMessageV2(msg)
@@ -111,6 +115,7 @@ func TestPubSubSubscriberV2RejectsServiceClaimSignedByWrongAuthority(t *testing.
 		serviceName:              "myapi",
 		addresses:                []string{"/ip4/127.0.0.1/tcp/8080"},
 		serviceClaimAuthorityKey: wrongAuthorityPriv,
+		omitPublishLease:         true,
 	})
 
 	subscriber.handleMessageV2(msg)
@@ -124,6 +129,7 @@ func TestPubSubSubscriberV2RejectsServiceClaimForDifferentPeer(t *testing.T) {
 		serviceClaimPeerID:    "12D3KooWDifferentPeer",
 		serviceClaimPerms:     []string{capability.PermissionAttach, capability.PermissionAnnounce},
 		serviceClaimExpiresAt: time.Now().Add(time.Hour),
+		omitPublishLease:      true,
 	})
 
 	subscriber.handleMessageV2(msg)
@@ -134,8 +140,75 @@ func TestPubSubSubscriberV2RejectsServiceClaimForDifferentServiceID(t *testing.T
 	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
 		serviceName:           "myapi",
 		addresses:             []string{"/ip4/127.0.0.1/tcp/8080"},
-		serviceClaimServiceID: "other-service",
+		serviceClaimServiceID: "service-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		serviceClaimPerms:     []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		omitPublishLease:      true,
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Rejected(t, subscriber)
+}
+
+func TestPubSubSubscriberV2AcceptsDuplicateDisplayNamesWithDifferentServiceIDs(t *testing.T) {
+	subscriber, first := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName: "myapi",
+		addresses:   []string{"/ip4/127.0.0.1/tcp/8080"},
+	})
+	_, second := testV2SubscriberAndMessage(t, testV2Payload{
+		authorityPriv: subscriber.testAuthorityKey,
+		serviceName:   "myapi",
+		addresses:     []string{"/ip4/127.0.0.1/tcp/8081"},
+	})
+
+	subscriber.handleMessageV2(first)
+	subscriber.handleMessageV2(second)
+	if got := subscriber.cache.Count(); got != 2 {
+		t.Fatalf("cache count = %d want 2", got)
+	}
+}
+
+func TestPubSubSubscriberV2RejectsDuplicateServiceIDFromWrongKey(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:           "myapi",
+		addresses:             []string{"/ip4/127.0.0.1/tcp/8080"},
+		wrongServicePublicKey: true,
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Rejected(t, subscriber)
+}
+
+func TestPubSubSubscriberV2RejectsPublishLeaseForDifferentServiceID(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:           "myapi",
+		addresses:             []string{"/ip4/127.0.0.1/tcp/8080"},
+		publishLeaseServiceID: "service-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Rejected(t, subscriber)
+}
+
+func TestPubSubSubscriberV2RejectsPublishLeaseFromUntrustedIssuer(t *testing.T) {
+	_, wrongAuthorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:              "myapi",
+		addresses:                []string{"/ip4/127.0.0.1/tcp/8080"},
+		publishLeaseAuthorityKey: wrongAuthorityPriv,
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Rejected(t, subscriber)
+}
+
+func TestPubSubSubscriberV2RejectsExpiredPublishLease(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:           "myapi",
+		addresses:             []string{"/ip4/127.0.0.1/tcp/8080"},
+		publishLeaseExpiresAt: time.Now().Add(-time.Minute),
 	})
 
 	subscriber.handleMessageV2(msg)
@@ -170,6 +243,7 @@ func TestPubSubSubscriberV2RejectsCorruptedCiphertext(t *testing.T) {
 }
 
 type testV2Payload struct {
+	authorityPriv            ed25519.PrivateKey
 	serviceName              string
 	serviceID                string
 	addresses                []string
@@ -183,12 +257,18 @@ type testV2Payload struct {
 	serviceClaimPerms        []string
 	serviceClaimExpiresAt    time.Time
 	serviceClaimAuthorityKey ed25519.PrivateKey
+	omitPublishLease         bool
+	publishLeaseAuthorityKey ed25519.PrivateKey
+	publishLeaseServiceID    string
+	publishLeaseExpiresAt    time.Time
+	wrongServicePublicKey    bool
 }
 
 type testV2Harness struct {
 	PubSubSubscriber
-	testPrivKey crypto.PrivKey
-	topic       string
+	testPrivKey      crypto.PrivKey
+	testAuthorityKey ed25519.PrivateKey
+	topic            string
 }
 
 func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Harness, *pubsub.Message) {
@@ -204,6 +284,10 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(payload.authorityPriv) > 0 {
+		authorityPriv = payload.authorityPriv
+		authorityPub = authorityPriv.Public().(ed25519.PublicKey)
 	}
 	if payload.ttl == 0 {
 		payload.ttl = 30 * time.Second
@@ -229,9 +313,21 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 	if err != nil {
 		t.Fatal(err)
 	}
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	serviceID := payload.serviceID
 	if serviceID == "" {
-		serviceID = "service-myapi"
+		serviceID = serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	}
+	servicePublicKey := serviceidentity.EncodePublicKey(ownerPub)
+	if payload.wrongServicePublicKey {
+		wrongPub, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		servicePublicKey = serviceidentity.EncodePublicKey(wrongPub)
 	}
 	var serviceClaim []byte
 	if !payload.omitServiceClaim {
@@ -271,6 +367,43 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 			t.Fatal(err)
 		}
 	}
+	var publishLease []byte
+	if !payload.omitPublishLease {
+		leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{
+			ClusterID:             "cluster-123",
+			NamespaceID:           "tenant-a",
+			ServiceID:             serviceID,
+			ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
+			PublisherPeerID:       pid.String(),
+			RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+			Nonce:                 "test-lease-nonce",
+		}, ownerPriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaseAuthorityKey := authorityPriv
+		if len(payload.publishLeaseAuthorityKey) > 0 {
+			leaseAuthorityKey = payload.publishLeaseAuthorityKey
+		}
+		leaseTTL := time.Hour
+		if !payload.publishLeaseExpiresAt.IsZero() {
+			leaseTTL = time.Until(payload.publishLeaseExpiresAt)
+		}
+		artifacts, err := grantspkg.BuildPublishLeaseArtifacts(leaseAuthorityKey, leaseReq, payload.serviceName, time.Hour, leaseTTL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if payload.publishLeaseServiceID != "" {
+			artifacts.Lease.ServiceID = payload.publishLeaseServiceID
+		}
+		if !payload.publishLeaseExpiresAt.IsZero() {
+			artifacts.Lease.ExpiresAt = payload.publishLeaseExpiresAt
+		}
+		publishLease, err = json.Marshal(artifacts.Lease)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	membershipBytes, err := json.Marshal(membership)
 	if err != nil {
 		t.Fatal(err)
@@ -278,9 +411,11 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 	ann, err := NewAnnouncementV2("cluster-123", "tenant-a", pid, payload.ttl, AnnouncementV2Payload{
 		ServiceName:          payload.serviceName,
 		ServiceID:            serviceID,
+		ServicePublicKey:     servicePublicKey,
 		Addresses:            payload.addresses,
 		MembershipCapability: membershipBytes,
 		ServiceClaim:         serviceClaim,
+		PublishLease:         publishLease,
 		RegisteredAt:         payload.registeredAt,
 	})
 	if err != nil {
@@ -306,8 +441,9 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 			replay:             newAnnouncementReplayCache(16),
 			events:             make(chan DiscoveryEvent, 4),
 		},
-		testPrivKey: priv,
-		topic:       topic,
+		testPrivKey:      priv,
+		testAuthorityKey: authorityPriv,
+		topic:            topic,
 	}
 	msg := &pubsub.Message{Message: &pb.Message{Data: data, From: []byte(pid), Topic: &topic, Key: mustPubKeyRaw(t, priv.GetPublic())}}
 	return h, msg

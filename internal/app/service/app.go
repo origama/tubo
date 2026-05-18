@@ -332,7 +332,13 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.Annou
 	if capBytes, err := a.loadMembershipCapabilityBytes(); err == nil && len(capBytes) > 0 {
 		payload.MembershipCapability = capBytes
 	}
-	if claimBytes, err := a.loadServiceClaimBytes(); err == nil && len(claimBytes) > 0 {
+	if leaseBytes, lease, err := a.loadPublishLeaseBytes(); err == nil && len(leaseBytes) > 0 {
+		payload.PublishLease = leaseBytes
+		payload.ServicePublicKey = lease.ServicePublicKey
+		if claimBytes, err := json.Marshal(lease.ServiceClaim); err == nil {
+			payload.ServiceClaim = claimBytes
+		}
+	} else if claimBytes, err := a.loadServiceClaimBytes(); err == nil && len(claimBytes) > 0 {
 		payload.ServiceClaim = claimBytes
 	}
 	ann, err := discovery.NewAnnouncementV2(a.discoveryClusterID(), a.discoveryNamespaceID(), a.host.ID(), a.announcementTTL, payload)
@@ -388,7 +394,7 @@ func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.Ann
 	peers := append([]string(nil), a.cfg.BootstrapPeers...)
 	peers = append(peers, a.cfg.RelayPeers...)
 	seen := make(map[string]struct{}, len(peers))
-	service := discoveryquery.Service{Kind: "service", Name: payload.ServiceName, PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
+	service := discoveryquery.Service{Kind: "service", Name: payload.ServiceName, ServiceID: payload.ServiceID, ServicePublicKey: payload.ServicePublicKey, PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
 	for _, raw := range peers {
 		if raw == "" {
 			continue
@@ -415,23 +421,32 @@ func (a *App) loadMembershipCapabilityBytes() ([]byte, error) {
 	return os.ReadFile(a.serviceCapabilityFile)
 }
 
-func (a *App) loadServiceClaimBytes() ([]byte, error) {
-	if a.servicePublishLeaseFile != "" {
-		b, err := os.ReadFile(a.servicePublishLeaseFile)
-		if err == nil && len(b) > 0 {
-			authorityPub, err := discovery.ParseAuthorityPublicKey(a.cfg.AuthorityPublicKey)
-			if err != nil {
-				return nil, err
-			}
-			lease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(b, authorityPub, a.discoveryClusterIDValue(), a.discoveryNamespaceIDValue(), a.serviceID, a.host.ID().String())
-			if err != nil {
-				return nil, err
-			}
-			return json.Marshal(lease.ServiceClaim)
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
-		}
+func (a *App) loadPublishLeaseBytes() ([]byte, grantspkg.PublishLease, error) {
+	if a.servicePublishLeaseFile == "" {
+		return nil, grantspkg.PublishLease{}, nil
 	}
+	b, err := os.ReadFile(a.servicePublishLeaseFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, grantspkg.PublishLease{}, nil
+		}
+		return nil, grantspkg.PublishLease{}, err
+	}
+	if len(b) == 0 {
+		return nil, grantspkg.PublishLease{}, nil
+	}
+	authorityPub, err := discovery.ParseAuthorityPublicKey(a.cfg.AuthorityPublicKey)
+	if err != nil {
+		return nil, grantspkg.PublishLease{}, err
+	}
+	lease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(b, authorityPub, a.discoveryClusterIDValue(), a.discoveryNamespaceIDValue(), a.serviceID, a.host.ID().String())
+	if err != nil {
+		return nil, grantspkg.PublishLease{}, err
+	}
+	return b, lease, nil
+}
+
+func (a *App) loadServiceClaimBytes() ([]byte, error) {
 	if a.serviceClaimFile == "" {
 		return nil, nil
 	}

@@ -30,6 +30,7 @@ type Cache interface {
 	Resolve(serviceName string) (*discovery.ServiceEntry, bool)
 	List() []*discovery.ServiceEntry
 	Add(peer.ID, string, []string, time.Duration) error
+	AddV2(peer.ID, string, string, string, []string, time.Duration) error
 }
 
 type Request struct {
@@ -47,6 +48,8 @@ type Metadata struct {
 type Service struct {
 	Kind             string   `json:"kind"`
 	Name             string   `json:"name"`
+	ServiceID        string   `json:"service_id,omitempty"`
+	ServicePublicKey string   `json:"service_public_key,omitempty"`
 	PeerID           string   `json:"peer_id"`
 	Addresses        []string `json:"addresses"`
 	DirectAddresses  []string `json:"direct_addresses"`
@@ -130,7 +133,7 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 			resp.Error = fmt.Sprintf("invalid service peer id: %v", err)
 			return resp
 		}
-		if err := cache.Add(pID, req.Service.Name, append([]string(nil), req.Service.Addresses...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
+		if err := cache.AddV2(pID, req.Service.ServiceID, req.Service.Name, req.Service.ServicePublicKey, append([]string(nil), req.Service.Addresses...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
 			resp.Error = fmt.Sprintf("cache announce: %v", err)
 			return resp
 		}
@@ -198,6 +201,8 @@ func serviceFromEntry(entry *discovery.ServiceEntry) Service {
 	return Service{
 		Kind:             "service",
 		Name:             entry.ServiceName,
+		ServiceID:        entry.ServiceID,
+		ServicePublicKey: entry.ServicePublicKey,
 		PeerID:           entry.PeerID.String(),
 		Addresses:        append([]string(nil), entry.Addresses...),
 		DirectAddresses:  direct,
