@@ -3,11 +3,14 @@ package grants
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/origama/tubo/internal/capability"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 func TestGrantServerSubmitPollInvalidScopeAndRequesterBinding(t *testing.T) {
@@ -124,4 +127,79 @@ func TestGrantServerDuplicateRequest(t *testing.T) {
 	if first.RequestID == "" || first.RequestID != second.RequestID {
 		t.Fatalf("duplicate requests not deduped: first=%#v second=%#v", first, second)
 	}
+}
+
+func TestGrantServerExpiredApprovedGrantDoesNotBlockAndActiveOneStillDoes(t *testing.T) {
+	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
+	clusterName := "home"
+	clusterID := "cluster-123"
+	namespaceID := "default"
+	serviceName := "myapi"
+	label := "stale-approved"
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+
+	t.Run("expired approved grant does not block", func(t *testing.T) {
+		store := NewStore(storePath)
+		store.now = func() time.Time { return now }
+		seedApprovedGrant(t, store, clusterName, clusterID, namespaceID, label, serviceName, "12D3-old", "12D3-old-peer", now.Add(time.Hour))
+		store.now = func() time.Time { return now.Add(2 * time.Hour) }
+		server, err := NewServer(ServerConfig{ClusterName: clusterName, ClusterID: clusterID, NamespaceID: namespaceID, Store: store, Now: func() time.Time { return now.Add(2 * time.Hour) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := server.HandleMessage(signedSubmit(label, serviceName, "12D3-new-peer"), peer.ID("12D3-requester"))
+		if resp.Type != TypePending {
+			t.Fatalf("expected pending after expired approved grant, got %#v", resp)
+		}
+		all, err := store.ListAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, req := range all {
+			if req.ServicePeerID == "12D3-old-peer" && req.Status == StatusApproved {
+				t.Fatalf("expired approved grant remained active: %#v", req)
+			}
+		}
+	})
+
+	t.Run("active approved grant still blocks", func(t *testing.T) {
+		store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+		store.now = func() time.Time { return now }
+		seedApprovedGrant(t, store, clusterName, clusterID, namespaceID, label, serviceName, "12D3-old", "12D3-old-peer", now.Add(time.Hour))
+		server, err := NewServer(ServerConfig{ClusterName: clusterName, ClusterID: clusterID, NamespaceID: namespaceID, Store: store, Now: func() time.Time { return now }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := server.HandleMessage(signedSubmit(label, serviceName, "12D3-new-peer"), peer.ID("12D3-requester"))
+		if resp.Type != TypeDenied || !strings.Contains(resp.Reason, "already has an active grant request or claim for a different peer") {
+			t.Fatalf("expected collision denial for active approved grant, got %#v", resp)
+		}
+	})
+}
+
+func seedApprovedGrant(t *testing.T, store *Store, clusterName, clusterID, namespaceID, label, serviceName, requesterPeerID, servicePeerID string, expiresAt time.Time) Request {
+	t.Helper()
+	ownerPriv, ownerPub := testOwnerKey(label)
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	leaseReq, err := SignPublishLeaseRequest(PublishLeaseRequest{ClusterID: clusterID, NamespaceID: namespaceID, ServiceID: serviceID, ServicePublicKey: serviceidentity.EncodePublicKey(ownerPub), PublisherPeerID: servicePeerID, RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: label + "-nonce"}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreatePending(Request{ClusterName: clusterName, ClusterID: clusterID, NamespaceID: namespaceID, RequesterPeerID: requesterPeerID, ServiceName: serviceName, ServiceID: serviceID, ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, RequestNonce: leaseReq.Nonce, ServicePeerID: servicePeerID, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedAt: expiresAt.Add(-24 * time.Hour), ExpiresAt: expiresAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPriv, _ := testOwnerKey("authority-" + label)
+	claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: clusterID, NamespaceID: namespaceID, ServiceID: serviceID, SubjectPeerID: servicePeerID, Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: expiresAt}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved, err := store.Approve(created.ID, claim, nil, nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if approved.Status != StatusApproved {
+		t.Fatalf("seeded grant not approved: %#v", approved)
+	}
+	return approved
 }

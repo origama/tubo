@@ -51,6 +51,23 @@ func TestStoreCreateReloadApproveDenyExpireAndDedupe(t *testing.T) {
 		t.Fatalf("unexpected approved request: %#v", approved)
 	}
 
+	reloaded.now = func() time.Time { return base.Add(2 * time.Hour) }
+	all, err := reloaded.ListAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundApprovedExpired := false
+	for _, req := range all {
+		if req.ID == approved.ID {
+			foundApprovedExpired = req.Status == StatusExpired
+			break
+		}
+	}
+	if !foundApprovedExpired {
+		t.Fatalf("approved request did not expire after lease expiry: %#v", all)
+	}
+
+	reloaded.now = func() time.Time { return base }
 	second := sampleRequest(base)
 	second.ServiceName = "other"
 	second.ServiceID = "service-other"

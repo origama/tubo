@@ -1566,6 +1566,74 @@ func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
 	}
 }
 
+func TestGrantsRequestIgnoresExpiredApprovedGrantCollision(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = authz.Config
+	svc := authz.Service
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	store := grantspkg.NewStore(storePath)
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	seedExpiresAt := time.Now().UTC().Add(time.Hour)
+	if err := seedApprovedClaimGrant(t, store, "home", cfg.Clusters["home"], cfg.CurrentNamespace, cfg.Service.Name, svc, authorityPriv, "12D3-stale-peer", seedExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+	expireApprovedGrantRecord(t, storePath, "12D3-stale-peer", time.Now().UTC().Add(-time.Hour))
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-request-expired-approved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cfg.Clusters["home"].ClusterID, NamespaceID: cfg.CurrentNamespace, Store: store, AutoApprove: true, AuthorityPrivateKey: authorityPriv, ClaimTTL: time.Hour, ServiceShareTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+
+	out, err := capture(func() error {
+		return run([]string{"grants", "request", "service/myapi", "--config", configPath, "--peer", grantPeer, "--ttl", "168h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Grant request approved.") {
+		t.Fatalf("unexpected request output: %s", out)
+	}
+	freshPeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := store.ListAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawExpiredOld, sawApprovedFresh bool
+	for _, req := range all {
+		if req.ServicePeerID == "12D3-stale-peer" && req.Status == grantspkg.StatusExpired {
+			sawExpiredOld = true
+		}
+		if req.ServicePeerID == freshPeerID.String() && req.Status == grantspkg.StatusApproved {
+			sawApprovedFresh = true
+		}
+	}
+	if !sawExpiredOld || !sawApprovedFresh {
+		t.Fatalf("expected expired old grant and approved fresh grant, got %#v", all)
+	}
+}
+
 func makePendingGrantRequest(t *testing.T, clusterName, clusterID, namespaceID, requesterPeerID, serviceName, servicePeerID string, requestedAt, expiresAt time.Time) grantspkg.Request {
 	t.Helper()
 	ownerPub, ownerPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -2072,6 +2140,62 @@ func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *t
 				t.Fatalf("ambiguous old error leaked: %v", err)
 			}
 		})
+	}
+}
+
+func seedApprovedClaimGrant(t *testing.T, store *grantspkg.Store, clusterName string, cluster cfgpkg.Cluster, namespace, serviceName string, svc cfgpkg.NamespaceService, authorityPriv ed25519.PrivateKey, requesterPeerID string, expiresAt time.Time) error {
+	t.Helper()
+	owner, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
+	if err != nil {
+		return err
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: cluster.ClusterID, NamespaceID: namespace, ServiceID: svc.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey), PublisherPeerID: requesterPeerID, RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: serviceName + "-nonce"}, owner.PrivateKey)
+	if err != nil {
+		return err
+	}
+	created, err := store.CreatePending(grantspkg.Request{ClusterName: clusterName, ClusterID: cluster.ClusterID, NamespaceID: namespace, RequesterPeerID: requesterPeerID, ServiceName: serviceName, ServiceID: svc.ServiceID, ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, RequestNonce: leaseReq.Nonce, ServicePeerID: requesterPeerID, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedAt: expiresAt.Add(-24 * time.Hour), ExpiresAt: expiresAt})
+	if err != nil {
+		return err
+	}
+	claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: cluster.ClusterID, NamespaceID: namespace, ServiceID: svc.ServiceID, SubjectPeerID: requesterPeerID, Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: expiresAt}, authorityPriv)
+	if err != nil {
+		return err
+	}
+	_, err = store.Approve(created.ID, claim, nil, nil, "")
+	return err
+}
+
+func expireApprovedGrantRecord(t *testing.T, storePath, servicePeerID string, expiresAt time.Time) {
+	t.Helper()
+	b, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Requests []grantspkg.Request `json:"requests"`
+	}
+	if err := json.Unmarshal(b, &state); err != nil {
+		t.Fatal(err)
+	}
+	for i := range state.Requests {
+		if state.Requests[i].ServicePeerID != servicePeerID || state.Requests[i].Status != grantspkg.StatusApproved {
+			continue
+		}
+		state.Requests[i].ExpiresAt = expiresAt
+		if state.Requests[i].ServiceClaim != nil {
+			state.Requests[i].ServiceClaim.ExpiresAt = expiresAt
+		}
+		if state.Requests[i].PublishLease != nil {
+			state.Requests[i].PublishLease.ExpiresAt = expiresAt
+			state.Requests[i].PublishLease.ServiceClaim.ExpiresAt = expiresAt
+		}
+	}
+	out, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storePath, append(out, '\n'), 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 

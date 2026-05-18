@@ -181,6 +181,9 @@ func (s *Store) Approve(id string, claim capability.ServiceClaim, lease *Publish
 		state.Requests[i].PublishLease = lease
 		state.Requests[i].MembershipCapability = membership
 		state.Requests[i].ServiceShareToken = serviceShareToken
+		if expiry, ok := approvedRequestExpiry(state.Requests[i]); ok {
+			state.Requests[i].ExpiresAt = expiry
+		}
 		if err := s.save(state); err != nil {
 			return Request{}, err
 		}
@@ -284,7 +287,10 @@ func (s *Store) save(state fileState) error {
 func (s *fileState) expire(now time.Time) int {
 	changed := 0
 	for i := range s.Requests {
-		if s.Requests[i].Status == StatusPending && !s.Requests[i].ExpiresAt.IsZero() && now.After(s.Requests[i].ExpiresAt.UTC()) {
+		if isRequestExpired(s.Requests[i], now) && s.Requests[i].Status != StatusExpired {
+			if expiry, ok := requestExpiry(s.Requests[i]); ok {
+				s.Requests[i].ExpiresAt = expiry
+			}
 			s.Requests[i].Status = StatusExpired
 			changed++
 		}
@@ -305,6 +311,45 @@ func validateStoreRequest(req Request) error {
 		return errors.New("grant request is missing required fields")
 	}
 	return nil
+}
+
+func requestExpiry(req Request) (time.Time, bool) {
+	switch req.Status {
+	case StatusPending:
+		if req.ExpiresAt.IsZero() {
+			return time.Time{}, false
+		}
+		return req.ExpiresAt.UTC(), true
+	case StatusApproved:
+		return approvedRequestExpiry(req)
+	default:
+		return time.Time{}, false
+	}
+}
+
+func approvedRequestExpiry(req Request) (time.Time, bool) {
+	var expiry time.Time
+	if req.PublishLease != nil && !req.PublishLease.ExpiresAt.IsZero() {
+		expiry = req.PublishLease.ExpiresAt.UTC()
+	}
+	if req.ServiceClaim != nil && !req.ServiceClaim.ExpiresAt.IsZero() {
+		claimExpiry := req.ServiceClaim.ExpiresAt.UTC()
+		if expiry.IsZero() || claimExpiry.Before(expiry) {
+			expiry = claimExpiry
+		}
+	}
+	if expiry.IsZero() && !req.ExpiresAt.IsZero() {
+		expiry = req.ExpiresAt.UTC()
+	}
+	if expiry.IsZero() {
+		return time.Time{}, false
+	}
+	return expiry, true
+}
+
+func isRequestExpired(req Request, now time.Time) bool {
+	expiry, ok := requestExpiry(req)
+	return ok && now.After(expiry)
 }
 
 func randomID(prefix string) (string, error) {
