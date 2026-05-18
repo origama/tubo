@@ -90,19 +90,25 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if msg.ClusterID != s.cfg.ClusterID || msg.NamespaceID != s.cfg.NamespaceID {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: "grant request scope does not match authority server"}
 	}
+	if err := VerifyPublishLeaseRequest(PublishLeaseRequest{Version: msg.Version, Kind: PublishLeaseRequestKind, ClusterID: msg.ClusterID, NamespaceID: msg.NamespaceID, ServiceID: msg.ServiceID, ServicePublicKey: msg.ServicePublicKey, PublisherPeerID: msg.ServicePeerID, PublisherInstancePublicKey: msg.PublisherInstanceKey, RequestedCapabilities: append([]string(nil), msg.RequestedPermissions...), Nonce: msg.RequestNonce, ServiceOwnerSignature: append([]byte(nil), msg.ServiceOwnerSignature...)}); err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
+	}
 	now := s.cfg.Now().UTC()
 	req := Request{
-		ClusterName:          s.cfg.ClusterName,
-		ClusterID:            msg.ClusterID,
-		NamespaceID:          msg.NamespaceID,
-		RequesterPeerID:      requester.String(),
-		ServiceName:          msg.ServiceName,
-		ServiceID:            msg.ServiceID,
-		ServicePeerID:        msg.ServicePeerID,
-		RequestedPermissions: append([]string(nil), msg.RequestedPermissions...),
-		RequestedTTLSeconds:  msg.RequestedTTLSeconds,
-		RequestedAt:          now,
-		ExpiresAt:            now.Add(24 * time.Hour),
+		ClusterName:           s.cfg.ClusterName,
+		ClusterID:             msg.ClusterID,
+		NamespaceID:           msg.NamespaceID,
+		RequesterPeerID:       requester.String(),
+		ServiceName:           msg.ServiceName,
+		ServiceID:             msg.ServiceID,
+		ServicePublicKey:      msg.ServicePublicKey,
+		ServiceOwnerSignature: append([]byte(nil), msg.ServiceOwnerSignature...),
+		RequestNonce:          msg.RequestNonce,
+		ServicePeerID:         msg.ServicePeerID,
+		RequestedPermissions:  append([]string(nil), msg.RequestedPermissions...),
+		RequestedTTLSeconds:   msg.RequestedTTLSeconds,
+		RequestedAt:           now,
+		ExpiresAt:             now.Add(24 * time.Hour),
 	}
 	if err := s.enforcePendingPolicy(req); err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
@@ -128,11 +134,11 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if claimTTL > 0 && shareTTL > claimTTL {
 		shareTTL = claimTTL
 	}
-	artifacts, err := BuildApprovalArtifacts(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL)
+	artifacts, err := BuildApprovalArtifacts(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: err.Error()}
 	}
-	approved, err := s.cfg.Store.Approve(req.ID, artifacts.ServiceClaim, &artifacts.MembershipCapability, artifacts.ServiceShareToken)
+	approved, err := s.cfg.Store.Approve(req.ID, artifacts.ServiceClaim, &artifacts.PublishLease, &artifacts.MembershipCapability, artifacts.ServiceShareToken)
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: err.Error()}
 	}
@@ -151,8 +157,8 @@ func (s *Server) enforcePendingPolicy(req Request) error {
 		if existing.Status == StatusPending && equivalentActive(existing, req) {
 			return nil
 		}
-		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceName == req.ServiceName && existing.Status != StatusDenied && existing.Status != StatusExpired && existing.ServicePeerID != req.ServicePeerID {
-			return fmt.Errorf("service name %q already has an active grant request or claim for a different peer", req.ServiceName)
+		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceID == req.ServiceID && existing.Status != StatusDenied && existing.Status != StatusExpired && existing.ServicePeerID != req.ServicePeerID {
+			return fmt.Errorf("service %q already has an active grant request or claim for a different peer", req.ServiceID)
 		}
 		if existing.Status != StatusPending {
 			continue
@@ -161,7 +167,7 @@ func (s *Server) enforcePendingPolicy(req Request) error {
 		if existing.RequesterPeerID == req.RequesterPeerID {
 			pendingRequester++
 		}
-		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceName == req.ServiceName {
+		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceID == req.ServiceID {
 			pendingService++
 		}
 	}
@@ -172,7 +178,7 @@ func (s *Server) enforcePendingPolicy(req Request) error {
 		return fmt.Errorf("too many pending grant requests for requester: limit %d", s.cfg.MaxPendingPerRequester)
 	}
 	if pendingService >= s.cfg.MaxPendingPerService {
-		return fmt.Errorf("too many pending grant requests for service %q: limit %d", req.ServiceName, s.cfg.MaxPendingPerService)
+		return fmt.Errorf("too many pending grant requests for service %q: limit %d", req.ServiceID, s.cfg.MaxPendingPerService)
 	}
 	return nil
 }

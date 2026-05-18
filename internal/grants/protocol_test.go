@@ -2,20 +2,25 @@ package grants
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/sha256"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/origama/tubo/internal/capability"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 func TestGrantMessagesRoundTrip(t *testing.T) {
 	claim := &capability.ServiceClaim{ClusterID: "cluster-123", NamespaceID: "default", ServiceID: "service-myapi", SubjectPeerID: "12D3-service", Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: time.Now().Add(time.Hour), Signature: []byte("sig")}
+	_, leasePub := testOwnerKey("lease-roundtrip")
+	lease := &PublishLease{Version: PublishLeaseVersion, Kind: PublishLeaseKind, ClusterID: "cluster-123", NamespaceID: "default", ServiceID: "service-myapi", ServicePublicKey: serviceidentity.EncodePublicKey(leasePub), PublisherPeerID: "12D3-service", RequestedCapabilities: []string{capability.PermissionPublish, capability.PermissionAttach, capability.PermissionAnnounce}, Nonce: "nonce", IssuedAt: time.Now().Add(-time.Minute), ExpiresAt: time.Now().Add(time.Hour), ServiceClaim: *claim, Signature: []byte("sig")}
 	for _, msg := range []Message{
 		validSubmit(),
 		{Type: TypePoll, Version: VersionV1, RequestID: "gr_123"},
 		{Type: TypePending, Version: VersionV1, RequestID: "gr_123", ExpiresAt: time.Now().Add(time.Hour)},
-		{Type: TypeApproved, Version: VersionV1, RequestID: "gr_123", ServiceClaim: claim, ServiceShareToken: "tubo-service-share-v1.token"},
+		{Type: TypeApproved, Version: VersionV1, RequestID: "gr_123", ServiceClaim: claim, PublishLease: lease, ServiceShareToken: "tubo-service-share-v1.token"},
 		{Type: TypeDenied, Version: VersionV1, RequestID: "gr_123", Reason: "no"},
 		{Type: TypeExpired, Version: VersionV1, RequestID: "gr_123", Reason: "expired"},
 	} {
@@ -73,17 +78,29 @@ func TestDecodeRejectsOversizedPayload(t *testing.T) {
 	}
 }
 
-func validSubmit() Message {
-	return Message{
-		Type:                 TypeSubmit,
-		Version:              VersionV1,
-		Token:                "tubo-invite-v1.token",
-		ClusterID:            "cluster-123",
-		NamespaceID:          "default",
-		ServiceName:          "myapi",
-		ServiceID:            "service-myapi",
-		ServicePeerID:        "12D3-service",
-		RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce},
-		RequestedTTLSeconds:  int64((7 * 24 * time.Hour).Seconds()),
+func validSubmit() Message { return signedSubmit("default", "myapi", "12D3-service") }
+
+func signedSubmit(label, serviceName, servicePeerID string) Message {
+	ownerPriv, ownerPub := testOwnerKey(label)
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	req, err := SignPublishLeaseRequest(PublishLeaseRequest{
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
+		PublisherPeerID:       servicePeerID,
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		Nonce:                 label + "-nonce",
+	}, ownerPriv)
+	if err != nil {
+		panic(err)
 	}
+	return Message{Type: TypeSubmit, Version: VersionV1, Token: "tubo-invite-v1.token", ClusterID: "cluster-123", NamespaceID: "default", ServiceName: serviceName, ServiceID: serviceID, ServicePublicKey: req.ServicePublicKey, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: servicePeerID, RequestNonce: req.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds())}
+}
+
+func testOwnerKey(label string) (ed25519.PrivateKey, ed25519.PublicKey) {
+	seed := sha256.Sum256([]byte(label))
+	priv := ed25519.NewKeyFromSeed(seed[:])
+	pub := priv.Public().(ed25519.PublicKey)
+	return priv, pub
 }

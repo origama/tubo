@@ -24,6 +24,7 @@ import (
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 	iversion "github.com/origama/tubo/internal/version"
 	"golang.org/x/crypto/ssh"
 )
@@ -1356,11 +1357,13 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	}
 	cfg = authz.Config
 	svc := authz.Service
-	if svc.ServiceID == "" || svc.ServiceSeed == "" || svc.ServiceClaimFile == "" || svc.ServiceOwnerKeyFile == "" {
+	if svc.ServiceID == "" || svc.ServiceSeed == "" || svc.ServiceClaimFile == "" || svc.ServicePublishLeaseFile == "" || svc.ServiceOwnerKeyFile == "" {
 		t.Fatalf("service identity incomplete: %#v", svc)
 	}
-	if _, err := os.Stat(svc.ServiceOwnerKeyFile); err != nil {
-		t.Fatalf("service owner key missing: %v", err)
+	for _, path := range []string{svc.ServiceOwnerKeyFile, svc.ServiceClaimFile, svc.ServicePublishLeaseFile} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("service artifact missing %s: %v", path, err)
+		}
 	}
 	_, deterministicSeed := serviceIdentityFor(cfg.Clusters["home"].ClusterID, "default", "myapi")
 	if svc.ServiceSeed == "service-demo-seed" || svc.ServiceSeed == deterministicSeed {
@@ -1516,7 +1519,7 @@ func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Approve(svc.GrantRequestID, claim, nil, ""); err != nil {
+	if _, err := store.Approve(svc.GrantRequestID, claim, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	out, err = capture(func() error {
@@ -1542,6 +1545,43 @@ func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
 	}
 }
 
+func makePendingGrantRequest(t *testing.T, clusterName, clusterID, namespaceID, requesterPeerID, serviceName, servicePeerID string, requestedAt, expiresAt time.Time) grantspkg.Request {
+	t.Helper()
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{
+		ClusterID:             clusterID,
+		NamespaceID:           namespaceID,
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
+		PublisherPeerID:       servicePeerID,
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		Nonce:                 serviceName + "-nonce",
+	}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return grantspkg.Request{
+		ClusterName:           clusterName,
+		ClusterID:             clusterID,
+		NamespaceID:           namespaceID,
+		RequesterPeerID:       requesterPeerID,
+		ServiceName:           serviceName,
+		ServiceID:             serviceID,
+		ServicePublicKey:      leaseReq.ServicePublicKey,
+		ServiceOwnerSignature: leaseReq.ServiceOwnerSignature,
+		RequestNonce:          leaseReq.Nonce,
+		ServicePeerID:         servicePeerID,
+		RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		RequestedTTLSeconds:   int64((7 * 24 * time.Hour).Seconds()),
+		RequestedAt:           requestedAt,
+		ExpiresAt:             expiresAt,
+	}
+}
+
 func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -1555,11 +1595,11 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "requests.json")
 	store := grantspkg.NewStore(storePath)
 	now := time.Now().UTC()
-	first, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-myapi", ServicePeerID: "12D3-service", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	first, err := store.CreatePending(makePendingGrantRequest(t, "home", cluster.ClusterID, "default", "12D3-requester", "myapi", "12D3-service", now, now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester-2", ServiceName: "other", ServiceID: "service-other", ServicePeerID: "12D3-other", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	second, err := store.CreatePending(makePendingGrantRequest(t, "home", cluster.ClusterID, "default", "12D3-requester-2", "other", "12D3-other", now, now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1588,7 +1628,7 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 		t.Fatalf("approval not persisted ok=%t err=%v req=%#v", ok, err, approved)
 	}
 	edPub := mustClusterAuthorityKey(t, configPath).Public().(ed25519.PublicKey)
-	if err := capability.VerifyServiceClaim(*approved.ServiceClaim, edPub, cluster.ClusterID, "default", "service-myapi", "12D3-service"); err != nil {
+	if err := capability.VerifyServiceClaim(*approved.ServiceClaim, edPub, cluster.ClusterID, "default", approved.ServiceID, approved.ServicePeerID); err != nil {
 		t.Fatalf("approved claim invalid: %v", err)
 	}
 	if _, err := capture(func() error {
@@ -1622,7 +1662,7 @@ func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "requests.json")
 	store := grantspkg.NewStore(storePath)
 	now := time.Now().UTC()
-	expired, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "expired", ServiceID: "service-expired", ServicePeerID: "12D3-expired", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)})
+	expired, err := store.CreatePending(makePendingGrantRequest(t, "home", cluster.ClusterID, "default", "12D3-requester", "expired", "12D3-expired", now.Add(-2*time.Hour), now.Add(-time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1631,7 +1671,7 @@ func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired approval error, got %v", err)
 	}
-	pending, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-myapi", ServicePeerID: "12D3-service", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	pending, err := store.CreatePending(makePendingGrantRequest(t, "home", cluster.ClusterID, "default", "12D3-requester", "myapi", "12D3-service", now, now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1783,7 +1823,7 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Approve(svc.GrantRequestID, claim, nil, ""); err != nil {
+	if _, err := store.Approve(svc.GrantRequestID, claim, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	authz, err := resolveAttachAuthorization(configPath, reloaded)

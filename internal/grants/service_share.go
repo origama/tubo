@@ -147,11 +147,12 @@ func ParseAndVerifyServiceShareToken(token string) (ServiceSharePayload, error) 
 
 type ApprovalArtifacts struct {
 	ServiceClaim         capability.ServiceClaim
+	PublishLease         PublishLease
 	MembershipCapability capability.MembershipCapability
 	ServiceShareToken    string
 }
 
-func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID string, claimTTL, shareTTL time.Duration) (ApprovalArtifacts, error) {
+func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID string, claimTTL, shareTTL time.Duration, servicePublicKey, requestNonce string, ownerSignature []byte) (ApprovalArtifacts, error) {
 	if claimTTL <= 0 {
 		claimTTL = ServiceShareDefaultTTL
 	}
@@ -161,14 +162,18 @@ func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, nam
 	if shareTTL > claimTTL {
 		shareTTL = claimTTL
 	}
-	claim, err := capability.SignServiceClaim(capability.ServiceClaim{
-		ClusterID:     clusterID,
-		NamespaceID:   namespaceID,
-		ServiceID:     serviceID,
-		SubjectPeerID: servicePeerID,
-		Permissions:   []string{capability.PermissionAttach, capability.PermissionAnnounce},
-		ExpiresAt:     time.Now().UTC().Add(claimTTL),
-	}, priv)
+	leaseArtifacts, err := BuildPublishLeaseArtifacts(priv, PublishLeaseRequest{
+		Version:               PublishLeaseVersion,
+		Kind:                  PublishLeaseRequestKind,
+		ClusterID:             clusterID,
+		NamespaceID:           namespaceID,
+		ServiceID:             serviceID,
+		ServicePublicKey:      servicePublicKey,
+		PublisherPeerID:       servicePeerID,
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		Nonce:                 requestNonce,
+		ServiceOwnerSignature: ownerSignature,
+	}, serviceName, claimTTL, shareTTL)
 	if err != nil {
 		return ApprovalArtifacts{}, err
 	}
@@ -181,7 +186,7 @@ func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, nam
 			capability.PermissionList,
 			capability.PermissionPublish,
 		},
-		ExpiresAt: claim.ExpiresAt,
+		ExpiresAt: leaseArtifacts.ServiceClaim.ExpiresAt,
 	}, priv)
 	if err != nil {
 		return ApprovalArtifacts{}, err
@@ -190,7 +195,7 @@ func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, nam
 	if err != nil {
 		return ApprovalArtifacts{}, err
 	}
-	return ApprovalArtifacts{ServiceClaim: claim, MembershipCapability: membership, ServiceShareToken: shareArtifacts.Token}, nil
+	return ApprovalArtifacts{ServiceClaim: leaseArtifacts.ServiceClaim, PublishLease: leaseArtifacts.Lease, MembershipCapability: membership, ServiceShareToken: shareArtifacts.Token}, nil
 }
 
 func buildServiceSharePayload(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID string, shareTTL time.Duration) (ServiceSharePayload, error) {

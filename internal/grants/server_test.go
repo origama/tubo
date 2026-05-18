@@ -55,7 +55,7 @@ func TestGrantServerSubmitPollInvalidScopeAndRequesterBinding(t *testing.T) {
 		t.Fatalf("unexpected poll response: %#v", poll)
 	}
 
-	bad := validSubmit()
+	bad := signedSubmit("bad-scope", "myapi", "12D3-service")
 	bad.NamespaceID = "other"
 	badResp, err := Submit(ctx, clientHost, info, bad)
 	if err != nil {
@@ -79,17 +79,12 @@ func TestGrantServerPendingLimitsAndServiceCollision(t *testing.T) {
 	if first.Type != TypePending {
 		t.Fatalf("expected pending first request: %#v", first)
 	}
-	second := validSubmit()
-	second.ServiceName = "other"
-	second.ServiceID = "service-other"
-	second.ServicePeerID = "12D3-other"
+	second := signedSubmit("limit-second", "other", "12D3-other")
 	limitedRequester := server.HandleMessage(second, requester)
 	if limitedRequester.Type != TypeDenied || limitedRequester.Reason == "" {
 		t.Fatalf("expected requester rate limit denial: %#v", limitedRequester)
 	}
-	conflict := validSubmit()
-	conflict.ServiceID = "service-conflict"
-	conflict.ServicePeerID = "12D3-conflict"
+	conflict := signedSubmit("default", "myapi", "12D3-conflict")
 	conflictResp := server.HandleMessage(conflict, peer.ID("12D3-other-requester"))
 	if conflictResp.Type != TypeDenied || conflictResp.Reason == "" {
 		t.Fatalf("expected service collision denial: %#v", conflictResp)
@@ -108,10 +103,7 @@ func TestGrantServerGlobalPendingLimit(t *testing.T) {
 	if first.Type != TypePending {
 		t.Fatalf("expected pending first request: %#v", first)
 	}
-	second := validSubmit()
-	second.ServiceName = "other"
-	second.ServiceID = "service-other"
-	second.ServicePeerID = "12D3-other"
+	second := signedSubmit("global-second", "other", "12D3-other")
 	limited := server.HandleMessage(second, peer.ID("12D3-requester-2"))
 	if limited.Type != TypeDenied || limited.Reason == "" {
 		t.Fatalf("expected global rate limit denial: %#v", limited)

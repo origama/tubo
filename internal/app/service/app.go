@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/protocol"
 )
@@ -39,26 +42,28 @@ type Config struct {
 	ServiceID                                                                                         string
 	MembershipCapabilityFile                                                                          string
 	ServiceClaimFile                                                                                  string
+	ServicePublishLeaseFile                                                                           string
 }
 type App struct {
-	cfg                   Config
-	host                  host.Host
-	publisher             *discovery.Publisher
-	hb                    *discovery.HeartbeatLoop
-	discoveryMode         discovery.Mode
-	serviceID             string
-	serviceCapabilityFile string
-	serviceClaimFile      string
-	health                *http.Server
-	cache                 *discovery.Cache
-	stopSubscriber        chan struct{}
-	relayInfos            []peer.AddrInfo
-	announcementTTL       time.Duration
-	requireRelayReadyAnn  bool
-	reservationMu         sync.RWMutex
-	reservationReadyUntil time.Time
-	relayConnMu           sync.RWMutex
-	relayConnected        map[peer.ID]bool
+	cfg                     Config
+	host                    host.Host
+	publisher               *discovery.Publisher
+	hb                      *discovery.HeartbeatLoop
+	discoveryMode           discovery.Mode
+	serviceID               string
+	serviceCapabilityFile   string
+	serviceClaimFile        string
+	servicePublishLeaseFile string
+	health                  *http.Server
+	cache                   *discovery.Cache
+	stopSubscriber          chan struct{}
+	relayInfos              []peer.AddrInfo
+	announcementTTL         time.Duration
+	requireRelayReadyAnn    bool
+	reservationMu           sync.RWMutex
+	reservationReadyUntil   time.Time
+	relayConnMu             sync.RWMutex
+	relayConnected          map[peer.ID]bool
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -152,19 +157,20 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	pub := discovery.NewPublisher(topic, pk)
 	app := &App{
-		cfg:                   cfg,
-		host:                  h,
-		publisher:             pub,
-		cache:                 cache,
-		stopSubscriber:        stopSubscriber,
-		relayInfos:            relays,
-		announcementTTL:       computeAnnouncementTTL(cfg.HeartbeatInterval),
-		requireRelayReadyAnn:  len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
-		relayConnected:        make(map[peer.ID]bool),
-		discoveryMode:         mode,
-		serviceID:             resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName),
-		serviceCapabilityFile: cfg.MembershipCapabilityFile,
-		serviceClaimFile:      cfg.ServiceClaimFile,
+		cfg:                     cfg,
+		host:                    h,
+		publisher:               pub,
+		cache:                   cache,
+		stopSubscriber:          stopSubscriber,
+		relayInfos:              relays,
+		announcementTTL:         computeAnnouncementTTL(cfg.HeartbeatInterval),
+		requireRelayReadyAnn:    len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
+		relayConnected:          make(map[peer.ID]bool),
+		discoveryMode:           mode,
+		serviceID:               resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName),
+		serviceCapabilityFile:   cfg.MembershipCapabilityFile,
+		serviceClaimFile:        cfg.ServiceClaimFile,
+		servicePublishLeaseFile: cfg.ServicePublishLeaseFile,
 	}
 	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
 	app.registerRelayNotifiee()
@@ -410,6 +416,22 @@ func (a *App) loadMembershipCapabilityBytes() ([]byte, error) {
 }
 
 func (a *App) loadServiceClaimBytes() ([]byte, error) {
+	if a.servicePublishLeaseFile != "" {
+		b, err := os.ReadFile(a.servicePublishLeaseFile)
+		if err == nil && len(b) > 0 {
+			authorityPub, err := discovery.ParseAuthorityPublicKey(a.cfg.AuthorityPublicKey)
+			if err != nil {
+				return nil, err
+			}
+			lease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(b, authorityPub, a.discoveryClusterIDValue(), a.discoveryNamespaceIDValue(), a.serviceID, a.host.ID().String())
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(lease.ServiceClaim)
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
 	if a.serviceClaimFile == "" {
 		return nil, nil
 	}

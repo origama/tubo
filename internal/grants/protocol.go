@@ -31,23 +31,28 @@ const (
 var serviceNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 type Message struct {
-	Type                 string                           `json:"type"`
-	Version              string                           `json:"version"`
-	Token                string                           `json:"token,omitempty"`
-	ClusterID            string                           `json:"cluster_id,omitempty"`
-	NamespaceID          string                           `json:"namespace_id,omitempty"`
-	ServiceName          string                           `json:"service_name,omitempty"`
-	ServiceID            string                           `json:"service_id,omitempty"`
-	ServicePeerID        string                           `json:"service_peer_id,omitempty"`
-	RequestedPermissions []string                         `json:"requested_permissions,omitempty"`
-	RequestedTTLSeconds  int64                            `json:"requested_ttl_seconds,omitempty"`
-	RequestID            string                           `json:"request_id,omitempty"`
-	ExpiresAt            time.Time                        `json:"expires_at,omitempty"`
-	Message              string                           `json:"message,omitempty"`
-	Reason               string                           `json:"reason,omitempty"`
-	ServiceClaim         *capability.ServiceClaim         `json:"service_claim,omitempty"`
-	MembershipCapability *capability.MembershipCapability `json:"membership_capability,omitempty"`
-	ServiceShareToken    string                           `json:"service_share_token,omitempty"`
+	Type                  string                           `json:"type"`
+	Version               string                           `json:"version"`
+	Token                 string                           `json:"token,omitempty"`
+	ClusterID             string                           `json:"cluster_id,omitempty"`
+	NamespaceID           string                           `json:"namespace_id,omitempty"`
+	ServiceName           string                           `json:"service_name,omitempty"`
+	ServiceID             string                           `json:"service_id,omitempty"`
+	ServicePublicKey      string                           `json:"service_public_key,omitempty"`
+	ServiceOwnerSignature []byte                           `json:"service_owner_signature,omitempty"`
+	ServicePeerID         string                           `json:"service_peer_id,omitempty"`
+	PublisherInstanceKey  string                           `json:"publisher_instance_public_key,omitempty"`
+	RequestNonce          string                           `json:"request_nonce,omitempty"`
+	RequestedPermissions  []string                         `json:"requested_permissions,omitempty"`
+	RequestedTTLSeconds   int64                            `json:"requested_ttl_seconds,omitempty"`
+	RequestID             string                           `json:"request_id,omitempty"`
+	ExpiresAt             time.Time                        `json:"expires_at,omitempty"`
+	Message               string                           `json:"message,omitempty"`
+	Reason                string                           `json:"reason,omitempty"`
+	ServiceClaim          *capability.ServiceClaim         `json:"service_claim,omitempty"`
+	PublishLease          *PublishLease                    `json:"publish_lease,omitempty"`
+	MembershipCapability  *capability.MembershipCapability `json:"membership_capability,omitempty"`
+	ServiceShareToken     string                           `json:"service_share_token,omitempty"`
 }
 
 func EncodeMessage(w io.Writer, msg Message) error {
@@ -97,8 +102,8 @@ func ValidateMessage(msg Message) error {
 			return errors.New("pending response requires request_id and expires_at")
 		}
 	case TypeApproved:
-		if msg.RequestID == "" || msg.ServiceClaim == nil {
-			return errors.New("approved response requires request_id and service_claim")
+		if msg.RequestID == "" || (msg.ServiceClaim == nil && msg.PublishLease == nil) {
+			return errors.New("approved response requires request_id and service_claim or publish_lease")
 		}
 	case TypeDenied:
 		if msg.RequestID == "" {
@@ -115,7 +120,7 @@ func ValidateMessage(msg Message) error {
 }
 
 func validateSubmit(msg Message) error {
-	if msg.ClusterID == "" || msg.NamespaceID == "" || msg.ServiceName == "" || msg.ServiceID == "" || msg.ServicePeerID == "" {
+	if msg.ClusterID == "" || msg.NamespaceID == "" || msg.ServiceID == "" || msg.ServiceName == "" || msg.ServicePublicKey == "" || msg.ServicePeerID == "" || msg.RequestNonce == "" {
 		return errors.New("submit request is missing required cluster/namespace/service fields")
 	}
 	if !serviceNameRE.MatchString(msg.ServiceName) {
@@ -126,6 +131,9 @@ func validateSubmit(msg Message) error {
 	}
 	if msg.RequestedTTLSeconds <= 0 {
 		return errors.New("requested_ttl_seconds is required")
+	}
+	if len(msg.ServiceOwnerSignature) == 0 {
+		return errors.New("service_owner_signature is required")
 	}
 	ttl := time.Duration(msg.RequestedTTLSeconds) * time.Second
 	if ttl < MinTTL || ttl > MaxTTL {
@@ -159,7 +167,7 @@ func PendingMessage(req Request) Message {
 func ResponseForRequest(req Request) Message {
 	switch req.Status {
 	case StatusApproved:
-		return Message{Type: TypeApproved, Version: VersionV1, RequestID: req.ID, ServiceClaim: req.ServiceClaim, MembershipCapability: req.MembershipCapability, ServiceShareToken: req.ServiceShareToken}
+		return Message{Type: TypeApproved, Version: VersionV1, RequestID: req.ID, ServiceClaim: req.ServiceClaim, PublishLease: req.PublishLease, MembershipCapability: req.MembershipCapability, ServiceShareToken: req.ServiceShareToken}
 	case StatusDenied:
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: req.DenialReason}
 	case StatusExpired:

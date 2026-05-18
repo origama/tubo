@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -120,4 +121,22 @@ func MatchServiceID(pub ed25519.PublicKey, serviceID string) error {
 		return fmt.Errorf("service id mismatch: got %q want %q", serviceID, want)
 	}
 	return nil
+}
+
+func EncodePublicKey(pub ed25519.PublicKey) string {
+	if len(pub) == 0 {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(pub)
+}
+
+func DecodePublicKey(encoded string) (ed25519.PublicKey, error) {
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(encoded))
+	if err != nil {
+		return nil, err
+	}
+	if len(b) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("invalid ed25519 public key length %d", len(b))
+	}
+	return ed25519.PublicKey(b), nil
 }
