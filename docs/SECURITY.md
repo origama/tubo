@@ -85,9 +85,9 @@ Current and near-term revocation semantics are bounded by:
 
 Do not assume immediate revocation unless the specific mechanism explicitly says it depends on fresh online or refreshed cached state.
 
-### 3.4 Current service-share tokens are sensitive credentials
+### 3.4 Current share-invite tokens are sensitive credentials
 
-Service-share tokens are connect-scoped and time-bounded, but they are still sensitive bootstrap material and must be handled like credentials.
+Share-invite tokens are connect-scoped and time-bounded, but they are still sensitive bootstrap material and must be handled like credentials.
 
 ## 4. 0.7.0.b0 direction
 

@@ -74,9 +74,12 @@ type clusterJoinResult struct {
 
 func localShareCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo share cluster/<name>|service/<name> [flags]")
+		return errors.New("usage: tubo share cluster/<name>|service/<name>|revoke [flags]")
 	}
 	resource := args[0]
+	if resource == "revoke" {
+		return localRevokeServiceShareCmd(args[1:])
+	}
 	fs := flag.NewFlagSet("share", flag.ContinueOnError)
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
 	clusterFlag := fs.String("cluster", "", "")

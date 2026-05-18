@@ -300,13 +300,13 @@ func mintLocalServicePublishLease(cluster cfgpkg.Cluster, clusterName, namespace
 		ServiceID:             svc.ServiceID,
 		ServicePublicKey:      serviceidentity.EncodePublicKey(owner.PublicKey),
 		PublisherPeerID:       servicePeerID.String(),
-		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
 		Nonce:                 randomNonce(),
 	}, owner.PrivateKey)
 	if err != nil {
 		return err
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), 365*24*time.Hour, grantspkg.ServiceShareDefaultTTL, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), 365*24*time.Hour, grantspkg.ServiceShareDefaultTTL, req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return err
 	}
@@ -448,7 +448,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 			ServiceOwnerSignature: leaseReq.ServiceOwnerSignature,
 			ServicePeerID:         servicePeerID,
 			RequestNonce:          leaseReq.Nonce,
-			RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce},
+			RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
 			RequestedTTLSeconds:   int64((30 * 24 * time.Hour).Seconds()),
 		})
 	}
@@ -510,6 +510,16 @@ func buildAttachServiceShareToken(cluster cfgpkg.Cluster, clusterName, namespace
 	if cluster.AuthorityPublicKey != pubAuthorized {
 		return "", fmt.Errorf("cluster %q authority public key mismatch", clusterName)
 	}
+	if svc.ServicePublishLeaseFile != "" {
+		if leaseBytes, err := os.ReadFile(svc.ServicePublishLeaseFile); err == nil {
+			var lease grantspkg.PublishLease
+			if err := json.Unmarshal(leaseBytes, &lease); err == nil {
+				if artifacts, err := grantspkg.BuildShareInviteArtifactsFromLease(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL); err == nil {
+					return artifacts.Token, nil
+				}
+			}
+		}
+	}
 	return grantspkg.BuildServiceShareToken(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL)
 }
 
@@ -523,7 +533,7 @@ func printAttachShareHint(cfg cfgpkg.Config, token string) {
 		fmt.Printf("share:\n  tubo connect --token %s --local 127.0.0.1:18888\n\n", token)
 		return
 	}
-	fmt.Printf("share: unavailable (no authority key available to sign a service share token)\n")
+	fmt.Printf("share: unavailable (no authority key available to sign a share invite)\n")
 	fmt.Printf("hint: run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token\n\n", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace)
 }
 
@@ -584,7 +594,7 @@ func buildServicePublishLeaseRequest(configPath string, cfg cfgpkg.Config, svc c
 		ServiceID:             svc.ServiceID,
 		ServicePublicKey:      serviceidentity.EncodePublicKey(owner.PublicKey),
 		PublisherPeerID:       servicePeerID,
-		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
 		Nonce:                 randomNonce(),
 	}
 	return grantspkg.SignPublishLeaseRequest(req, owner.PrivateKey)

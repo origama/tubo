@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-18 06:45 UTC
+> **Last updated:** 2026-05-18 12:18 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -214,7 +214,8 @@ The following packages have no `_test.go` files yet:
 12. **Issue #114 — stable service identity primitives**: ✅ Done on `0.7.0.b0`; aggiunto `internal/serviceidentity`, introdotto `service_owner_key_file` nella config locale, derivato `service_id` dalla service owner key per le identita' nuove, reso esplicito il vincolo nel flusso `attach`, aggiornati test CLI/package e `docs/cli.md`
 13. **Issue #115 — PublishLease by `service_id` with service-key proof**: ✅ Done on `0.7.0.b0`; introdotte `PublishLeaseRequest`/`PublishLease` firmate dalla service owner key, re-key di grants/publish su `service_id`, fallback compatibile al legacy `ServiceClaim`, e fixture compose/e2e riallineati al nuovo modello (`service_owner_key_file` + `service_publish_lease_file`). Verificato con `go test ./...`, `./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, e `tests/e2e/run.sh 001-default-cluster-default-namespace`
 14. **Issue #116 — Discovery V2 service_id-first records**: ✅ Done on `0.7.0.b0`; Discovery V2 cache/storage is keyed primarily by `service_id`, display name is metadata/compat index, announcements carry service public key + `PublishLease`, validation rejects wrong key/wrong scope/untrusted or expired leases, duplicate display names are accepted as distinct records, `get services` surfaces `service_id`, and e2e gates `public_duplicate_display_names` + `public_stolen_access_token_rejected` were added. Verificato con `go test ./...`, `./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, `tests/e2e/run.sh 001-default-cluster-default-namespace`, `tests/e2e/run.sh public_duplicate_display_names`, e `tests/e2e/run.sh public_stolen_access_token_rejected`
-15. **Versioning/release maintenance**: keep release workflow/docs in sync with the current `v0.6.0` state
+15. **Issue #118 — ShareInvite as service_id bootstrap token**: ✅ Done on `0.7.0.b0`; token rinominato a `tubo-share-invite-v1`, mint da publish lease valida con `share.mint`, `connect` marca/controlla la revoca locale del JTI, `share revoke` e i gate e2e `public_attach_reprint_share_token` / `public_revoke_invite` sono passati; verificato con `go test ./...`, `./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, `tests/e2e/run.sh public_attach_reprint_share_token`, e `tests/e2e/run.sh public_revoke_invite`
+16. **Versioning/release maintenance**15. **Versioning/release maintenance**: keep release workflow/docs in sync with the current `v0.6.0` state
 14. **Release v0.6.0**: ✅ Done on `main` (tag prep, changelog/version bump, `go test ./...`, `SMOKE_FORCE_BUILD=1 ./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, and `tests/e2e/run.sh 001-default-cluster-default-namespace` all passed)
 
 ### Keep on radar (not yet mapped to an issue here)

@@ -134,7 +134,7 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if claimTTL > 0 && shareTTL > claimTTL {
 		shareTTL = claimTTL
 	}
-	artifacts, err := BuildApprovalArtifacts(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature)
+	artifacts, err := BuildApprovalArtifacts(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: err.Error()}
 	}

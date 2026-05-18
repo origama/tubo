@@ -537,9 +537,9 @@ if ! tubo describe namespace/tenant-a --config "$config_path" >/dev/null; then
 fi
 
 share_output="$(tubo share service/myapi --config "$config_path" --cluster home --namespace tenant-a --expires 2h)"
-share_token="$(printf '%s\n' "$share_output" | grep -o 'tubo-service-share-v1\.[^[:space:]]*' | head -n1)"
+share_token="$(printf '%s\n' "$share_output" | grep -o 'tubo-share-invite-v1\.[^[:space:]]*' | head -n1)"
 if [[ -z "$share_token" ]]; then
-  echo "[smoke-tubo-workflow] failed to extract share token"
+  echo "[smoke-tubo-workflow] failed to extract share invite token"
   echo "$share_output"
   exit 1
 fi

@@ -77,7 +77,7 @@ func VerifyPublishLeaseRequest(req PublishLeaseRequest) error {
 		return errors.New("publish lease request is missing required fields")
 	}
 	if !validPublishLeaseCapabilities(req.RequestedCapabilities) {
-		return errors.New("requested capabilities must be limited to publish/attach/announce")
+		return errors.New("requested capabilities must be limited to publish/attach/announce/share.mint")
 	}
 	pub, err := serviceidentity.DecodePublicKey(req.ServicePublicKey)
 	if err != nil {
@@ -294,7 +294,7 @@ func validPublishLeaseCapabilities(perms []string) bool {
 	}
 	for _, perm := range canonicalPublishLeaseCapabilities(perms) {
 		switch perm {
-		case capability.PermissionPublish, capability.PermissionAttach, capability.PermissionAnnounce:
+		case capability.PermissionPublish, capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint:
 		default:
 			return false
 		}

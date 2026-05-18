@@ -125,11 +125,16 @@ for i in $(seq 1 60); do
 done
 [[ -n "$alice_services" ]] || fail "alice did not see published service"
 
-share_output="$(exec_actor alice sh -lc "cd /work && tubo share service/${SERVICE_NAME} --config /work/config.yaml --cluster home --namespace default --expires 2h")"
-share_token="$(printf '%s\n' "$share_output" | awk '/tubo-share-invite-v1\./ {print $NF; exit}')"
-[[ -n "$share_token" ]] || fail "failed to extract share invite token"
+share_output_1="$(exec_actor alice sh -lc "cd /work && tubo share service/${SERVICE_NAME} --config /work/config.yaml --cluster home --namespace default --expires 2h")"
+share_token_1="$(printf '%s\n' "$share_output_1" | awk '/tubo-share-invite-v1\./ {print $NF; exit}')"
+[[ -n "$share_token_1" ]] || fail "failed to extract first share invite token"
 
-exec_actor_bg bob sh -lc "cd /work && exec tubo connect --token '$share_token' --local 127.0.0.1:${BOB_PORT} > /work/logs/bob-connect.out 2>&1"
+share_output_2="$(exec_actor alice sh -lc "cd /work && tubo share service/${SERVICE_NAME} --config /work/config.yaml --cluster home --namespace default --expires 2h")"
+share_token_2="$(printf '%s\n' "$share_output_2" | awk '/tubo-share-invite-v1\./ {print $NF; exit}')"
+[[ -n "$share_token_2" ]] || fail "failed to extract second share invite token"
+[[ "$share_token_1" != "$share_token_2" ]] || fail "expected a fresh share invite token"
+
+exec_actor_bg bob sh -lc "cd /work && exec tubo connect --token '$share_token_2' --local 127.0.0.1:${BOB_PORT} > /work/logs/bob-connect.out 2>&1"
 
 response=""
 for i in $(seq 1 60); do
@@ -147,4 +152,4 @@ assert_contains "$response" '"path":"/v1/dummy"' "response missing path marker"
 
 write_report_json "$E2E_ARTIFACTS_DIR/report.json" "$E2E_SCENARIO" "$E2E_NETWORK_NAME" "$SERVICE_NAME" "$(actor_container_name alice)" "$(actor_container_name bob)"
 
-echo "[e2e] PASS: default cluster/default namespace happy path works"
+echo "[e2e] PASS: share invite reprint works"

@@ -132,7 +132,7 @@ func grantsRequestCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		resp, err = grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, ServicePeerID: servicePeerID.String(), RequestNonce: leaseReq.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64(ttl.Seconds())})
+		resp, err = grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, ServicePeerID: servicePeerID.String(), RequestNonce: leaseReq.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedTTLSeconds: int64(ttl.Seconds())})
 	}
 	if err != nil {
 		return err
@@ -197,7 +197,7 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			}
 		}
 		if resp.ServiceShareToken != "" {
-			fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\nService share token: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile, resp.ServiceShareToken)
+			fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\nShare invite token: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile, resp.ServiceShareToken)
 		} else {
 			fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile)
 		}
@@ -324,7 +324,7 @@ func grantsApproveCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(priv, req.ClusterName, req.ClusterID, req.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, *ttl, grantspkg.ServiceShareDefaultTTL, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(priv, req.ClusterName, req.ClusterID, req.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, *ttl, grantspkg.ServiceShareDefaultTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return err
 	}
@@ -334,7 +334,7 @@ func grantsApproveCmd(args []string) error {
 	}
 	fmt.Printf("approved grant request %s\n", approved.ID)
 	if artifacts.ServiceShareToken != "" {
-		fmt.Printf("service share token: %s\n", artifacts.ServiceShareToken)
+		fmt.Printf("share invite token: %s\n", artifacts.ServiceShareToken)
 	}
 	return nil
 }

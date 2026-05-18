@@ -1277,27 +1277,27 @@ func TestServiceShareTokenAndConnectSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" {
+	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" || payload.DisplayNameHint != "myapi" || payload.TargetServiceID != payload.ServiceID || payload.JTI == "" {
 		t.Fatalf("unexpected service share scope: %#v", payload)
 	}
-	if payload.Grant.ClusterID != payload.ClusterID || payload.Grant.NamespaceID != payload.NamespaceID || payload.Grant.ServiceID != payload.ServiceID {
+	if payload.Grant.ClusterID != payload.ClusterID || payload.Grant.NamespaceID != payload.NamespaceID || payload.Grant.ServiceID != payload.TargetServiceID {
 		t.Fatalf("grant scope mismatch: %#v", payload.Grant)
 	}
 	if len(payload.Grant.Permissions) != 1 || payload.Grant.Permissions[0] != capability.PermissionConnect {
 		t.Fatalf("service share is not connect-only: %#v", payload.Grant.Permissions)
 	}
-	if connectName, scope, err := connectServiceShareSetup("", token, "", ""); err != nil {
+	if connectName, serviceID, scope, err := connectServiceShareSetup("", token, "", ""); err != nil {
 		t.Fatal(err)
-	} else if connectName != "myapi" || scope.Cluster != "home" || scope.Namespace != "default" {
-		t.Fatalf("unexpected connect setup: name=%q scope=%#v", connectName, scope)
+	} else if connectName != "myapi" || serviceID != payload.TargetServiceID || scope.Cluster != "home" || scope.Namespace != "default" {
+		t.Fatalf("unexpected connect setup: name=%q id=%q scope=%#v", connectName, serviceID, scope)
 	}
-	if _, _, err := connectServiceShareSetup("other", token, "", ""); err == nil || !strings.Contains(err.Error(), "service share is for") {
+	if _, _, _, err := connectServiceShareSetup("other", token, "", ""); err == nil || !strings.Contains(err.Error(), "service share is for") {
 		t.Fatalf("expected service mismatch error, got %v", err)
 	}
-	if _, _, err := connectServiceShareSetup("", token, "other", ""); err == nil || !strings.Contains(err.Error(), "cluster") {
+	if _, _, _, err := connectServiceShareSetup("", token, "other", ""); err == nil || !strings.Contains(err.Error(), "cluster") {
 		t.Fatalf("expected cluster mismatch error, got %v", err)
 	}
-	if _, _, err := connectServiceShareSetup("", token, "", "other"); err == nil || !strings.Contains(err.Error(), "namespace") {
+	if _, _, _, err := connectServiceShareSetup("", token, "", "other"); err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("expected namespace mismatch error, got %v", err)
 	}
 
@@ -1315,6 +1315,12 @@ func TestServiceShareTokenAndConnectSetup(t *testing.T) {
 	tamperedToken := tamperTokenPayload(t, token, serviceShareTokenPrefix, []byte(`"service_name":"myapi"`), []byte(`"service_name":"evil"`))
 	if _, err := parseAndVerifyServiceShareToken(tamperedToken); err == nil || !strings.Contains(err.Error(), "invalid service share signature") {
 		t.Fatalf("expected tampered service share error, got %v", err)
+	}
+	if _, err := capture(func() error { return run([]string{"share", "revoke", token, "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureShareInviteAvailable(filepath.Dir(configPath), payload); err == nil || !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("expected revoked invite rejection, got %v", err)
 	}
 }
 

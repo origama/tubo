@@ -127,7 +127,7 @@ func validateSubmit(msg Message) error {
 		return fmt.Errorf("invalid service name %q", msg.ServiceName)
 	}
 	if !validGrantPermissions(msg.RequestedPermissions) {
-		return errors.New("requested permissions must be limited to attach and announce")
+		return errors.New("requested permissions must be limited to attach, announce, and share.mint")
 	}
 	if msg.RequestedTTLSeconds <= 0 {
 		return errors.New("requested_ttl_seconds is required")
@@ -149,7 +149,7 @@ func validGrantPermissions(perms []string) bool {
 	seen := map[string]struct{}{}
 	for _, perm := range perms {
 		switch perm {
-		case capability.PermissionAttach, capability.PermissionAnnounce:
+		case capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint:
 			seen[perm] = struct{}{}
 		default:
 			return false

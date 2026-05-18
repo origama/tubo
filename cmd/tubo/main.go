@@ -323,12 +323,13 @@ Usage:
   tubo attach <url> --name <service> [-d]
   tubo attach <service> --port <port> [-d]
   tubo connect <service> [--local 127.0.0.1:PORT]
-  tubo connect --token <service-share> [--local 127.0.0.1:PORT]
+  tubo connect --token <share-invite> [--local 127.0.0.1:PORT]
   tubo get services
   tubo use overlay/public
   tubo create cluster/home
   tubo share cluster/home --permission member
   tubo share service/myapp --expires 1h
+  tubo share revoke <share-invite>
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [overlay/public|tubo-public]
@@ -338,7 +339,7 @@ Common flow:
   tubo attach http://127.0.0.1:8080 --name myapp -d
 
   # Another machine
-  tubo connect --token <service-share> --local 127.0.0.1:9888
+  tubo connect --token <share-invite> --local 127.0.0.1:9888
   curl http://127.0.0.1:9888/
 
 Discovery and process management:
@@ -388,7 +389,7 @@ Flags:
 	case "connect":
 		fmt.Println(`Usage:
   tubo connect <service> [--local 127.0.0.1:PORT]
-  tubo connect --token <service-share> [--local 127.0.0.1:PORT]
+  tubo connect --token <share-invite> [--local 127.0.0.1:PORT]
 
 Open a local HTTP/WebSocket listener to a named service.
 
@@ -466,6 +467,7 @@ Select a local overlay/cluster/namespace context in the config file.`)
 		fmt.Println(`Usage:
   tubo share cluster/<name> [--permission member] [--namespace <name>] [--expires <duration>]
   tubo share service/<name> [--cluster <name>] [--namespace <name>] [--expires <duration>]
+  tubo share revoke <share-invite>
 
 Create a copyable cluster invitation or service-scoped connect token from local authority material.`)
 	case "create":
@@ -1707,7 +1709,7 @@ func connectCmd(args []string) error {
 		*namespace = *namespaceShort
 	}
 	var err error
-	serviceName, shareScope, err := connectServiceShareSetup(serviceName, shareToken, *cluster, *namespace)
+	serviceName, serviceID, shareScope, err := connectServiceShareSetup(serviceName, shareToken, *cluster, *namespace)
 	if err != nil {
 		return err
 	}
@@ -1717,11 +1719,11 @@ func connectCmd(args []string) error {
 	}
 	if serviceName == "" {
 		if fs.NArg() != 1 {
-			return errors.New("usage: tubo connect [--token <service-share>] <service-name> [--local host:port] [flags]")
+			return errors.New("usage: tubo connect [--token <share-invite>] <service-name> [--local host:port] [flags]")
 		}
 		serviceName = fs.Arg(0)
 	} else if fs.NArg() != 0 {
-		return errors.New("usage: tubo connect [--token <service-share>] <service-name> [--local host:port] [flags]")
+		return errors.New("usage: tubo connect [--token <share-invite>] <service-name> [--local host:port] [flags]")
 	}
 	serviceName, err = parseServiceRef(serviceName)
 	if err != nil {
@@ -1737,10 +1739,20 @@ func connectCmd(args []string) error {
 		if err != nil {
 			return err
 		}
+		if err := ensureShareInviteAvailable(filepath.Dir(*configPath), payload); err != nil {
+			return err
+		}
 		cfg = importServiceShareDiscoveryContext(cfg, payload)
+		if err := markShareInviteUsed(filepath.Dir(*configPath), payload); err != nil {
+			return err
+		}
 		*cluster = payload.ClusterName
 		*namespace = payload.Namespace
 		shareScope = serviceScope{Cluster: payload.ClusterName, Namespace: payload.Namespace}
+		serviceID = payload.TargetServiceID
+		if serviceName == "" {
+			serviceName = payload.DisplayNameHint
+		}
 		connectGrant = &payload.Grant
 	}
 	scope, err := resolveServiceScope(cfg, *cluster, *namespace, false)
@@ -1756,6 +1768,9 @@ func connectCmd(args []string) error {
 		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", serviceName)
 	}
 	serviceView = normalizeServiceResource(serviceView)
+	if serviceID != "" && serviceView.ServiceID != "" && serviceView.ServiceID != serviceID {
+		return fmt.Errorf("service share is for service_id %q, not %q", serviceID, serviceView.ServiceID)
+	}
 	listenAddr, localURL, err := chooseConnectLocal(*local)
 	if err != nil {
 		return err
@@ -2385,6 +2400,74 @@ func discoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 	return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, service, nil
 }
 
+func discoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope serviceScope, serviceName, serviceID string) (discoveryLookupResult, serviceResource, error) {
+	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
+	if serviceID == "" {
+		return discoverServiceWithConfig(cfg, timeout, cachedOnly, live, scope, serviceName)
+	}
+	if !live {
+		if services, adminAddr, err := fetchLocalServiceCache(cfg); err == nil {
+			service, err := requireServiceByID(services, serviceID)
+			if err == nil {
+				service = applyServiceScope(service, scope)
+				return discoveryLookupResult{Services: []serviceResource{service}, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache", Scope: serviceScopePtr(scope)}, service, nil
+			}
+		}
+		if cachedOnly {
+			return discoveryLookupResult{}, serviceResource{}, errors.New("no local cache found")
+		}
+		if services, metadata, messages, err := fetchRemoteServiceCache(cfg, timeout); err == nil {
+			service, err := requireServiceByID(services, serviceID)
+			if err == nil {
+				messages = append([]string{"no local cache found"}, messages...)
+				service = applyServiceScope(service, scope)
+				return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "remote-query", Scope: serviceScopePtr(scope), Metadata: metadata}, service, nil
+			}
+		} else {
+			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
+			services, obsErr := observeServices(cfg, timeout, nil)
+			if obsErr != nil {
+				return discoveryLookupResult{}, serviceResource{}, obsErr
+			}
+			service, obsErr := requireServiceByID(services, serviceID)
+			if obsErr != nil {
+				return discoveryLookupResult{}, serviceResource{}, obsErr
+			}
+			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
+			service = applyServiceScope(service, scope)
+			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, service, nil
+		}
+	}
+	services, err := observeServices(cfg, timeout, nil)
+	if err != nil {
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
+	service, err := requireServiceByID(services, serviceID)
+	if err != nil {
+		if serviceName != "" {
+			fallbackResult, fallbackService, fallbackErr := discoverServiceWithConfig(cfg, timeout, cachedOnly, live, scope, serviceName)
+			if fallbackErr == nil {
+				if fallbackService.ServiceID != "" && fallbackService.ServiceID != serviceID {
+					return discoveryLookupResult{}, serviceResource{}, fmt.Errorf("service share is for service_id %q, not %q", serviceID, fallbackService.ServiceID)
+				}
+				return fallbackResult, fallbackService, nil
+			}
+		}
+		return discoveryLookupResult{}, serviceResource{}, err
+	}
+	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
+	if !live {
+		messages = append([]string{"no local cache found"}, messages...)
+	}
+	service = applyServiceScope(service, scope)
+	if serviceName != "" && service.ServiceID != "" && service.ServiceID != serviceID {
+		return discoveryLookupResult{}, serviceResource{}, fmt.Errorf("service share is for service_id %q, not %q", serviceID, service.ServiceID)
+	}
+	return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, service, nil
+}
+
 func loadDiscoveryConfig(path string) (cfgpkg.Config, error) {
 	cfg, err := cfgpkg.LoadFile(path)
 	if err != nil {
@@ -2711,6 +2794,15 @@ func requireService(services []serviceResource, name string) (serviceResource, e
 		}
 	}
 	return serviceResource{}, fmt.Errorf("service %q not found", name)
+}
+
+func requireServiceByID(services []serviceResource, serviceID string) (serviceResource, error) {
+	for _, service := range services {
+		if service.ServiceID == serviceID {
+			return service, nil
+		}
+	}
+	return serviceResource{}, fmt.Errorf("service %q not found", serviceID)
 }
 
 func printServicesTable(services []serviceResource) {
