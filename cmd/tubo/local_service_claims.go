@@ -404,7 +404,7 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 			shareHint = attachShareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
 		}
 		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken, ShareRecoveryHint: shareHint, PublishLeaseReused: true}, nil
-	} else if errors.Is(err, os.ErrNotExist) {
+	} else if errors.Is(err, os.ErrNotExist) || isPublishLeaseExpiredError(err) {
 		if claimErr := verifyServiceClaimFile(svc.ServiceClaimFile, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID.String()); claimErr == nil {
 			membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
 			if err != nil {
@@ -425,11 +425,15 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 					svc = updatedSvc
 					shareToken = refreshedShareToken
 					cluster = cfg.Clusters[cfg.CurrentCluster]
-				} else if shareToken == "" {
+					return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
+				}
+				if cluster.AuthorityPrivateKeyFile == "" {
 					return attachAuthorization{}, refreshErr
 				}
 			}
-			return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
+			if cluster.AuthorityPrivateKeyFile == "" {
+				return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
+			}
 		} else if !errors.Is(claimErr, os.ErrNotExist) {
 			return attachAuthorization{}, fmt.Errorf("service claim for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, claimErr)
 		}
@@ -703,6 +707,10 @@ func verifyPublishLeaseFile(path string, pub ed25519.PublicKey, clusterID, names
 		return err
 	}
 	return grantspkg.VerifyPublishLease(lease, pub, clusterID, namespaceID, serviceID, servicePeerID)
+}
+
+func isPublishLeaseExpiredError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "publish lease expired")
 }
 
 func readPublishLeaseFile(path string) (grantspkg.PublishLease, error) {
