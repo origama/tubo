@@ -573,16 +573,6 @@ func printAttachShareHint(cfg cfgpkg.Config, authz attachAuthorization) {
 	fmt.Printf("hint: run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token\n\n", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace)
 }
 
-func attachShareRecoveryHint(serviceName, clusterName, namespaceName, grantPeer, grantRequestID string) string {
-	if strings.TrimSpace(grantPeer) == "" {
-		return fmt.Sprintf("run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token", serviceName, clusterName, namespaceName)
-	}
-	if strings.TrimSpace(grantRequestID) != "" {
-		return fmt.Sprintf("reprint the token with `tubo grants request service/%s --poll --peer %s --cluster %s --namespace %s` (request %s)", serviceName, grantPeer, clusterName, namespaceName, grantRequestID)
-	}
-	return fmt.Sprintf("request or poll the grant with `tubo grants request service/%s --peer %s --cluster %s --namespace %s`", serviceName, grantPeer, clusterName, namespaceName)
-}
-
 func noServicePublishGrantError(clusterName, namespaceName, serviceName string) error {
 	return fmt.Errorf("no service publish grant for cluster %q namespace %q service %q; request a grant from a cluster authority or run attach from an authority node", clusterName, namespaceName, serviceName)
 }
@@ -624,10 +614,6 @@ func verifyPublishLeaseFile(path string, pub ed25519.PublicKey, clusterID, names
 		return err
 	}
 	return grantspkg.VerifyPublishLease(lease, pub, clusterID, namespaceID, serviceID, servicePeerID)
-}
-
-func isPublishLeaseExpiredError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "publish lease expired")
 }
 
 func readPublishLeaseFile(path string) (grantspkg.PublishLease, error) {
