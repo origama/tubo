@@ -219,8 +219,44 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	return result, nil
 }
 
-func (r *resolver) Renew(_ context.Context, _ RenewRequest) (ResolveResult, error) {
-	return ResolveResult{}, ErrNotImplemented
+func (r *resolver) Renew(_ context.Context, req RenewRequest) (ResolveResult, error) {
+	if r.deps.ArtifactStore == nil {
+		return ResolveResult{}, ErrNotImplemented
+	}
+	cfg := req.Config
+	svc := req.Service
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+	if err != nil {
+		return ResolveResult{}, err
+	}
+	grantPeer := svc.GrantServicePeer
+	if strings.TrimSpace(grantPeer) == "" {
+		grantPeer = grantServicePeer(cluster)
+	}
+	if cluster.AuthorityPrivateKeyFile != "" && r.deps.AuthoritySigner != nil {
+		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
+			return ResolveResult{}, err
+		}
+		shareToken, err := r.deps.ArtifactStore.BuildShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+		if err != nil {
+			return ResolveResult{}, err
+		}
+		return ResolveResult{Decision: DecisionReady, Config: cfg, Service: svc, ServicePeerID: req.ServicePeerID, MembershipCapabilityFile: membershipFile, ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, ServiceShareToken: shareToken, MintedLocally: true}, nil
+	}
+	if grantPeer != "" && r.deps.GrantClient != nil {
+		updatedCfg, updatedSvc, updatedShareToken, err := r.deps.GrantClient.RenewPublishAuthorization(req.ConfigPath, cfg, svc, req.ServicePeerID)
+		if err != nil {
+			return ResolveResult{}, err
+		}
+		updatedCluster := updatedCfg.Clusters[updatedCfg.CurrentCluster]
+		updatedMembershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, updatedCluster, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace, updatedSvc.ServiceSeed)
+		if err != nil {
+			return ResolveResult{}, err
+		}
+		return ResolveResult{Decision: DecisionReady, Config: updatedCfg, Service: updatedSvc, ServicePeerID: req.ServicePeerID, MembershipCapabilityFile: updatedMembershipFile, ServiceClaimFile: updatedSvc.ServiceClaimFile, ServicePublishLeaseFile: updatedSvc.ServicePublishLeaseFile, ServiceShareToken: updatedShareToken}, nil
+	}
+	return ResolveResult{}, fmt.Errorf("service publish lease renewal requires a grant service peer or local authority key")
 }
 
 func isPublishLeaseExpiredError(err error) bool {

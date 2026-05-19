@@ -3,7 +3,6 @@ package attachauth
 import (
 	"context"
 	"crypto/ed25519"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -87,8 +86,9 @@ func (f *fakeGrantClient) RequestPublishGrant(string, cfgpkg.Config, cfgpkg.Name
 	return f.cfg, f.svc, f.token, f.err
 }
 
-func (fakeGrantClient) RenewPublishAuthorization(string, cfgpkg.Config, cfgpkg.NamespaceService, string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
-	panic("not used")
+func (f *fakeGrantClient) RenewPublishAuthorization(string, cfgpkg.Config, cfgpkg.NamespaceService, string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
+	f.calls++
+	return f.cfg, f.svc, f.token, f.err
 }
 
 func TestResolveReturnsReadyForReusablePublishLease(t *testing.T) {
@@ -236,10 +236,35 @@ func TestResolveReturnsReadyWhenOnlyStoredClaimIsAvailable(t *testing.T) {
 	}
 }
 
-func TestResolveKeepsRenewUnwired(t *testing.T) {
-	resolver := New(Dependencies{})
-	if _, err := resolver.Renew(context.Background(), RenewRequest{}); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Renew error = %v, want ErrNotImplemented", err)
+func TestRenewUsesGrantClient(t *testing.T) {
+	cfg := testAttachConfigWithGrantPeer()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease", GrantServicePeer: "/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant"}
+	grantClient := &fakeGrantClient{cfg: cfg, svc: svc, token: "share-token"}
+	resolver := New(Dependencies{
+		ArtifactStore: fakeArtifactStore{membershipFile: "/tmp/membership.cap"},
+		GrantClient:   grantClient,
+		Clock:         SystemClock{},
+	})
+
+	got, err := resolver.Renew(context.Background(), RenewRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg, Service: svc, ServicePeerID: "12D3KooWPeer"})
+	if err != nil {
+		t.Fatalf("Renew error = %v", err)
+	}
+	if got.Decision != DecisionReady {
+		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionReady)
+	}
+	if got.ServiceShareToken != "share-token" {
+		t.Fatalf("ServiceShareToken = %q", got.ServiceShareToken)
+	}
+	if grantClient.calls != 1 {
+		t.Fatalf("GrantClient calls = %d, want 1", grantClient.calls)
+	}
+}
+
+func TestRenewRequiresARefreshPath(t *testing.T) {
+	resolver := New(Dependencies{ArtifactStore: fakeArtifactStore{membershipFile: "/tmp/membership.cap"}})
+	if _, err := resolver.Renew(context.Background(), RenewRequest{Config: testAttachConfig(), Service: cfgpkg.NamespaceService{ServiceSeed: "seed"}, ServicePeerID: "12D3KooWPeer"}); err == nil || !strings.Contains(err.Error(), "renewal requires") {
+		t.Fatalf("Renew error = %v, want renewal path error", err)
 	}
 }
 

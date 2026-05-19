@@ -13,6 +13,7 @@ import (
 	"github.com/origama/tubo/internal/app/edge"
 	"github.com/origama/tubo/internal/app/relay"
 	"github.com/origama/tubo/internal/app/service"
+	attachauth "github.com/origama/tubo/internal/attachauth"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
@@ -624,6 +625,7 @@ func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg 
 	if strings.TrimSpace(svc.ServicePublishLeaseFile) == "" {
 		return
 	}
+	resolver := newAttachAuthResolver()
 	go func() {
 		backoff := 5 * time.Second
 		for {
@@ -651,7 +653,7 @@ func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg 
 				case <-timer.C:
 				}
 			}
-			nextCfg, nextSvc, shareToken, err := renewAttachPublishAuthorization(configPath, cfg, svc, servicePeerID)
+			result, err := resolver.Renew(ctx, attachauth.RenewRequest{ConfigPath: configPath, Config: cfg, Service: svc, ServicePeerID: servicePeerID})
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -664,9 +666,9 @@ func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg 
 				}
 				continue
 			}
-			cfg = nextCfg
-			svc = nextSvc
-			if shareToken != "" {
+			cfg = result.Config
+			svc = result.Service
+			if result.ServiceShareToken != "" {
 				log.Printf("share invite refreshed for service %q", cfg.Service.Name)
 			}
 		}
