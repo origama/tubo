@@ -131,6 +131,10 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	if err != nil {
 		return ResolveResult{}, err
 	}
+	grantPeer := svc.GrantServicePeer
+	if strings.TrimSpace(grantPeer) == "" {
+		grantPeer = grantServicePeer(cluster)
+	}
 	if cluster.AuthorityPrivateKeyFile != "" && r.deps.AuthoritySigner != nil {
 		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
 			return ResolveResult{}, err
@@ -141,10 +145,57 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		result.ServiceShareToken = shareToken
 		result.MintedLocally = true
 		if shareToken == "" {
-			grantPeer := grantServicePeer(cluster)
 			result.ShareRecoveryHint = shareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
 		}
 		return result, nil
+	}
+	if grantPeer != "" && r.deps.GrantClient != nil {
+		updatedCfg, updatedSvc, updatedShareToken, grantErr := r.deps.GrantClient.RequestPublishGrant(req.ConfigPath, cfg, svc, servicePeerID)
+		if grantErr == nil {
+			updatedCluster := updatedCfg.Clusters[updatedCfg.CurrentCluster]
+			updatedMembershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, updatedCluster, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace, updatedSvc.ServiceSeed)
+			if err != nil {
+				return ResolveResult{}, err
+			}
+			result := ResolveResult{
+				Decision:                 DecisionReady,
+				Config:                   updatedCfg,
+				Service:                  updatedSvc,
+				ServicePeerID:            servicePeerID,
+				MembershipCapabilityFile: updatedMembershipFile,
+				ServiceClaimFile:         updatedSvc.ServiceClaimFile,
+				ServicePublishLeaseFile:  updatedSvc.ServicePublishLeaseFile,
+				ServiceShareToken:        updatedShareToken,
+			}
+			if updatedShareToken == "" {
+				result.ShareRecoveryHint = shareRecoveryHint(updatedCfg.Service.Name, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace, grantPeer, updatedSvc.GrantRequestID)
+			}
+			return result, nil
+		}
+		result := ResolveResult{
+			Config:                   updatedCfg,
+			Service:                  updatedSvc,
+			ServicePeerID:            servicePeerID,
+			MembershipCapabilityFile: membershipFile,
+			ServiceClaimFile:         updatedSvc.ServiceClaimFile,
+			ServicePublishLeaseFile:  updatedSvc.ServicePublishLeaseFile,
+			ServiceShareToken:        updatedShareToken,
+			UserMessage:              grantErr.Error(),
+		}
+		if updatedShareToken == "" {
+			result.ShareRecoveryHint = shareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, updatedSvc.GrantRequestID)
+		}
+		switch classifyGrantError(grantErr) {
+		case DecisionPendingApproval:
+			result.Decision = DecisionPendingApproval
+			return result, nil
+		case DecisionDenied:
+			result.Decision = DecisionDenied
+			return result, nil
+		default:
+			result.Decision = DecisionRetryable
+			return result, nil
+		}
 	}
 	result := base
 	result.Decision = DecisionRetryable
@@ -152,7 +203,6 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	result.ServiceShareToken = shareToken
 	result.UserMessage = "stored publish authorization requires refresh or mint"
 	if shareToken == "" {
-		grantPeer := grantServicePeer(cluster)
 		result.ShareRecoveryHint = shareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
 	}
 	return result, nil
@@ -176,6 +226,21 @@ func grantServicePeer(cluster cfgpkg.Cluster) string {
 		}
 	}
 	return ""
+}
+
+func classifyGrantError(err error) Decision {
+	if err == nil {
+		return DecisionReady
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, " is pending;") || strings.Contains(msg, " pending;"):
+		return DecisionPendingApproval
+	case strings.Contains(msg, " denied:"):
+		return DecisionDenied
+	default:
+		return DecisionRetryable
+	}
 }
 
 func shareRecoveryHint(serviceName, clusterName, namespaceName, grantPeer, grantRequestID string) string {
