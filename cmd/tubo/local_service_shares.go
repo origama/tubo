@@ -125,6 +125,11 @@ func localShareServiceCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	finalToken, err := finalizeAuthorityServiceShareToken(artifacts.Token, privKey, serviceID)
+	if err != nil {
+		return err
+	}
+	artifacts.Token = finalToken
 	result := serviceShareResult{
 		ClusterName: scope.Cluster,
 		Namespace:   scope.Namespace,
@@ -222,6 +227,23 @@ func isServiceShareToken(token string) bool {
 
 func shareInviteRegistryPath(configDir string) string {
 	return filepath.Join(configDir, shareInviteRegistryFileName)
+}
+
+func finalizeAuthorityServiceShareToken(token string, privKey ed25519.PrivateKey, serviceID string) (string, error) {
+	store := grantspkg.NewRevocationStore(grantspkg.DefaultRevocationStorePath())
+	if revoked, _, err := store.IsPublishRevoked(serviceID); err != nil {
+		return "", err
+	} else if revoked {
+		return "", fmt.Errorf("publish revoked for service %q", serviceID)
+	}
+	epochs, err := store.EpochsForService(serviceID)
+	if err != nil {
+		return "", err
+	}
+	if epochs.AccessEpoch == 0 && epochs.PublishEpoch == 0 {
+		return token, nil
+	}
+	return grantspkg.ReissueServiceShareTokenWithEpochs(token, privKey, epochs)
 }
 
 func loadShareInviteRegistry(configDir string) (map[string]bool, error) {

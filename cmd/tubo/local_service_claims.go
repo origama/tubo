@@ -622,12 +622,16 @@ func buildAttachServiceShareToken(cluster cfgpkg.Cluster, clusterName, namespace
 			var lease grantspkg.PublishLease
 			if err := json.Unmarshal(leaseBytes, &lease); err == nil {
 				if artifacts, err := grantspkg.BuildShareInviteArtifactsFromLease(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL); err == nil {
-					return artifacts.Token, nil
+					return finalizeAuthorityServiceShareToken(artifacts.Token, privKey, svc.ServiceID)
 				}
 			}
 		}
 	}
-	return grantspkg.BuildServiceShareToken(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL)
+	token, err := grantspkg.BuildServiceShareToken(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL)
+	if err != nil {
+		return "", err
+	}
+	return finalizeAuthorityServiceShareToken(token, privKey, svc.ServiceID)
 }
 
 func printAttachShareHint(cfg cfgpkg.Config, authz attachAuthorization) {

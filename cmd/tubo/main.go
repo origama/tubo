@@ -128,6 +128,8 @@ func run(args []string) error {
 		return localUseCmd(args[1:])
 	case "share":
 		return localShareCmd(args[1:])
+	case "revoke":
+		return revokeCmd(args[1:])
 	case "grants":
 		return grantsCmd(args[1:])
 	case "create":
@@ -315,7 +317,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|create|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|create|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -332,6 +334,7 @@ Usage:
   tubo share cluster/home --permission member
   tubo share service/myapp --expires 1h
   tubo share revoke <share-invite>
+  tubo revoke <invite|session|service-access|publish> <id-or-service>
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [overlay/public|tubo-public]
@@ -472,6 +475,14 @@ Select a local overlay/cluster/namespace context in the config file.`)
   tubo share revoke <share-invite>
 
 Create a copyable cluster invitation or service-scoped connect token from local authority material.`)
+	case "revoke":
+		fmt.Println(`Usage:
+  tubo revoke invite <invite-id-or-token> [--reason <text>]
+  tubo revoke session <session-id> [--reason <text>]
+  tubo revoke service-access <service-id-or-service/name> [--reason <text>]
+  tubo revoke publish <service-id-or-service/name> [--reason <text>]
+
+Record issuer-side revocation state for invite redemption, connect refresh, service access, or publish authorization.`)
 	case "create":
 		fmt.Println(`Usage:
   tubo create cluster/<name>

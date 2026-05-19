@@ -104,7 +104,7 @@ Level 1 does **not** guarantee:
 
 ### Revocation model
 
-Level 1 revocation is bounded by short TTLs unless online or cache-refreshed revocation state is explicitly enabled.
+Level 1 revocation is bounded by short TTLs unless online or cache-refreshed revocation state is explicitly enabled. The issuer-side revocation store supports revoked invite JTIs, revoked connect sessions, service-access epochs, and publish revocation records.
 
 ## 3.2 Level 2 — public overlay + private cluster/namespace
 
@@ -236,7 +236,7 @@ revocation bounded by TTL
 revocation bounded by cache freshness + TTL
 ```
 
-0.7.0.b0 must not claim immediate revocation without explicitly requiring fresh state.
+0.7.0.b0 must not claim immediate revocation without explicitly requiring fresh state. When a grant service has fresh revocation state, it rejects revoked ShareInvite redemption, revoked session refresh, stale service-access epochs, and publish requests for publish-revoked services. Already-issued access leases remain TTL-bounded unless the service validator is extended with online/cache revocation checks.
 
 ## 5. 0.7.0.b0 implementation boundary
 

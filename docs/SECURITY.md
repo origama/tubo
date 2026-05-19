@@ -80,11 +80,12 @@ A future Level 2 private-namespace design must use a real secret `namespace_disc
 
 Current and near-term revocation semantics are bounded by:
 
-- token / claim TTLs;
+- token / claim / access-lease TTLs;
 - cache freshness;
-- renewal state.
+- renewal state;
+- issuer-side revocation state when a grant service is consulted.
 
-Do not assume immediate revocation unless the specific mechanism explicitly says it depends on fresh online or refreshed cached state.
+Issuer-side revocation supports invite JTIs, connect session IDs, service-access epochs, and publish revocation records. Do not assume immediate revocation unless the specific mechanism explicitly says it depends on fresh online or refreshed cached state.
 
 ### 3.4 Current share-invite tokens are sensitive credentials
 

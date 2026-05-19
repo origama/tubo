@@ -37,6 +37,7 @@ type ConnectAccessLease struct {
 	ServiceID           string    `json:"service_id"`
 	ClientPublicKey     string    `json:"client_public_key"`
 	ClientKeyThumbprint string    `json:"client_key_thumbprint"`
+	AccessEpoch         int64     `json:"access_epoch,omitempty"`
 	Permissions         []string  `json:"permissions"`
 	IssuedAt            time.Time `json:"issued_at"`
 	ExpiresAt           time.Time `json:"expires_at"`
@@ -54,6 +55,7 @@ type ConnectRefreshLease struct {
 	ServiceID           string    `json:"service_id"`
 	ClientPublicKey     string    `json:"client_public_key"`
 	ClientKeyThumbprint string    `json:"client_key_thumbprint"`
+	AccessEpoch         int64     `json:"access_epoch,omitempty"`
 	Permissions         []string  `json:"permissions"`
 	IssuedAt            time.Time `json:"issued_at"`
 	ExpiresAt           time.Time `json:"expires_at"`
@@ -76,6 +78,7 @@ type canonicalConnectLease struct {
 	ServiceID           string   `json:"service_id"`
 	ClientPublicKey     string   `json:"client_public_key"`
 	ClientKeyThumbprint string   `json:"client_key_thumbprint"`
+	AccessEpoch         int64    `json:"access_epoch,omitempty"`
 	Permissions         []string `json:"permissions"`
 	IssuedAt            string   `json:"issued_at"`
 	ExpiresAt           string   `json:"expires_at"`
@@ -125,6 +128,7 @@ func BuildConnectLeaseArtifacts(priv ed25519.PrivateKey, invite ServiceSharePayl
 		ServiceID:           invite.TargetServiceID,
 		ClientPublicKey:     strings.TrimSpace(clientPublicKey),
 		ClientKeyThumbprint: thumbprint,
+		AccessEpoch:         invite.AccessEpoch,
 		Permissions:         []string{capability.PermissionConnect},
 		IssuedAt:            now,
 		ExpiresAt:           now.Add(refreshTTL),
@@ -267,6 +271,7 @@ func signConnectAccessForRefresh(priv ed25519.PrivateKey, refresh ConnectRefresh
 		ServiceID:           refresh.ServiceID,
 		ClientPublicKey:     refresh.ClientPublicKey,
 		ClientKeyThumbprint: refresh.ClientKeyThumbprint,
+		AccessEpoch:         refresh.AccessEpoch,
 		Permissions:         []string{capability.PermissionConnect},
 		IssuedAt:            now.UTC(),
 		ExpiresAt:           expiresAt,
@@ -346,6 +351,7 @@ func canonicalAccessLeaseBytes(lease ConnectAccessLease) ([]byte, error) {
 		ServiceID:           lease.ServiceID,
 		ClientPublicKey:     strings.TrimSpace(lease.ClientPublicKey),
 		ClientKeyThumbprint: lease.ClientKeyThumbprint,
+		AccessEpoch:         lease.AccessEpoch,
 		Permissions:         canonicalConnectLeasePermissions(lease.Permissions),
 		IssuedAt:            canonicalConnectLeaseTime(lease.IssuedAt),
 		ExpiresAt:           canonicalConnectLeaseTime(lease.ExpiresAt),
@@ -364,6 +370,7 @@ func canonicalRefreshLeaseBytes(lease ConnectRefreshLease) ([]byte, error) {
 		ServiceID:           lease.ServiceID,
 		ClientPublicKey:     strings.TrimSpace(lease.ClientPublicKey),
 		ClientKeyThumbprint: lease.ClientKeyThumbprint,
+		AccessEpoch:         lease.AccessEpoch,
 		Permissions:         canonicalConnectLeasePermissions(lease.Permissions),
 		IssuedAt:            canonicalConnectLeaseTime(lease.IssuedAt),
 		ExpiresAt:           canonicalConnectLeaseTime(lease.ExpiresAt),

@@ -400,6 +400,7 @@ func grantsServeCmd(args []string) error {
 	listen := fs.String("p2p-listen", "", "")
 	seed := fs.String("seed", "", "")
 	storePath := fs.String("store", grantspkg.DefaultStorePath(), "")
+	revocationsPath := fs.String("revocations", grantspkg.DefaultRevocationStorePath(), "")
 	autoApprove := fs.Bool("public-auto-approve", false, "")
 	claimTTL := fs.Duration("claim-ttl", 24*time.Hour, "")
 	shareTTL := fs.Duration("share-ttl", time.Hour, "")
@@ -450,7 +451,7 @@ func grantsServeCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)
 	}
-	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL, GrantServicePeers: p2p.PeerAddrs(host), ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL})
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL, GrantServicePeers: p2p.PeerAddrs(host), ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL, Revocations: grantspkg.NewRevocationStore(*revocationsPath)})
 	if err != nil {
 		return err
 	}

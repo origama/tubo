@@ -49,6 +49,8 @@ type ServiceSharePayload struct {
 	TargetServiceID    string                       `json:"target_service_id,omitempty"`
 	Grant              capability.ConnectCapability `json:"grant"` // legacy bearer fallback for old tokens/bridges
 	GrantService       GrantServiceEndpoint         `json:"grant_service,omitempty"`
+	AccessEpoch        int64                        `json:"access_epoch,omitempty"`
+	PublishEpoch       int64                        `json:"publish_epoch,omitempty"`
 	IssuedAt           time.Time                    `json:"issued_at"`
 	ExpiresAt          time.Time                    `json:"expires_at"`
 }
@@ -138,6 +140,16 @@ func BuildShareInviteTokenFromLease(priv ed25519.PrivateKey, clusterName string,
 		return "", err
 	}
 	return artifacts.Token, nil
+}
+
+func ReissueServiceShareTokenWithEpochs(token string, priv ed25519.PrivateKey, epochs RevocationEpochs) (string, error) {
+	payload, err := ParseAndVerifyServiceShareToken(token)
+	if err != nil {
+		return "", err
+	}
+	payload.AccessEpoch = epochs.AccessEpoch
+	payload.PublishEpoch = epochs.PublishEpoch
+	return SignServiceShareToken(payload, priv)
 }
 
 func ParseAndVerifyServiceShareToken(token string) (ServiceSharePayload, error) {

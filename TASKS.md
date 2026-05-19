@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-18 23:42 UTC
+> **Last updated:** 2026-05-19 00:01 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -174,6 +174,7 @@
 | C.70 | Issue #95/#107 — Relay-aware Grant Service without discovery | ✅ | Done: added shared overlay host/reachability helper, wired `grants serve` and grant clients to configured bootstrap/relay/autorelay/hole-punching/private reachability, relay reservation maintenance, relay-aware printed addresses, and tests for relayed address generation/direct-only failure plus stored invite grant metadata request flow |
 | C.71 | Public attach/connect UX on the public bundle | ✅ | Done: extended `tubo-public` bundle metadata with `home/default`, cluster authority public key, and grant-service peers; added public auto-approve grant service mode, clean-config `attach`/`connect` bootstrap notes, and docs updates for the simplified share/connect flow. Fresh-config Bob connect is now exercised end-to-end in the deterministic e2e harness. |
 | C.72 | Issue #120 — ConnectAccessLease/ConnectRefreshLease + bridge PoP renewal | ✅ | Done on `0.7.0.b0`: ShareInvite redemption through grant-service metadata now yields client-key-bound access/refresh leases, bridge refreshes access leases before expiry, PoP binds scope/service/access hash/nonce/JTI/issued-at, service validation rejects stolen key/hash/replay/expired proofs, and e2e `public_connect_auto_renew` passes. |
+| C.73 | Issue #121 — Revocation primitives and epoch validation | ✅ | Done on `0.7.0.b0`: added issuer-side revocation store, `tubo revoke invite/session/service-access/publish`, access/publish epoch fields, grant-service checks for revoked invite/session/stale service-access epoch/publish revoke, share minting hooks, docs, unit tests, and e2e `public_revoke_invite`, `public_revoke_session`, `public_revoke_service_access`. |
 
 ---
 
@@ -194,7 +195,7 @@ The following packages have no `_test.go` files yet:
 
 ### Now
 
-1. **Issue #112 — layered security model completion**: ⏳ In progress on `0.7.0.b0`; #120 implemented and under final gate; next implementation order: #121 revocation/epochs, #123 ID-first CLI, #128 deterministic E2E, then #127 migration, #124 aliases, #125 Level 2 private namespace, #126 Level 3 private overlay (`security`, `area:service`, `area:cli`, `area:testbench`, `prio:high`)
+1. **Issue #112 — layered security model completion**: ⏳ In progress on `0.7.0.b0`; #120 and #121 implemented; next implementation order: #123 ID-first CLI, #128 deterministic E2E, then #127 migration, #124 aliases, #125 Level 2 private namespace, #126 Level 3 private overlay (`security`, `area:service`, `area:cli`, `area:testbench`, `prio:high`)
 2. **Issue #95 — Publish Grant epic review/merge prep**: subissue #96–#107 implementate su branch; prossimo step review finale PR/merge (`security`, `area:service`, `area:cli`, `prio:high`)
 2. **Issue #129 — expired approved grants should not block reattach**: ✅ Done on `0.7.0.b0`; grant store now expires approved grants using their effective claim/lease expiry, collision checks ignore stale approved records, and tests cover expired vs active approved grants plus the CLI request path (`security`, `area:service`, `area:cli`, `prio:high`)
 3. **Issue #130 — attach restart loses service share token UX after grant approval**: ✅ Done on `0.7.0.b0`; `attach` now makes publish-lease reuse explicit, treats an expired lease like a missing one so it re-enters the normal renew/request path, preserves the publish-lease path when a fresh grant-approved attach starts the runtime, and share-invite issuer pinning now compares authority key material instead of the full SSH authorized-key string so comment-only differences no longer break `connect --token` (`security`, `area:service`, `area:cli`, `prio:high`)

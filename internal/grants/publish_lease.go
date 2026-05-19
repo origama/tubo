@@ -43,6 +43,7 @@ type PublishLease struct {
 	PublisherInstancePublicKey string                  `json:"publisher_instance_public_key,omitempty"`
 	RequestedCapabilities      []string                `json:"requested_capabilities"`
 	Nonce                      string                  `json:"nonce"`
+	PublishEpoch               int64                   `json:"publish_epoch,omitempty"`
 	IssuedAt                   time.Time               `json:"issued_at"`
 	ExpiresAt                  time.Time               `json:"expires_at"`
 	ServiceClaim               capability.ServiceClaim `json:"service_claim"`
@@ -100,6 +101,10 @@ func VerifyPublishLeaseRequest(req PublishLeaseRequest) error {
 }
 
 func BuildPublishLeaseArtifacts(priv ed25519.PrivateKey, req PublishLeaseRequest, serviceName string, claimTTL, leaseTTL time.Duration) (PublishLeaseArtifacts, error) {
+	return BuildPublishLeaseArtifactsWithEpoch(priv, req, serviceName, claimTTL, leaseTTL, 0)
+}
+
+func BuildPublishLeaseArtifactsWithEpoch(priv ed25519.PrivateKey, req PublishLeaseRequest, serviceName string, claimTTL, leaseTTL time.Duration, publishEpoch int64) (PublishLeaseArtifacts, error) {
 	if err := VerifyPublishLeaseRequest(req); err != nil {
 		return PublishLeaseArtifacts{}, err
 	}
@@ -131,6 +136,7 @@ func BuildPublishLeaseArtifacts(priv ed25519.PrivateKey, req PublishLeaseRequest
 		PublisherInstancePublicKey: req.PublisherInstancePublicKey,
 		RequestedCapabilities:      append([]string(nil), req.RequestedCapabilities...),
 		Nonce:                      req.Nonce,
+		PublishEpoch:               publishEpoch,
 		IssuedAt:                   time.Now().UTC(),
 		ExpiresAt:                  time.Now().UTC().Add(leaseTTL),
 		ServiceClaim:               claim,
@@ -248,6 +254,7 @@ func canonicalPublishLease(lease PublishLease) ([]byte, error) {
 		PublisherInstancePublicKey string                  `json:"publisher_instance_public_key,omitempty"`
 		RequestedCapabilities      []string                `json:"requested_capabilities"`
 		Nonce                      string                  `json:"nonce"`
+		PublishEpoch               int64                   `json:"publish_epoch,omitempty"`
 		IssuedAt                   time.Time               `json:"issued_at"`
 		ExpiresAt                  time.Time               `json:"expires_at"`
 		ServiceClaim               capability.ServiceClaim `json:"service_claim"`
@@ -263,6 +270,7 @@ func canonicalPublishLease(lease PublishLease) ([]byte, error) {
 		PublisherInstancePublicKey: lease.PublisherInstancePublicKey,
 		RequestedCapabilities:      canonicalPublishLeaseCapabilities(lease.RequestedCapabilities),
 		Nonce:                      lease.Nonce,
+		PublishEpoch:               lease.PublishEpoch,
 		IssuedAt:                   lease.IssuedAt.UTC(),
 		ExpiresAt:                  lease.ExpiresAt.UTC(),
 		ServiceClaim:               lease.ServiceClaim,

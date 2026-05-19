@@ -204,6 +204,7 @@ type connectAccessLease struct {
 	ServiceID           string    `json:"service_id"`
 	ClientPublicKey     string    `json:"client_public_key"`
 	ClientKeyThumbprint string    `json:"client_key_thumbprint"`
+	AccessEpoch         int64     `json:"access_epoch,omitempty"`
 	Permissions         []string  `json:"permissions"`
 	IssuedAt            time.Time `json:"issued_at"`
 	ExpiresAt           time.Time `json:"expires_at"`
@@ -221,6 +222,7 @@ type canonicalConnectAccessLease struct {
 	ServiceID           string   `json:"service_id"`
 	ClientPublicKey     string   `json:"client_public_key"`
 	ClientKeyThumbprint string   `json:"client_key_thumbprint"`
+	AccessEpoch         int64    `json:"access_epoch,omitempty"`
 	Permissions         []string `json:"permissions"`
 	IssuedAt            string   `json:"issued_at"`
 	ExpiresAt           string   `json:"expires_at"`
@@ -282,6 +284,7 @@ func canonicalConnectAccessLeaseBytes(lease connectAccessLease) ([]byte, error) 
 		ServiceID:           lease.ServiceID,
 		ClientPublicKey:     strings.TrimSpace(lease.ClientPublicKey),
 		ClientKeyThumbprint: lease.ClientKeyThumbprint,
+		AccessEpoch:         lease.AccessEpoch,
 		Permissions:         perms,
 		IssuedAt:            lease.IssuedAt.UTC().Format(time.RFC3339Nano),
 		ExpiresAt:           lease.ExpiresAt.UTC().Format(time.RFC3339Nano),

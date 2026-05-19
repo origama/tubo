@@ -39,4 +39,4 @@ Il primo scenario valida il happy path base:
 - Alice pubblica un servizio `e2e-echo` e genera il token `tubo share service/...`;
 - Bob parte da config pulita, fa implicit public join e si collega direttamente con `tubo connect --token`, senza `tubo join cluster/home`.
 
-Gli scenari `public_*` coprono i gate security/discovery di `0.7.0.b0`: duplicate display name accettate solo come record distinti per `service_id`, lease non valide respinte, connect proof rubati/scaduti/replay respinti, e auto-renew dei `ConnectAccessLease` tramite `ConnectRefreshLease`.
+Gli scenari `public_*` coprono i gate security/discovery di `0.7.0.b0`: duplicate display name accettate solo come record distinti per `service_id`, lease non valide respinte, connect proof rubati/scaduti/replay respinti, auto-renew dei `ConnectAccessLease`, e revoche issuer-side per invite/session/service-access.

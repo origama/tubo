@@ -33,6 +33,7 @@ type ServerConfig struct {
 	GrantServicePeers      []string
 	ConnectAccessTTL       time.Duration
 	ConnectRefreshTTL      time.Duration
+	Revocations            *RevocationStore
 }
 
 type Server struct {
@@ -106,6 +107,13 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if err := VerifyPublishLeaseRequest(PublishLeaseRequest{Version: msg.Version, Kind: PublishLeaseRequestKind, ClusterID: msg.ClusterID, NamespaceID: msg.NamespaceID, ServiceID: msg.ServiceID, ServicePublicKey: msg.ServicePublicKey, PublisherPeerID: msg.ServicePeerID, PublisherInstancePublicKey: msg.PublisherInstanceKey, RequestedCapabilities: append([]string(nil), msg.RequestedPermissions...), Nonce: msg.RequestNonce, ServiceOwnerSignature: append([]byte(nil), msg.ServiceOwnerSignature...)}); err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
 	}
+	if s.cfg.Revocations != nil {
+		if revoked, _, err := s.cfg.Revocations.IsPublishRevoked(msg.ServiceID); err != nil {
+			return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
+		} else if revoked {
+			return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: fmt.Sprintf("publish revoked for service %q", msg.ServiceID)}
+		}
+	}
 	now := s.cfg.Now().UTC()
 	req := Request{
 		ClusterName:           s.cfg.ClusterName,
@@ -148,6 +156,9 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 		shareTTL = claimTTL
 	}
 	artifacts, err := BuildApprovalArtifactsWithGrantService(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature, s.cfg.GrantServicePeers)
+	if err == nil && s.cfg.Revocations != nil {
+		artifacts, err = s.applyRevocationEpochsToApproval(artifacts, req.ServiceID)
+	}
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: err.Error()}
 	}
@@ -218,6 +229,9 @@ func (s *Server) handleShareRedeem(msg Message) Message {
 	if payload.ClusterID != s.cfg.ClusterID || payload.NamespaceID != s.cfg.NamespaceID {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: "share invite scope does not match authority server"}
 	}
+	if err := s.validateShareInviteRevocation(payload); err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: err.Error()}
+	}
 	serverAuthority, err := authorityPublicKeyString(s.cfg.AuthorityPrivateKey)
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: err.Error()}
@@ -242,11 +256,71 @@ func (s *Server) handleConnectRefresh(msg Message) Message {
 	if msg.ConnectRefreshLease.ClusterID != s.cfg.ClusterID || msg.ConnectRefreshLease.NamespaceID != s.cfg.NamespaceID {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, Reason: "connect refresh lease scope does not match authority server"}
 	}
+	if err := s.validateConnectRefreshRevocation(*msg.ConnectRefreshLease); err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, Reason: err.Error()}
+	}
 	access, err := RefreshConnectAccessLease(s.cfg.AuthorityPrivateKey, *msg.ConnectRefreshLease, s.cfg.ConnectAccessTTL)
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, Reason: err.Error()}
 	}
 	return Message{Type: TypeConnectRefresh, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, ConnectAccessLease: &access}
+}
+
+func (s *Server) applyRevocationEpochsToApproval(artifacts ApprovalArtifacts, serviceID string) (ApprovalArtifacts, error) {
+	if s.cfg.Revocations == nil || artifacts.ServiceShareToken == "" {
+		return artifacts, nil
+	}
+	epochs, err := s.cfg.Revocations.EpochsForService(serviceID)
+	if err != nil {
+		return ApprovalArtifacts{}, err
+	}
+	if epochs.AccessEpoch == 0 && epochs.PublishEpoch == 0 {
+		return artifacts, nil
+	}
+	token, err := ReissueServiceShareTokenWithEpochs(artifacts.ServiceShareToken, s.cfg.AuthorityPrivateKey, epochs)
+	if err != nil {
+		return ApprovalArtifacts{}, err
+	}
+	artifacts.ServiceShareToken = token
+	return artifacts, nil
+}
+
+func (s *Server) validateShareInviteRevocation(payload ServiceSharePayload) error {
+	if s.cfg.Revocations == nil {
+		return nil
+	}
+	if revoked, _, err := s.cfg.Revocations.IsInviteRevoked(payload.JTI); err != nil {
+		return err
+	} else if revoked {
+		return fmt.Errorf("share invite revoked")
+	}
+	epoch, err := s.cfg.Revocations.ServiceAccessEpoch(payload.TargetServiceID)
+	if err != nil {
+		return err
+	}
+	if payload.AccessEpoch < epoch {
+		return fmt.Errorf("service access revoked for service %q", payload.TargetServiceID)
+	}
+	return nil
+}
+
+func (s *Server) validateConnectRefreshRevocation(refresh ConnectRefreshLease) error {
+	if s.cfg.Revocations == nil {
+		return nil
+	}
+	if revoked, _, err := s.cfg.Revocations.IsSessionRevoked(refresh.SessionID); err != nil {
+		return err
+	} else if revoked {
+		return fmt.Errorf("connect session revoked")
+	}
+	epoch, err := s.cfg.Revocations.ServiceAccessEpoch(refresh.ServiceID)
+	if err != nil {
+		return err
+	}
+	if refresh.AccessEpoch < epoch {
+		return fmt.Errorf("service access revoked for service %q", refresh.ServiceID)
+	}
+	return nil
 }
 
 func Submit(ctx context.Context, h host.Host, info peer.AddrInfo, msg Message) (Message, error) {
