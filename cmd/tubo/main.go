@@ -14,11 +14,10 @@ import (
 	"github.com/origama/tubo/internal/app/relay"
 	"github.com/origama/tubo/internal/app/service"
 	attachauth "github.com/origama/tubo/internal/attachauth"
-	capability "github.com/origama/tubo/internal/capability"
 	catalog "github.com/origama/tubo/internal/catalog"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	connectflow "github.com/origama/tubo/internal/connectflow"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
-	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/networkbundle"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
@@ -1338,30 +1337,6 @@ type servicesAdminResponse struct {
 	Items []serviceResource `json:"items"`
 }
 
-type connectAttempt struct {
-	Path   string `json:"path"`
-	Addr   string `json:"addr"`
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
-}
-
-type connectResult struct {
-	Service   string           `json:"service"`
-	ServiceID string           `json:"service_id,omitempty"`
-	Local     string           `json:"local"`
-	Path      string           `json:"path"`
-	Scope     *serviceScope    `json:"scope,omitempty"`
-	Selected  string           `json:"selected_addr,omitempty"`
-	Direct    string           `json:"direct,omitempty"`
-	Relay     string           `json:"relay,omitempty"`
-	Attempts  []connectAttempt `json:"attempts,omitempty"`
-}
-
-type connectCandidate struct {
-	Path string
-	Addr string
-}
-
 const defaultDiscoveryTimeout = 20 * time.Second
 
 func connectCmd(args []string) error {
@@ -1376,282 +1351,60 @@ func connectCmd(args []string) error {
 	cluster := fs.String("cluster", "", "")
 	namespace := fs.String("namespace", "", "")
 	namespaceShort := fs.String("n", "", "")
-	serviceName := ""
+	serviceRef := ""
 	parseArgs := args
 	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		serviceName = args[0]
+		serviceRef = args[0]
 		parseArgs = args[1:]
 	}
 	if err := fs.Parse(parseArgs); err != nil {
 		return err
 	}
-	shareToken := strings.TrimSpace(*token)
 	if *namespace == "" {
 		*namespace = *namespaceShort
 	}
-	var err error
-	serviceName, serviceID, shareScope, err := connectServiceShareSetup(serviceName, shareToken, *cluster, *namespace)
-	if err != nil {
-		return err
-	}
-	if shareToken != "" {
-		*cluster = shareScope.Cluster
-		*namespace = shareScope.Namespace
-	}
-	if serviceName == "" {
-		if fs.NArg() != 1 {
+	if serviceRef == "" {
+		switch fs.NArg() {
+		case 0:
+			if strings.TrimSpace(*token) == "" {
+				return errors.New("usage: tubo connect [--token <share-invite>] <service-name> [--local host:port] [flags]")
+			}
+		case 1:
+			serviceRef = fs.Arg(0)
+		default:
 			return errors.New("usage: tubo connect [--token <share-invite>] <service-name> [--local host:port] [flags]")
 		}
-		serviceName = fs.Arg(0)
 	} else if fs.NArg() != 0 {
 		return errors.New("usage: tubo connect [--token <share-invite>] <service-name> [--local host:port] [flags]")
 	}
-	serviceName, err = parseServiceRef(serviceName)
-	if err != nil {
-		return err
-	}
-	if serviceID == "" && isServiceID(serviceName) {
-		serviceID = serviceName
-		serviceName = ""
-	}
-	cfg, err := loadDiscoveryConfig(*configPath)
-	if err != nil {
-		return err
-	}
-	var connectGrant *capability.ConnectCapability
-	var connectInviteToken string
-	var connectGrantPeers []string
-	if shareToken != "" {
-		payload, err := parseAndVerifyServiceShareToken(shareToken)
-		if err != nil {
-			return err
-		}
-		if err := ensureShareInviteAvailable(filepath.Dir(*configPath), payload); err != nil {
-			return err
-		}
-		cfg, err = importServiceShareDiscoveryContext(cfg, payload)
-		if err != nil {
-			return err
-		}
-		if err := markShareInviteUsed(filepath.Dir(*configPath), payload); err != nil {
-			return err
-		}
-		*cluster = payload.ClusterName
-		*namespace = payload.Namespace
-		shareScope = serviceScope{Cluster: payload.ClusterName, Namespace: payload.Namespace}
-		serviceID = payload.TargetServiceID
-		if serviceName == "" {
-			serviceName = payload.DisplayNameHint
-		}
-		if payload.GrantService.Protocol == grantspkg.ProtocolID && len(payload.GrantService.Peers) > 0 {
-			connectInviteToken = shareToken
-			connectGrantPeers = append([]string(nil), payload.GrantService.Peers...)
-		} else {
-			connectGrant = &payload.Grant
-		}
-	}
-	scope, err := resolveServiceScope(cfg, *cluster, *namespace, false)
-	if err != nil {
-		return err
-	}
-	if shareToken != "" {
-		scope = shareScope
-	}
-
-	var result discoveryLookupResult
-	var serviceView serviceResource
-	lookupLabel := serviceName
-	if lookupLabel == "" {
-		lookupLabel = serviceID
-	}
-	if shareToken != "" && serviceID != "" {
-		result, serviceView, err = discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName)
-		if err != nil {
-			result, serviceView, err = discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName, serviceID)
-		}
-	} else {
-		result, serviceView, err = discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName, serviceID)
-	}
-	if err != nil {
-		if isAmbiguousServiceError(err) {
-			return err
-		}
-		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", lookupLabel)
-	}
-	serviceView = normalizeServiceResource(serviceView)
-	if serviceID != "" {
-		if serviceView.ServiceID != "" && serviceView.ServiceID != serviceID {
-			return fmt.Errorf("service share is for service_id %q, not %q", serviceID, serviceView.ServiceID)
-		}
-		if serviceView.ServiceID == "" {
-			serviceView.ServiceID = serviceID
-		}
-	}
-	listenAddr, localURL, err := chooseConnectLocal(*local)
-	if err != nil {
-		return err
-	}
-	bridgeCfg := bridge.Config{
-		Listen:             listenAddr,
-		Seed:               cfg.Node.Seed,
-		P2PListen:          cfg.Node.P2PListen,
-		PrivateKeyFile:     cfg.Network.PrivateKeyFile,
-		PrivateKeyB64:      cfg.Network.PrivateKeyB64,
-		RelayPeers:         cfg.Network.RelayPeers,
-		Autorelay:          cfg.Network.Autorelay,
-		HolePunching:       cfg.Network.HolePunching,
-		ConnectGrant:       connectGrant,
-		ConnectInviteToken: connectInviteToken,
-		ConnectGrantPeers:  connectGrantPeers,
-	}
-	if bridgeCfg.P2PListen == "" {
-		bridgeCfg.P2PListen = "/ip4/0.0.0.0/tcp/0"
-	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	selectedPath, selectedAddr, attempts, app, err := connectBridge(ctx, bridgeCfg, serviceView)
+	result, err := connectflow.Resolve(ctx, newConnectWorkflow(), connectflow.Request{ConfigPath: *configPath, ServiceRef: serviceRef, Token: *token, Cluster: *cluster, Namespace: *namespace, Local: *local, Timeout: *timeout, CachedOnly: *cachedOnly, Live: *live})
 	if err != nil {
 		return err
 	}
-	directMsg := connectDirectMessage(serviceView, attempts, selectedPath)
-	relayMsg := connectRelayMessage(serviceView, selectedAddr, selectedPath)
-	output := connectResult{Service: serviceView.Name, ServiceID: serviceView.ServiceID, Local: localURL, Path: selectedPath, Scope: serviceScopePtr(scope), Selected: selectedAddr, Direct: directMsg, Relay: relayMsg, Attempts: attempts}
+	output := fromConnectWorkflowResult(result)
 	if *jsonOut {
 		if err := printJSON(output); err != nil {
 			return err
 		}
 	} else {
 		printMessages(result.Messages)
-		fmt.Printf("connected to service %q\n", serviceView.Name)
-		if serviceView.ServiceID != "" {
-			fmt.Printf("service id: %s\n", serviceView.ServiceID)
+		fmt.Printf("connected to service %q\n", result.ServiceName)
+		if result.ServiceID != "" {
+			fmt.Printf("service id: %s\n", result.ServiceID)
 		}
-		fmt.Printf("local: %s\n", localURL)
-		fmt.Printf("path: %s\n", selectedPath)
-		if directMsg != "" {
-			fmt.Printf("direct: %s\n", directMsg)
+		fmt.Printf("local: %s\n", result.LocalURL)
+		fmt.Printf("path: %s\n", result.Path)
+		if result.Direct != "" {
+			fmt.Printf("direct: %s\n", result.Direct)
 		}
-		if relayMsg != "" {
-			fmt.Printf("relay: %s\n", relayMsg)
+		if result.Relay != "" {
+			fmt.Printf("relay: %s\n", result.Relay)
 		}
 		fmt.Println("press Ctrl+C to stop")
 	}
-	return app.Start(ctx)
-}
-
-func chooseConnectLocal(local string) (listenAddr string, localURL string, err error) {
-	if local != "" {
-		if _, _, splitErr := net.SplitHostPort(local); splitErr != nil {
-			return "", "", fmt.Errorf("invalid --local %q: %w", local, splitErr)
-		}
-		return local, "http://" + local, nil
-	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return "", "", err
-	}
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	return addr, "http://" + addr, nil
-}
-
-func connectBridge(ctx context.Context, base bridge.Config, service serviceResource) (string, string, []connectAttempt, *bridge.App, error) {
-	candidates, err := connectCandidates(service)
-	if err != nil {
-		return "", "", nil, nil, err
-	}
-	attempts := make([]connectAttempt, 0, len(candidates))
-	for _, candidate := range candidates {
-		cfg := base
-		cfg.ServiceAddr = candidate.Addr
-		app, err := bridge.New(ctx, cfg)
-		if err != nil {
-			attempts = append(attempts, connectAttempt{Path: candidate.Path, Addr: candidate.Addr, Status: "failed", Error: err.Error()})
-			continue
-		}
-		attempts = append(attempts, connectAttempt{Path: candidate.Path, Addr: candidate.Addr, Status: "selected"})
-		return candidate.Path, candidate.Addr, attempts, app, nil
-	}
-	return "", "", attempts, nil, fmt.Errorf("connect to service %q failed: %s", service.Name, summarizeConnectAttempts(attempts))
-}
-
-func connectCandidates(service serviceResource) ([]connectCandidate, error) {
-	service = normalizeServiceResource(service)
-	if len(service.DirectAddresses) == 0 && len(service.RelayedAddresses) == 0 {
-		return nil, fmt.Errorf("service %q has no announced addresses", service.Name)
-	}
-	candidates := make([]connectCandidate, 0, len(service.DirectAddresses)+len(service.RelayedAddresses))
-	for _, addr := range service.DirectAddresses {
-		if isUnusableDirectAddress(addr) {
-			continue
-		}
-		candidates = append(candidates, connectCandidate{Path: "direct", Addr: addr})
-	}
-	for _, addr := range service.RelayedAddresses {
-		candidates = append(candidates, connectCandidate{Path: "relayed", Addr: addr})
-	}
-	return candidates, nil
-}
-
-func isUnusableDirectAddress(addr string) bool {
-	return strings.Contains(addr, "/ip4/127.") || strings.Contains(addr, "/ip4/0.0.0.0/") || strings.Contains(addr, "/ip6/::1/") || strings.Contains(addr, "/ip6/::/") || strings.Contains(addr, "/dns4/localhost/") || strings.Contains(addr, "/dns6/localhost/")
-}
-
-func summarizeConnectAttempts(attempts []connectAttempt) string {
-	parts := make([]string, 0, len(attempts))
-	for _, attempt := range attempts {
-		if attempt.Status == "selected" {
-			parts = append(parts, fmt.Sprintf("%s succeeded", attempt.Path))
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("%s failed (%s)", attempt.Path, attempt.Error))
-	}
-	if len(parts) == 0 {
-		return "no dial attempts"
-	}
-	return strings.Join(parts, "; ")
-}
-
-func connectDirectMessage(service serviceResource, attempts []connectAttempt, selectedPath string) string {
-	service = normalizeServiceResource(service)
-	usableDirect := 0
-	for _, addr := range service.DirectAddresses {
-		if !isUnusableDirectAddress(addr) {
-			usableDirect++
-		}
-	}
-	if len(service.DirectAddresses) == 0 {
-		return "unavailable, no direct addresses advertised"
-	}
-	if usableDirect == 0 {
-		return "unavailable, only loopback/unspecified direct addresses advertised"
-	}
-	if selectedPath == "direct" {
-		return "selected"
-	}
-	for _, attempt := range attempts {
-		if attempt.Path == "direct" && attempt.Status == "failed" {
-			if len(service.RelayedAddresses) > 0 {
-				return "attempted, failed; relay selected and hole punching may still upgrade later"
-			}
-			return "attempted, failed"
-		}
-	}
-	return "available"
-}
-
-func connectRelayMessage(service serviceResource, selectedAddr, selectedPath string) string {
-	service = normalizeServiceResource(service)
-	if len(service.RelayedAddresses) == 0 {
-		return ""
-	}
-	if selectedPath == "direct" {
-		return "available as fallback"
-	}
-	if selectedAddr != "" {
-		return selectedAddr
-	}
-	return "selected"
+	return result.App.Start(ctx)
 }
 
 func psCmd(args []string) error {
