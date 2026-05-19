@@ -9,15 +9,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"github.com/origama/tubo/internal/app/bridge"
-	"github.com/origama/tubo/internal/app/edge"
-	"github.com/origama/tubo/internal/app/relay"
-	"github.com/origama/tubo/internal/app/service"
 	attachauth "github.com/origama/tubo/internal/attachauth"
 	catalog "github.com/origama/tubo/internal/catalog"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	connectflow "github.com/origama/tubo/internal/connectflow"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	launcher "github.com/origama/tubo/internal/launcher"
 	"github.com/origama/tubo/internal/networkbundle"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
@@ -565,54 +562,7 @@ func runRole(role string, args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	var discoveryRuntime cfgpkg.DiscoveryRuntime
-	cluster := c.Clusters[c.CurrentCluster]
-	switch role {
-	case "edge":
-		runtime, err := c.RequireDiscoveryRuntime()
-		if err != nil {
-			return err
-		}
-		discoveryRuntime = runtime
-		a, err := edge.New(ctx, edge.Config{HTTPListen: c.Edge.Listen, P2PListen: c.Node.P2PListen, Seed: c.Node.Seed, AdminListen: c.Edge.AdminListen, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, BootstrapRetryInterval: 5 * time.Second, DirectStreamTimeout: c.Edge.DirectStreamTimeout.Duration(), PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, AuthorityPublicKey: cluster.AuthorityPublicKey, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID})
-		if err != nil {
-			return err
-		}
-		return a.Start(ctx)
-	case "service":
-		runtime, err := c.RequireDiscoveryRuntime()
-		if err != nil {
-			return err
-		}
-		discoveryRuntime = runtime
-		authz, err := resolveAttachAuthorization(configPath, c)
-		if err != nil {
-			return err
-		}
-		c = authz.Config
-		cluster = c.Clusters[c.CurrentCluster]
-		svc := authz.Service
-		printAttachShareHint(c, authz)
-		startAttachPublishLeaseRenewal(ctx, configPath, c, svc, authz.ServicePeerID)
-		a, err := service.New(ctx, service.Config{Listen: c.Node.P2PListen, Seed: svc.ServiceSeed, ServiceName: c.Service.Name, ServiceID: svc.ServiceID, Target: c.Service.Target, HealthListen: c.HealthListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, BootstrapPeers: c.Network.BootstrapPeers, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching, ForceReachability: c.Network.ForceReachability, HeartbeatInterval: c.HeartbeatInterval.Duration(), BootstrapRetryInterval: 5 * time.Second, DiscoveryTopic: discoveryRuntime.Topic, DiscoveryMode: discoveryRuntime.Mode.String(), DiscoveryClusterID: discoveryRuntime.ClusterID, DiscoveryNamespaceID: discoveryRuntime.NamespaceID, AuthorityPublicKey: cluster.AuthorityPublicKey, MembershipCapabilityFile: authz.MembershipCapabilityFile, ServiceClaimFile: authz.ServiceClaimFile, ServicePublishLeaseFile: authz.ServicePublishLeaseFile})
-		if err != nil {
-			return err
-		}
-		return a.Start(ctx)
-	case "relay":
-		a, err := relay.New(ctx, relay.Config{Listen: c.Node.P2PListen, Seed: c.Node.Seed, HealthListen: c.Relay.HealthListen, PublicAddr: c.Relay.PublicAddr, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, EnableRelayService: c.Relay.EnableRelayService, EnableAutoNATService: c.Relay.EnableAutoNATService, EnableDiscoveryPubSub: c.Relay.EnableDiscoveryPubSub, ForceReachabilityPublic: c.Relay.ForceReachabilityPublic, PrintRunCommands: c.Relay.PrintRunCommands, MaxReservations: c.Relay.MaxReservations, MaxReservationsPerIP: c.Relay.MaxReservationsPerIP, MaxReservationsPerASN: c.Relay.MaxReservationsPerASN, MaxCircuitsPerPeer: c.Relay.MaxCircuitsPerPeer, BufferSize: c.Relay.BufferSize, ReservationTTL: c.Relay.ReservationTTL.Duration(), LimitDuration: c.Relay.LimitDuration.Duration(), LimitDataBytes: c.Relay.LimitDataBytes})
-		if err != nil {
-			return err
-		}
-		return a.Start(ctx)
-	case "bridge":
-		a, err := bridge.New(ctx, bridge.Config{Listen: c.Bridge.Listen, Seed: c.Node.Seed, P2PListen: c.Node.P2PListen, ServiceAddr: c.Bridge.ServiceAddr, ServiceSeed: c.Bridge.ServiceSeed, ServiceP2PListen: c.Bridge.ServiceP2PListen, PrivateKeyFile: c.Network.PrivateKeyFile, PrivateKeyB64: c.Network.PrivateKeyB64, RelayPeers: c.Network.RelayPeers, Autorelay: c.Network.Autorelay, HolePunching: c.Network.HolePunching})
-		if err != nil {
-			return err
-		}
-		return a.Start(ctx)
-	}
-	return nil
+	return launcher.Run(ctx, newRuntimeLauncher(), role, configPath, c)
 }
 
 func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) {
