@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-19 22:00 UTC
+> **Last updated:** 2026-05-19 22:07 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -176,7 +176,7 @@
 | C.72 | Issue #120 — ConnectAccessLease/ConnectRefreshLease + bridge PoP renewal | ✅ | Done on `0.7.0.b0`: ShareInvite redemption through grant-service metadata now yields client-key-bound access/refresh leases, bridge refreshes access leases before expiry, PoP binds scope/service/access hash/nonce/JTI/issued-at, service validation rejects stolen key/hash/replay/expired proofs, and e2e `public_connect_auto_renew` passes. |
 | C.73 | Issue #121 — Revocation primitives and epoch validation | ✅ | Done on `0.7.0.b0`: added issuer-side revocation store, `tubo revoke invite/session/service-access/publish`, access/publish epoch fields, grant-service checks for revoked invite/session/stale service-access epoch/publish revoke, share minting hooks, docs, unit tests, and e2e `public_revoke_invite`, `public_revoke_session`, `public_revoke_service_access`. |
 | C.74 | Cross-cutting — architecture deepening review | ✅ | Done via issue #132: attach/publish authorization is now deepened into `internal/attachauth`, startup + renewal both route through it, redundant CLI-side branching was removed, and verification passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
-| C.75 | Issue #133 — refactor `cmd/tubo/main.go` into explicit CLI/use-case modules | ⏳ | In progress: Step 1 complete — extracted ServiceCatalog logic into `internal/catalog` and replaced the old `cmd/tubo/main.go` implementations with thin wrappers, preserving existing behavior while shrinking the entrypoint. Next: migrate `get`/`describe`/`inspect`/`watch` to use the catalog API directly. |
+| C.75 | Issue #133 — refactor `cmd/tubo/main.go` into explicit CLI/use-case modules | ⏳ | In progress: Step 1 complete — extracted ServiceCatalog logic into `internal/catalog` and replaced the old `cmd/tubo/main.go` implementations with thin wrappers, preserving existing behavior while shrinking the entrypoint. Step 2 complete — `get`/`describe`/`inspect`/`watch` now call the catalog API directly (including cross-namespace service listing helper paths), reducing reliance on the legacy wrapper layer. Next: extract ProcessManager / LocalSupervisor. |
 
 ---
 

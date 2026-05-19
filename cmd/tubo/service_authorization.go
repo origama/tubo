@@ -10,6 +10,7 @@ import (
 	"time"
 
 	capability "github.com/origama/tubo/internal/capability"
+	catalog "github.com/origama/tubo/internal/catalog"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 )
@@ -172,7 +173,8 @@ func discoverServicesAcrossScopes(cfg cfgpkg.Config, timeout time.Duration, scop
 		scopedCfg := cfg
 		scopedCfg.CurrentCluster = scope.Cluster
 		scopedCfg.CurrentNamespace = scope.Namespace
-		result, err := discoverServicesWithConfig(scopedCfg, timeout, false, true, scope)
+		catalogResult, err := catalog.DiscoverServicesWithConfig(scopedCfg, timeout, false, true, toCatalogScope(scope))
+		result := fromCatalogLookupResult(catalogResult)
 		if err != nil {
 			return discoveryLookupResult{}, fmt.Errorf("namespace %s/%s: %w", scope.Cluster, scope.Namespace, err)
 		}

@@ -15,6 +15,7 @@ import (
 	"github.com/origama/tubo/internal/app/service"
 	attachauth "github.com/origama/tubo/internal/attachauth"
 	capability "github.com/origama/tubo/internal/capability"
+	catalog "github.com/origama/tubo/internal/catalog"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
@@ -2142,7 +2143,7 @@ func getCmd(args []string) error {
 	case resource == "overlays" || resource == "clusters" || resource == "namespaces":
 		return localGetResource(resource, *configPath, *jsonOut)
 	}
-	cfg, err := loadDiscoveryConfig(*configPath)
+	cfg, err := catalog.LoadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -2175,10 +2176,11 @@ func getCmd(args []string) error {
 			return nil
 		}
 		scope := scopes[0]
-		result, err := discoverServicesWithConfig(cfg, *timeout, *cachedOnly, *live, scope)
+		catalogResult, err := catalog.DiscoverServicesWithConfig(cfg, *timeout, *cachedOnly, *live, toCatalogScope(scope))
 		if err != nil {
 			return err
 		}
+		result := fromCatalogLookupResult(catalogResult)
 		if *jsonOut {
 			return printJSON(struct {
 				Mode     string                   `json:"mode"`
@@ -2209,10 +2211,11 @@ func getCmd(args []string) error {
 			serviceID = name
 			name = ""
 		}
-		result, service, err := discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name, serviceID)
+		catalogResult, catalogService, err := catalog.DiscoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, toCatalogScope(scopes[0]), name, serviceID)
 		if err != nil {
 			return err
 		}
+		result, service := fromCatalogLookupResult(catalogResult), fromCatalogService(catalogService)
 		if *jsonOut {
 			return printJSON(struct {
 				Mode     string                   `json:"mode"`
@@ -2268,7 +2271,7 @@ func describeCmd(args []string) error {
 	if *namespace == "" {
 		*namespace = *namespaceShort
 	}
-	cfg, err := loadDiscoveryConfig(*configPath)
+	cfg, err := catalog.LoadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -2285,10 +2288,11 @@ func describeCmd(args []string) error {
 		serviceID = name
 		name = ""
 	}
-	result, service, err := discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name, serviceID)
+	catalogResult, catalogService, err := catalog.DiscoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, toCatalogScope(scopes[0]), name, serviceID)
 	if err != nil {
 		return err
 	}
+	result, service := fromCatalogLookupResult(catalogResult), fromCatalogService(catalogService)
 	printMessages(result.Messages)
 	printServiceDescription(service, result.Messages)
 	return nil
@@ -2327,7 +2331,7 @@ func inspectCmd(args []string) error {
 	if *namespace == "" {
 		*namespace = *namespaceShort
 	}
-	cfg, err := loadDiscoveryConfig(*configPath)
+	cfg, err := catalog.LoadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -2344,10 +2348,11 @@ func inspectCmd(args []string) error {
 		serviceID = name
 		name = ""
 	}
-	result, service, err := discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name, serviceID)
+	catalogResult, catalogService, err := catalog.DiscoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, toCatalogScope(scopes[0]), name, serviceID)
 	if err != nil {
 		return err
 	}
+	result, service := fromCatalogLookupResult(catalogResult), fromCatalogService(catalogService)
 	return printJSON(struct {
 		Mode     string                   `json:"mode"`
 		Messages []string                 `json:"messages"`
@@ -2381,7 +2386,7 @@ func watchCmd(args []string) error {
 		*namespace = *namespaceShort
 	}
 	useAllNamespaces := *allNamespaces || *allNamespacesShort
-	cfg, err := loadDiscoveryConfig(*configPath)
+	cfg, err := catalog.LoadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
 	}
@@ -2407,9 +2412,9 @@ func watchCmd(args []string) error {
 	scopedCfg.CurrentNamespace = scope.Namespace
 	fmt.Printf("watching services for %s...\n", timeout.String())
 	if !*live {
-		if services, adminAddr, err := fetchLocalServiceCache(scopedCfg); err == nil {
+		if services, adminAddr, err := catalog.FetchLocalServiceCache(scopedCfg); err == nil {
 			fmt.Printf("using local cache from edge admin at %s\n", adminAddr)
-			for _, service := range services {
+			for _, service := range fromCatalogServices(services) {
 				fmt.Printf("CURRENT\tservice/%s\tpeer=%s\tpath=%s\n", service.Name, service.PeerID, service.Path)
 			}
 			if *cachedOnly {
@@ -2422,8 +2427,9 @@ func watchCmd(args []string) error {
 			fmt.Println("no local cache found")
 		}
 	}
-	_, err = observeServices(scopedCfg, *timeout, func(event serviceWatchEvent) {
-		fmt.Printf("%s\tservice/%s\tpeer=%s\tpath=%s\n", strings.ToUpper(event.Type), event.Name, event.PeerID, event.Path)
+	_, err = catalog.ObserveServices(scopedCfg, *timeout, func(event catalog.WatchEvent) {
+		watchEvent := fromCatalogWatchEvent(event)
+		fmt.Printf("%s\tservice/%s\tpeer=%s\tpath=%s\n", strings.ToUpper(watchEvent.Type), watchEvent.Name, watchEvent.PeerID, watchEvent.Path)
 	})
 	return err
 }
