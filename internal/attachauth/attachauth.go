@@ -50,7 +50,13 @@ type Resolver interface {
 	Renew(context.Context, RenewRequest) (ResolveResult, error)
 }
 
-type Dependencies struct{}
+type Dependencies struct {
+	IdentityStore   IdentityStore
+	ArtifactStore   ArtifactStore
+	AuthoritySigner AuthoritySigner
+	GrantClient     GrantClient
+	Clock           Clock
+}
 
 type resolver struct {
 	deps Dependencies
