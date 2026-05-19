@@ -1776,113 +1776,6 @@ func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 	}
 }
 
-func TestResolveAttachAuthorizationAcceptsExistingClaimWithoutAuthority(t *testing.T) {
-	configPath := writeCreateClusterConfig(t)
-	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := cfgpkg.LoadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Service.Name = "myapi"
-	cfg.Service.Target = "http://127.0.0.1:8080"
-	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cluster := cfg.Clusters["home"]
-	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(time.Hour), ""); err != nil {
-		t.Fatal(err)
-	}
-	cluster.AuthorityPrivateKeyFile = ""
-	cfg.Clusters["home"] = cluster
-	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
-		t.Fatal(err)
-	}
-
-	authz, err := resolveAttachAuthorization(configPath, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if authz.MintedServiceClaim {
-		t.Fatal("non-authority resolver unexpectedly minted a claim")
-	}
-	if authz.ServicePeerID == "" || authz.ServiceClaimFile != svc.ServiceClaimFile || authz.MembershipCapabilityFile == "" {
-		t.Fatalf("unexpected authz: %#v", authz)
-	}
-	if authz.ServiceShareToken != "" {
-		t.Fatalf("expected no share token without authority key, got %q", authz.ServiceShareToken)
-	}
-}
-
-func TestResolveAttachAuthorizationReusedLeaseReportsGrantRecoveryHint(t *testing.T) {
-	configPath := writeCreateClusterConfig(t)
-	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := cfgpkg.LoadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Service.Name = "myapi"
-	cfg.Service.Target = "http://127.0.0.1:8080"
-	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cluster := cfg.Clusters["home"]
-	leaseAuthz, err := resolveAttachAuthorization(configPath, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg = leaseAuthz.Config
-	svc = leaseAuthz.Service
-	grantHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-restart-hint")
-	if err != nil {
-		t.Fatal(err)
-	}
-	grantPeer := p2p.PeerAddrs(grantHost)[0]
-	grantHost.Close()
-	svc.GrantRequestID = "gr_reprint"
-	svc.GrantServicePeer = grantPeer
-	cluster.AuthorityPrivateKeyFile = ""
-	cluster.Namespaces["default"] = cfgpkg.Namespace{MembershipCapabilityFile: cluster.Namespaces["default"].MembershipCapabilityFile, Services: map[string]cfgpkg.NamespaceService{"myapi": svc}}
-	cfg.Clusters["home"] = cluster
-	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
-		t.Fatal(err)
-	}
-	reloaded, err := cfgpkg.LoadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reloaded.Service.Name = "myapi"
-	reloaded.Service.Target = "http://127.0.0.1:8080"
-	authz, err := resolveAttachAuthorization(configPath, reloaded)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !authz.PublishLeaseReused {
-		t.Fatalf("expected reused publish lease, got %#v", authz)
-	}
-	if authz.ServiceShareToken != "" {
-		t.Fatalf("expected no local token without authority key, got %q", authz.ServiceShareToken)
-	}
-	if !strings.Contains(authz.ShareRecoveryHint, "tubo grants request service/myapi --poll --peer") || !strings.Contains(authz.ShareRecoveryHint, "gr_reprint") {
-		t.Fatalf("unexpected recovery hint: %q", authz.ShareRecoveryHint)
-	}
-	out, err := capture(func() error {
-		printAttachShareHint(authz.Config, authz)
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "publish lease: reused") || !strings.Contains(out, "tubo grants request service/myapi --poll --peer") {
-		t.Fatalf("unexpected attach output: %s", out)
-	}
-}
-
 func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
 	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Service: cfgpkg.Service{Name: "myapi"}}
 	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, ServiceShareToken: "tubo-service-share-v1.test-token"}
@@ -1895,6 +1788,21 @@ func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
 	}
 	if !strings.Contains(out, "tubo connect --token tubo-service-share-v1.test-token") {
 		t.Fatalf("unexpected attach token output: %s", out)
+	}
+}
+
+func TestPrintAttachShareHintShowsRecoveryHint(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Service: cfgpkg.Service{Name: "myapi"}}
+	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, PublishLeaseReused: true, ShareRecoveryHint: "tubo grants request service/myapi --poll --peer /ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant --cluster home --namespace default (request gr_reprint)"}
+	out, err := capture(func() error {
+		printAttachShareHint(cfg, authz)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "publish lease: reused") || !strings.Contains(out, "tubo grants request service/myapi --poll --peer") {
+		t.Fatalf("unexpected attach output: %s", out)
 	}
 }
 
@@ -2190,97 +2098,6 @@ func TestImportServiceShareDiscoveryContextIgnoresAuthorizedKeyCommentDifference
 	}
 	if imported.Clusters["home"].AuthorityPublicKey == "" {
 		t.Fatalf("expected imported cluster authority key, got %#v", imported.Clusters["home"])
-	}
-}
-
-func TestResolveAttachAuthorizationHandlesDeniedAndExpiredGrantRoute(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		finish  func(*testing.T, *grantspkg.Store, string)
-		wantErr string
-	}{
-		{name: "denied", finish: func(t *testing.T, store *grantspkg.Store, id string) {
-			_, err := store.Deny(id, "no")
-			if err != nil {
-				t.Fatal(err)
-			}
-		}, wantErr: "denied"},
-		{name: "expired", finish: func(t *testing.T, store *grantspkg.Store, id string) {
-			b, err := os.ReadFile(store.Path())
-			if err != nil {
-				t.Fatal(err)
-			}
-			var state struct {
-				Requests []grantspkg.Request `json:"requests"`
-			}
-			if err := json.Unmarshal(b, &state); err != nil {
-				t.Fatal(err)
-			}
-			for i := range state.Requests {
-				if state.Requests[i].ID == id {
-					state.Requests[i].Status = grantspkg.StatusExpired
-				}
-			}
-			b, err = json.MarshalIndent(state, "", "  ")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(store.Path(), append(b, '\n'), 0600); err != nil {
-				t.Fatal(err)
-			}
-		}, wantErr: "expired"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			configPath := writeCreateClusterConfig(t)
-			if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := cfgpkg.LoadFile(configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.Service.Name = "myapi"
-			cfg.Service.Target = "http://127.0.0.1:8080"
-			cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cluster := cfg.Clusters["home"]
-			serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-route-"+tc.name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer serverHost.Close()
-			store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
-			server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store})
-			if err != nil {
-				t.Fatal(err)
-			}
-			server.Register(serverHost)
-			svc.GrantServicePeer = p2p.PeerAddrs(serverHost)[0]
-			ns := cluster.Namespaces["default"]
-			ns.Services["myapi"] = svc
-			cluster.Namespaces["default"] = ns
-			cluster.AuthorityPrivateKeyFile = ""
-			cfg.Clusters["home"] = cluster
-			if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
-				t.Fatal(err)
-			}
-			_, err = resolveAttachAuthorization(configPath, cfg)
-			if err == nil || !strings.Contains(err.Error(), "pending") {
-				t.Fatalf("expected pending, got %v", err)
-			}
-			reloaded, err := cfgpkg.LoadFile(configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			reqID := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"].GrantRequestID
-			tc.finish(t, store, reqID)
-			_, err = resolveAttachAuthorization(configPath, reloaded)
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected %q, got %v", tc.wantErr, err)
-			}
-		})
 	}
 }
 

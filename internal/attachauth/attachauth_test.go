@@ -118,6 +118,33 @@ func TestResolveReturnsReadyForReusablePublishLease(t *testing.T) {
 	}
 }
 
+func TestResolveReusableLeaseReturnsRecoveryHintWithoutLocalShareToken(t *testing.T) {
+	cfg := testAttachConfigWithGrantPeer()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease", GrantRequestID: "gr_reprint", GrantServicePeer: "/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant"}
+	resolver := New(Dependencies{
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{membershipFile: "/tmp/membership.cap"},
+		Clock:         SystemClock{},
+	})
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
+	}
+	if got.Decision != DecisionReady {
+		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionReady)
+	}
+	if !got.PublishLeaseReused {
+		t.Fatal("expected PublishLeaseReused")
+	}
+	if got.ServiceShareToken != "" {
+		t.Fatalf("ServiceShareToken = %q, want empty", got.ServiceShareToken)
+	}
+	if !strings.Contains(got.ShareRecoveryHint, "tubo grants request service/myapi --poll --peer /ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant --cluster home --namespace default") || !strings.Contains(got.ShareRecoveryHint, "gr_reprint") {
+		t.Fatalf("ShareRecoveryHint = %q", got.ShareRecoveryHint)
+	}
+}
+
 func TestResolveMintsLocallyWhenAuthorityKeyIsPresent(t *testing.T) {
 	cfg := testAttachConfig()
 	cfg.Clusters["home"] = cfgpkg.Cluster{
