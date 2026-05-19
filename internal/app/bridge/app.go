@@ -44,6 +44,7 @@ type App struct {
 	server       *http.Server
 	listener     net.Listener
 	listenAddr   string
+	stateMu      sync.RWMutex
 	connectMu    sync.Mutex
 	connectLease *grantspkg.ConnectAccessLease
 }
@@ -128,24 +129,34 @@ func (a *App) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("listen bridge: %w", err)
 	}
+	listenAddr := ln.Addr().String()
+	server := &http.Server{Addr: a.cfg.Listen, Handler: a.mux()}
+	a.stateMu.Lock()
 	a.listener = ln
-	a.listenAddr = ln.Addr().String()
-	a.server = &http.Server{Addr: a.cfg.Listen, Handler: a.mux()}
+	a.listenAddr = listenAddr
+	a.server = server
+	a.stateMu.Unlock()
 	go func() {
-		log.Printf("client bridge listening on %s", a.listenAddr)
-		if err := a.server.Serve(ln); err != nil && err != http.ErrServerClosed {
+		log.Printf("client bridge listening on %s", listenAddr)
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Printf("bridge server: %v", err)
 		}
 	}()
 	<-ctx.Done()
 	sd, c := context.WithTimeout(context.Background(), 5*time.Second)
 	defer c()
-	return a.server.Shutdown(sd)
+	a.stateMu.RLock()
+	server = a.server
+	a.stateMu.RUnlock()
+	return server.Shutdown(sd)
 }
 
 func (a *App) ListenAddr() string {
-	if a.listenAddr != "" {
-		return a.listenAddr
+	a.stateMu.RLock()
+	listenAddr := a.listenAddr
+	a.stateMu.RUnlock()
+	if listenAddr != "" {
+		return listenAddr
 	}
 	return a.cfg.Listen
 }

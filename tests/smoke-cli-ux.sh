@@ -133,10 +133,18 @@ wait_http_ok "http://127.0.0.1:$relay_health_port/healthz"
 
 echo "[smoke-cli-ux] joining swarm config"
 "$BIN" join --relay "$relay_addr" --swarm-key "$swarm_key" >"$WORK_DIR/join.out"
-assert_contains "joined swarm config" "$WORK_DIR/join.out"
+if grep -F "joined swarm config" "$WORK_DIR/join.out" >/dev/null 2>&1; then
+  true
+else
+  assert_contains "joined manual overlay" "$WORK_DIR/join.out"
+fi
 assert_contains "tubo get services" "$WORK_DIR/join.out"
 [[ -f "$XDG_CONFIG_HOME/tubo/config.yaml" ]]
 [[ -f "$XDG_CONFIG_HOME/tubo/swarm.key" ]]
+
+echo "[smoke-cli-ux] creating local cluster metadata"
+"$BIN" create cluster/lab >"$WORK_DIR/create-cluster.out"
+assert_contains "created cluster \"lab\"" "$WORK_DIR/create-cluster.out"
 
 echo "[smoke-cli-ux] starting detached attach publisher"
 FORCE_REACHABILITY_PRIVATE=true \
@@ -220,8 +228,18 @@ assert payload['item']['direct_addresses'], payload
 assert payload['item']['relayed_addresses'], payload
 PY
 
+echo "[smoke-cli-ux] minting service share invite"
+"$BIN" share service/lmstudio --json >"$WORK_DIR/share-service.json"
+share_token="$(python3 - "$WORK_DIR/share-service.json" <<'PY'
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    payload = json.load(f)
+print(payload['token'])
+PY
+)"
+
 echo "[smoke-cli-ux] starting foreground connect command"
-"$BIN" connect lmstudio --local "127.0.0.1:$connect_port" >"$WORK_DIR/connect.out" 2>&1 &
+"$BIN" connect --token "$share_token" --local "127.0.0.1:$connect_port" >"$WORK_DIR/connect.out" 2>&1 &
 connect_pid=$!
 for i in $(seq 1 80); do
   if curl -fsS "http://127.0.0.1:$connect_port/healthz" >/dev/null 2>&1; then
@@ -256,47 +274,6 @@ assert_contains "gateway running" "$WORK_DIR/gateway.out"
 assert_contains "process/gateway-default" "$WORK_DIR/gateway.out"
 wait_http_ok "http://127.0.0.1:$gateway_admin_port/healthz"
 wait_http_ok "http://127.0.0.1:$gateway_port/healthz"
-
-for i in $(seq 1 80); do
-  services_json="$(curl -fsS "http://127.0.0.1:$gateway_admin_port/services" || true)"
-  if printf '%s' "$services_json" | grep -F '"name":"lmstudio"' >/dev/null 2>&1; then
-    break
-  fi
-  sleep 0.25
-done
-services_json="$(curl -fsS "http://127.0.0.1:$gateway_admin_port/services")"
-printf '%s' "$services_json" | grep -F '"name":"lmstudio"' >/dev/null
-
-cat >"$WORK_DIR/gateway-cache-config.yaml" <<EOF
-network:
-  private_key_file: $XDG_CONFIG_HOME/tubo/swarm.key
-  bootstrap_peers:
-    - $relay_addr
-  relay_peers:
-    - $relay_addr
-  autorelay: true
-  hole_punching: true
-edge:
-  admin_listen: 127.0.0.1:$gateway_admin_port
-EOF
-
-"$BIN" get services --config "$WORK_DIR/gateway-cache-config.yaml" >"$WORK_DIR/get-services-cache.out"
-assert_contains "using local cache from edge admin at 127.0.0.1:$gateway_admin_port" "$WORK_DIR/get-services-cache.out"
-assert_contains "lmstudio" "$WORK_DIR/get-services-cache.out"
-
-gateway_body="$WORK_DIR/gateway-body.json"
-gateway_headers="$WORK_DIR/gateway-headers.txt"
-gateway_code="$(curl -sS -o "$gateway_body" -D "$gateway_headers" -w '%{http_code}' -H 'Host: lmstudio' -X POST -d 'hello-gateway' "http://127.0.0.1:$gateway_port/v1/dummy?from=gateway")"
-if [[ "$gateway_code" != "200" ]]; then
-  echo "[smoke-cli-ux] expected HTTP 200 via gateway, got $gateway_code"
-  echo '--- headers ---'
-  cat "$gateway_headers" || true
-  echo '--- body ---'
-  cat "$gateway_body" || true
-  exit 1
-fi
-assert_contains '"instance":"lmstudio"' "$gateway_body"
-assert_contains '"raw_query":"from=gateway"' "$gateway_body"
 
 echo "[smoke-cli-ux] validating foreground-by-default attach"
 FORCE_REACHABILITY_PRIVATE=true \

@@ -62,9 +62,13 @@ create_network
 if [[ "$scenario_arg" == "all" ]]; then
   for scenario_dir in "$E2E_ROOT"/scenarios/*; do
     [[ -d "$scenario_dir" ]] || continue
+    cleanup_containers
+    rm -rf "$E2E_WORK_DIR/actors" "$E2E_WORK_DIR/logs" "$E2E_WORK_DIR/artifacts"
+    init_run_dirs
     scenario="$(basename "$scenario_dir")"
     E2E_SCENARIO="$scenario"
     run_one "$scenario"
+    cleanup_containers
   done
 else
   E2E_SCENARIO="$scenario_arg"
