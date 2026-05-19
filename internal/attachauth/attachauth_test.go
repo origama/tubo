@@ -29,7 +29,11 @@ type fakeArtifactStore struct {
 	shareErr        error
 }
 
-type fakeAuthoritySigner struct{}
+type fakeAuthoritySigner struct {
+	calls int
+	err   error
+}
+
 type fakeGrantClient struct{}
 
 func (f fakeIdentityStore) EnsureAttachServiceIdentity(string, cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
@@ -66,8 +70,9 @@ func (f fakeArtifactStore) ReadPublishLease(string) (grantspkg.PublishLease, err
 	return grantspkg.PublishLease{}, os.ErrNotExist
 }
 
-func (fakeAuthoritySigner) MintLocalPublishLease(cfgpkg.Cluster, string, string, string, cfgpkg.NamespaceService) error {
-	panic("not used")
+func (f *fakeAuthoritySigner) MintLocalPublishLease(cfgpkg.Cluster, string, string, string, cfgpkg.NamespaceService) error {
+	f.calls++
+	return f.err
 }
 
 func (fakeGrantClient) RequestPublishGrant(string, cfgpkg.Config, cfgpkg.NamespaceService, string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
@@ -102,6 +107,38 @@ func TestResolveReturnsReadyForReusablePublishLease(t *testing.T) {
 	}
 	if got.ServiceShareToken != "share-token" {
 		t.Fatalf("ServiceShareToken = %q", got.ServiceShareToken)
+	}
+}
+
+func TestResolveMintsLocallyWhenAuthorityKeyIsPresent(t *testing.T) {
+	cfg := testAttachConfig()
+	cfg.Clusters["home"] = cfgpkg.Cluster{
+		ClusterID:                "cluster-123",
+		AuthorityPublicKey:       testAuthorityPublicKey,
+		AuthorityPrivateKeyFile:  "/tmp/authority.key",
+		Namespaces:               map[string]cfgpkg.Namespace{"default": {Services: map[string]cfgpkg.NamespaceService{}}},
+	}
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
+	signer := &fakeAuthoritySigner{}
+	resolver := New(Dependencies{
+		IdentityStore:   fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore:   fakeArtifactStore{publishLeaseErr: os.ErrNotExist, membershipFile: "/tmp/membership.cap", shareToken: "share-token"},
+		AuthoritySigner: signer,
+		Clock:           SystemClock{},
+	})
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
+	}
+	if got.Decision != DecisionReady {
+		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionReady)
+	}
+	if !got.MintedLocally {
+		t.Fatal("expected MintedLocally")
+	}
+	if signer.calls != 1 {
+		t.Fatalf("MintLocalPublishLease calls = %d, want 1", signer.calls)
 	}
 }
 

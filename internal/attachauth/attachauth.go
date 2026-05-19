@@ -131,6 +131,21 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	if err != nil {
 		return ResolveResult{}, err
 	}
+	if cluster.AuthorityPrivateKeyFile != "" && r.deps.AuthoritySigner != nil {
+		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
+			return ResolveResult{}, err
+		}
+		result := base
+		result.Decision = DecisionReady
+		result.MembershipCapabilityFile = membershipFile
+		result.ServiceShareToken = shareToken
+		result.MintedLocally = true
+		if shareToken == "" {
+			grantPeer := grantServicePeer(cluster)
+			result.ShareRecoveryHint = shareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
+		}
+		return result, nil
+	}
 	result := base
 	result.Decision = DecisionRetryable
 	result.MembershipCapabilityFile = membershipFile
