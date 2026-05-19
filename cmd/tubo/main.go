@@ -25,15 +25,11 @@ import (
 	"github.com/origama/tubo/internal/trust"
 	iversion "github.com/origama/tubo/internal/version"
 	"gopkg.in/yaml.v3"
-	"io"
 	"log"
 	"net"
-	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -674,25 +670,6 @@ func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg 
 	}()
 }
 
-type detachedProcessState struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Command   string `json:"command"`
-	Name      string `json:"name"`
-	Service   string `json:"service,omitempty"`
-	ServiceID string `json:"service_id,omitempty"`
-	Cluster   string `json:"cluster,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	Local     string `json:"local,omitempty"`
-	Target    string `json:"target,omitempty"`
-	PID       int    `json:"pid"`
-	StartedAt string `json:"started_at"`
-	LogFile   string `json:"log_file"`
-	StateFile string `json:"state_file"`
-	PIDFile   string `json:"pid_file"`
-	StatusURL string `json:"status_url,omitempty"`
-}
-
 type joinResult struct {
 	NetworkName    string   `json:"network_name,omitempty"`
 	NetworkID      string   `json:"network_id,omitempty"`
@@ -1068,12 +1045,6 @@ func defaultTuboDataDir() string {
 	return filepath.Join(home, ".local", "share", "tubo")
 }
 
-type detachedSpec struct {
-	State     detachedProcessState
-	ChildArgs []string
-	HealthURL string
-}
-
 func detachRoleCommand(commandName, role string, args []string) error {
 	cfg, configPath, err := resolveRoleConfig(role, args)
 	if err != nil {
@@ -1096,59 +1067,11 @@ func detachRoleCommand(commandName, role string, args []string) error {
 	if serviceID != "" {
 		spec.State.ServiceID = serviceID
 	}
-	if err := os.MkdirAll(filepath.Dir(spec.State.StateFile), 0700); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(spec.State.LogFile), 0700); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(spec.State.PIDFile), 0700); err != nil {
-		return err
-	}
-	for _, path := range []string{spec.State.StateFile, spec.State.PIDFile} {
-		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("detached process state already exists for %s", spec.State.ID)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-	}
-	logFile, err := os.OpenFile(spec.State.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
+	state, err := startDetachedProcess(spec)
 	if err != nil {
 		return err
 	}
-	defer logFile.Close()
-	exe, err := os.Executable()
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(exe, spec.ChildArgs...)
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.Stdin = nil
-	cmd.Env = append(os.Environ(), "TUBO_DETACHED_CHILD=1")
-	configureDetachedCommand(cmd)
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	spec.State.PID = cmd.Process.Pid
-	spec.State.StartedAt = time.Now().UTC().Format(time.RFC3339)
-	pidBytes := []byte(fmt.Sprintf("%d\n", spec.State.PID))
-	if err := os.WriteFile(spec.State.PIDFile, pidBytes, 0600); err != nil {
-		return err
-	}
-	stateBytes, err := json.MarshalIndent(spec.State, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(spec.State.StateFile, stateBytes, 0600); err != nil {
-		return err
-	}
-	if err := waitForDetachedStart(cmd, spec.HealthURL, spec.State.LogFile, 5*time.Second); err != nil {
-		_ = os.Remove(spec.State.PIDFile)
-		_ = os.Remove(spec.State.StateFile)
-		return err
-	}
-	printDetachedSummary(commandName, spec.State)
+	printDetachedSummary(commandName, state)
 	return nil
 }
 
@@ -1244,130 +1167,6 @@ func maybeImplicitInit(role string, args []string, noInit bool) error {
 	return nil
 }
 
-func buildDetachedSpec(commandName string, cfg cfgpkg.Config, args []string) (detachedSpec, error) {
-	dataRoot := defaultTuboDataDir()
-	var name, local, target, serviceName, statusAddr string
-	switch commandName {
-	case "attach":
-		serviceName = cfg.Service.Name
-		name = "attach-" + sanitizeProcessName(serviceName)
-		target = cfg.Service.Target
-		statusAddr = cfg.HealthListen
-	case "gateway":
-		name = "gateway-default"
-		local = cfg.Edge.Listen
-		target = "swarm"
-		statusAddr = cfg.Edge.AdminListen
-	case "relay":
-		name = "relay-default"
-		local = cfg.Node.P2PListen
-		statusAddr = cfg.Relay.HealthListen
-	default:
-		return detachedSpec{}, fmt.Errorf("detach is not supported for %s", commandName)
-	}
-	if name == "" {
-		return detachedSpec{}, fmt.Errorf("unable to derive detached process name for %s", commandName)
-	}
-	statePath := filepath.Join(dataRoot, "processes", name+".json")
-	logPath := filepath.Join(dataRoot, "logs", name+".log")
-	pidPath := filepath.Join(dataRoot, "run", name+".pid")
-	statusURL := ""
-	if statusAddr != "" {
-		statusURL = "http://" + hostPortForHTTP(statusAddr) + "/healthz"
-	}
-	return detachedSpec{
-		State: detachedProcessState{
-			ID:        "process/" + name,
-			Kind:      "process",
-			Command:   commandName,
-			Name:      name,
-			Service:   serviceName,
-			Cluster:   cfg.CurrentCluster,
-			Namespace: cfg.CurrentNamespace,
-			Local:     local,
-			Target:    target,
-			LogFile:   logPath,
-			StateFile: statePath,
-			PIDFile:   pidPath,
-			StatusURL: statusURL,
-		},
-		ChildArgs: append([]string{commandName}, args...),
-		HealthURL: statusURL,
-	}, nil
-}
-
-func sanitizeProcessName(s string) string {
-	if s == "" {
-		return "default"
-	}
-	mapped := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z':
-			return r
-		case r >= 'A' && r <= 'Z':
-			return r + ('a' - 'A')
-		case r >= '0' && r <= '9':
-			return r
-		case r == '-', r == '_', r == '.':
-			return '-'
-		default:
-			return '-'
-		}
-	}, s)
-	mapped = strings.Trim(mapped, "-")
-	for strings.Contains(mapped, "--") {
-		mapped = strings.ReplaceAll(mapped, "--", "-")
-	}
-	if mapped == "" {
-		return "default"
-	}
-	return mapped
-}
-
-func waitForDetachedStart(cmd *exec.Cmd, healthURL, logPath string, timeout time.Duration) error {
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- cmd.Wait()
-	}()
-	deadline := time.Now().Add(timeout)
-	client := &http.Client{Timeout: 500 * time.Millisecond}
-	for {
-		select {
-		case err := <-errCh:
-			if err == nil {
-				return fmt.Errorf("detached process exited before becoming ready")
-			}
-			return fmt.Errorf("detached process exited early: %w\n%s", err, tailFile(logPath, 4096))
-		default:
-		}
-		if healthURL != "" {
-			if resp, err := client.Get(healthURL); err == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode == http.StatusOK {
-					return nil
-				}
-			}
-		} else if time.Now().After(deadline.Add(-timeout + 500*time.Millisecond)) {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return nil
-		}
-		time.Sleep(150 * time.Millisecond)
-	}
-}
-
-func tailFile(path string, max int) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	if len(b) > max {
-		b = b[len(b)-max:]
-	}
-	return string(b)
-}
-
 func printDetachedSummary(commandName string, state detachedProcessState) {
 	switch commandName {
 	case "attach":
@@ -1388,109 +1187,6 @@ func printDetachedSummary(commandName string, state detachedProcessState) {
 	}
 	fmt.Printf("pid: %d\n", state.PID)
 	fmt.Printf("logs: %s\n", state.LogFile)
-}
-
-func processStateDir() string { return filepath.Join(defaultTuboDataDir(), "processes") }
-func processLogDir() string   { return filepath.Join(defaultTuboDataDir(), "logs") }
-func processRunDir() string   { return filepath.Join(defaultTuboDataDir(), "run") }
-
-func listProcessViews(includeAll bool) ([]processView, error) {
-	states, err := listProcessStates()
-	if err != nil {
-		return nil, err
-	}
-	items := make([]processView, 0, len(states))
-	for _, state := range states {
-		status := processStateStatus(state)
-		if !includeAll && status != "running" {
-			continue
-		}
-		items = append(items, processViewFromState(state, status))
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-	return items, nil
-}
-
-func listProcessStates() ([]detachedProcessState, error) {
-	entries, err := os.ReadDir(processStateDir())
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	states := make([]detachedProcessState, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(processStateDir(), entry.Name())
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		var state detachedProcessState
-		if err := json.Unmarshal(b, &state); err != nil {
-			return nil, err
-		}
-		states = append(states, state)
-	}
-	return states, nil
-}
-
-func normalizeProcessRef(ref string) string {
-	if strings.HasPrefix(ref, "process/") {
-		return ref
-	}
-	return "process/" + ref
-}
-
-func loadProcessState(ref string) (detachedProcessState, string, error) {
-	ref = normalizeProcessRef(ref)
-	states, err := listProcessStates()
-	if err != nil {
-		return detachedProcessState{}, "", err
-	}
-	for _, state := range states {
-		if state.ID == ref {
-			return state, processStateStatus(state), nil
-		}
-	}
-	return detachedProcessState{}, "", fmt.Errorf("unknown process %q", ref)
-}
-
-func processStateStatus(state detachedProcessState) string {
-	if state.PID <= 0 {
-		return "stale"
-	}
-	if _, err := os.Stat(state.PIDFile); err != nil {
-		return "stale"
-	}
-	if pidRunning(state.PID) {
-		return "running"
-	}
-	return "stale"
-}
-
-func processViewFromState(state detachedProcessState, status string) processView {
-	return processView{
-		ID:        state.ID,
-		Name:      state.Name,
-		Command:   state.Command,
-		Status:    status,
-		PID:       state.PID,
-		Service:   state.Service,
-		ServiceID: state.ServiceID,
-		Cluster:   state.Cluster,
-		Namespace: state.Namespace,
-		Local:     state.Local,
-		Target:    state.Target,
-		LogFile:   state.LogFile,
-		StateFile: state.StateFile,
-		PIDFile:   state.PIDFile,
-		StatusURL: state.StatusURL,
-		StartedAt: state.StartedAt,
-	}
 }
 
 func printProcessesTable(items []processView) {
@@ -1569,59 +1265,6 @@ func logsCmd(args []string) error {
 	return followLogFile(ctx, state.LogFile)
 }
 
-func printLogTail(path string, lines int) error {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	parts := strings.Split(string(b), "\n")
-	filtered := make([]string, 0, len(parts))
-	for _, line := range parts {
-		if line == "" {
-			continue
-		}
-		filtered = append(filtered, line)
-	}
-	start := 0
-	if lines > 0 && len(filtered) > lines {
-		start = len(filtered) - lines
-	}
-	for _, line := range filtered[start:] {
-		fmt.Println(line)
-	}
-	return nil
-}
-
-func followLogFile(ctx context.Context, path string) error {
-	var offset int64
-	if info, err := os.Stat(path); err == nil {
-		offset = info.Size()
-	}
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			f, err := os.Open(path)
-			if err != nil {
-				continue
-			}
-			_, _ = f.Seek(offset, io.SeekStart)
-			buf, err := io.ReadAll(f)
-			_ = f.Close()
-			if err != nil {
-				continue
-			}
-			if len(buf) > 0 {
-				fmt.Print(string(buf))
-				offset += int64(len(buf))
-			}
-		}
-	}
-}
-
 func stopCmd(args []string) error {
 	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
 	force := fs.Bool("force", false, "")
@@ -1631,41 +1274,12 @@ func stopCmd(args []string) error {
 	if fs.NArg() != 1 {
 		return errors.New("usage: tubo stop [--force] <process/name>")
 	}
-	state, status, err := loadProcessState(fs.Arg(0))
+	state, err := stopProcess(fs.Arg(0), *force)
 	if err != nil {
 		return err
 	}
-	if status != "running" {
-		return fmt.Errorf("process %s is not running", state.ID)
-	}
-	if err := terminatePID(state.PID); err != nil {
-		return err
-	}
-	if err := waitForProcessExit(state.PID, 5*time.Second); err != nil {
-		if !*force {
-			return err
-		}
-		if err := killPID(state.PID); err != nil {
-			return err
-		}
-		if err := waitForProcessExit(state.PID, 2*time.Second); err != nil {
-			return err
-		}
-	}
-	_ = os.Remove(state.PIDFile)
 	fmt.Printf("stopped %s\n", state.ID)
 	return nil
-}
-
-func waitForProcessExit(pid int, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !pidRunning(pid) {
-			return nil
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	return fmt.Errorf("process %d did not exit in time", pid)
 }
 
 func rmCmd(args []string) error {
@@ -1677,22 +1291,9 @@ func rmCmd(args []string) error {
 	if !*stale {
 		return errors.New("usage: tubo rm --stale")
 	}
-	states, err := listProcessStates()
+	removed, err := removeStaleProcesses()
 	if err != nil {
 		return err
-	}
-	removed := 0
-	for _, state := range states {
-		if processStateStatus(state) == "running" {
-			continue
-		}
-		for _, path := range []string{state.StateFile, state.PIDFile, state.LogFile} {
-			if path == "" {
-				continue
-			}
-			_ = os.Remove(path)
-		}
-		removed++
 	}
 	fmt.Printf("removed %d stale process artifacts\n", removed)
 	return nil
@@ -1730,25 +1331,6 @@ type serviceWatchEvent struct {
 	Name   string `json:"name"`
 	PeerID string `json:"peer_id"`
 	Path   string `json:"path"`
-}
-
-type processView struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Command   string `json:"command"`
-	Status    string `json:"status"`
-	PID       int    `json:"pid"`
-	Service   string `json:"service,omitempty"`
-	ServiceID string `json:"service_id,omitempty"`
-	Cluster   string `json:"cluster,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	Local     string `json:"local,omitempty"`
-	Target    string `json:"target,omitempty"`
-	LogFile   string `json:"log_file"`
-	StateFile string `json:"state_file"`
-	PIDFile   string `json:"pid_file"`
-	StatusURL string `json:"status_url,omitempty"`
-	StartedAt string `json:"started_at,omitempty"`
 }
 
 type servicesAdminResponse struct {
