@@ -85,10 +85,11 @@ func localShareServiceCmd(args []string) error {
 	if namespace.Services == nil {
 		return fmt.Errorf("namespace %q has no services configured", scope.Namespace)
 	}
-	svc, ok := namespace.Services[name]
+	svc, resolvedName, ok := resolveLocalServiceForShare(namespace.Services, name)
 	if !ok {
 		return fmt.Errorf("service %q not found in cluster %q namespace %q", name, scope.Cluster, scope.Namespace)
 	}
+	name = resolvedName
 	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)
@@ -227,6 +228,20 @@ func isServiceShareToken(token string) bool {
 
 func shareInviteRegistryPath(configDir string) string {
 	return filepath.Join(configDir, shareInviteRegistryFileName)
+}
+
+func resolveLocalServiceForShare(services map[string]cfgpkg.NamespaceService, ref string) (cfgpkg.NamespaceService, string, bool) {
+	if svc, ok := services[ref]; ok {
+		return svc, ref, true
+	}
+	if isServiceID(ref) {
+		for name, svc := range services {
+			if svc.ServiceID == ref {
+				return svc, name, true
+			}
+		}
+	}
+	return cfgpkg.NamespaceService{}, "", false
 }
 
 func finalizeAuthorityServiceShareToken(token string, privKey ed25519.PrivateKey, serviceID string) (string, error) {

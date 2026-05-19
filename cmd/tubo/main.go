@@ -20,6 +20,7 @@ import (
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/networkbundle"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 	"github.com/origama/tubo/internal/trust"
 	iversion "github.com/origama/tubo/internal/version"
 	"gopkg.in/yaml.v3"
@@ -679,6 +680,8 @@ type detachedProcessState struct {
 	Name      string `json:"name"`
 	Service   string `json:"service,omitempty"`
 	ServiceID string `json:"service_id,omitempty"`
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 	Local     string `json:"local,omitempty"`
 	Target    string `json:"target,omitempty"`
 	PID       int    `json:"pid"`
@@ -1278,6 +1281,8 @@ func buildDetachedSpec(commandName string, cfg cfgpkg.Config, args []string) (de
 			Command:   commandName,
 			Name:      name,
 			Service:   serviceName,
+			Cluster:   cfg.CurrentCluster,
+			Namespace: cfg.CurrentNamespace,
 			Local:     local,
 			Target:    target,
 			LogFile:   logPath,
@@ -1474,6 +1479,9 @@ func processViewFromState(state detachedProcessState, status string) processView
 		Status:    status,
 		PID:       state.PID,
 		Service:   state.Service,
+		ServiceID: state.ServiceID,
+		Cluster:   state.Cluster,
+		Namespace: state.Namespace,
 		Local:     state.Local,
 		Target:    state.Target,
 		LogFile:   state.LogFile,
@@ -1486,7 +1494,7 @@ func processViewFromState(state detachedProcessState, status string) processView
 
 func printProcessesTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tCOMMAND\tSTATUS\tPID\tLOCAL\tTARGET")
+	fmt.Fprintln(w, "NAME\tCOMMAND\tSERVICE ID\tSCOPE\tSTATUS\tPID\tLOCAL\tTARGET")
 	for _, item := range items {
 		local := item.Local
 		if local == "" {
@@ -1496,7 +1504,11 @@ func printProcessesTable(items []processView) {
 		if target == "" {
 			target = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.Command, item.Status, item.PID, local, target)
+		scope := "-"
+		if item.Cluster != "" || item.Namespace != "" {
+			scope = item.Cluster + "/" + item.Namespace
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.Command, displayServiceID(item.ServiceID), scope, item.Status, item.PID, local, target)
 	}
 	_ = w.Flush()
 }
@@ -1509,6 +1521,12 @@ func printProcessDescription(state detachedProcessState, status string) {
 	fmt.Printf("PID: %d\n", state.PID)
 	if state.Service != "" {
 		fmt.Printf("Service: %s\n", state.Service)
+	}
+	if state.ServiceID != "" {
+		fmt.Printf("Service ID: %s\n", state.ServiceID)
+	}
+	if state.Cluster != "" || state.Namespace != "" {
+		fmt.Printf("Scope: %s/%s\n", state.Cluster, state.Namespace)
 	}
 	if state.Local != "" {
 		fmt.Printf("Local: %s\n", state.Local)
@@ -1720,6 +1738,9 @@ type processView struct {
 	Status    string `json:"status"`
 	PID       int    `json:"pid"`
 	Service   string `json:"service,omitempty"`
+	ServiceID string `json:"service_id,omitempty"`
+	Cluster   string `json:"cluster,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
 	Local     string `json:"local,omitempty"`
 	Target    string `json:"target,omitempty"`
 	LogFile   string `json:"log_file"`
@@ -1742,14 +1763,15 @@ type connectAttempt struct {
 }
 
 type connectResult struct {
-	Service  string           `json:"service"`
-	Local    string           `json:"local"`
-	Path     string           `json:"path"`
-	Scope    *serviceScope    `json:"scope,omitempty"`
-	Selected string           `json:"selected_addr,omitempty"`
-	Direct   string           `json:"direct,omitempty"`
-	Relay    string           `json:"relay,omitempty"`
-	Attempts []connectAttempt `json:"attempts,omitempty"`
+	Service   string           `json:"service"`
+	ServiceID string           `json:"service_id,omitempty"`
+	Local     string           `json:"local"`
+	Path      string           `json:"path"`
+	Scope     *serviceScope    `json:"scope,omitempty"`
+	Selected  string           `json:"selected_addr,omitempty"`
+	Direct    string           `json:"direct,omitempty"`
+	Relay     string           `json:"relay,omitempty"`
+	Attempts  []connectAttempt `json:"attempts,omitempty"`
 }
 
 type connectCandidate struct {
@@ -1805,6 +1827,10 @@ func connectCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	if serviceID == "" && isServiceID(serviceName) {
+		serviceID = serviceName
+		serviceName = ""
+	}
 	cfg, err := loadDiscoveryConfig(*configPath)
 	if err != nil {
 		return err
@@ -1849,13 +1875,34 @@ func connectCmd(args []string) error {
 		scope = shareScope
 	}
 
-	result, serviceView, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName)
+	var result discoveryLookupResult
+	var serviceView serviceResource
+	lookupLabel := serviceName
+	if lookupLabel == "" {
+		lookupLabel = serviceID
+	}
+	if shareToken != "" && serviceID != "" {
+		result, serviceView, err = discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName)
+		if err != nil {
+			result, serviceView, err = discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName, serviceID)
+		}
+	} else {
+		result, serviceView, err = discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scope, serviceName, serviceID)
+	}
 	if err != nil {
-		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", serviceName)
+		if isAmbiguousServiceError(err) {
+			return err
+		}
+		return fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", lookupLabel)
 	}
 	serviceView = normalizeServiceResource(serviceView)
-	if serviceID != "" && serviceView.ServiceID != "" && serviceView.ServiceID != serviceID {
-		return fmt.Errorf("service share is for service_id %q, not %q", serviceID, serviceView.ServiceID)
+	if serviceID != "" {
+		if serviceView.ServiceID != "" && serviceView.ServiceID != serviceID {
+			return fmt.Errorf("service share is for service_id %q, not %q", serviceID, serviceView.ServiceID)
+		}
+		if serviceView.ServiceID == "" {
+			serviceView.ServiceID = serviceID
+		}
 	}
 	listenAddr, localURL, err := chooseConnectLocal(*local)
 	if err != nil {
@@ -1885,14 +1932,17 @@ func connectCmd(args []string) error {
 	}
 	directMsg := connectDirectMessage(serviceView, attempts, selectedPath)
 	relayMsg := connectRelayMessage(serviceView, selectedAddr, selectedPath)
-	output := connectResult{Service: serviceName, Local: localURL, Path: selectedPath, Scope: serviceScopePtr(scope), Selected: selectedAddr, Direct: directMsg, Relay: relayMsg, Attempts: attempts}
+	output := connectResult{Service: serviceView.Name, ServiceID: serviceView.ServiceID, Local: localURL, Path: selectedPath, Scope: serviceScopePtr(scope), Selected: selectedAddr, Direct: directMsg, Relay: relayMsg, Attempts: attempts}
 	if *jsonOut {
 		if err := printJSON(output); err != nil {
 			return err
 		}
 	} else {
 		printMessages(result.Messages)
-		fmt.Printf("connected to service %q\n", serviceName)
+		fmt.Printf("connected to service %q\n", serviceView.Name)
+		if serviceView.ServiceID != "" {
+			fmt.Printf("service id: %s\n", serviceView.ServiceID)
+		}
 		fmt.Printf("local: %s\n", localURL)
 		fmt.Printf("path: %s\n", selectedPath)
 		if directMsg != "" {
@@ -2154,7 +2204,12 @@ func getCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
+		serviceID := ""
+		if isServiceID(name) {
+			serviceID = name
+			name = ""
+		}
+		result, service, err := discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name, serviceID)
 		if err != nil {
 			return err
 		}
@@ -2225,7 +2280,12 @@ func describeCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
+	serviceID := ""
+	if isServiceID(name) {
+		serviceID = name
+		name = ""
+	}
+	result, service, err := discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name, serviceID)
 	if err != nil {
 		return err
 	}
@@ -2279,7 +2339,12 @@ func inspectCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	result, service, err := discoverServiceWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name)
+	serviceID := ""
+	if isServiceID(name) {
+		serviceID = name
+		name = ""
+	}
+	result, service, err := discoverServiceExactWithConfig(cfg, *timeout, *cachedOnly, *live, scopes[0], name, serviceID)
 	if err != nil {
 		return err
 	}
@@ -2449,14 +2514,25 @@ func discoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 				service = applyServiceScope(service, scope)
 				return discoveryLookupResult{Services: []serviceResource{service}, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache", Scope: serviceScopePtr(scope)}, service, nil
 			}
+			if isAmbiguousServiceError(err) {
+				return discoveryLookupResult{}, serviceResource{}, err
+			}
 		}
 		if cachedOnly {
 			return discoveryLookupResult{}, serviceResource{}, errors.New("no local cache found")
 		}
-		if service, metadata, messages, err := fetchRemoteService(cfg, serviceName, timeout); err == nil {
-			messages = append([]string{"no local cache found"}, messages...)
-			service = applyServiceScope(service, scope)
-			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "remote-query", Scope: serviceScopePtr(scope), Metadata: metadata}, service, nil
+		if services, metadata, messages, err := fetchRemoteServiceCache(cfg, timeout); err == nil {
+			service, err := requireService(services, serviceName)
+			if err != nil {
+				if isAmbiguousServiceError(err) {
+					return discoveryLookupResult{}, serviceResource{}, err
+				}
+			} else {
+				messages = append([]string{"no local cache found"}, messages...)
+				messages = append(messages, fmt.Sprintf("received service %s", service.Name))
+				service = applyServiceScope(service, scope)
+				return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "remote-query", Scope: serviceScopePtr(scope), Metadata: metadata}, service, nil
+			}
 		} else {
 			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
 			services, obsErr := observeServices(cfg, timeout, nil)
@@ -2510,6 +2586,7 @@ func discoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 			service, err := requireServiceByID(services, serviceID)
 			if err == nil {
 				messages = append([]string{"no local cache found"}, messages...)
+				messages = append(messages, fmt.Sprintf("received service %s", service.Name))
 				service = applyServiceScope(service, scope)
 				return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "remote-query", Scope: serviceScopePtr(scope), Metadata: metadata}, service, nil
 			}
@@ -2526,6 +2603,18 @@ func discoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
 			service = applyServiceScope(service, scope)
 			return discoveryLookupResult{Services: []serviceResource{service}, Messages: messages, Mode: "live", Scope: serviceScopePtr(scope)}, service, nil
+		}
+	}
+	if serviceName != "" {
+		fallbackResult, fallbackService, fallbackErr := discoverServiceWithConfig(cfg, timeout, cachedOnly, live, scope, serviceName)
+		if fallbackErr == nil {
+			if fallbackService.ServiceID != "" && fallbackService.ServiceID != serviceID {
+				return discoveryLookupResult{}, serviceResource{}, fmt.Errorf("service share is for service_id %q, not %q", serviceID, fallbackService.ServiceID)
+			}
+			return fallbackResult, fallbackService, nil
+		}
+		if isAmbiguousServiceError(fallbackErr) {
+			return discoveryLookupResult{}, serviceResource{}, fallbackErr
 		}
 	}
 	services, err := observeServices(cfg, timeout, nil)
@@ -2549,6 +2638,7 @@ func discoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 	if !live {
 		messages = append([]string{"no local cache found"}, messages...)
 	}
+	messages = append(messages, fmt.Sprintf("received service %s", service.Name))
 	service = applyServiceScope(service, scope)
 	if serviceName != "" && service.ServiceID != "" && service.ServiceID != serviceID {
 		return discoveryLookupResult{}, serviceResource{}, fmt.Errorf("service share is for service_id %q, not %q", serviceID, service.ServiceID)
@@ -2871,15 +2961,28 @@ func servicePathFromAddresses(addresses []string) string {
 
 func sortServiceResources(items []serviceResource) {
 	sort.Slice(items, func(i, j int) bool {
-		return items[i].Name < items[j].Name
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
+		}
+		if items[i].ServiceID != items[j].ServiceID {
+			return items[i].ServiceID < items[j].ServiceID
+		}
+		return items[i].PeerID < items[j].PeerID
 	})
 }
 
 func requireService(services []serviceResource, name string) (serviceResource, error) {
+	matches := make([]serviceResource, 0, 2)
 	for _, service := range services {
 		if service.Name == name {
-			return service, nil
+			matches = append(matches, service)
 		}
+	}
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		return serviceResource{}, ambiguousServiceNameErrorf(name, matches)
 	}
 	return serviceResource{}, fmt.Errorf("service %q not found", name)
 }
@@ -2893,22 +2996,72 @@ func requireServiceByID(services []serviceResource, serviceID string) (serviceRe
 	return serviceResource{}, fmt.Errorf("service %q not found", serviceID)
 }
 
+func isServiceID(ref string) bool {
+	return serviceidentity.ValidateServiceID(strings.TrimSpace(ref)) == nil
+}
+
+type ambiguousServiceNameError string
+
+func (e ambiguousServiceNameError) Error() string { return string(e) }
+
+func isAmbiguousServiceError(err error) bool {
+	_, ok := err.(ambiguousServiceNameError)
+	return ok
+}
+
+func ambiguousServiceNameErrorf(name string, matches []serviceResource) error {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Multiple services named %q found.\nUse:\n", name)
+	for _, service := range matches {
+		if service.ServiceID == "" {
+			fmt.Fprintf(&b, "  tubo connect service/%s  # peer %s\n", service.Name, service.PeerID)
+			continue
+		}
+		fmt.Fprintf(&b, "  tubo connect service/%s\n", service.ServiceID)
+	}
+	b.WriteString("Or use a verified alias.")
+	return ambiguousServiceNameError(b.String())
+}
+
 func printServicesTable(services []serviceResource) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATUS\tPATH\tPEER\tCAPABILITIES")
+	fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tPEER\tCAPABILITIES")
 	for _, service := range services {
 		caps := "-"
 		if len(service.Capabilities) > 0 {
 			caps = strings.Join(service.Capabilities, ",")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", service.Name, service.Status, service.Path, service.PeerID, caps)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayServiceID(service.ServiceID), displayServiceScope(service), service.Status, service.Path, service.PeerID, caps)
 	}
 	_ = w.Flush()
+}
+
+func displayServiceID(serviceID string) string {
+	if serviceID == "" {
+		return "-"
+	}
+	return serviceID
+}
+
+func displayServiceScope(service serviceResource) string {
+	if service.Cluster == "" && service.Namespace == "" {
+		return "-"
+	}
+	if service.Cluster == "" {
+		return service.Namespace
+	}
+	if service.Namespace == "" {
+		return service.Cluster
+	}
+	return service.Cluster + "/" + service.Namespace
 }
 
 func printServiceDescription(service serviceResource, messages []string) {
 	service = normalizeServiceResource(service)
 	fmt.Printf("Name: %s\n", service.Name)
+	if service.ServiceID != "" {
+		fmt.Printf("Service ID: %s\n", service.ServiceID)
+	}
 	fmt.Printf("Kind: %s\n", service.Kind)
 	if service.Cluster != "" || service.Namespace != "" {
 		fmt.Printf("Scope: %s/%s\n", service.Cluster, service.Namespace)

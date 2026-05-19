@@ -2883,6 +2883,235 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	}
 }
 
+func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceScope, string, string) {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "duplicate-service-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	t.Cleanup(cache.Stop)
+	t.Cleanup(func() { _ = server.Close() })
+	addr := p2p.PeerAddrs(server)[0]
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceIDA := serviceidentity.ServiceIDFromPublicKey(pubA)
+	serviceIDB := serviceidentity.ServiceIDFromPublicKey(pubB)
+	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", serviceidentity.EncodePublicKey(pubA), []string{addr}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", serviceidentity.EncodePublicKey(pubB), []string{addr}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "observability",
+		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath},
+		},
+	}
+	return cfg, serviceScope{Cluster: "home", Namespace: "observability"}, serviceIDA, serviceIDB
+}
+
+func TestDiscoverServiceRejectsDuplicateDisplayNames(t *testing.T) {
+	cfg, scope, serviceIDA, serviceIDB := newDuplicateServiceDiscoveryFixture(t)
+	_, _, err := discoverServiceWithConfig(cfg, 5*time.Second, false, false, scope, "myapi")
+	if err == nil {
+		t.Fatal("expected duplicate display name error")
+	}
+	if !isAmbiguousServiceError(err) {
+		t.Fatalf("expected ambiguous service error, got %v", err)
+	}
+	for _, want := range []string{"tubo connect service/" + serviceIDA, "tubo connect service/" + serviceIDB} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ambiguous error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestDiscoverServiceExactByServiceIDReturnsMatchingDuplicate(t *testing.T) {
+	cfg, scope, _, serviceIDB := newDuplicateServiceDiscoveryFixture(t)
+	result, service, err := discoverServiceExactWithConfig(cfg, 5*time.Second, false, false, scope, "", serviceIDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != "remote-query" {
+		t.Fatalf("mode = %q, want remote-query", result.Mode)
+	}
+	if service.ServiceID != serviceIDB || service.Name != "myapi" {
+		t.Fatalf("unexpected exact service: %#v", service)
+	}
+	joined := strings.Join(result.Messages, "\n")
+	if !strings.Contains(joined, "received service myapi") {
+		t.Fatalf("exact lookup missing service hint: %s", joined)
+	}
+}
+
+func TestDiscoverServiceExactFallsBackToDisplayNameWhenServiceIDMissing(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "fallback-service-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	t.Cleanup(cache.Stop)
+	t.Cleanup(func() { _ = server.Close() })
+	addr := p2p.PeerAddrs(server)[0]
+	if err := cache.Add(server.ID(), "myapi", []string{addr}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "observability",
+		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath},
+		},
+	}
+	result, service, err := discoverServiceExactWithConfig(cfg, 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"}, "myapi", "service-fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.Name != "myapi" || service.ServiceID != "" {
+		t.Fatalf("unexpected fallback service: %#v", service)
+	}
+	if result.Mode != "remote-query" && result.Mode != "cache" && result.Mode != "live" {
+		t.Fatalf("unexpected fallback mode: %q", result.Mode)
+	}
+}
+
+func TestResolveLocalServiceForShareMatchesServiceID(t *testing.T) {
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceIDA := serviceidentity.ServiceIDFromPublicKey(pubA)
+	serviceIDB := serviceidentity.ServiceIDFromPublicKey(pubB)
+	svc, name, ok := resolveLocalServiceForShare(map[string]cfgpkg.NamespaceService{
+		"lmstudio": {ServiceID: serviceIDA},
+		"ollama":   {ServiceID: serviceIDB},
+	}, serviceIDB)
+	if !ok || name != "ollama" || svc.ServiceID != serviceIDB {
+		t.Fatalf("unexpected share resolution: ok=%t name=%q svc=%#v", ok, name, svc)
+	}
+}
+
+func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
+	out, err := capture(func() error {
+		printServicesTable([]serviceResource{{Name: "lmstudio", ServiceID: "service-a", Cluster: "home", Namespace: "default", Status: "online", Path: "direct", PeerID: "12D3-peer", Capabilities: []string{"connect"}}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SERVICE ID", "SCOPE", "service-a", "home/default"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("services table missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestPrintProcessesTableIncludesServiceMetadata(t *testing.T) {
+	out, err := capture(func() error {
+		printProcessesTable([]processView{{Name: "attach-lmstudio", Command: "attach", ServiceID: "service-a", Cluster: "home", Namespace: "default", Status: "running", PID: 1234, Local: "127.0.0.1:51234", Target: "http://127.0.0.1:1234"}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SERVICE ID", "SCOPE", "service-a", "home/default"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("process table missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestGrantsHistoryIncludesServiceMetadataAndSource(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	store := grantspkg.NewStore(storePath)
+	now := time.Now().UTC()
+	reqB := grantspkg.Request{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-b", ServicePublicKey: "pk-b", ServiceOwnerSignature: []byte("sig-b"), RequestNonce: "nonce-b", ServicePeerID: "12D3-service-b", RequestedPermissions: []string{capability.PermissionAttach}, RequestedAt: now.Add(2 * time.Minute), ExpiresAt: now.Add(time.Hour)}
+	reqA := grantspkg.Request{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-a", ServicePublicKey: "pk-a", ServiceOwnerSignature: []byte("sig-a"), RequestNonce: "nonce-a", ServicePeerID: "12D3-service-a", RequestedPermissions: []string{capability.PermissionAttach}, RequestedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if _, err := store.CreatePending(reqB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePending(reqA); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"history source: authority/local store", "SERVICE_ID", "SCOPE", "service-a", "service-b"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("grants history missing %q: %s", want, out)
+		}
+	}
+	if strings.Index(out, "service-a") > strings.Index(out, "service-b") {
+		t.Fatalf("expected service-a before service-b: %s", out)
+	}
+}
+
 func TestChooseConnectLocal(t *testing.T) {
 	listen, url, err := chooseConnectLocal("127.0.0.1:51234")
 	if err != nil {

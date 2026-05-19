@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -263,6 +264,7 @@ func grantsHistoryCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	fmt.Printf("history source: authority/local store %s\n", *storePath)
 	printGrantRequests(requests)
 	return nil
 }
@@ -356,10 +358,17 @@ func ensureNoApprovedServiceCollision(store *grantspkg.Store, req grantspkg.Requ
 }
 
 func printGrantRequests(requests []grantspkg.Request) {
+	sort.SliceStable(requests, func(i, j int) bool {
+		if requests[i].ServiceID != requests[j].ServiceID {
+			return requests[i].ServiceID < requests[j].ServiceID
+		}
+		return requests[i].RequestedAt.Before(requests[j].RequestedAt)
+	})
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSTATUS\tNAMESPACE\tSERVICE\tREQUESTER\tSERVICE_PEER\tEXPIRES")
+	fmt.Fprintln(w, "ID\tSTATUS\tSCOPE\tSERVICE\tSERVICE_ID\tREQUESTER\tSERVICE_PEER\tEXPIRES")
 	for _, req := range requests {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", req.ID, req.Status, req.NamespaceID, req.ServiceName, req.RequesterPeerID, req.ServicePeerID, req.ExpiresAt.Format(time.RFC3339))
+		scope := req.ClusterName + "/" + req.NamespaceID
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", req.ID, req.Status, scope, req.ServiceName, req.ServiceID, req.RequesterPeerID, req.ServicePeerID, req.ExpiresAt.Format(time.RFC3339))
 	}
 	_ = w.Flush()
 }
