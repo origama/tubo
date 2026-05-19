@@ -215,7 +215,7 @@ func TestResolveInterpretsGrantPendingAndDenied(t *testing.T) {
 	}
 }
 
-func TestResolveReturnsRetryableWhenStoredLeaseNeedsRefresh(t *testing.T) {
+func TestResolveReturnsReadyWhenOnlyStoredClaimIsAvailable(t *testing.T) {
 	cfg := testAttachConfig()
 	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
 	resolver := New(Dependencies{
@@ -228,8 +228,8 @@ func TestResolveReturnsRetryableWhenStoredLeaseNeedsRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve error = %v", err)
 	}
-	if got.Decision != DecisionRetryable {
-		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionRetryable)
+	if got.Decision != DecisionReady {
+		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionReady)
 	}
 	if got.PublishLeaseReused {
 		t.Fatal("did not expect PublishLeaseReused")

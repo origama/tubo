@@ -112,7 +112,10 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		result.ServiceShareToken = shareToken
 		result.PublishLeaseReused = true
 		if shareToken == "" {
-			grantPeer := grantServicePeer(cluster)
+			grantPeer := svc.GrantServicePeer
+			if strings.TrimSpace(grantPeer) == "" {
+				grantPeer = grantServicePeer(cluster)
+			}
 			result.ShareRecoveryHint = shareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
 		}
 		return result, nil
@@ -120,8 +123,9 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		return ResolveResult{}, fmt.Errorf("service publish lease for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, err)
 	}
 
-	if err := r.deps.ArtifactStore.VerifyServiceClaim(svc.ServiceClaimFile, authorityPub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return ResolveResult{}, fmt.Errorf("service claim for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, err)
+	claimErr := r.deps.ArtifactStore.VerifyServiceClaim(svc.ServiceClaimFile, authorityPub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID)
+	if claimErr != nil && !errors.Is(claimErr, os.ErrNotExist) {
+		return ResolveResult{}, fmt.Errorf("service claim for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, claimErr)
 	}
 	membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
 	if err != nil {
@@ -134,6 +138,13 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	grantPeer := svc.GrantServicePeer
 	if strings.TrimSpace(grantPeer) == "" {
 		grantPeer = grantServicePeer(cluster)
+	}
+	if cluster.AuthorityPrivateKeyFile == "" && grantPeer == "" && claimErr == nil {
+		result := base
+		result.Decision = DecisionReady
+		result.MembershipCapabilityFile = membershipFile
+		result.ServiceShareToken = shareToken
+		return result, nil
 	}
 	if cluster.AuthorityPrivateKeyFile != "" && r.deps.AuthoritySigner != nil {
 		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {

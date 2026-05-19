@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	attachauth "github.com/origama/tubo/internal/attachauth"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
@@ -372,114 +373,26 @@ type attachAuthorization struct {
 }
 
 func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAuthorization, error) {
-	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	result, err := newAttachAuthResolver().Resolve(context.Background(), attachauth.ResolveRequest{ConfigPath: configPath, Config: cfg})
 	if err != nil {
 		return attachAuthorization{}, err
 	}
-	cluster := cfg.Clusters[cfg.CurrentCluster]
-	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
-	if err != nil {
-		return attachAuthorization{}, err
+	switch result.Decision {
+	case attachauth.DecisionReady:
+		return attachAuthorization{Config: result.Config, Service: result.Service, ServicePeerID: result.ServicePeerID, ServiceClaimFile: result.ServiceClaimFile, ServicePublishLeaseFile: result.ServicePublishLeaseFile, MembershipCapabilityFile: result.MembershipCapabilityFile, ServiceShareToken: result.ServiceShareToken, ShareRecoveryHint: result.ShareRecoveryHint, PublishLeaseReused: result.PublishLeaseReused, MintedServiceClaim: result.MintedLocally}, nil
+	case attachauth.DecisionPendingApproval, attachauth.DecisionDenied:
+		if strings.TrimSpace(result.UserMessage) == "" {
+			return attachAuthorization{}, errors.New("attach authorization denied")
+		}
+		return attachAuthorization{}, errors.New(result.UserMessage)
+	case attachauth.DecisionRetryable:
+		if strings.Contains(result.UserMessage, "grant request ") {
+			return attachAuthorization{}, errors.New(result.UserMessage)
+		}
+		return attachAuthorization{}, noServicePublishGrantError(result.Config.CurrentCluster, result.Config.CurrentNamespace, result.Config.Service.Name)
+	default:
+		return attachAuthorization{}, errors.New("attach authorization returned an unknown decision")
 	}
-	pub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
-	if err != nil {
-		return attachAuthorization{}, fmt.Errorf("parse authority public key for cluster %q: %w", cfg.CurrentCluster, err)
-	}
-
-	if err := verifyPublishLeaseFile(svc.ServicePublishLeaseFile, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID.String()); err == nil {
-		membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
-		if err != nil {
-			return attachAuthorization{}, err
-		}
-		shareToken, err := buildAttachServiceShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
-		if err != nil {
-			return attachAuthorization{}, err
-		}
-		shareHint := ""
-		grantPeer := svc.GrantServicePeer
-		if grantPeer == "" {
-			grantPeer = clusterGrantServicePeer(cluster)
-		}
-		if shareToken == "" {
-			shareHint = attachShareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
-		}
-		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken, ShareRecoveryHint: shareHint, PublishLeaseReused: true}, nil
-	} else if errors.Is(err, os.ErrNotExist) || isPublishLeaseExpiredError(err) {
-		if claimErr := verifyServiceClaimFile(svc.ServiceClaimFile, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID.String()); claimErr == nil {
-			membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
-			if err != nil {
-				return attachAuthorization{}, err
-			}
-			shareToken, err := buildAttachServiceShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
-			if err != nil {
-				return attachAuthorization{}, err
-			}
-			grantPeer := svc.GrantServicePeer
-			if grantPeer == "" {
-				grantPeer = clusterGrantServicePeer(cluster)
-			}
-			if grantPeer != "" {
-				updatedCfg, updatedSvc, refreshedShareToken, refreshErr := renewAttachPublishAuthorization(configPath, cfg, svc, servicePeerID.String())
-				if refreshErr == nil {
-					cfg = updatedCfg
-					svc = updatedSvc
-					shareToken = refreshedShareToken
-					cluster = cfg.Clusters[cfg.CurrentCluster]
-					return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
-				}
-				if cluster.AuthorityPrivateKeyFile == "" {
-					return attachAuthorization{}, refreshErr
-				}
-			}
-			if cluster.AuthorityPrivateKeyFile == "" {
-				return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
-			}
-		} else if !errors.Is(claimErr, os.ErrNotExist) {
-			return attachAuthorization{}, fmt.Errorf("service claim for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, claimErr)
-		}
-	} else if cluster.AuthorityPrivateKeyFile == "" {
-		return attachAuthorization{}, fmt.Errorf("service publish lease for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, err)
-	}
-
-	if cluster.AuthorityPrivateKeyFile != "" {
-		if err := mintLocalServicePublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
-			return attachAuthorization{}, err
-		}
-		membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
-		if err != nil {
-			return attachAuthorization{}, err
-		}
-		shareToken, err := buildAttachServiceShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
-		if err != nil {
-			return attachAuthorization{}, err
-		}
-		return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken, MintedServiceClaim: true}, nil
-	}
-
-	grantPeer := svc.GrantServicePeer
-	if grantPeer == "" {
-		grantPeer = clusterGrantServicePeer(cluster)
-	}
-	if grantPeer != "" {
-		svc.GrantServicePeer = grantPeer
-		updatedCfg, updatedSvc, shareToken, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
-		if err != nil {
-			return attachAuthorization{}, err
-		}
-		cfg = updatedCfg
-		svc = updatedSvc
-		cluster = cfg.Clusters[cfg.CurrentCluster]
-		if err := verifyServiceClaimFile(svc.ServiceClaimFile, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID.String()); err == nil {
-			membershipFile, err := resolveAttachMembershipCapabilityFile(configPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
-			if err != nil {
-				return attachAuthorization{}, err
-			}
-			return attachAuthorization{Config: cfg, Service: svc, ServicePeerID: servicePeerID.String(), ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, MembershipCapabilityFile: membershipFile, ServiceShareToken: shareToken}, nil
-		}
-		return attachAuthorization{}, fmt.Errorf("publish grant request %q is pending; publication requires an approved publish lease", svc.GrantRequestID)
-	}
-
-	return attachAuthorization{}, noServicePublishGrantError(cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name)
 }
 
 func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
