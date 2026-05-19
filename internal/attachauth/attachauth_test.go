@@ -4,41 +4,66 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"os"
+	"strings"
 	"testing"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
 )
 
-type fakeIdentityStore struct{}
-type fakeArtifactStore struct{}
+type fakeIdentityStore struct {
+	cfg       cfgpkg.Config
+	svc       cfgpkg.NamespaceService
+	peerID    string
+	ensureErr error
+	peerErr   error
+}
+
+type fakeArtifactStore struct {
+	publishLeaseErr error
+	serviceClaimErr error
+	membershipFile  string
+	membershipErr   error
+	shareToken      string
+	shareErr        error
+}
+
 type fakeAuthoritySigner struct{}
 type fakeGrantClient struct{}
 
-func (fakeIdentityStore) EnsureAttachServiceIdentity(string, cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
-	panic("not used")
+func (f fakeIdentityStore) EnsureAttachServiceIdentity(string, cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
+	if f.ensureErr != nil {
+		return cfgpkg.Config{}, cfgpkg.NamespaceService{}, f.ensureErr
+	}
+	return f.cfg, f.svc, nil
 }
 
-func (fakeIdentityStore) ServicePeerID(string) (string, error) { panic("not used") }
-
-func (fakeArtifactStore) VerifyPublishLease(string, ed25519.PublicKey, string, string, string, string) error {
-	panic("not used")
+func (f fakeIdentityStore) ServicePeerID(string) (string, error) {
+	if f.peerErr != nil {
+		return "", f.peerErr
+	}
+	return f.peerID, nil
 }
 
-func (fakeArtifactStore) VerifyServiceClaim(string, ed25519.PublicKey, string, string, string, string) error {
-	panic("not used")
+func (f fakeArtifactStore) VerifyPublishLease(string, ed25519.PublicKey, string, string, string, string) error {
+	return f.publishLeaseErr
 }
 
-func (fakeArtifactStore) ResolveMembershipCapabilityFile(string, cfgpkg.Cluster, string, string, string) (string, error) {
-	panic("not used")
+func (f fakeArtifactStore) VerifyServiceClaim(string, ed25519.PublicKey, string, string, string, string) error {
+	return f.serviceClaimErr
 }
 
-func (fakeArtifactStore) BuildShareToken(cfgpkg.Cluster, string, string, string, cfgpkg.NamespaceService) (string, error) {
-	panic("not used")
+func (f fakeArtifactStore) ResolveMembershipCapabilityFile(string, cfgpkg.Cluster, string, string, string) (string, error) {
+	return f.membershipFile, f.membershipErr
 }
 
-func (fakeArtifactStore) ReadPublishLease(string) (grantspkg.PublishLease, error) {
-	panic("not used")
+func (f fakeArtifactStore) BuildShareToken(cfgpkg.Cluster, string, string, string, cfgpkg.NamespaceService) (string, error) {
+	return f.shareToken, f.shareErr
+}
+
+func (f fakeArtifactStore) ReadPublishLease(string) (grantspkg.PublishLease, error) {
+	return grantspkg.PublishLease{}, os.ErrNotExist
 }
 
 func (fakeAuthoritySigner) MintLocalPublishLease(cfgpkg.Cluster, string, string, string, cfgpkg.NamespaceService) error {
@@ -53,21 +78,89 @@ func (fakeGrantClient) RenewPublishAuthorization(string, cfgpkg.Config, cfgpkg.N
 	panic("not used")
 }
 
-func TestNewReturnsResolver(t *testing.T) {
+func TestResolveReturnsReadyForReusablePublishLease(t *testing.T) {
+	cfg := testAttachConfig()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
 	resolver := New(Dependencies{
-		IdentityStore:   fakeIdentityStore{},
-		ArtifactStore:   fakeArtifactStore{},
-		AuthoritySigner: fakeAuthoritySigner{},
-		GrantClient:     fakeGrantClient{},
-		Clock:           SystemClock{},
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{membershipFile: "/tmp/membership.cap", shareToken: "share-token"},
+		Clock:         SystemClock{},
 	})
-	if resolver == nil {
-		t.Fatal("expected resolver")
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
 	}
-	if _, err := resolver.Resolve(context.Background(), ResolveRequest{}); !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("Resolve error = %v, want ErrNotImplemented", err)
+	if got.Decision != DecisionReady {
+		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionReady)
 	}
+	if !got.PublishLeaseReused {
+		t.Fatal("expected PublishLeaseReused")
+	}
+	if got.MembershipCapabilityFile != "/tmp/membership.cap" {
+		t.Fatalf("MembershipCapabilityFile = %q", got.MembershipCapabilityFile)
+	}
+	if got.ServiceShareToken != "share-token" {
+		t.Fatalf("ServiceShareToken = %q", got.ServiceShareToken)
+	}
+}
+
+func TestResolveReturnsRetryableWhenStoredLeaseNeedsRefresh(t *testing.T) {
+	cfg := testAttachConfig()
+	cfg.Clusters["home"] = cfgpkg.Cluster{
+		ClusterID:          "cluster-123",
+		AuthorityPublicKey: testAuthorityPublicKey,
+		MembershipGrant: &cfgpkg.ClusterMembershipGrant{
+			GrantServiceProtocol: grantspkg.ProtocolID,
+			GrantServicePeers:    []string{"/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant"},
+		},
+		Namespaces: map[string]cfgpkg.Namespace{"default": {Services: map[string]cfgpkg.NamespaceService{}}},
+	}
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease", GrantRequestID: "gr_123"}
+	resolver := New(Dependencies{
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{publishLeaseErr: os.ErrNotExist, membershipFile: "/tmp/membership.cap"},
+		Clock:         SystemClock{},
+	})
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
+	}
+	if got.Decision != DecisionRetryable {
+		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionRetryable)
+	}
+	if got.PublishLeaseReused {
+		t.Fatal("did not expect PublishLeaseReused")
+	}
+	if got.MembershipCapabilityFile != "/tmp/membership.cap" {
+		t.Fatalf("MembershipCapabilityFile = %q", got.MembershipCapabilityFile)
+	}
+	if !strings.Contains(got.ShareRecoveryHint, "tubo grants request service/myapi --poll --peer /ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant --cluster home --namespace default") {
+		t.Fatalf("ShareRecoveryHint = %q", got.ShareRecoveryHint)
+	}
+}
+
+func TestResolveKeepsRenewUnwired(t *testing.T) {
+	resolver := New(Dependencies{})
 	if _, err := resolver.Renew(context.Background(), RenewRequest{}); !errors.Is(err, ErrNotImplemented) {
 		t.Fatalf("Renew error = %v, want ErrNotImplemented", err)
+	}
+}
+
+const testAuthorityPublicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAII0U1wP0i0fWQJ8YjLkNn6M2I7vWl7f7Yc8N5Q3w0N9A tubo-test"
+
+func testAttachConfig() cfgpkg.Config {
+	return cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Service:          cfgpkg.Service{Name: "myapi"},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				ClusterID:          "cluster-123",
+				AuthorityPublicKey: testAuthorityPublicKey,
+				Namespaces:         map[string]cfgpkg.Namespace{"default": {Services: map[string]cfgpkg.NamespaceService{}}},
+			},
+		},
 	}
 }
