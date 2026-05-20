@@ -321,7 +321,7 @@ tubo describe service/ollama
 tubo init relay --out relay.yaml
 tubo init edge --out edge.yaml
 tubo init service --out service.yaml
-tubo init topology --out topology.yaml
+tubo init bridge --out bridge.yaml
 ```
 
 I file esistenti non sono sovrascritti senza `--force`.
@@ -511,35 +511,10 @@ tubo grants history
 
 The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and prints relay-aware `/p2p-circuit` addresses for signed invites; it does not publish itself in Discovery V2. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `grants history` now prints `SCOPE` and `SERVICE_ID`, sorts by `service_id`, and prefixes the output with the local store path so the source is explicit. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, revoked, or still-pending grants stop publication.
 
-## Topology
+## Multi-node setup
 
-```yaml
-swarm:
-  key_file: ./swarm.key
-nodes:
-  relay:
-    role: relay
-    seed: public-relay-seed
-    public_addr: /ip4/1.2.3.4/tcp/4001
-  edge:
-    role: edge
-    seed: edge-seed
-    listen: :8443
-    admin_listen: 127.0.0.1:8444
-    relay: relay
-  lmstudio:
-    role: service
-    seed: service-lmstudio-seed
-    service_name: lmstudio
-    target: http://192.168.1.28:1234
-    relay: relay
-```
+Per setup multi-node usa uno di questi due percorsi:
 
-Se un nodo dichiara `relay: relay`, il render risolve il relay in `/p2p/<peer_id>` e popola automaticamente `network.bootstrap_peers` e `network.relay_peers` per edge/service.
+- flusso locale canonico: `tubo join`, `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, `tubo share ...`, `tubo attach`, `tubo connect --token ...`
+- YAML per ruolo: `tubo init relay|edge|service|bridge` e poi modifica i file generati con relay peer, swarm key e metadata del cluster/namespace necessari
 
-Generazione:
-
-```bash
-tubo topology render --config topology.yaml --out generated
-tubo topology commands --config topology.yaml
-```

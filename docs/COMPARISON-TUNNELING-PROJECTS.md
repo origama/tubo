@@ -53,7 +53,7 @@ Punti forti:
 - routing per service name;
 - relay libp2p;
 - private swarm con PSK;
-- topology YAML;
+- local resource + join/share workflow;
 - runtime unico `tubo`;
 - deploy self-hosted;
 - modello adatto a edge pubblico + servizi privati.
@@ -153,7 +153,7 @@ Però ha un'identità diversa e interessante:
 
 ```text
 self-hosted p2p service tunnel
-con discovery, relay libp2p, private swarm e topology
+con discovery, relay libp2p, private swarm e bootstrap/join locale
 ```
 
 La feature che lo renderebbe davvero comparabile ai migliori tunnel general-purpose è il TCP generico.

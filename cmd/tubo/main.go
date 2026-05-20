@@ -143,8 +143,6 @@ func run(args []string) error {
 		return doctor(args[1:])
 	case "init":
 		return initCmd(args[1:])
-	case "topology":
-		return topology(args[1:])
 	case "version":
 		return versionCmd(args[1:])
 	default:
@@ -483,7 +481,7 @@ Record issuer-side revocation state for invite redemption, connect refresh, serv
   tubo create service/<name>
 
 Create local clusters, namespaces, and namespace-scoped service identities in the current config.`)
-	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init", "topology":
+	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
 		return fmt.Errorf("unknown help topic %q", command)
@@ -1939,139 +1937,12 @@ func initCmd(args []string) error {
 	if len(args) == 0 {
 		return usage()
 	}
-	if args[0] == "topology" {
-		fs := flag.NewFlagSet("init topology", 0)
-		out := fs.String("out", "topology.yaml", "")
-		force := fs.Bool("force", false, "")
-		_ = fs.Parse(args[1:])
-		return write(*out, topoExample(), *force)
-	}
 	role := args[0]
 	fs := flag.NewFlagSet("init", 0)
 	out := fs.String("out", role+".yaml", "")
 	force := fs.Bool("force", false, "")
 	_ = fs.Parse(args[1:])
 	return cfgpkg.WriteFile(*out, cfgpkg.Defaults(role), *force)
-}
-
-type Topology struct {
-	Swarm struct {
-		KeyFile string `yaml:"key_file"`
-	} `yaml:"swarm"`
-	Nodes map[string]map[string]any `yaml:"nodes"`
-}
-
-func topology(args []string) error {
-	if len(args) == 0 {
-		return usage()
-	}
-	fs := flag.NewFlagSet("topology", 0)
-	path := fs.String("config", "topology.yaml", "")
-	out := fs.String("out", "generated", "")
-	_ = fs.Parse(args[1:])
-	b, err := os.ReadFile(*path)
-	if err != nil {
-		return err
-	}
-	var t Topology
-	if err := yaml.Unmarshal(b, &t); err != nil {
-		return err
-	}
-	if args[0] == "commands" {
-		for name, n := range t.Nodes {
-			role := n["role"]
-			switch role {
-			case "edge":
-				role = "gateway"
-			case "service":
-				role = "attach"
-			}
-			fmt.Printf("tubo %s --config generated/%s.yaml\n", role, name)
-		}
-		return nil
-	}
-	if args[0] != "render" {
-		return usage()
-	}
-	if err := os.MkdirAll(*out, 0755); err != nil {
-		return err
-	}
-	peerIDs := make(map[string]string, len(t.Nodes))
-	for name, n := range t.Nodes {
-		seed := str(n, "seed", "")
-		if seed == "" {
-			continue
-		}
-		peerID, err := p2p.PeerIDFromSeed(seed)
-		if err != nil {
-			return fmt.Errorf("topology %s peer id: %w", name, err)
-		}
-		peerIDs[name] = peerID.String()
-	}
-	resolveRelayAddr := func(relayName string) (string, error) {
-		relayNode, ok := t.Nodes[relayName]
-		if !ok {
-			return "", fmt.Errorf("unknown relay %q", relayName)
-		}
-		publicAddr := str(relayNode, "public_addr", "")
-		if publicAddr == "" {
-			return "", fmt.Errorf("relay %q is missing public_addr", relayName)
-		}
-		peerID := peerIDs[relayName]
-		if peerID == "" {
-			return "", fmt.Errorf("relay %q is missing seed", relayName)
-		}
-		if strings.Contains(publicAddr, "/p2p/") {
-			return publicAddr, nil
-		}
-		return fmt.Sprintf("%s/p2p/%s", publicAddr, peerID), nil
-	}
-	for name, n := range t.Nodes {
-		role := fmt.Sprint(n["role"])
-		c := cfgpkg.Defaults(role)
-		c.Network.PrivateKeyFile = t.Swarm.KeyFile
-		c.Node.Seed = str(n, "seed", c.Node.Seed)
-		relayRef := str(n, "relay", "")
-		if relayRef != "" {
-			relayAddr, err := resolveRelayAddr(relayRef)
-			if err != nil {
-				return err
-			}
-			c.Network.BootstrapPeers = []string{relayAddr}
-			c.Network.RelayPeers = []string{relayAddr}
-		}
-		switch role {
-		case "relay":
-			c.Relay.PublicAddr = str(n, "public_addr", "")
-		case "edge":
-			c.Edge.Listen = str(n, "listen", c.Edge.Listen)
-			c.Edge.AdminListen = str(n, "admin_listen", c.Edge.AdminListen)
-		case "service":
-			c.Service.Name = str(n, "service_name", name)
-			c.Service.Target = str(n, "target", "")
-		}
-		if err := cfgpkg.WriteFile(filepath.Join(*out, name+".yaml"), c, true); err != nil {
-			return err
-		}
-	}
-	return os.WriteFile(filepath.Join(*out, "docker-compose.generated.yaml"), []byte("services: {}\n"), 0644)
-}
-func str(m map[string]any, k, d string) string {
-	if v, ok := m[k]; ok {
-		return fmt.Sprint(v)
-	}
-	return d
-}
-func write(path, s string, force bool) error {
-	if !force {
-		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("%s exists (use --force)", path)
-		}
-	}
-	return os.WriteFile(path, []byte(s), 0600)
-}
-func topoExample() string {
-	return "swarm:\n  key_file: ./swarm.key\nnodes:\n  relay:\n    role: relay\n    seed: public-relay-seed\n    public_addr: /ip4/1.2.3.4/tcp/4001\n  edge:\n    role: edge\n    seed: edge-seed\n    listen: :8443\n    admin_listen: 127.0.0.1:8444\n    relay: relay\n  lmstudio:\n    role: service\n    seed: service-lmstudio-seed\n    service_name: lmstudio\n    target: http://127.0.0.1:1234\n    relay: relay\n"
 }
 
 type csvFlag struct{ p *[]string }

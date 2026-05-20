@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-20 00:28 UTC
+> **Last updated:** 2026-05-20 06:16 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -177,6 +177,7 @@
 | C.73 | Issue #121 — Revocation primitives and epoch validation | ✅ | Done on `0.7.0.b0`: added issuer-side revocation store, `tubo revoke invite/session/service-access/publish`, access/publish epoch fields, grant-service checks for revoked invite/session/stale service-access epoch/publish revoke, share minting hooks, docs, unit tests, and e2e `public_revoke_invite`, `public_revoke_session`, `public_revoke_service_access`. |
 | C.74 | Cross-cutting — architecture deepening review | ✅ | Done via issue #132: attach/publish authorization is now deepened into `internal/attachauth`, startup + renewal both route through it, redundant CLI-side branching was removed, and verification passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.75 | Issue #133 — refactor `cmd/tubo/main.go` into explicit CLI/use-case modules | ✅ | Done via issue #133: extracted `internal/catalog`, `internal/processes`, `internal/connectflow`, and `internal/launcher`; reduced `cmd/tubo/main.go` to thinner CLI/config wiring; added local verification targets in `Makefile`; fixed a race surfaced by `go test -race ./...` in `internal/app/bridge`; refreshed `tests/smoke-cli-ux.sh` for cluster-aware attach/share/connect flow; and hardened `tests/e2e/run.sh all` to reset containers/workdirs between scenarios. Final validation passed with `go test ./...`, `go test -race ./...`, `go build ./...`, `./tests/smoke-compose.sh`, `./tests/smoke-cli-ux.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, `make e2e-default`, and `make e2e`. |
+| C.76 | Cross-cutting — remove legacy `topology` CLI/docs surface | ✅ | Done on `0.7.0.b0`: removed `tubo topology` and `tubo init topology`, deleted topology tests from `cmd/tubo/main_test.go`, refreshed `docs/cli.md`, `docs/README.md`, `docs/OPERABILITY.md`, and `docs/COMPARISON-TUNNELING-PROJECTS.md`, and revalidated with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. GitHub issue/comment update remained blocked locally because `gh` is not authenticated. |
 
 ---
 
