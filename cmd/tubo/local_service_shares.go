@@ -68,28 +68,19 @@ func localShareServiceCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	cluster, ok := cfg.Clusters[scope.Cluster]
-	if !ok {
-		return fmt.Errorf("cluster %q not found", scope.Cluster)
+	ctx, err := localWorkspace().ResolveServiceContext(*configPath, name, scope.Cluster, scope.Namespace)
+	if err != nil {
+		return err
 	}
+	cfg = ctx.Config
+	scope.Cluster = ctx.ClusterName
+	scope.Namespace = ctx.Namespace
+	cluster := ctx.Cluster
+	svc := ctx.Service
+	name = ctx.Name
 	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" || cluster.AuthorityPrivateKeyFile == "" {
 		return fmt.Errorf("cluster %q is missing authority metadata", scope.Cluster)
 	}
-	if cluster.Namespaces == nil {
-		return fmt.Errorf("cluster %q has no namespaces configured", scope.Cluster)
-	}
-	namespace, ok := cluster.Namespaces[scope.Namespace]
-	if !ok {
-		return fmt.Errorf("namespace %q not found in cluster %q", scope.Namespace, scope.Cluster)
-	}
-	if namespace.Services == nil {
-		return fmt.Errorf("namespace %q has no services configured", scope.Namespace)
-	}
-	svc, resolvedName, ok := resolveLocalServiceForShare(namespace.Services, name)
-	if !ok {
-		return fmt.Errorf("service %q not found in cluster %q namespace %q", name, scope.Cluster, scope.Namespace)
-	}
-	name = resolvedName
 	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)

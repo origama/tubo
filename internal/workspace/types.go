@@ -86,3 +86,8 @@ type EnsureServiceResult struct {
 	Created bool
 	Changed bool
 }
+
+type CreateServiceResult struct {
+	Context       ServiceContext
+	AlreadyExists bool
+}

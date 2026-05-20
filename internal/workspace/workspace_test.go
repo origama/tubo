@@ -167,6 +167,45 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 }
 
+func TestEnsureAndCreateService(t *testing.T) {
+	path := writeTestConfig(t, cfgpkg.Config{})
+	ws := Open(FSStore{})
+	if _, err := ws.CreateCluster(path, "home"); err != nil {
+		t.Fatal(err)
+	}
+	ensure, err := ws.EnsureService(path, "myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ensure.Context.Service.ServiceID == "" || ensure.Context.Service.ServiceSeed == "" {
+		t.Fatalf("ensure=%#v", ensure)
+	}
+	if ensure.Context.Service.ServiceOwnerKeyFile == "" || ensure.Context.Service.ServiceClaimFile == "" || ensure.Context.Service.ServicePublishLeaseFile == "" {
+		t.Fatalf("ensure paths=%#v", ensure.Context.Service)
+	}
+	created, err := ws.CreateService(path, "myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Context.Service.ServiceClaimFile == "" || created.Context.Service.ServicePublishLeaseFile == "" {
+		t.Fatalf("created=%#v", created)
+	}
+	ctx, err := ws.ResolveServiceContext(path, created.Context.Service.ServiceID, "home", "default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Name != "myapi" {
+		t.Fatalf("ctx=%#v", ctx)
+	}
+	again, err := ws.CreateService(path, "myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !again.AlreadyExists {
+		t.Fatalf("again=%#v", again)
+	}
+}
+
 func TestLoadConfigOrErrorMissing(t *testing.T) {
 	ws := Open(FSStore{})
 	_, err := ws.LoadConfigOrError(t.TempDir() + "/missing.yaml")
