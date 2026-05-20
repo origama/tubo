@@ -129,6 +129,44 @@ func TestListDescribeAndUseLocalResources(t *testing.T) {
 	}
 }
 
+func TestCreateClusterAndNamespace(t *testing.T) {
+	cfg := cfgpkg.Config{}
+	path := writeTestConfig(t, cfg)
+	ws := Open(FSStore{})
+	cluster, err := ws.CreateCluster(path, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cluster.Name != "home" || cluster.ClusterID == "" || !cluster.Current {
+		t.Fatalf("cluster=%#v", cluster)
+	}
+	reloaded, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storedCluster := reloaded.Clusters["home"]
+	if storedCluster.AuthorityPrivateKeyFile == "" || storedCluster.MembershipCapabilityFile == "" {
+		t.Fatalf("storedCluster=%#v", storedCluster)
+	}
+	ns, err := ws.CreateNamespace(path, "observability")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ns.Name != "observability" || ns.Cluster != "home" || !ns.Current {
+		t.Fatalf("namespace=%#v", ns)
+	}
+	reloaded, err = ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.CurrentNamespace != "observability" {
+		t.Fatalf("currentNamespace=%q", reloaded.CurrentNamespace)
+	}
+	if reloaded.Clusters["home"].Namespaces["observability"].MembershipCapabilityFile == "" {
+		t.Fatalf("cluster namespaces=%#v", reloaded.Clusters["home"].Namespaces)
+	}
+}
+
 func TestLoadConfigOrErrorMissing(t *testing.T) {
 	ws := Open(FSStore{})
 	_, err := ws.LoadConfigOrError(t.TempDir() + "/missing.yaml")
