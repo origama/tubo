@@ -2067,6 +2067,75 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 	}
 }
 
+func TestResolveAttachAuthorizationPublicBundleGrantFallbackProducesRuntimeMembershipFile(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "public-bundle-grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store, AutoApprove: true, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cluster.AuthorityPrivateKeyFile = ""
+	cluster.MembershipCapabilityFile = ""
+	cluster.MembershipGrant = &cfgpkg.ClusterMembershipGrant{
+		ClusterName:          "home",
+		ClusterID:            cluster.ClusterID,
+		AuthorityPublicKey:   cluster.AuthorityPublicKey,
+		Namespace:            "default",
+		Role:                 "member",
+		Permissions:          []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish},
+		GrantServiceProtocol: grantspkg.ProtocolID,
+		GrantServicePeers:    []string{grantPeer},
+		IssuedAt:             time.Now().UTC(),
+		ExpiresAt:            time.Now().UTC().Add(time.Hour),
+	}
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.MembershipCapabilityFile == "" {
+		t.Fatalf("expected runtime membership capability file, got %#v", authz)
+	}
+	if _, err := os.Stat(authz.MembershipCapabilityFile); err != nil {
+		t.Fatalf("membership capability file stat: %v", err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"].GrantServicePeer; got != grantPeer {
+		t.Fatalf("GrantServicePeer=%q want %q", got, grantPeer)
+	}
+}
+
 func TestImportServiceShareDiscoveryContextIgnoresAuthorizedKeyCommentDifferences(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {

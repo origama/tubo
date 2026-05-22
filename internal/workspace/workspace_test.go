@@ -3,6 +3,7 @@ package workspace
 import (
 	"strings"
 	"testing"
+	"time"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
 )
@@ -203,6 +204,26 @@ func TestEnsureAndCreateService(t *testing.T) {
 	}
 	if !again.AlreadyExists {
 		t.Fatalf("again=%#v", again)
+	}
+}
+
+func TestResolveMembershipCapabilityFileRequiresRuntimeEvidence(t *testing.T) {
+	cfg := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {
+		ClusterID:          "cluster-123",
+		AuthorityPublicKey: "ssh-ed25519 AAAATEST home",
+		MembershipGrant: &cfgpkg.ClusterMembershipGrant{
+			ClusterName: "home",
+			ClusterID:   "cluster-123",
+			Namespace:   "default",
+			Role:        "member",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		},
+		Namespaces: map[string]cfgpkg.Namespace{"default": {}},
+	}}}
+	path := writeTestConfig(t, cfg)
+	ws := Open(FSStore{})
+	if _, err := ws.ResolveMembershipCapabilityFile(path, cfg.Clusters["home"], "home", "default", "seed"); err == nil || !strings.Contains(err.Error(), "no membership capability file configured") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

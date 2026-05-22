@@ -213,10 +213,12 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 		return cfg, svc, "", err
 	}
 	defer overlay.Close()
-	// Resolve grant service peer from svc or cluster membership grant
-	grantPeer := svc.GrantServicePeer
-	if strings.TrimSpace(grantPeer) == "" {
+	grantPeer := strings.TrimSpace(svc.GrantServicePeer)
+	if grantPeer == "" {
 		grantPeer = clusterGrantServicePeer(cluster)
+	}
+	if grantPeer == "" {
+		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a grant service")
 	}
 	info, err := p2p.AddrInfoFromString(grantPeer)
 	if err != nil {
@@ -252,7 +254,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 	if err != nil {
 		return cfg, svc, "", err
 	}
-	shareToken, err := handleGrantClientResponse(configPath, cfg, svc, svc.GrantServicePeer, resp, servicePeerID)
+	shareToken, err := handleGrantClientResponse(configPath, cfg, svc, grantPeer, resp, servicePeerID)
 	if err != nil {
 		return cfg, svc, "", err
 	}
@@ -319,12 +321,6 @@ func verifyServiceClaimFile(path string, pub ed25519.PublicKey, clusterID, names
 }
 
 func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
-	// Check if inline membership grant authorizes this namespace
-	if g := cluster.MembershipGrant; g != nil {
-		if g.ClusterName == clusterName && g.ClusterID == cluster.ClusterID && g.Namespace == namespaceName && g.Role == "member" && !g.ExpiresAt.IsZero() && time.Now().UTC().Before(g.ExpiresAt.UTC()) {
-			return "", nil // inline grant is valid, no file needed
-		}
-	}
 	capPath := serviceMembershipCapabilityPath(configPath, clusterName, namespaceName)
 	if _, err := os.Stat(capPath); err == nil {
 		return capPath, nil

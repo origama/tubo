@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-20 23:24 UTC
+> **Last updated:** 2026-05-23 18:20 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -179,6 +179,7 @@
 | C.75 | Issue #133 — refactor `cmd/tubo/main.go` into explicit CLI/use-case modules | ✅ | Done via issue #133: extracted `internal/catalog`, `internal/processes`, `internal/connectflow`, and `internal/launcher`; reduced `cmd/tubo/main.go` to thinner CLI/config wiring; added local verification targets in `Makefile`; fixed a race surfaced by `go test -race ./...` in `internal/app/bridge`; refreshed `tests/smoke-cli-ux.sh` for cluster-aware attach/share/connect flow; and hardened `tests/e2e/run.sh all` to reset containers/workdirs between scenarios. Final validation passed with `go test ./...`, `go test -race ./...`, `go build ./...`, `./tests/smoke-compose.sh`, `./tests/smoke-cli-ux.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, `make e2e-default`, and `make e2e`. |
 | C.76 | Issue #134 — remove legacy `topology` CLI/docs surface | ✅ | Done on `0.7.0.b0`: removed `tubo topology` and `tubo init topology`, deleted topology tests from `cmd/tubo/main_test.go`, refreshed `docs/cli.md`, `docs/README.md`, `docs/OPERABILITY.md`, and `docs/COMPARISON-TUNNELING-PROJECTS.md`, revalidated with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`, then commented and closed #134. |
 | C.77 | Issue #135 — deepen local workspace state into `internal/workspace` | ✅ | Done on `0.7.0.b0`: introduced `internal/workspace` with local config/store/path ownership plus query/use/create/service-state workflows; moved overlay/cluster/namespace list+describe+use, cluster/namespace creation, service identity/materialization, membership-capability resolution, and local service create/share lookup behind the workspace boundary; added dedicated workspace tests and kept CLI UX stable via thin adapters/wrappers in `cmd/tubo`. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, `./tests/smoke-cli-ux.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
+| C.78 | Issue #136 — fix inline membership evidence handling for public-bundle attach | ⏳ | In progress on `0.7.0.b0`: add regression tests for inline membership grants on public-bundle attach, persist resolved grant-service peers correctly, and stop treating an empty membership capability path as a fully-valid runtime capability result. |
 
 ---
 

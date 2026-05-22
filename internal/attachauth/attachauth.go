@@ -127,10 +127,6 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	if claimErr != nil && !errors.Is(claimErr, os.ErrNotExist) {
 		return ResolveResult{}, fmt.Errorf("service claim for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, claimErr)
 	}
-	membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
-	if err != nil {
-		return ResolveResult{}, err
-	}
 	shareToken, err := r.deps.ArtifactStore.BuildShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
 	if err != nil {
 		return ResolveResult{}, err
@@ -140,6 +136,10 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		grantPeer = grantServicePeer(cluster)
 	}
 	if cluster.AuthorityPrivateKeyFile == "" && grantPeer == "" && claimErr == nil {
+		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		if err != nil {
+			return ResolveResult{}, err
+		}
 		result := base
 		result.Decision = DecisionReady
 		result.MembershipCapabilityFile = membershipFile
@@ -148,6 +148,10 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	}
 	if cluster.AuthorityPrivateKeyFile != "" && r.deps.AuthoritySigner != nil {
 		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
+			return ResolveResult{}, err
+		}
+		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		if err != nil {
 			return ResolveResult{}, err
 		}
 		result := base
@@ -184,14 +188,13 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 			return result, nil
 		}
 		result := ResolveResult{
-			Config:                   updatedCfg,
-			Service:                  updatedSvc,
-			ServicePeerID:            servicePeerID,
-			MembershipCapabilityFile: membershipFile,
-			ServiceClaimFile:         updatedSvc.ServiceClaimFile,
-			ServicePublishLeaseFile:  updatedSvc.ServicePublishLeaseFile,
-			ServiceShareToken:        updatedShareToken,
-			UserMessage:              grantErr.Error(),
+			Config:                  updatedCfg,
+			Service:                 updatedSvc,
+			ServicePeerID:           servicePeerID,
+			ServiceClaimFile:        updatedSvc.ServiceClaimFile,
+			ServicePublishLeaseFile: updatedSvc.ServicePublishLeaseFile,
+			ServiceShareToken:       updatedShareToken,
+			UserMessage:             grantErr.Error(),
 		}
 		if updatedShareToken == "" {
 			result.ShareRecoveryHint = shareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, updatedSvc.GrantRequestID)
@@ -210,7 +213,6 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	}
 	result := base
 	result.Decision = DecisionRetryable
-	result.MembershipCapabilityFile = membershipFile
 	result.ServiceShareToken = shareToken
 	result.UserMessage = "stored publish authorization requires refresh or mint"
 	if shareToken == "" {
@@ -226,16 +228,16 @@ func (r *resolver) Renew(_ context.Context, req RenewRequest) (ResolveResult, er
 	cfg := req.Config
 	svc := req.Service
 	cluster := cfg.Clusters[cfg.CurrentCluster]
-	membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
-	if err != nil {
-		return ResolveResult{}, err
-	}
 	grantPeer := svc.GrantServicePeer
 	if strings.TrimSpace(grantPeer) == "" {
 		grantPeer = grantServicePeer(cluster)
 	}
 	if cluster.AuthorityPrivateKeyFile != "" && r.deps.AuthoritySigner != nil {
 		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
+			return ResolveResult{}, err
+		}
+		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		if err != nil {
 			return ResolveResult{}, err
 		}
 		shareToken, err := r.deps.ArtifactStore.BuildShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
