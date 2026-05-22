@@ -103,6 +103,12 @@ func (w *Workspace) ResolveServiceContext(configPath, serviceRef, clusterName, n
 }
 
 func (w *Workspace) ResolveMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
+	// Check if inline membership grant authorizes this namespace
+	if g := cluster.MembershipGrant; g != nil {
+		if g.ClusterName == clusterName && g.ClusterID == cluster.ClusterID && g.Namespace == namespaceName && g.Role == "member" && !g.ExpiresAt.IsZero() && time.Now().UTC().Before(g.ExpiresAt.UTC()) {
+			return "", nil // inline grant is valid, no file needed
+		}
+	}
 	capPath := DerivePaths(configPath).ServiceMembershipCapability(clusterName, namespaceName)
 	if _, err := w.store.Stat(capPath); err == nil {
 		return capPath, nil
