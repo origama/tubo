@@ -8,14 +8,25 @@ COMPOSE="${COMPOSE_CMD:-docker compose} -f docker-compose.tubo-workflow.yml"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 
+BIN_DIR="$(mktemp -d "${ROOT_DIR}/.tmp-smoke-workflow-bin.XXXXXX")"
+TUBO_BIN="$BIN_DIR/tubo"
+connect_pid=""
+
 tubo() {
-  go run ./cmd/tubo "$@"
+  "$TUBO_BIN" "$@"
 }
 
 cleanup() {
+  set +e
+  if [[ -n "$connect_pid" ]]; then
+    kill "$connect_pid" >/dev/null 2>&1 || true
+    wait "$connect_pid" >/dev/null 2>&1 || true
+    connect_pid=""
+  fi
   $COMPOSE down --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$BIN_DIR"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 wait_http_ok() {
   local url="$1"
@@ -27,6 +38,14 @@ wait_http_ok() {
     sleep 1
   done
   return 1
+}
+
+assert_no_workflow_connect_leaks() {
+  if ps -ef | grep -F 'generated/tubo-workflow/tubo/client.yaml' | grep -F 'tubo connect' | grep -v grep >/dev/null 2>&1; then
+    echo "[smoke-tubo-workflow] leaked host-side tubo connect process"
+    ps -ef | grep -F 'generated/tubo-workflow/tubo/client.yaml' | grep -F 'tubo connect' | grep -v grep || true
+    return 1
+  fi
 }
 
 free_tcp_port() {
@@ -154,6 +173,9 @@ compose_build_serial() {
   fi
   COMPOSE_PARALLEL_LIMIT=1 $COMPOSE build
 }
+
+echo "[smoke-tubo-workflow] building local tubo binary"
+go build -o "$TUBO_BIN" ./cmd/tubo
 
 config_dir="generated/tubo-workflow/tubo"
 container_root="/home/nonroot/.config/tubo"
@@ -550,7 +572,6 @@ connect_log="$(mktemp)"
 connect_resp="$(mktemp)"
 tubo connect --token "$share_token" --config "${config_dir}/client.yaml" --local 127.0.0.1:${connect_port} >"$connect_log" 2>&1 &
 connect_pid=$!
-trap 'if [[ -n "${connect_pid:-}" ]]; then kill "$connect_pid" >/dev/null 2>&1 || true; fi; cleanup' EXIT
 
 for i in $(seq 1 60); do
   if curl -fsS -o "$connect_resp" -H 'Content-Type: text/plain' --data 'hello-service-share' "http://127.0.0.1:${connect_port}/v1/dummy?from=service-share" >/dev/null 2>&1; then
@@ -605,5 +626,9 @@ if ! grep -q "\"body_b64\":\"$payload_b64\"" "$resp_body"; then
   cat "$resp_body"
   exit 1
 fi
+
+cleanup
+trap - EXIT INT TERM
+assert_no_workflow_connect_leaks
 
 echo "[smoke-tubo-workflow] PASS: cluster/namespace/service workflow works and namespace isolation is preserved"
