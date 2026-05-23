@@ -23,6 +23,13 @@ cleanup() {
     wait "$connect_pid" >/dev/null 2>&1 || true
     connect_pid=""
   fi
+  pkill -f 'generated/tubo-workflow/tubo/client.yaml' >/dev/null 2>&1 || true
+  for _ in $(seq 1 40); do
+    if ! pgrep -f 'generated/tubo-workflow/tubo/client.yaml' >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.25
+  done
   $COMPOSE down --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$BIN_DIR"
 }
@@ -41,9 +48,9 @@ wait_http_ok() {
 }
 
 assert_no_workflow_connect_leaks() {
-  if ps -ef | grep -F 'generated/tubo-workflow/tubo/client.yaml' | grep -F 'tubo connect' | grep -v grep >/dev/null 2>&1; then
+  if pgrep -af 'generated/tubo-workflow/tubo/client.yaml' >/dev/null 2>&1; then
     echo "[smoke-tubo-workflow] leaked host-side tubo connect process"
-    ps -ef | grep -F 'generated/tubo-workflow/tubo/client.yaml' | grep -F 'tubo connect' | grep -v grep || true
+    pgrep -af 'generated/tubo-workflow/tubo/client.yaml' || true
     return 1
   fi
 }
