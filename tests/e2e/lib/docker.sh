@@ -3,6 +3,47 @@ set -euo pipefail
 
 source "${E2E_ROOT}/lib/common.sh"
 
+E2E_RESOURCE_LABEL_KEY="io.origama.tubo.e2e"
+E2E_RESOURCE_LABEL_VALUE="1"
+E2E_RUN_LABEL_KEY="io.origama.tubo.e2e.run_id"
+
+e2e_resource_label() {
+  printf '%s=%s' "$E2E_RESOURCE_LABEL_KEY" "$E2E_RESOURCE_LABEL_VALUE"
+}
+
+e2e_run_label() {
+  printf '%s=%s' "$E2E_RUN_LABEL_KEY" "$E2E_RUN_ID"
+}
+
+remove_docker_names() {
+  local kind="$1"
+  shift
+  local names=()
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    names+=("$name")
+  done
+  if [[ ${#names[@]} -eq 0 ]]; then
+    return
+  fi
+  case "$kind" in
+    container)
+      docker rm -f "${names[@]}" >/dev/null 2>&1 || true
+      ;;
+    network)
+      docker network rm "${names[@]}" >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
+cleanup_stale_e2e_resources() {
+  remove_docker_names container < <(docker ps -a --filter "label=$(e2e_resource_label)" --format '{{.Names}}')
+  remove_docker_names container < <(docker ps -a --format '{{.Names}}' | rg '^tubo-e2e-' || true)
+  docker rm -f bundle-server >/dev/null 2>&1 || true
+  remove_docker_names network < <(docker network ls --filter "label=$(e2e_resource_label)" --format '{{.Name}}')
+  remove_docker_names network < <(docker network ls --format '{{.Name}}' | rg '^tubo-e2e-' || true)
+}
+
 actor_container_name() {
   local actor="$1"
   printf 'tubo-e2e-%s-%s' "$E2E_RUN_ID" "$actor"
@@ -17,7 +58,10 @@ build_e2e_image() {
 }
 
 create_network() {
-  docker network create "$E2E_NETWORK_NAME" >/dev/null
+  docker network create \
+    --label "$(e2e_resource_label)" \
+    --label "$(e2e_run_label)" \
+    "$E2E_NETWORK_NAME" >/dev/null
 }
 
 remove_network() {
@@ -33,6 +77,8 @@ start_actor() {
     --name "$name"
     --hostname "$actor"
     --network "$E2E_NETWORK_NAME"
+    --label "$(e2e_resource_label)"
+    --label "$(e2e_run_label)"
     -e "TUBO_DEFAULT_PUBLIC_BUNDLE_URL=${TUBO_DEFAULT_PUBLIC_BUNDLE_URL:-}"
     -v "$(actor_home "$actor"):/work"
     -w /work

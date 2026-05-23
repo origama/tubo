@@ -18,8 +18,9 @@ if [[ -z "$scenario_arg" ]]; then
 fi
 
 if [[ "$scenario_arg" == "clean" ]]; then
+  cleanup_stale_e2e_resources
   rm -rf "$ROOT_DIR/generated/e2e"
-  log "removed generated/e2e"
+  log "removed generated/e2e and stale Docker E2E resources"
   exit 0
 fi
 
@@ -33,6 +34,8 @@ export E2E_ARTIFACTS_DIR="$E2E_WORK_DIR/artifacts"
 export E2E_IMAGE_NAME="tubo-e2e:${run_id}"
 export E2E_NETWORK_NAME="tubo-e2e-${run_id}-public"
 
+cleanup_stale_e2e_resources
+
 mkdir -p "$E2E_WORK_DIR"
 init_run_dirs
 
@@ -44,7 +47,7 @@ cleanup() {
   cleanup_containers
   remove_network
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 run_one() {
   local scenario="$1"
