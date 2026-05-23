@@ -63,6 +63,31 @@ func clusterGrantServicePeer(cluster cfgpkg.Cluster) string {
 	return ""
 }
 
+func grantServicePeersForTokens(addrs []string) []string {
+	relayed := make([]string, 0, len(addrs))
+	direct := make([]string, 0, len(addrs))
+	seen := make(map[string]struct{}, len(addrs))
+	for _, raw := range addrs {
+		addr := strings.TrimSpace(raw)
+		if addr == "" {
+			continue
+		}
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		if strings.Contains(addr, "/p2p-circuit") {
+			relayed = append(relayed, addr)
+			continue
+		}
+		direct = append(direct, addr)
+	}
+	if len(relayed) > 0 {
+		return relayed
+	}
+	return direct
+}
+
 func grantsRequestCmd(args []string) error {
 	serviceArg, flagArgs := splitGrantIDArg(args)
 	fs := flag.NewFlagSet("grants request", flag.ContinueOnError)
@@ -460,7 +485,7 @@ func grantsServeCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)
 	}
-	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL, GrantServicePeers: p2p.PeerAddrs(host), ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL, Revocations: grantspkg.NewRevocationStore(*revocationsPath)})
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL, GrantServicePeers: grantServicePeersForTokens(overlay.ReachableAddrs()), ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL, Revocations: grantspkg.NewRevocationStore(*revocationsPath)})
 	if err != nil {
 		return err
 	}
