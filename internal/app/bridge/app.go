@@ -103,13 +103,17 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if cfg.ConnectInviteToken != "" && len(cfg.ConnectGrantPeers) > 0 && cfg.ConnectRefreshLease == nil {
 		artifacts, err := redeemConnectInvite(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectInviteToken)
 		if err != nil {
-			_ = h.Close()
-			return nil, err
+			if cfg.ConnectGrant == nil {
+				_ = h.Close()
+				return nil, err
+			}
+			log.Printf("bridge share invite redemption failed; falling back to embedded legacy connect grant err=%v", err)
+		} else {
+			cfg.ConnectAccessLease = &artifacts.AccessLease
+			cfg.ConnectRefreshLease = &artifacts.RefreshLease
+			connectLease = &artifacts.AccessLease
+			log.Printf("bridge share invite redeemed service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 		}
-		cfg.ConnectAccessLease = &artifacts.AccessLease
-		cfg.ConnectRefreshLease = &artifacts.RefreshLease
-		connectLease = &artifacts.AccessLease
-		log.Printf("bridge share invite redeemed service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	if cfg.ConnectGrant != nil {
 		log.Printf("bridge legacy connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)

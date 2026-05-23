@@ -74,12 +74,11 @@ func (connectWorkflow) ParseShareToken(token string) (connectflow.ShareTokenInfo
 		IssuedAt:           payload.IssuedAt,
 		ExpiresAt:          payload.ExpiresAt,
 	}
+	grant := payload.Grant
+	info.ConnectGrant = &grant
 	if payload.GrantService.Protocol == grantspkg.ProtocolID && len(payload.GrantService.Peers) > 0 {
 		info.ConnectInviteToken = token
 		info.ConnectGrantPeers = append([]string(nil), payload.GrantService.Peers...)
-	} else {
-		grant := payload.Grant
-		info.ConnectGrant = &grant
 	}
 	return info, nil
 }

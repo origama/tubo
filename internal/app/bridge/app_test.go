@@ -79,6 +79,51 @@ func TestBridgeReportsExpiredRefreshLeaseClearly(t *testing.T) {
 	}
 }
 
+func TestBridgeFallsBackToLegacyGrantWhenInviteRedemptionPeersAreUnreachable(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-fallback-service", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	invite, err := grantspkg.BuildServiceShareArtifacts(authPriv, "home", "cluster-123", "default", "myapi", "svc-123", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := invite.Payload
+	payload.GrantService = grantspkg.GrantServiceEndpoint{
+		Protocol: grantspkg.ProtocolID,
+		Peers:    []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWFallbackGrantPeer"},
+	}
+	token, err := grantspkg.SignServiceShareToken(payload, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(context.Background(), Config{
+		Listen:             "127.0.0.1:0",
+		Seed:               "bridge-fallback-client",
+		P2PListen:          "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:        p2p.PeerAddrs(serviceHost)[0],
+		ConnectGrant:       &payload.Grant,
+		ConnectInviteToken: token,
+		ConnectGrantPeers:  append([]string(nil), payload.GrantService.Peers...),
+	})
+	if err != nil {
+		t.Fatalf("bridge.New() should fall back to embedded legacy grant, got %v", err)
+	}
+	defer app.host.Close()
+	proof, err := app.connectProof()
+	if err != nil {
+		t.Fatalf("connectProof() after fallback: %v", err)
+	}
+	if proof == nil {
+		t.Fatal("expected connect proof from embedded legacy grant fallback")
+	}
+}
+
 func bridgeHostAuthorizedKey(t *testing.T, h hostpkg.Host) string {
 	t.Helper()
 	pub := h.Peerstore().PubKey(h.ID())
