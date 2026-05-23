@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-23 20:05 UTC
+> **Last updated:** 2026-05-23 21:10 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -180,6 +180,7 @@
 | C.76 | Issue #134 — remove legacy `topology` CLI/docs surface | ✅ | Done on `0.7.0.b0`: removed `tubo topology` and `tubo init topology`, deleted topology tests from `cmd/tubo/main_test.go`, refreshed `docs/cli.md`, `docs/README.md`, `docs/OPERABILITY.md`, and `docs/COMPARISON-TUNNELING-PROJECTS.md`, revalidated with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`, then commented and closed #134. |
 | C.77 | Issue #135 — deepen local workspace state into `internal/workspace` | ✅ | Done on `0.7.0.b0`: introduced `internal/workspace` with local config/store/path ownership plus query/use/create/service-state workflows; moved overlay/cluster/namespace list+describe+use, cluster/namespace creation, service identity/materialization, membership-capability resolution, and local service create/share lookup behind the workspace boundary; added dedicated workspace tests and kept CLI UX stable via thin adapters/wrappers in `cmd/tubo`. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, `./tests/smoke-cli-ux.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.78 | Issue #136 — fix inline membership evidence handling for public-bundle attach | ✅ | Done on `0.7.0.b0`: added regression tests for public-bundle attach with inline `membership_grant`, made attach grant requests persist the resolved cluster grant-service peer fallback, and tightened attach/workspace authorization flow so runtime membership capability files are only resolved when actually needed and remain non-empty for the service runtime. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, `./tests/smoke-cli-ux.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
+| C.79 | Issue #137 — harden test cleanup against leaked connect processes and stale E2E containers | ✅ | Done on `0.7.0.b0`: `tests/smoke-compose-tubo-workflow.sh` now uses a built `tubo` binary for the background connect tunnel, performs robust PID/pattern cleanup, and asserts that no host-side workflow connect process remains; the Docker E2E harness now labels actor/network resources, sweeps stale `tubo-e2e-*` / `bundle-server` resources before runs, and makes `tests/e2e/run.sh clean` remove stale Docker resources too. Validation passed with targeted leak checks, `KEEP_WORK=1 ./tests/e2e/run.sh 001-default-cluster-default-namespace` + `./tests/e2e/run.sh clean`, `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 
 ---
 
