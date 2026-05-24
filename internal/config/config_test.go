@@ -266,6 +266,83 @@ func TestDiscoveryRuntimeWithoutClusterIdentityReturnsZeroValue(t *testing.T) {
 		t.Fatal("expected discovery runtime requirement error")
 	}
 }
+
+func TestResolveEffectiveScopePrefersExplicitOverridesAndCurrentContext(t *testing.T) {
+	cfg := Config{CurrentOverlay: "tubo-public", CurrentCluster: "home", CurrentNamespace: "default"}
+	scope, err := ResolveEffectiveScope(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.Overlay != "tubo-public" || scope.Cluster != "home" || scope.Namespace != "default" || scope.AllNamespaces {
+		t.Fatalf("scope = %#v", scope)
+	}
+	override, err := ResolveEffectiveScope(cfg, "ops", "metrics", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override.Overlay != "tubo-public" || override.Cluster != "ops" || override.Namespace != "metrics" {
+		t.Fatalf("override = %#v", override)
+	}
+	all, err := ResolveEffectiveScope(cfg, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !all.AllNamespaces || all.Namespace != "" {
+		t.Fatalf("all namespaces scope = %#v", all)
+	}
+	if _, err := ResolveEffectiveScope(Config{}, "", "metrics", false); err == nil {
+		t.Fatal("expected missing cluster error")
+	}
+}
+
+func TestIsPublicDefaultScopeUsesOverlayMetadataNotJustHomeDefaultNames(t *testing.T) {
+	cfg := Config{
+		CurrentOverlay:   "tubo-public",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays: map[string]Overlay{
+			"tubo-public": {
+				Kind:                   OverlayKindPublicBundle,
+				PublicDefaultCluster:   "home",
+				PublicDefaultNamespace: "default",
+			},
+			"manual": {
+				PublicDefaultCluster:   "home",
+				PublicDefaultNamespace: "default",
+			},
+		},
+	}
+	publicScope, err := ResolveEffectiveScope(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsPublicDefaultScope(cfg, publicScope) {
+		t.Fatalf("expected public default scope, got %#v", publicScope)
+	}
+	if !EffectiveScopePolicy(cfg, publicScope).PublicDefault {
+		t.Fatalf("expected public default policy, got %#v", EffectiveScopePolicy(cfg, publicScope))
+	}
+	customScope := Scope{Overlay: "tubo-public", Cluster: "team-origama", Namespace: "lab"}
+	if IsPublicDefaultScope(cfg, customScope) {
+		t.Fatalf("custom public-overlay scope must not be treated as public default: %#v", customScope)
+	}
+	privateScope := Scope{Overlay: "manual", Cluster: "home", Namespace: "default"}
+	if IsPublicDefaultScope(cfg, privateScope) {
+		t.Fatalf("private/manual home/default must not be treated as public default: %#v", privateScope)
+	}
+	if IsPublicDefaultScope(cfg, Scope{Overlay: "tubo-public", Cluster: "home", Namespace: "", AllNamespaces: true}) {
+		t.Fatal("all-namespaces scope must not be treated as public default")
+	}
+	legacy := Config{CurrentOverlay: "tubo-public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]Overlay{"tubo-public": {}}}
+	legacyScope, err := ResolveEffectiveScope(legacy, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsPublicDefaultScope(legacy, legacyScope) {
+		t.Fatalf("overlay without explicit public metadata must not be treated as public default: %#v", legacyScope)
+	}
+}
+
 func TestValidateRequired(t *testing.T) {
 	c := Defaults("bridge")
 	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "service_addr") {

@@ -80,9 +80,12 @@ type Bridge struct {
 }
 
 type Overlay struct {
-	Relays         []string `yaml:"relays,omitempty" json:"relays,omitempty"`
-	BootstrapPeers []string `yaml:"bootstrap_peers,omitempty" json:"bootstrap_peers,omitempty"`
-	SwarmKeyFile   string   `yaml:"swarm_key_file,omitempty" json:"swarm_key_file,omitempty"`
+	Kind                   string   `yaml:"kind,omitempty" json:"kind,omitempty"`
+	PublicDefaultCluster   string   `yaml:"public_default_cluster,omitempty" json:"public_default_cluster,omitempty"`
+	PublicDefaultNamespace string   `yaml:"public_default_namespace,omitempty" json:"public_default_namespace,omitempty"`
+	Relays                 []string `yaml:"relays,omitempty" json:"relays,omitempty"`
+	BootstrapPeers         []string `yaml:"bootstrap_peers,omitempty" json:"bootstrap_peers,omitempty"`
+	SwarmKeyFile           string   `yaml:"swarm_key_file,omitempty" json:"swarm_key_file,omitempty"`
 }
 
 type Cluster struct {
@@ -165,10 +168,71 @@ func (d *Duration) UnmarshalYAML(v *yaml.Node) error {
 	return nil
 }
 
+const OverlayKindPublicBundle = "public-bundle"
+
+type Scope struct {
+	Overlay       string
+	Cluster       string
+	Namespace     string
+	AllNamespaces bool
+}
+
+type ScopePolicy struct {
+	PublicDefault bool
+}
+
 type ScopeIssuer struct {
 	ClusterName        string
 	NamespaceName      string
 	AuthorityPublicKey string
+}
+
+func ResolveEffectiveScope(cfg Config, clusterFlag, namespaceFlag string, allNamespaces bool) (Scope, error) {
+	overlay := strings.TrimSpace(cfg.CurrentOverlay)
+	cluster := strings.TrimSpace(clusterFlag)
+	if cluster == "" {
+		cluster = strings.TrimSpace(cfg.CurrentCluster)
+	}
+	namespace := strings.TrimSpace(namespaceFlag)
+	if allNamespaces {
+		if namespace != "" {
+			return Scope{}, fmt.Errorf("--all-namespaces cannot be combined with --namespace")
+		}
+		namespace = ""
+	} else if namespace == "" {
+		namespace = strings.TrimSpace(cfg.CurrentNamespace)
+	}
+	if namespace != "" && cluster == "" {
+		return Scope{}, fmt.Errorf("namespace requires a cluster context; pass --cluster or set a current cluster")
+	}
+	return Scope{Overlay: overlay, Cluster: cluster, Namespace: namespace, AllNamespaces: allNamespaces}, nil
+}
+
+func IsPublicDefaultScope(cfg Config, scope Scope) bool {
+	overlayName := strings.TrimSpace(scope.Overlay)
+	if overlayName == "" {
+		overlayName = strings.TrimSpace(cfg.CurrentOverlay)
+	}
+	clusterName := strings.TrimSpace(scope.Cluster)
+	if clusterName == "" {
+		clusterName = strings.TrimSpace(cfg.CurrentCluster)
+	}
+	namespaceName := strings.TrimSpace(scope.Namespace)
+	if namespaceName == "" && !scope.AllNamespaces {
+		namespaceName = strings.TrimSpace(cfg.CurrentNamespace)
+	}
+	if overlayName == "" || clusterName == "" || namespaceName == "" || scope.AllNamespaces {
+		return false
+	}
+	overlay, ok := cfg.Overlays[overlayName]
+	if !ok || overlay.Kind != OverlayKindPublicBundle {
+		return false
+	}
+	return overlay.PublicDefaultCluster != "" && overlay.PublicDefaultNamespace != "" && clusterName == overlay.PublicDefaultCluster && namespaceName == overlay.PublicDefaultNamespace
+}
+
+func EffectiveScopePolicy(cfg Config, scope Scope) ScopePolicy {
+	return ScopePolicy{PublicDefault: IsPublicDefaultScope(cfg, scope)}
 }
 
 func (c Config) ScopeIssuer(clusterName, namespaceName string) (ScopeIssuer, bool) {
@@ -279,9 +343,12 @@ func cloneStrings(in []string) []string {
 
 func cloneOverlay(in Overlay) Overlay {
 	return Overlay{
-		Relays:         cloneStrings(in.Relays),
-		BootstrapPeers: cloneStrings(in.BootstrapPeers),
-		SwarmKeyFile:   in.SwarmKeyFile,
+		Kind:                   in.Kind,
+		PublicDefaultCluster:   in.PublicDefaultCluster,
+		PublicDefaultNamespace: in.PublicDefaultNamespace,
+		Relays:                 cloneStrings(in.Relays),
+		BootstrapPeers:         cloneStrings(in.BootstrapPeers),
+		SwarmKeyFile:           in.SwarmKeyFile,
 	}
 }
 

@@ -56,23 +56,11 @@ func (w *Workspace) SaveConfig(path string, cfg cfgpkg.Config) error {
 }
 
 func ResolveScope(cfg cfgpkg.Config, clusterFlag, namespaceFlag string, allNamespaces bool) (Scope, error) {
-	cluster := strings.TrimSpace(clusterFlag)
-	if cluster == "" {
-		cluster = strings.TrimSpace(cfg.CurrentCluster)
+	scope, err := cfgpkg.ResolveEffectiveScope(cfg, clusterFlag, namespaceFlag, allNamespaces)
+	if err != nil {
+		return Scope{}, err
 	}
-	namespace := strings.TrimSpace(namespaceFlag)
-	if allNamespaces {
-		if namespace != "" {
-			return Scope{}, errors.New("--all-namespaces cannot be combined with --namespace")
-		}
-		namespace = ""
-	} else if namespace == "" {
-		namespace = strings.TrimSpace(cfg.CurrentNamespace)
-	}
-	if namespace != "" && cluster == "" {
-		return Scope{}, errors.New("namespace requires a cluster context; pass --cluster or set a current cluster")
-	}
-	return Scope{Cluster: cluster, Namespace: namespace, AllNamespaces: allNamespaces}, nil
+	return Scope{Cluster: scope.Cluster, Namespace: scope.Namespace, AllNamespaces: scope.AllNamespaces}, nil
 }
 
 func (w *Workspace) ListOverlays(configPath string) ([]OverlayView, error) {
