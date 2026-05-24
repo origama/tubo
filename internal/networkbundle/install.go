@@ -51,7 +51,10 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 	namespaceName := "default"
 	cluster := cfgpkg.Cluster{
 		Namespaces: map[string]cfgpkg.Namespace{
-			namespaceName: {},
+			namespaceName: {
+				Discovery:     cfgpkg.NamespaceDiscoveryEnabled,
+				ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember,
+			},
 		},
 	}
 	if payload.PublicCluster != nil {
@@ -61,7 +64,10 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 			ClusterID:          payload.PublicCluster.ClusterID,
 			AuthorityPublicKey: payload.PublicCluster.AuthorityPublicKey,
 			Namespaces: map[string]cfgpkg.Namespace{
-				namespaceName: {},
+				namespaceName: {
+					Discovery:     cfgpkg.NamespaceDiscoveryDisabled,
+					ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly,
+				},
 			},
 			MembershipGrant: &cfgpkg.ClusterMembershipGrant{
 				ClusterName:        payload.PublicCluster.Name,

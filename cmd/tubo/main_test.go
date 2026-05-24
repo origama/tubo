@@ -798,7 +798,7 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public"} {
+	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public", "Discovery: enabled", "Connect policy: namespace_members"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe namespace output missing %q: %s", want, out)
 		}
@@ -820,6 +820,22 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	}
 	if cfg.Network.PrivateKeyFile != "/etc/p2p/swarm.key" {
 		t.Fatalf("network private_key_file changed unexpectedly: %q", cfg.Network.PrivateKeyFile)
+	}
+
+	policyCfg := cfgpkg.Config{Role: "service", CurrentOverlay: "public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}}}}, Service: cfgpkg.Service{Name: "api", Target: "http://127.0.0.1:9000"}}
+	policyPath := filepath.Join(t.TempDir(), "policy-config.yaml")
+	if err := cfgpkg.WriteFile(policyPath, policyCfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"config", "validate", "--config", policyPath}) }); err != nil {
+		t.Fatalf("config validate should accept valid namespace policy: %v", err)
+	}
+	policyCfg.Clusters["home"] = cfgpkg.Cluster{Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: "bogus"}}}
+	if err := cfgpkg.WriteFile(policyPath, policyCfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"config", "validate", "--config", policyPath}) }); err == nil || !strings.Contains(err.Error(), "clusters.home.namespaces.default.discovery") {
+		t.Fatalf("config validate should reject invalid namespace policy, got %v", err)
 	}
 
 	if _, err := capture(func() error { return run([]string{"use", "overlay/remote"}) }); err != nil {

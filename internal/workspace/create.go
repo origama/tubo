@@ -70,7 +70,10 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 		AuthorityPublicKey:       pubAuthorized,
 		AuthorityPrivateKeyFile:  privPath,
 		MembershipCapabilityFile: capPath,
-		Namespaces:               map[string]cfgpkg.Namespace{"default": {}},
+		Namespaces: map[string]cfgpkg.Namespace{"default": {
+			Discovery:     cfgpkg.NamespaceDiscoveryEnabled,
+			ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember,
+		}},
 	}
 	cfg.CurrentCluster = name
 	cfg.CurrentNamespace = "default"
@@ -127,7 +130,7 @@ func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, err
 	if err := writeJSONFile(w.store, capPath, membership); err != nil {
 		return NamespaceView{}, err
 	}
-	cluster.Namespaces[name] = cfgpkg.Namespace{MembershipCapabilityFile: capPath}
+	cluster.Namespaces[name] = cfgpkg.Namespace{MembershipCapabilityFile: capPath, Discovery: cfgpkg.NamespaceDiscoveryEnabled, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember}
 	cfg.Clusters[cfg.CurrentCluster] = cluster
 	cfg.CurrentNamespace = name
 	if err := w.SaveConfig(configPath, cfg); err != nil {

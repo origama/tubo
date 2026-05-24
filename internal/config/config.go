@@ -114,8 +114,23 @@ type ClusterMembershipGrant struct {
 	ExpiresAt            time.Time `yaml:"expires_at,omitempty" json:"expires_at,omitempty"`
 }
 
+type NamespaceDiscovery string
+
+type ConnectPolicy string
+
+const (
+	NamespaceDiscoveryEnabled  NamespaceDiscovery = "enabled"
+	NamespaceDiscoveryDisabled NamespaceDiscovery = "disabled"
+
+	ConnectPolicyInviteOnly      ConnectPolicy = "invite_only"
+	ConnectPolicyNamespaceMember ConnectPolicy = "namespace_members"
+	ConnectPolicyPublic          ConnectPolicy = "public"
+)
+
 type Namespace struct {
-	MembershipCapabilityFile string                      `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
+	MembershipCapabilityFile string             `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
+	Discovery                NamespaceDiscovery `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	ConnectPolicy            ConnectPolicy      `yaml:"connect_policy,omitempty" json:"connect_policy,omitempty"`
 	Services                 map[string]NamespaceService `yaml:"services,omitempty" json:"services,omitempty"`
 }
 
@@ -179,6 +194,8 @@ type Scope struct {
 
 type ScopePolicy struct {
 	PublicDefault bool
+	Discovery     NamespaceDiscovery
+	ConnectPolicy ConnectPolicy
 }
 
 type ScopeIssuer struct {
@@ -232,7 +249,36 @@ func IsPublicDefaultScope(cfg Config, scope Scope) bool {
 }
 
 func EffectiveScopePolicy(cfg Config, scope Scope) ScopePolicy {
-	return ScopePolicy{PublicDefault: IsPublicDefaultScope(cfg, scope)}
+	policy := ScopePolicy{PublicDefault: IsPublicDefaultScope(cfg, scope)}
+	if policy.PublicDefault {
+		policy.Discovery = NamespaceDiscoveryDisabled
+		policy.ConnectPolicy = ConnectPolicyInviteOnly
+		return policy
+	}
+	if scope.AllNamespaces {
+		return policy
+	}
+	clusterName := strings.TrimSpace(scope.Cluster)
+	if clusterName == "" {
+		clusterName = strings.TrimSpace(cfg.CurrentCluster)
+	}
+	namespaceName := strings.TrimSpace(scope.Namespace)
+	if namespaceName == "" {
+		namespaceName = strings.TrimSpace(cfg.CurrentNamespace)
+	}
+	if cluster, ok := cfg.Clusters[clusterName]; ok {
+		if namespace, ok := cluster.Namespaces[namespaceName]; ok {
+			policy.Discovery = namespace.Discovery
+			policy.ConnectPolicy = namespace.ConnectPolicy
+		}
+	}
+	if policy.Discovery == "" {
+		policy.Discovery = NamespaceDiscoveryEnabled
+	}
+	if policy.ConnectPolicy == "" {
+		policy.ConnectPolicy = ConnectPolicyNamespaceMember
+	}
+	return policy
 }
 
 func (c Config) ScopeIssuer(clusterName, namespaceName string) (ScopeIssuer, bool) {
@@ -387,7 +433,7 @@ func cloneCluster(in Cluster) Cluster {
 }
 
 func cloneNamespace(in Namespace) Namespace {
-	out := Namespace{MembershipCapabilityFile: in.MembershipCapabilityFile}
+	out := Namespace{MembershipCapabilityFile: in.MembershipCapabilityFile, Discovery: in.Discovery, ConnectPolicy: in.ConnectPolicy}
 	if len(in.Services) > 0 {
 		out.Services = make(map[string]NamespaceService, len(in.Services))
 		for k, v := range in.Services {
@@ -667,6 +713,21 @@ func Validate(c Config) error {
 	if c.Node.P2PListen != "" {
 		if _, err := multiaddr.NewMultiaddr(c.Node.P2PListen); err != nil {
 			return fmt.Errorf("node.p2p_listen: %w", err)
+		}
+	}
+	for overlayName, overlay := range c.Overlays {
+		if overlay.Kind != "" && overlay.Kind != OverlayKindPublicBundle {
+			return fmt.Errorf("overlays.%s.kind: unsupported value %q", overlayName, overlay.Kind)
+		}
+	}
+	for clusterName, cluster := range c.Clusters {
+		for namespaceName, namespace := range cluster.Namespaces {
+			if namespace.Discovery != "" && namespace.Discovery != NamespaceDiscoveryEnabled && namespace.Discovery != NamespaceDiscoveryDisabled {
+				return fmt.Errorf("clusters.%s.namespaces.%s.discovery: unsupported value %q", clusterName, namespaceName, namespace.Discovery)
+			}
+			if namespace.ConnectPolicy != "" && namespace.ConnectPolicy != ConnectPolicyInviteOnly && namespace.ConnectPolicy != ConnectPolicyNamespaceMember && namespace.ConnectPolicy != ConnectPolicyPublic {
+				return fmt.Errorf("clusters.%s.namespaces.%s.connect_policy: unsupported value %q", clusterName, namespaceName, namespace.ConnectPolicy)
+			}
 		}
 	}
 	for _, a := range append(c.Network.BootstrapPeers, c.Network.RelayPeers...) {

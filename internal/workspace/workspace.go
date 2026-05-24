@@ -198,7 +198,12 @@ func (w *Workspace) DescribeNamespace(configPath, name string) (NamespaceDescrip
 	if _, ok := cluster.Namespaces[name]; !ok {
 		return NamespaceDescription{}, fmt.Errorf("namespace %q not found in cluster %q", name, cfg.CurrentCluster)
 	}
-	return NamespaceDescription{Name: name, Cluster: cfg.CurrentCluster, CurrentCluster: true, CurrentNamespace: name == cfg.CurrentNamespace, CurrentOverlay: cfg.CurrentOverlay}, nil
+	scope, err := cfgpkg.ResolveEffectiveScope(cfg, cfg.CurrentCluster, name, false)
+	if err != nil {
+		return NamespaceDescription{}, err
+	}
+	policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
+	return NamespaceDescription{Name: name, Cluster: cfg.CurrentCluster, CurrentCluster: true, CurrentNamespace: name == cfg.CurrentNamespace, CurrentOverlay: cfg.CurrentOverlay, Discovery: policy.Discovery, ConnectPolicy: policy.ConnectPolicy, PublicDefault: policy.PublicDefault}, nil
 }
 
 func (w *Workspace) Use(configPath string, ref Ref) (cfgpkg.Config, error) {

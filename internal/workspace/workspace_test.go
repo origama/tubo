@@ -62,8 +62,8 @@ func TestListDescribeAndUseLocalResources(t *testing.T) {
 				AuthorityPublicKey: "ssh-ed25519 AAAATEST home",
 				Capabilities:       []string{"list", "publish"},
 				Namespaces: map[string]cfgpkg.Namespace{
-					"default":       {},
-					"observability": {},
+					"default":       {Discovery: cfgpkg.NamespaceDiscoveryEnabled, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember},
+					"observability": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyPublic},
 				},
 			},
 		},
@@ -110,7 +110,7 @@ func TestListDescribeAndUseLocalResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !namespaceDesc.CurrentCluster || !namespaceDesc.CurrentNamespace || namespaceDesc.CurrentOverlay != "public" {
+	if !namespaceDesc.CurrentCluster || !namespaceDesc.CurrentNamespace || namespaceDesc.CurrentOverlay != "public" || namespaceDesc.Discovery != cfgpkg.NamespaceDiscoveryEnabled || namespaceDesc.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember || namespaceDesc.PublicDefault {
 		t.Fatalf("namespaceDesc=%#v", namespaceDesc)
 	}
 
@@ -149,6 +149,9 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if storedCluster.AuthorityPrivateKeyFile == "" || storedCluster.MembershipCapabilityFile == "" {
 		t.Fatalf("storedCluster=%#v", storedCluster)
 	}
+	if ns := storedCluster.Namespaces["default"]; ns.Discovery != cfgpkg.NamespaceDiscoveryEnabled || ns.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember {
+		t.Fatalf("default namespace policy=%#v", ns)
+	}
 	ns, err := ws.CreateNamespace(path, "observability")
 	if err != nil {
 		t.Fatal(err)
@@ -163,8 +166,12 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if reloaded.CurrentNamespace != "observability" {
 		t.Fatalf("currentNamespace=%q", reloaded.CurrentNamespace)
 	}
-	if reloaded.Clusters["home"].Namespaces["observability"].MembershipCapabilityFile == "" {
+	storedNamespace := reloaded.Clusters["home"].Namespaces["observability"]
+	if storedNamespace.MembershipCapabilityFile == "" {
 		t.Fatalf("cluster namespaces=%#v", reloaded.Clusters["home"].Namespaces)
+	}
+	if storedNamespace.Discovery != cfgpkg.NamespaceDiscoveryEnabled || storedNamespace.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember {
+		t.Fatalf("stored namespace policy=%#v", storedNamespace)
 	}
 }
 

@@ -64,6 +64,9 @@ type NamespaceDescription struct {
 	CurrentCluster   bool
 	CurrentNamespace bool
 	CurrentOverlay   string
+	Discovery        cfgpkg.NamespaceDiscovery
+	ConnectPolicy    cfgpkg.ConnectPolicy
+	PublicDefault    bool
 }
 
 type NamespaceList struct {

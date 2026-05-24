@@ -311,6 +311,9 @@ func TestIsPublicDefaultScopeUsesOverlayMetadataNotJustHomeDefaultNames(t *testi
 				PublicDefaultNamespace: "default",
 			},
 		},
+		Clusters: map[string]Cluster{
+			"home": {Namespaces: map[string]Namespace{"default": {}}},
+		},
 	}
 	publicScope, err := ResolveEffectiveScope(cfg, "", "", false)
 	if err != nil {
@@ -319,8 +322,9 @@ func TestIsPublicDefaultScopeUsesOverlayMetadataNotJustHomeDefaultNames(t *testi
 	if !IsPublicDefaultScope(cfg, publicScope) {
 		t.Fatalf("expected public default scope, got %#v", publicScope)
 	}
-	if !EffectiveScopePolicy(cfg, publicScope).PublicDefault {
-		t.Fatalf("expected public default policy, got %#v", EffectiveScopePolicy(cfg, publicScope))
+	policy := EffectiveScopePolicy(cfg, publicScope)
+	if !policy.PublicDefault || policy.Discovery != NamespaceDiscoveryDisabled || policy.ConnectPolicy != ConnectPolicyInviteOnly {
+		t.Fatalf("expected invite-only public default policy, got %#v", policy)
 	}
 	customScope := Scope{Overlay: "tubo-public", Cluster: "team-origama", Namespace: "lab"}
 	if IsPublicDefaultScope(cfg, customScope) {
@@ -333,13 +337,56 @@ func TestIsPublicDefaultScopeUsesOverlayMetadataNotJustHomeDefaultNames(t *testi
 	if IsPublicDefaultScope(cfg, Scope{Overlay: "tubo-public", Cluster: "home", Namespace: "", AllNamespaces: true}) {
 		t.Fatal("all-namespaces scope must not be treated as public default")
 	}
-	legacy := Config{CurrentOverlay: "tubo-public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]Overlay{"tubo-public": {}}}
+	legacy := Config{CurrentOverlay: "tubo-public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]Overlay{"tubo-public": {}}, Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}}}
 	legacyScope, err := ResolveEffectiveScope(legacy, "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if IsPublicDefaultScope(legacy, legacyScope) {
 		t.Fatalf("overlay without explicit public metadata must not be treated as public default: %#v", legacyScope)
+	}
+}
+
+func TestEffectiveScopePolicyUsesNamespaceDefaultsOutsidePublicDefault(t *testing.T) {
+	cfg := Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays:         map[string]Overlay{"manual": {}},
+		Clusters: map[string]Cluster{
+			"home": {Namespaces: map[string]Namespace{
+				"default": {},
+				"lab":     {Discovery: NamespaceDiscoveryDisabled, ConnectPolicy: ConnectPolicyPublic},
+			}},
+		},
+	}
+	defaultScope, err := ResolveEffectiveScope(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := EffectiveScopePolicy(cfg, defaultScope)
+	if policy.PublicDefault || policy.Discovery != NamespaceDiscoveryEnabled || policy.ConnectPolicy != ConnectPolicyNamespaceMember {
+		t.Fatalf("unexpected default custom policy: %#v", policy)
+	}
+	labScope, err := ResolveEffectiveScope(cfg, "home", "lab", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy = EffectiveScopePolicy(cfg, labScope)
+	if policy.PublicDefault || policy.Discovery != NamespaceDiscoveryDisabled || policy.ConnectPolicy != ConnectPolicyPublic {
+		t.Fatalf("unexpected explicit namespace policy: %#v", policy)
+	}
+}
+
+func TestValidateRejectsUnknownNamespacePolicies(t *testing.T) {
+	cfg := Defaults("service")
+	cfg.Clusters = map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {Discovery: "bogus"}}}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "clusters.home.namespaces.default.discovery") {
+		t.Fatalf("expected discovery validation error, got %v", err)
+	}
+	cfg.Clusters["home"] = Cluster{Namespaces: map[string]Namespace{"default": {ConnectPolicy: "bogus"}}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "clusters.home.namespaces.default.connect_policy") {
+		t.Fatalf("expected connect_policy validation error, got %v", err)
 	}
 }
 

@@ -135,6 +135,9 @@ func printNamespaceDescription(desc workspace.NamespaceDescription) {
 	fmt.Printf("Current cluster: %t\n", desc.CurrentCluster)
 	fmt.Printf("Current namespace: %t\n", desc.CurrentNamespace)
 	fmt.Printf("Current overlay: %s\n", desc.CurrentOverlay)
+	fmt.Printf("Discovery: %s\n", desc.Discovery)
+	fmt.Printf("Connect policy: %s\n", desc.ConnectPolicy)
+	fmt.Printf("Public default: %t\n", desc.PublicDefault)
 	fmt.Println("Metadata:")
 	fmt.Println("  - namespace is defined locally in the current cluster")
 }

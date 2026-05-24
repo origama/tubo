@@ -50,6 +50,9 @@ func TestInstallPublicBundleWritesPublicClusterMetadata(t *testing.T) {
 	if cluster.MembershipGrant == nil || len(cluster.MembershipGrant.GrantServicePeers) != len(payload.PublicCluster.GrantServicePeers) {
 		t.Fatalf("missing membership grant metadata: %#v", cluster.MembershipGrant)
 	}
+	if ns := cluster.Namespaces[payload.PublicCluster.DefaultNamespace]; ns.Discovery != cfgpkg.NamespaceDiscoveryDisabled || ns.ConnectPolicy != cfgpkg.ConnectPolicyInviteOnly {
+		t.Fatalf("unexpected public default namespace policy: %#v", ns)
+	}
 	if cfg.Network.PrivateKeyFile != filepath.Join(dir, "swarm.key") || cfg.Network.PrivateKeyB64 != "" {
 		t.Fatalf("unexpected network key config: %#v", cfg.Network)
 	}
