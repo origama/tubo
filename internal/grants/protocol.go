@@ -44,6 +44,7 @@ type Message struct {
 	ServicePublicKey      string                           `json:"service_public_key,omitempty"`
 	ServiceOwnerSignature []byte                           `json:"service_owner_signature,omitempty"`
 	ServicePeerID         string                           `json:"service_peer_id,omitempty"`
+	ServiceAddresses      []string                         `json:"service_addresses,omitempty"`
 	PublisherInstanceKey  string                           `json:"publisher_instance_public_key,omitempty"`
 	RequestNonce          string                           `json:"request_nonce,omitempty"`
 	RequestedPermissions  []string                         `json:"requested_permissions,omitempty"`

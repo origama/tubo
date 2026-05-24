@@ -235,7 +235,8 @@ func TestBuildShareInviteArtifactsWithGrantServiceIncludesMetadata(t *testing.T)
 		t.Fatal(err)
 	}
 	grantPeers := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWGrant"}
-	invite, err := BuildShareInviteArtifactsFromLeaseWithGrantService(authorityPriv, "home", leaseArtifacts.Lease, "myapi", time.Hour, grantPeers)
+	serviceAddrs := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWService"}
+	invite, err := BuildShareInviteArtifactsFromLeaseWithEndpoints(authorityPriv, "home", leaseArtifacts.Lease, "myapi", time.Hour, grantPeers, "12D3KooWService", serviceAddrs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,6 +255,28 @@ func TestBuildShareInviteArtifactsWithGrantServiceIncludesMetadata(t *testing.T)
 	peers, ok := grantService["peers"].([]any)
 	if !ok || len(peers) != 1 || peers[0] != grantPeers[0] {
 		t.Fatalf("grant_service peers = %#v, want %#v", grantService["peers"], grantPeers)
+	}
+	endpointValue, ok := raw["service_endpoint"]
+	if !ok {
+		t.Fatal("expected service_endpoint metadata to be present")
+	}
+	endpoint, ok := endpointValue.(map[string]any)
+	if !ok {
+		t.Fatalf("service_endpoint payload has unexpected type %T", endpointValue)
+	}
+	if endpoint["peer_id"] != "12D3KooWService" {
+		t.Fatalf("service_endpoint peer_id = %#v", endpoint["peer_id"])
+	}
+	addresses, ok := endpoint["addresses"].([]any)
+	if !ok || len(addresses) != 1 || addresses[0] != serviceAddrs[0] {
+		t.Fatalf("service_endpoint addresses = %#v, want %#v", endpoint["addresses"], serviceAddrs)
+	}
+	parsed, err := ParseAndVerifyServiceShareToken(invite.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ServiceEndpoint.PeerID != "12D3KooWService" || len(parsed.ServiceEndpoint.Addresses) != 1 || parsed.ServiceEndpoint.Addresses[0] != serviceAddrs[0] {
+		t.Fatalf("parsed service endpoint = %#v", parsed.ServiceEndpoint)
 	}
 }
 

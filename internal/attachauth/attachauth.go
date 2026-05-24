@@ -102,7 +102,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		if err != nil {
 			return ResolveResult{}, err
 		}
-		shareToken, err := r.deps.ArtifactStore.BuildShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+		shareToken, err := r.deps.ArtifactStore.BuildShareToken(cfg, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
 		if err != nil {
 			return ResolveResult{}, err
 		}
@@ -127,7 +127,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	if claimErr != nil && !errors.Is(claimErr, os.ErrNotExist) {
 		return ResolveResult{}, fmt.Errorf("service claim for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, claimErr)
 	}
-	shareToken, err := r.deps.ArtifactStore.BuildShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+	shareToken, err := r.deps.ArtifactStore.BuildShareToken(cfg, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
 	if err != nil {
 		return ResolveResult{}, err
 	}
@@ -240,7 +240,7 @@ func (r *resolver) Renew(_ context.Context, req RenewRequest) (ResolveResult, er
 		if err != nil {
 			return ResolveResult{}, err
 		}
-		shareToken, err := r.deps.ArtifactStore.BuildShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+		shareToken, err := r.deps.ArtifactStore.BuildShareToken(cfg, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
 		if err != nil {
 			return ResolveResult{}, err
 		}

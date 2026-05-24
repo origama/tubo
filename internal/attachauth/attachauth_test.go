@@ -68,7 +68,7 @@ func (f fakeArtifactStore) ResolveMembershipCapabilityFile(string, cfgpkg.Cluste
 	return f.membershipFile, f.membershipErr
 }
 
-func (f fakeArtifactStore) BuildShareToken(cfgpkg.Cluster, string, string, string, cfgpkg.NamespaceService) (string, error) {
+func (f fakeArtifactStore) BuildShareToken(cfgpkg.Config, cfgpkg.Cluster, string, string, string, cfgpkg.NamespaceService) (string, error) {
 	return f.shareToken, f.shareErr
 }
 

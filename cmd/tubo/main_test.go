@@ -1852,6 +1852,21 @@ func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
 	}
 }
 
+func TestRequireShareTokenEndpointForPublicDefaultRejectsMissingEndpoint(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildServiceShareArtifacts(priv, "home", "cluster-public-2026", "default", "myapi", "service-123", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{joinDefaultNetworkName: {Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}}}}}
+	if err := requireShareTokenEndpointForPublicDefault(cfg, artifacts.Token); err == nil || !strings.Contains(err.Error(), "remote-dialable service endpoint") {
+		t.Fatalf("expected missing endpoint error, got %v", err)
+	}
+}
+
 func TestPrintAttachShareHintShowsRecoveryHint(t *testing.T) {
 	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Service: cfgpkg.Service{Name: "myapi"}}
 	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, PublishLeaseReused: true, ShareRecoveryHint: "tubo grants request service/myapi --poll --peer /ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant --cluster home --namespace default (request gr_reprint)"}
@@ -2088,6 +2103,11 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 		t.Fatal(err)
 	}
 	cluster := cfg.Clusters["home"]
+	relayPeerID, err := p2p.PeerIDFromSeed("relay-endpoint-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeerID.String()}
 	authorityPriv := mustClusterAuthorityKey(t, configPath)
 	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-route-auto-server")
 	if err != nil {
@@ -2122,6 +2142,9 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 	}
 	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" {
 		t.Fatalf("unexpected token payload: %#v", payload)
+	}
+	if payload.ServiceEndpoint.PeerID != authz.ServicePeerID || len(payload.ServiceEndpoint.Addresses) != 1 || !strings.Contains(payload.ServiceEndpoint.Addresses[0], "/p2p-circuit/") || !strings.Contains(payload.ServiceEndpoint.Addresses[0], relayPeerID.String()) {
+		t.Fatalf("expected relay-aware service endpoint in token, got %#v", payload.ServiceEndpoint)
 	}
 	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" || authz.ServicePublishLeaseFile == "" {
 		t.Fatalf("expected approved authz to save claim, publish lease, and membership: %#v", authz)

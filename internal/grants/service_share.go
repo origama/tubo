@@ -34,6 +34,11 @@ type GrantServiceEndpoint struct {
 	Peers    []string `json:"peers,omitempty"`
 }
 
+type ServiceEndpoint struct {
+	PeerID    string   `json:"peer_id,omitempty"`
+	Addresses []string `json:"addresses,omitempty"`
+}
+
 type ServiceSharePayload struct {
 	Version            string                       `json:"version"`
 	Kind               string                       `json:"kind"`
@@ -49,6 +54,7 @@ type ServiceSharePayload struct {
 	TargetServiceID    string                       `json:"target_service_id,omitempty"`
 	Grant              capability.ConnectCapability `json:"grant"` // legacy bearer fallback for old tokens/bridges
 	GrantService       GrantServiceEndpoint         `json:"grant_service,omitempty"`
+	ServiceEndpoint    ServiceEndpoint              `json:"service_endpoint,omitempty"`
 	AccessEpoch        int64                        `json:"access_epoch,omitempty"`
 	PublishEpoch       int64                        `json:"publish_epoch,omitempty"`
 	IssuedAt           time.Time                    `json:"issued_at"`
@@ -61,14 +67,16 @@ func (p ServiceSharePayload) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.GrantService.Protocol != "" || len(p.GrantService.Peers) > 0 {
-		return b, nil
-	}
 	var payload map[string]any
 	if err := json.Unmarshal(b, &payload); err != nil {
 		return nil, err
 	}
-	delete(payload, "grant_service")
+	if p.GrantService.Protocol == "" && len(p.GrantService.Peers) == 0 {
+		delete(payload, "grant_service")
+	}
+	if p.ServiceEndpoint.PeerID == "" && len(p.ServiceEndpoint.Addresses) == 0 {
+		delete(payload, "service_endpoint")
+	}
 	return json.Marshal(payload)
 }
 
@@ -137,12 +145,19 @@ func BuildShareInviteArtifactsFromLease(priv ed25519.PrivateKey, clusterName str
 }
 
 func BuildShareInviteArtifactsFromLeaseWithGrantService(priv ed25519.PrivateKey, clusterName string, lease PublishLease, displayName string, shareTTL time.Duration, grantPeers []string) (ServiceShareArtifacts, error) {
+	return BuildShareInviteArtifactsFromLeaseWithEndpoints(priv, clusterName, lease, displayName, shareTTL, grantPeers, "", nil)
+}
+
+func BuildShareInviteArtifactsFromLeaseWithEndpoints(priv ed25519.PrivateKey, clusterName string, lease PublishLease, displayName string, shareTTL time.Duration, grantPeers []string, servicePeerID string, serviceAddresses []string) (ServiceShareArtifacts, error) {
 	payload, err := buildShareInvitePayloadFromLease(priv, clusterName, lease, displayName, shareTTL)
 	if err != nil {
 		return ServiceShareArtifacts{}, err
 	}
 	if len(grantPeers) > 0 {
 		payload.GrantService = GrantServiceEndpoint{Protocol: ProtocolID, Peers: append([]string(nil), grantPeers...)}
+	}
+	if strings.TrimSpace(servicePeerID) != "" && len(serviceAddresses) > 0 {
+		payload.ServiceEndpoint = ServiceEndpoint{PeerID: strings.TrimSpace(servicePeerID), Addresses: append([]string(nil), serviceAddresses...)}
 	}
 	token, err := SignServiceShareToken(payload, priv)
 	if err != nil {
@@ -243,6 +258,11 @@ func ParseAndVerifyServiceShareToken(token string) (ServiceSharePayload, error) 
 	if payload.Grant.ClusterID != payload.ClusterID || payload.Grant.NamespaceID != payload.NamespaceID || payload.Grant.ServiceID != payload.TargetServiceID {
 		return ServiceSharePayload{}, errors.New("service share grant scope mismatch")
 	}
+	if payload.ServiceEndpoint.PeerID != "" || len(payload.ServiceEndpoint.Addresses) > 0 {
+		if strings.TrimSpace(payload.ServiceEndpoint.PeerID) == "" || len(payload.ServiceEndpoint.Addresses) == 0 {
+			return ServiceSharePayload{}, errors.New("service share service endpoint is incomplete")
+		}
+	}
 	return payload, nil
 }
 
@@ -254,10 +274,10 @@ type ApprovalArtifacts struct {
 }
 
 func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID string, claimTTL, shareTTL time.Duration, requestedCapabilities []string, servicePublicKey, requestNonce string, ownerSignature []byte) (ApprovalArtifacts, error) {
-	return BuildApprovalArtifactsWithGrantService(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID, claimTTL, shareTTL, requestedCapabilities, servicePublicKey, requestNonce, ownerSignature, nil)
+	return BuildApprovalArtifactsWithGrantService(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID, claimTTL, shareTTL, requestedCapabilities, servicePublicKey, requestNonce, ownerSignature, nil, nil)
 }
 
-func BuildApprovalArtifactsWithGrantService(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID string, claimTTL, shareTTL time.Duration, requestedCapabilities []string, servicePublicKey, requestNonce string, ownerSignature []byte, grantPeers []string) (ApprovalArtifacts, error) {
+func BuildApprovalArtifactsWithGrantService(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID string, claimTTL, shareTTL time.Duration, requestedCapabilities []string, servicePublicKey, requestNonce string, ownerSignature []byte, grantPeers []string, serviceAddresses []string) (ApprovalArtifacts, error) {
 	if claimTTL <= 0 {
 		claimTTL = ServiceShareDefaultTTL
 	}
@@ -300,7 +320,7 @@ func BuildApprovalArtifactsWithGrantService(priv ed25519.PrivateKey, clusterName
 	if err != nil {
 		return ApprovalArtifacts{}, err
 	}
-	shareArtifacts, err := BuildShareInviteArtifactsFromLeaseWithGrantService(priv, clusterName, leaseArtifacts.Lease, serviceName, shareTTL, grantPeers)
+	shareArtifacts, err := BuildShareInviteArtifactsFromLeaseWithEndpoints(priv, clusterName, leaseArtifacts.Lease, serviceName, shareTTL, grantPeers, servicePeerID, serviceAddresses)
 	if err != nil {
 		shareArtifacts, err = BuildServiceShareArtifacts(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, shareTTL)
 		if err != nil {

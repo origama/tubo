@@ -160,7 +160,7 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if s.cfg.GrantServicePeersProvider != nil {
 		grantServicePeers = append([]string(nil), s.cfg.GrantServicePeersProvider()...)
 	}
-	artifacts, err := BuildApprovalArtifactsWithGrantService(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature, grantServicePeers)
+	artifacts, err := BuildApprovalArtifactsWithGrantService(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature, grantServicePeers, msg.ServiceAddresses)
 	if err == nil && s.cfg.Revocations != nil {
 		artifacts, err = s.applyRevocationEpochsToApproval(artifacts, req.ServiceID)
 	}

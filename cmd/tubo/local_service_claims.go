@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	attachauth "github.com/origama/tubo/internal/attachauth"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
@@ -246,6 +247,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 			ServicePublicKey:      leaseReq.ServicePublicKey,
 			ServiceOwnerSignature: leaseReq.ServiceOwnerSignature,
 			ServicePeerID:         servicePeerID,
+			ServiceAddresses:      serviceEndpointAddrsForTokens(cfg, servicePeerID),
 			RequestNonce:          leaseReq.Nonce,
 			RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
 			RequestedTTLSeconds:   int64(attachPublishLeaseTTL().Seconds()),
@@ -296,7 +298,7 @@ func renewAttachPublishAuthorization(configPath string, cfg cfgpkg.Config, svc c
 		if err := mintLocalServicePublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
 			return cfg, svc, "", err
 		}
-		shareToken, err := buildAttachServiceShareToken(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+		shareToken, err := buildAttachServiceShareToken(cfg, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
 		if err != nil {
 			return cfg, svc, "", err
 		}
@@ -333,7 +335,33 @@ func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Clu
 	return namespaceMembershipCapabilityFile(cluster, namespaceName)
 }
 
-func buildAttachServiceShareToken(cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) (string, error) {
+func serviceEndpointAddrsForTokens(cfg cfgpkg.Config, servicePeerID string) []string {
+	decodedPeerID, err := peer.Decode(strings.TrimSpace(servicePeerID))
+	if err != nil {
+		return nil
+	}
+	if len(cfg.Network.RelayPeers) > 0 {
+		return grantServicePeersForTokens(p2p.MergeRelayCircuitAddrs(nil, p2p.ParseAddrInfos(cfg.Network.RelayPeers), decodedPeerID))
+	}
+	return nil
+}
+
+func requireShareTokenEndpointForPublicDefault(cfg cfgpkg.Config, token string) error {
+	scope, err := cfgpkg.ResolveEffectiveScope(cfg, "", "", false)
+	if err != nil || !cfgpkg.IsPublicDefaultScope(cfg, scope) {
+		return err
+	}
+	payload, err := parseAndVerifyServiceShareToken(token)
+	if err != nil {
+		return err
+	}
+	if payload.ServiceEndpoint.PeerID == "" || len(payload.ServiceEndpoint.Addresses) == 0 {
+		return errors.New("share invite is missing a remote-dialable service endpoint; wait for relay readiness and retry attach")
+	}
+	return nil
+}
+
+func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) (string, error) {
 	if cluster.AuthorityPrivateKeyFile == "" {
 		return "", nil
 	}
@@ -348,12 +376,24 @@ func buildAttachServiceShareToken(cluster cfgpkg.Cluster, clusterName, namespace
 	if cluster.AuthorityPublicKey != pubAuthorized {
 		return "", fmt.Errorf("cluster %q authority public key mismatch", clusterName)
 	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		return "", err
+	}
+	serviceEndpointAddrs := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
 	if svc.ServicePublishLeaseFile != "" {
 		if leaseBytes, err := os.ReadFile(svc.ServicePublishLeaseFile); err == nil {
 			var lease grantspkg.PublishLease
 			if err := json.Unmarshal(leaseBytes, &lease); err == nil {
-				if artifacts, err := grantspkg.BuildShareInviteArtifactsFromLease(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL); err == nil {
-					return finalizeAuthorityServiceShareToken(artifacts.Token, privKey, svc.ServiceID)
+				if artifacts, err := grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL, nil, servicePeerID.String(), serviceEndpointAddrs); err == nil {
+					finalToken, err := finalizeAuthorityServiceShareToken(artifacts.Token, privKey, svc.ServiceID)
+					if err != nil {
+						return "", err
+					}
+					if err := requireShareTokenEndpointForPublicDefault(cfg, finalToken); err != nil {
+						return "", err
+					}
+					return finalToken, nil
 				}
 			}
 		}

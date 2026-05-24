@@ -51,8 +51,8 @@ func (attachAuthArtifactStore) ResolveMembershipCapabilityFile(configPath string
 	return resolveAttachMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
 }
 
-func (attachAuthArtifactStore) BuildShareToken(cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) (string, error) {
-	return buildAttachServiceShareToken(cluster, clusterName, namespaceName, serviceName, svc)
+func (attachAuthArtifactStore) BuildShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) (string, error) {
+	return buildAttachServiceShareToken(cfg, cluster, clusterName, namespaceName, serviceName, svc)
 }
 
 func (attachAuthArtifactStore) ReadPublishLease(path string) (grantspkg.PublishLease, error) {

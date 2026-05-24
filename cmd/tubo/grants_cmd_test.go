@@ -3,6 +3,9 @@ package main
 import (
 	"reflect"
 	"testing"
+
+	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/p2p"
 )
 
 func TestGrantServicePeersForTokensPrefersRelayCircuitAddresses(t *testing.T) {
@@ -49,5 +52,22 @@ func TestGrantServicePeersForTokensDropsLocalOnlyCandidates(t *testing.T) {
 	got := grantServicePeersForTokens(addrs)
 	if len(got) != 0 {
 		t.Fatalf("grantServicePeersForTokens() = %#v, want empty", got)
+	}
+}
+
+func TestServiceEndpointAddrsForTokensPrefersRelayCircuitAddrs(t *testing.T) {
+	servicePeerID, err := p2p.PeerIDFromSeed("service-endpoint-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayPeerID, err := p2p.PeerIDFromSeed("relay-endpoint-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{Network: cfgpkg.Network{RelayPeers: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeerID.String()}}}
+	got := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
+	want := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeerID.String() + "/p2p-circuit/p2p/" + servicePeerID.String()}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("serviceEndpointAddrsForTokens() = %#v, want %#v", got, want)
 	}
 }
