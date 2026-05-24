@@ -65,9 +65,18 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		}
 		return runner.Start(ctx)
 	case "service":
-		runtime, err := cfg.RequireDiscoveryRuntime()
+		scope, err := cfgpkg.ResolveEffectiveScope(cfg, "", "", false)
 		if err != nil {
 			return err
+		}
+		policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
+		discoveryEnabled := policy.Discovery != cfgpkg.NamespaceDiscoveryDisabled
+		runtime := cfgpkg.DiscoveryRuntime{Mode: cfgpkg.DiscoveryModeNamespaceV2, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace}
+		if discoveryEnabled {
+			runtime, err = cfg.RequireDiscoveryRuntime()
+			if err != nil {
+				return err
+			}
 		}
 		authz, err := deps.ResolveAttachAuthorization(configPath, cfg)
 		if err != nil {
@@ -98,6 +107,13 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 			DiscoveryClusterID:       runtime.ClusterID,
 			DiscoveryNamespaceID:     runtime.NamespaceID,
 			AuthorityPublicKey:       cluster.AuthorityPublicKey,
+			DiscoveryEnabled:         discoveryEnabled,
+			Visibility: func() string {
+				if discoveryEnabled {
+					return "discoverable"
+				}
+				return "unlisted"
+			}(),
 			MembershipCapabilityFile: authz.MembershipCapabilityFile,
 			ServiceClaimFile:         authz.ServiceClaimFile,
 			ServicePublishLeaseFile:  authz.ServicePublishLeaseFile,

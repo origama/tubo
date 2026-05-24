@@ -1838,7 +1838,7 @@ func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 }
 
 func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
-	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Service: cfgpkg.Service{Name: "myapi"}}
+	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{joinDefaultNetworkName: {Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}}}}, Service: cfgpkg.Service{Name: "myapi"}}
 	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, ServiceShareToken: "tubo-service-share-v1.test-token"}
 	out, err := capture(func() error {
 		printAttachShareHint(cfg, authz)
@@ -1847,7 +1847,7 @@ func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "tubo connect --token tubo-service-share-v1.test-token") {
+	if !strings.Contains(out, "visibility: unlisted") || !strings.Contains(out, "access: invite token required") || !strings.Contains(out, "tubo connect --token tubo-service-share-v1.test-token") {
 		t.Fatalf("unexpected attach token output: %s", out)
 	}
 }

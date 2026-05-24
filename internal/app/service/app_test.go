@@ -159,7 +159,7 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	}
 	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
 	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
-	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,6 +198,27 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	}
 }
 
+func TestNewSkipsDiscoveryPublisherForUnlistedMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "service-unlisted-seed", ServiceName: "myapi", ServiceID: "svc-123", Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: false, Visibility: "unlisted", DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH)))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	if app.publisher != nil || app.cache != nil || app.stopSubscriber != nil {
+		t.Fatalf("expected discovery publisher/subscriber to be skipped in unlisted mode: publisher=%#v cache=%#v stop=%#v", app.publisher, app.cache, app.stopSubscriber)
+	}
+}
+
 func TestServiceDiscoveryQuerySuspendsWithoutValidPublishLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -228,7 +249,7 @@ func TestServiceDiscoveryQuerySuspendsWithoutValidPublishLease(t *testing.T) {
 	}
 	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
 	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Now().Add(-time.Minute))
-	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
 	if err != nil {
 		t.Fatal(err)
 	}

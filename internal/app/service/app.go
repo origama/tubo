@@ -43,6 +43,8 @@ type Config struct {
 	MembershipCapabilityFile                                                                          string
 	ServiceClaimFile                                                                                  string
 	ServicePublishLeaseFile                                                                           string
+	DiscoveryEnabled                                                                                  bool
+	Visibility                                                                                        string
 }
 type App struct {
 	cfg                     Config
@@ -124,38 +126,44 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
 	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
-	gs, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
-	if err != nil {
-		_ = h.Close()
-		return nil, err
-	}
-	topicName := cfg.DiscoveryTopic
-	if topicName == "" {
-		topicName = discovery.DiscoveryTopic
-	}
-	topic, err := gs.Join(topicName)
-	if err != nil {
-		_ = h.Close()
-		return nil, err
-	}
-	cache := discovery.NewCache(30*time.Second, time.Second)
-	subscriber := discovery.NewPubSubSubscriber(topic, cache)
-	if mode == discovery.ModeNamespaceV2 {
-		subscriber = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
-	}
-	if pubKey := h.Peerstore().PubKey(h.ID()); pubKey != nil {
-		subscriber.AddPublicKey(h.ID(), pubKey)
-	}
-	stopSubscriber := subscriber.Start(ctx)
+	var pub *discovery.Publisher
+	var cache *discovery.Cache
+	var stopSubscriber chan struct{}
+	if cfg.DiscoveryEnabled {
+		gs, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
+		if err != nil {
+			_ = h.Close()
+			return nil, err
+		}
+		topicName := cfg.DiscoveryTopic
+		if topicName == "" {
+			topicName = discovery.DiscoveryTopic
+		}
+		topic, err := gs.Join(topicName)
+		if err != nil {
+			_ = h.Close()
+			return nil, err
+		}
+		cache = discovery.NewCache(30*time.Second, time.Second)
+		subscriber := discovery.NewPubSubSubscriber(topic, cache)
+		if mode == discovery.ModeNamespaceV2 {
+			subscriber = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
+		}
+		if pubKey := h.Peerstore().PubKey(h.ID()); pubKey != nil {
+			subscriber.AddPublicKey(h.ID(), pubKey)
+		}
+		stopSubscriber = subscriber.Start(ctx)
 
-	pk := h.Peerstore().PrivKey(h.ID())
-	if pk == nil {
-		close(stopSubscriber)
-		cache.Stop()
-		_ = h.Close()
-		return nil, fmt.Errorf("no private key for peer")
+		pk := h.Peerstore().PrivKey(h.ID())
+		if pk == nil {
+			close(stopSubscriber)
+			cache.Stop()
+			_ = h.Close()
+			return nil, fmt.Errorf("no private key for peer")
+		}
+		pub = discovery.NewPublisher(topic, pk)
+		h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
 	}
-	pub := discovery.NewPublisher(topic, pk)
 	app := &App{
 		cfg:                     cfg,
 		host:                    h,
@@ -172,7 +180,6 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		serviceClaimFile:        cfg.ServiceClaimFile,
 		servicePublishLeaseFile: cfg.ServicePublishLeaseFile,
 	}
-	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
 	app.registerRelayNotifiee()
 	return app, nil
 }
@@ -207,12 +214,12 @@ func (a *App) Start(ctx context.Context) error {
 		}()
 	}
 	go a.maintainRelayReservations(ctx)
-	if a.discoveryMode == discovery.ModeNamespaceV2 {
+	if a.cfg.DiscoveryEnabled && a.discoveryMode == discovery.ModeNamespaceV2 {
 		if !a.publishCurrentAnnouncementV2(ctx) {
 			log.Printf("initial announcement deferred: publish lease unavailable or relay reservation not ready yet")
 		}
 		go a.runAnnouncementLoopV2(ctx)
-	} else {
+	} else if a.cfg.DiscoveryEnabled {
 		if !a.hb.PublishNow(ctx) {
 			log.Printf("initial announcement deferred: relay reservation not ready yet")
 		}

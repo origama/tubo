@@ -88,6 +88,33 @@ func TestRunServiceUsesAttachAuthorizationAndStartsRunner(t *testing.T) {
 	}
 }
 
+func TestRunServiceUsesUnlistedModeForPublicDefault(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentOverlay: "tubo-public", CurrentCluster: "home", CurrentNamespace: "default"}
+	cfg.Clusters = map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-public-2026", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}}}}
+	cfg.Node.P2PListen = "/ip4/127.0.0.1/tcp/40123"
+	cfg.Network.BootstrapPeers = []string{"/ip4/1.2.3.4/tcp/4001/p2p/peer"}
+	cfg.Network.RelayPeers = []string{"/ip4/1.2.3.4/tcp/4002/p2p/relay"}
+	cfg.Network.Autorelay = true
+	cfg.Network.HolePunching = true
+	cfg.HealthListen = "127.0.0.1:8081"
+	cfg.HeartbeatInterval = cfgpkg.Duration(2 * time.Second)
+	cfg.Service.Name = "svc"
+	cfg.Service.Target = "http://127.0.0.1:9000"
+	deps := &stubDeps{authz: AttachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "svc-1", ServiceSeed: "seed-1"}, ServicePeerID: "12D3KooW...", MembershipCapabilityFile: "membership.cap", ServiceClaimFile: "claim.cap", ServicePublishLeaseFile: "lease.json"}}
+	if err := Run(context.Background(), deps, "service", "/tmp/config.yaml", cfg); err != nil {
+		t.Fatal(err)
+	}
+	if deps.serviceCfg.DiscoveryEnabled {
+		t.Fatalf("expected public default service to run unlisted, got %#v", deps.serviceCfg)
+	}
+	if deps.serviceCfg.Visibility != "unlisted" {
+		t.Fatalf("visibility = %q", deps.serviceCfg.Visibility)
+	}
+	if deps.serviceCfg.DiscoveryMode != cfgpkg.DiscoveryModeNamespaceV2.String() || deps.serviceCfg.DiscoveryClusterID != "cluster-public-2026" || deps.serviceCfg.DiscoveryNamespaceID != "default" {
+		t.Fatalf("unexpected discovery scope for unlisted mode: %#v", deps.serviceCfg)
+	}
+}
+
 func TestRunBridgeStartsBridgeRunner(t *testing.T) {
 	cfg := cfgpkg.Config{}
 	cfg.Bridge.Listen = "127.0.0.1:18081"

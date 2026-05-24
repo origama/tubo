@@ -375,6 +375,13 @@ func printAttachShareHint(cfg cfgpkg.Config, authz attachAuthorization) {
 		fmt.Printf("service id: %s\n", authz.Service.ServiceID)
 	}
 	fmt.Printf("scope: %s/%s/%s\n", overlayLabel, cfg.CurrentCluster, cfg.CurrentNamespace)
+	if scope, err := cfgpkg.ResolveEffectiveScope(cfg, "", "", false); err == nil {
+		policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
+		if policy.Discovery == cfgpkg.NamespaceDiscoveryDisabled {
+			fmt.Printf("visibility: unlisted\n")
+			fmt.Printf("access: invite token required\n")
+		}
+	}
 	if authz.PublishLeaseReused {
 		fmt.Printf("publish lease: reused\n")
 	}
