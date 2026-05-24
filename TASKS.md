@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-24 22:48 UTC
+> **Last updated:** 2026-05-24 23:12 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -186,6 +186,7 @@
 | C.82 | Issue #140 — split invite-only public-default epic into executable subissues | ✅ | Done on `0.7.0.b0`: split #140 into milestone-oriented subissues #141–#157, including explicit separation of Milestone 1 (safe public default) vs Milestone 2 (collaboration namespaces) and a dedicated enforcement issue (#143) that requires discovery to be disabled for public default at effective capability/runtime policy level, not only via Tubo client UX checks. |
 | C.83 | Issue #141 — formalize effective scope and public-default policy helpers | ✅ | Done on `0.7.0.b0`: added shared `internal/config` helpers for effective scope resolution, public-default detection, and minimal effective policy lookup; persisted explicit public-bundle overlay metadata (`overlay.kind`, `overlay.public_default_cluster`, `overlay.public_default_namespace`) so detection does not rely on raw `home/default` names; and switched `internal/workspace.ResolveScope(...)` to the shared config helper so follow-up #140 work can reuse one source of truth. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.84 | Issue #142 — add namespace discovery/connect policy model with safe public defaults | ✅ | Done on `0.7.0.b0`: added explicit namespace policy fields (`discovery`, `connect_policy`) in `internal/config`, extended `EffectiveScopePolicy(...)` so signed-bundle `home/default` resolves to `disabled` + `invite_only` while custom namespaces default to `enabled` + `namespace_members`, taught `config validate` to reject unknown policy values, surfaced effective policy in `describe namespace/...`, made `create cluster` / `create namespace` persist safe defaults, and made public-bundle installs persist explicit invite-only policy too. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
+| C.85 | Issue #143 — enforce discovery-disabled public default semantics at capability/runtime/CLI layers | ✅ | Done on `0.7.0.b0`: added a shared `internal/config.RequireAmbientDiscoveryScope(...)` gate with stable public-default guidance, routed `cmd/tubo` service-authorization and `internal/catalog` discovery entrypoints through that gate so ambient discovery is denied centrally instead of per-command ad hoc, preserved `connect --token` by bypassing the ambient-discovery scope path in `internal/connectflow`, added CLI/unit coverage for discovery-disabled guidance plus token-path bypass, and updated `docs/cli.md`. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 
 ---
 
