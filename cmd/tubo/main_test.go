@@ -907,6 +907,15 @@ func TestPublicDefaultDisablesAmbientDiscoveryCommandsButNotConnectToken(t *test
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH)))
 	cfg := cfgpkg.Config{
 		Role:             "service",
 		CurrentOverlay:   joinDefaultNetworkName,
@@ -922,7 +931,7 @@ func TestPublicDefaultDisablesAmbientDiscoveryCommandsButNotConnectToken(t *test
 		Clusters: map[string]cfgpkg.Cluster{
 			"home": {
 				ClusterID:          "cluster-public-2026",
-				AuthorityPublicKey: "ssh-ed25519 AAAATEST public",
+				AuthorityPublicKey: authorityKey,
 				MembershipGrant:    &cfgpkg.ClusterMembershipGrant{ClusterName: "home", ClusterID: "cluster-public-2026", Namespace: "default", Role: "member", ExpiresAt: time.Now().Add(time.Hour)},
 				Namespaces:         map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}},
 			},
@@ -939,9 +948,17 @@ func TestPublicDefaultDisablesAmbientDiscoveryCommandsButNotConnectToken(t *test
 			t.Fatalf("expected discovery-disabled guidance for %v, got %v", args, err)
 		}
 	}
-	_, err := capture(func() error { return run([]string{"connect", "--token", "not-a-token"}) })
+	_, err = capture(func() error { return run([]string{"connect", "--token", "not-a-token"}) })
 	if err == nil || strings.Contains(err.Error(), "tubo connect --token <invite>") {
 		t.Fatalf("connect --token should not be blocked by public-default discovery policy, got %v", err)
+	}
+	legacyInvite, err := grantspkg.BuildServiceShareArtifacts(authorityPriv, "home", "cluster-public-2026", "default", "myapi", "service-legacy", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(func() error { return run([]string{"connect", "--token", legacyInvite.Token}) })
+	if err == nil || !strings.Contains(err.Error(), "missing a self-contained service endpoint") {
+		t.Fatalf("expected legacy public-default token compatibility error, got %v", err)
 	}
 }
 

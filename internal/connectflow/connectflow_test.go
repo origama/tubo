@@ -3,6 +3,7 @@ package connectflow
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,6 +119,35 @@ func TestResolveFallsBackToExactLookupAndBuildsBridge(t *testing.T) {
 	}
 }
 
+func TestResolveUsesSelfContainedTokenEndpointWithoutDiscovery(t *testing.T) {
+	serviceAddr := "/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWService"
+	deps := stubDeps{
+		loadConfig: func(string) (cfgpkg.Config, error) { return cfgpkg.Config{}, nil },
+		setupShare: func(serviceRef, token, cluster, namespace string) (string, string, catalog.Scope, error) {
+			return serviceRef, "svc-1", catalog.Scope{Cluster: "home", Namespace: "default"}, nil
+		},
+		parseServiceRef: func(ref string) (string, error) { return ref, nil },
+		isServiceID:     func(string) bool { return false },
+		resolveScope:    func(cfgpkg.Config, string, string) (catalog.Scope, error) { return catalog.Scope{}, cfgpkg.ErrAmbientDiscoveryDisabled },
+		parseShareToken: func(string) (ShareTokenInfo, error) {
+			return ShareTokenInfo{Cluster: "home", Namespace: "default", TargetServiceID: "svc-1", DisplayNameHint: "svc", ServiceEndpointPeer: "12D3KooWService", ServiceEndpointAddrs: []string{serviceAddr}}, nil
+		},
+		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
+		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { return cfg, nil },
+		markInvite:      func(string, ShareTokenInfo) error { return nil },
+		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) { t.Fatal("discoverService should not be called for self-contained token"); return catalog.LookupResult{}, catalog.Service{}, nil },
+		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) { t.Fatal("discoverServiceExact should not be called for self-contained token"); return catalog.LookupResult{}, catalog.Service{}, nil },
+		newBridge: func(context.Context, bridge.Config) (*bridge.App, error) { return &bridge.App{}, nil },
+	}
+	result, err := Resolve(context.Background(), deps, Request{ConfigPath: "/tmp/config.yaml", ServiceRef: "svc", Token: "token", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServiceID != "svc-1" || result.ServiceName != "svc" || result.SelectedAddr != serviceAddr {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
 func TestResolveBypassesAmbientDiscoveryScopeForTokenFlow(t *testing.T) {
 	service := catalog.Service{
 		Name:            "svc",
@@ -152,6 +182,33 @@ func TestResolveBypassesAmbientDiscoveryScopeForTokenFlow(t *testing.T) {
 	}
 	if result.ServiceID != "svc-1" || result.ServiceName != "svc" {
 		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
+func TestResolveRejectsLegacyTokenWithoutEndpointInPublicDefault(t *testing.T) {
+	deps := stubDeps{
+		loadConfig: func(string) (cfgpkg.Config, error) {
+			return cfgpkg.Config{CurrentOverlay: "tubo-public", Overlays: map[string]cfgpkg.Overlay{"tubo-public": {Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}}}, nil
+		},
+		setupShare: func(serviceRef, token, cluster, namespace string) (string, string, catalog.Scope, error) {
+			return serviceRef, "svc-1", catalog.Scope{Cluster: "home", Namespace: "default"}, nil
+		},
+		parseServiceRef: func(ref string) (string, error) { return ref, nil },
+		isServiceID:     func(string) bool { return false },
+		resolveScope:    func(cfgpkg.Config, string, string) (catalog.Scope, error) { return catalog.Scope{}, nil },
+		parseShareToken: func(string) (ShareTokenInfo, error) {
+			return ShareTokenInfo{Cluster: "home", Namespace: "default", TargetServiceID: "svc-1", DisplayNameHint: "svc"}, nil
+		},
+		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
+		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { cfg.CurrentCluster = "home"; cfg.CurrentNamespace = "default"; return cfg, nil },
+		markInvite:      func(string, ShareTokenInfo) error { return nil },
+		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) { return catalog.LookupResult{}, catalog.Service{}, errors.New("should not discover") },
+		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) { return catalog.LookupResult{}, catalog.Service{}, errors.New("should not discover") },
+		newBridge: func(context.Context, bridge.Config) (*bridge.App, error) { return &bridge.App{}, nil },
+	}
+	_, err := Resolve(context.Background(), deps, Request{ConfigPath: "/tmp/config.yaml", ServiceRef: "svc", Token: "token", Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "missing a self-contained service endpoint") {
+		t.Fatalf("expected compatibility error, got %v", err)
 	}
 }
 

@@ -23,6 +23,7 @@ func TestConnectWorkflowParseShareTokenKeepsLegacyGrantWhenGrantServiceMetadataE
 		Protocol: grantspkg.ProtocolID,
 		Peers:    []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWFallbackGrantPeer"},
 	}
+	payload.ServiceEndpoint = grantspkg.ServiceEndpoint{PeerID: "12D3KooWServicePeer", Addresses: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}}
 	token, err := grantspkg.SignServiceShareToken(payload, priv)
 	if err != nil {
 		t.Fatal(err)
@@ -42,5 +43,8 @@ func TestConnectWorkflowParseShareTokenKeepsLegacyGrantWhenGrantServiceMetadataE
 	}
 	if info.ConnectGrant.ServiceID != payload.TargetServiceID {
 		t.Fatalf("ConnectGrant.ServiceID = %q, want %q", info.ConnectGrant.ServiceID, payload.TargetServiceID)
+	}
+	if info.ServiceEndpointPeer != payload.ServiceEndpoint.PeerID || len(info.ServiceEndpointAddrs) != 1 || info.ServiceEndpointAddrs[0] != payload.ServiceEndpoint.Addresses[0] {
+		t.Fatalf("service endpoint = %q %#v", info.ServiceEndpointPeer, info.ServiceEndpointAddrs)
 	}
 }

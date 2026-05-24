@@ -48,19 +48,21 @@ type Result struct {
 }
 
 type ShareTokenInfo struct {
-	JTI                string
-	Cluster            string
-	ClusterID          string
-	AuthorityPublicKey string
-	Namespace          string
-	NamespaceID        string
-	TargetServiceID    string
-	DisplayNameHint    string
-	IssuedAt           time.Time
-	ExpiresAt          time.Time
-	ConnectGrant       *capability.ConnectCapability
-	ConnectInviteToken string
-	ConnectGrantPeers  []string
+	JTI                  string
+	Cluster              string
+	ClusterID            string
+	AuthorityPublicKey   string
+	Namespace            string
+	NamespaceID          string
+	TargetServiceID      string
+	DisplayNameHint      string
+	ServiceEndpointPeer  string
+	ServiceEndpointAddrs []string
+	IssuedAt             time.Time
+	ExpiresAt            time.Time
+	ConnectGrant         *capability.ConnectCapability
+	ConnectInviteToken   string
+	ConnectGrantPeers    []string
 }
 
 type Deps interface {
@@ -93,6 +95,7 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 	var connectGrant *capability.ConnectCapability
 	var connectInviteToken string
 	var connectGrantPeers []string
+	var shareInfo ShareTokenInfo
 	if shareToken != "" {
 		info, err := deps.ParseShareToken(shareToken)
 		if err != nil {
@@ -108,6 +111,7 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		if err := deps.MarkShareInviteUsed(filepath.Dir(req.ConfigPath), info); err != nil {
 			return Result{}, err
 		}
+		shareInfo = info
 		cluster = info.Cluster
 		namespace = info.Namespace
 		shareScope = catalog.Scope{Cluster: info.Cluster, Namespace: info.Namespace}
@@ -142,9 +146,21 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 	}
 	var lookup catalog.LookupResult
 	var service catalog.Service
-	if shareToken != "" && serviceID != "" {
-		lookup, service, err = deps.DiscoverService(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef)
-		if err != nil {
+	if shareToken != "" {
+		if len(shareInfo.ServiceEndpointAddrs) > 0 {
+			service = catalog.Service{Name: serviceRef, ServiceID: serviceID, PeerID: shareInfo.ServiceEndpointPeer}
+			service.DirectAddresses, service.RelayedAddresses = splitServiceAddresses(shareInfo.ServiceEndpointAddrs)
+			if service.Name == "" {
+				service.Name = shareInfo.DisplayNameHint
+			}
+		} else if cfgpkg.IsPublicDefaultScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: scope.Cluster, Namespace: scope.Namespace}) {
+			return Result{}, fmt.Errorf("share invite is missing a self-contained service endpoint for public/home/default; ask the publisher to reissue the invite")
+		} else if serviceID != "" {
+			lookup, service, err = deps.DiscoverService(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef)
+			if err != nil {
+				lookup, service, err = deps.DiscoverServiceExact(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef, serviceID)
+			}
+		} else {
 			lookup, service, err = deps.DiscoverServiceExact(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef, serviceID)
 		}
 	} else {
@@ -322,6 +338,17 @@ func ConnectRelayMessage(service catalog.Service, selectedAddr, selectedPath str
 		return selectedAddr
 	}
 	return "selected"
+}
+
+func splitServiceAddresses(addresses []string) (direct []string, relayed []string) {
+	for _, addr := range addresses {
+		if strings.Contains(addr, "/p2p-circuit") {
+			relayed = append(relayed, addr)
+			continue
+		}
+		direct = append(direct, addr)
+	}
+	return direct, relayed
 }
 
 func scopePtr(scope catalog.Scope) *catalog.Scope {
