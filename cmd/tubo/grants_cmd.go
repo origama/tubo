@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"sort"
@@ -80,12 +81,36 @@ func grantServicePeersForTokens(addrs []string) []string {
 			relayed = append(relayed, addr)
 			continue
 		}
+		if !isRemoteDialableGrantServicePeer(addr) {
+			continue
+		}
 		direct = append(direct, addr)
 	}
 	if len(relayed) > 0 {
 		return relayed
 	}
 	return direct
+}
+
+func isRemoteDialableGrantServicePeer(addr string) bool {
+	parts := strings.Split(strings.TrimSpace(addr), "/")
+	for i := 0; i < len(parts)-1; i++ {
+		switch parts[i] {
+		case "ip4", "ip6":
+			ip := net.ParseIP(parts[i+1])
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				return false
+			}
+			return true
+		case "dns", "dns4", "dns6", "dnsaddr":
+			host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(parts[i+1])), ".")
+			if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+				return false
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func grantsRequestCmd(args []string) error {

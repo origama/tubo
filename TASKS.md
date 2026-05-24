@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-23 23:10 UTC
+> **Last updated:** 2026-05-24 05:25 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -182,6 +182,7 @@
 | C.78 | Issue #136 — fix inline membership evidence handling for public-bundle attach | ✅ | Done on `0.7.0.b0`: added regression tests for public-bundle attach with inline `membership_grant`, made attach grant requests persist the resolved cluster grant-service peer fallback, and tightened attach/workspace authorization flow so runtime membership capability files are only resolved when actually needed and remain non-empty for the service runtime. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, `./tests/smoke-cli-ux.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.79 | Issue #137 — harden test cleanup against leaked connect processes and stale E2E containers | ✅ | Done on `0.7.0.b0`: `tests/smoke-compose-tubo-workflow.sh` now uses a built `tubo` binary for the background connect tunnel, performs robust PID/pattern cleanup, and asserts that no host-side workflow connect process remains; the Docker E2E harness now labels actor/network resources, sweeps stale `tubo-e2e-*` / `bundle-server` resources before runs, and makes `tests/e2e/run.sh clean` remove stale Docker resources too. Validation passed with targeted leak checks, `KEEP_WORK=1 ./tests/e2e/run.sh 001-default-cluster-default-namespace` + `./tests/e2e/run.sh clean`, `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.80 | Issue #138 — fix public attach auto-printed share invites with unreachable grant-service peers | ✅ | Done on `0.7.0.b0`: `grants serve` now prefers relay-aware `/p2p-circuit` peers for auto-approved share invites instead of raw local host addrs, `connect --token` preserves the embedded legacy connect grant and falls back to it when invite redemption peers are unreachable, and regression coverage was added in `cmd/tubo` and `internal/app/bridge`. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, and a black-box retest using only the executable/docs: `attach` from clean config still printed a token containing stale public-infra `127.0.0.1` grant-service metadata, but `connect --token` now succeeded end-to-end via the embedded-grant fallback while plain `connect <name>` remained a separate connect-proof UX/behavior issue. |
+| C.81 | Issue #139 — harden share-invite `grant_service` peer metadata | ⏳ | In progress on `0.7.0.b0`: tighten share-invite grant-service peer selection to exclude local-only direct addrs, resolve peers lazily at approval time instead of from an early `grants serve` snapshot, omit empty `grant_service` metadata rather than serializing misleading placeholders, and add regression coverage that the normal public lease-redemption path does not depend on the legacy fallback. |
 
 ---
 
