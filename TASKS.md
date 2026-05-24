@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-24 23:12 UTC
+> **Last updated:** 2026-05-24 23:23 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -187,6 +187,7 @@
 | C.83 | Issue #141 — formalize effective scope and public-default policy helpers | ✅ | Done on `0.7.0.b0`: added shared `internal/config` helpers for effective scope resolution, public-default detection, and minimal effective policy lookup; persisted explicit public-bundle overlay metadata (`overlay.kind`, `overlay.public_default_cluster`, `overlay.public_default_namespace`) so detection does not rely on raw `home/default` names; and switched `internal/workspace.ResolveScope(...)` to the shared config helper so follow-up #140 work can reuse one source of truth. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.84 | Issue #142 — add namespace discovery/connect policy model with safe public defaults | ✅ | Done on `0.7.0.b0`: added explicit namespace policy fields (`discovery`, `connect_policy`) in `internal/config`, extended `EffectiveScopePolicy(...)` so signed-bundle `home/default` resolves to `disabled` + `invite_only` while custom namespaces default to `enabled` + `namespace_members`, taught `config validate` to reject unknown policy values, surfaced effective policy in `describe namespace/...`, made `create cluster` / `create namespace` persist safe defaults, and made public-bundle installs persist explicit invite-only policy too. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.85 | Issue #143 — enforce discovery-disabled public default semantics at capability/runtime/CLI layers | ✅ | Done on `0.7.0.b0`: added a shared `internal/config.RequireAmbientDiscoveryScope(...)` gate with stable public-default guidance, routed `cmd/tubo` service-authorization and `internal/catalog` discovery entrypoints through that gate so ambient discovery is denied centrally instead of per-command ad hoc, preserved `connect --token` by bypassing the ambient-discovery scope path in `internal/connectflow`, added CLI/unit coverage for discovery-disabled guidance plus token-path bypass, and updated `docs/cli.md`. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
+| C.86 | Issue #144 — add unlisted attach mode for public default invite-only services | ✅ | Done on `0.7.0.b0`: launcher/service runtime now distinguish discoverable vs unlisted attach from effective scope policy; public-default `attach` skips GossipSub join, discovery query handler, publisher, and announcement loops while keeping relay reservations, health, stream handling, and connect-proof validation alive; attach output now states `visibility: unlisted` and `access: invite token required`; and runtime/launcher/CLI/integration coverage was updated accordingly. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 
 ---
 
