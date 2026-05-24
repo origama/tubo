@@ -230,6 +230,57 @@ func TestGrantServerAutoApproveResolvesGrantPeersLazilyAtApprovalTime(t *testing
 	}
 }
 
+func TestGrantServerAutoApproveOmitsGrantServiceMetadataWhenProviderHasNoUsablePeers(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	authorityPriv, _ := testOwnerKey("authority-grant-peers-empty")
+	server, err := NewServer(ServerConfig{
+		ClusterName:            "home",
+		ClusterID:              "cluster-123",
+		NamespaceID:            "default",
+		Store:                  store,
+		AutoApprove:            true,
+		AuthorityPrivateKey:    authorityPriv,
+		ClaimTTL:               time.Hour,
+		ServiceShareTTL:        time.Hour,
+		GrantServicePeers:      []string{"/ip4/127.0.0.1/tcp/39385/p2p/12D3KooWStale"},
+		GrantServicePeersProvider: func() []string {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerPriv, ownerPub := testOwnerKey("lazy-grant-peers-empty")
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	leaseReq, err := SignPublishLeaseRequest(PublishLeaseRequest{
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
+		PublisherPeerID:       "12D3-service",
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
+		Nonce:                 "lazy-grant-peers-empty-nonce",
+	}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := server.HandleMessage(Message{Type: TypeSubmit, Version: VersionV1, ClusterID: "cluster-123", NamespaceID: "default", ServiceName: "myapi", ServiceID: serviceID, ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, ServicePeerID: "12D3-service", RequestNonce: leaseReq.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds())}, peer.ID("12D3-requester"))
+	if resp.Type != TypeApproved || resp.ServiceShareToken == "" {
+		t.Fatalf("expected approved response with share token, got %#v", resp)
+	}
+	payload, err := ParseAndVerifyServiceShareToken(resp.ServiceShareToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.GrantService.Protocol != "" || len(payload.GrantService.Peers) != 0 {
+		t.Fatalf("expected no grant_service metadata in parsed payload, got %#v", payload.GrantService)
+	}
+	raw := decodeServiceShareTokenPayloadJSON(t, resp.ServiceShareToken)
+	if _, ok := raw["grant_service"]; ok {
+		t.Fatalf("expected raw token to omit grant_service metadata, got %#v", raw["grant_service"])
+	}
+}
+
 func seedApprovedGrant(t *testing.T, store *Store, clusterName, clusterID, namespaceID, label, serviceName, requesterPeerID, servicePeerID string, expiresAt time.Time) Request {
 	t.Helper()
 	ownerPriv, ownerPub := testOwnerKey(label)

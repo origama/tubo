@@ -3,6 +3,8 @@ package grants
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +193,70 @@ func TestBuildShareInviteArtifactsRejectsExpiredOrMismatchedLease(t *testing.T) 
 	}
 }
 
+func TestSignServiceShareTokenOmitsEmptyGrantServiceMetadata(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := BuildServiceShareArtifacts(priv, "home", "cluster-123", "default", "myapi", "service-myapi", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := decodeServiceShareTokenPayloadJSON(t, artifacts.Token)
+	if _, ok := raw["grant_service"]; ok {
+		t.Fatalf("expected empty grant_service metadata to be omitted, got %#v", raw["grant_service"])
+	}
+}
+
+func TestBuildShareInviteArtifactsWithGrantServiceIncludesMetadata(t *testing.T) {
+	_, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	req, err := SignPublishLeaseRequest(PublishLeaseRequest{
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
+		PublisherPeerID:       "12D3-peer",
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
+		Nonce:                 "nonce-share-metadata",
+	}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseArtifacts, err := BuildPublishLeaseArtifacts(authorityPriv, req, "myapi", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantPeers := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWGrant"}
+	invite, err := BuildShareInviteArtifactsFromLeaseWithGrantService(authorityPriv, "home", leaseArtifacts.Lease, "myapi", time.Hour, grantPeers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := decodeServiceShareTokenPayloadJSON(t, invite.Token)
+	value, ok := raw["grant_service"]
+	if !ok {
+		t.Fatal("expected grant_service metadata to be present")
+	}
+	grantService, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("grant_service payload has unexpected type %T", value)
+	}
+	if grantService["protocol"] != ProtocolID {
+		t.Fatalf("grant_service protocol = %#v, want %q", grantService["protocol"], ProtocolID)
+	}
+	peers, ok := grantService["peers"].([]any)
+	if !ok || len(peers) != 1 || peers[0] != grantPeers[0] {
+		t.Fatalf("grant_service peers = %#v, want %#v", grantService["peers"], grantPeers)
+	}
+}
+
 func TestParseAndVerifyServiceShareTokenRejectsExpiredAndScopeMismatch(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -250,4 +316,23 @@ func TestParseAndVerifyServiceShareTokenRejectsExpiredAndScopeMismatch(t *testin
 	if _, err := ParseAndVerifyServiceShareToken(mismatchToken); err == nil || !strings.Contains(err.Error(), "cluster id mismatch") {
 		t.Fatalf("expected scope mismatch error, got %v", err)
 	}
+}
+
+func decodeServiceShareTokenPayloadJSON(t *testing.T, token string) map[string]any {
+	t.Helper()
+	trimmed := strings.TrimPrefix(token, ServiceShareTokenPrefix)
+	trimmed = strings.TrimPrefix(trimmed, LegacyServiceShareTokenPrefix)
+	parts := strings.Split(trimmed, ".")
+	if len(parts) != 2 {
+		t.Fatalf("invalid service share token format: %q", token)
+	}
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(payloadBytes, &raw); err != nil {
+		t.Fatal(err)
+	}
+	return raw
 }

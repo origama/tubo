@@ -55,6 +55,23 @@ type ServiceSharePayload struct {
 	ExpiresAt          time.Time                    `json:"expires_at"`
 }
 
+func (p ServiceSharePayload) MarshalJSON() ([]byte, error) {
+	type alias ServiceSharePayload
+	b, err := json.Marshal(alias(p))
+	if err != nil {
+		return nil, err
+	}
+	if p.GrantService.Protocol != "" || len(p.GrantService.Peers) > 0 {
+		return b, nil
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(b, &payload); err != nil {
+		return nil, err
+	}
+	delete(payload, "grant_service")
+	return json.Marshal(payload)
+}
+
 type ServiceShareArtifacts struct {
 	Payload ServiceSharePayload
 	Token   string
