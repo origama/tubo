@@ -510,7 +510,9 @@ func grantsServeCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)
 	}
-	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL, GrantServicePeers: grantServicePeersForTokens(overlay.ReachableAddrs()), ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL, Revocations: grantspkg.NewRevocationStore(*revocationsPath)})
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL, GrantServicePeersProvider: func() []string {
+		return grantServicePeersForTokens(overlay.ReachableAddrs())
+	}, ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL, Revocations: grantspkg.NewRevocationStore(*revocationsPath)})
 	if err != nil {
 		return err
 	}

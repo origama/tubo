@@ -30,8 +30,9 @@ type ServerConfig struct {
 	AuthorityPrivateKey    ed25519.PrivateKey
 	ClaimTTL               time.Duration
 	ServiceShareTTL        time.Duration
-	GrantServicePeers      []string
-	ConnectAccessTTL       time.Duration
+	GrantServicePeers         []string
+	GrantServicePeersProvider func() []string
+	ConnectAccessTTL          time.Duration
 	ConnectRefreshTTL      time.Duration
 	Revocations            *RevocationStore
 }
@@ -155,7 +156,11 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if claimTTL > 0 && shareTTL > claimTTL {
 		shareTTL = claimTTL
 	}
-	artifacts, err := BuildApprovalArtifactsWithGrantService(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature, s.cfg.GrantServicePeers)
+	grantServicePeers := append([]string(nil), s.cfg.GrantServicePeers...)
+	if s.cfg.GrantServicePeersProvider != nil {
+		grantServicePeers = append([]string(nil), s.cfg.GrantServicePeersProvider()...)
+	}
+	artifacts, err := BuildApprovalArtifactsWithGrantService(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature, grantServicePeers)
 	if err == nil && s.cfg.Revocations != nil {
 		artifacts, err = s.applyRevocationEpochsToApproval(artifacts, req.ServiceID)
 	}
