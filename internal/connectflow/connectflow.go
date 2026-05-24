@@ -119,12 +119,14 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		connectInviteToken = info.ConnectInviteToken
 		connectGrantPeers = append([]string(nil), info.ConnectGrantPeers...)
 	}
-	scope, err := deps.ResolveScope(cfg, cluster, namespace)
-	if err != nil {
-		return Result{}, err
-	}
+	var scope catalog.Scope
 	if shareToken != "" {
 		scope = shareScope
+	} else {
+		scope, err = deps.ResolveScope(cfg, cluster, namespace)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	serviceRef, err = deps.ParseServiceRef(serviceRef)
 	if err != nil {
@@ -149,7 +151,7 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		lookup, service, err = deps.DiscoverServiceExact(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef, serviceID)
 	}
 	if err != nil {
-		if catalog.IsAmbiguousServiceError(err) {
+		if catalog.IsAmbiguousServiceError(err) || cfgpkg.IsAmbientDiscoveryDisabled(err) {
 			return Result{}, err
 		}
 		return Result{}, fmt.Errorf("service %q not found; run `tubo get services` to inspect available services", lookupLabel)

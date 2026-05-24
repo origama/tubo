@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -192,6 +193,8 @@ type Scope struct {
 	AllNamespaces bool
 }
 
+var ErrAmbientDiscoveryDisabled = errors.New("ambient discovery is disabled in public/home/default")
+
 type ScopePolicy struct {
 	PublicDefault bool
 	Discovery     NamespaceDiscovery
@@ -279,6 +282,21 @@ func EffectiveScopePolicy(cfg Config, scope Scope) ScopePolicy {
 		policy.ConnectPolicy = ConnectPolicyNamespaceMember
 	}
 	return policy
+}
+
+func RequireAmbientDiscoveryScope(cfg Config, scope Scope) error {
+	policy := EffectiveScopePolicy(cfg, scope)
+	if policy.Discovery != NamespaceDiscoveryDisabled {
+		return nil
+	}
+	if policy.PublicDefault {
+		return fmt.Errorf("%w; use `tubo connect --token <invite>` or switch to a private cluster/namespace", ErrAmbientDiscoveryDisabled)
+	}
+	return fmt.Errorf("ambient discovery is disabled for scope %s/%s", strings.TrimSpace(scope.Cluster), strings.TrimSpace(scope.Namespace))
+}
+
+func IsAmbientDiscoveryDisabled(err error) bool {
+	return errors.Is(err, ErrAmbientDiscoveryDisabled)
 }
 
 func (c Config) ScopeIssuer(clusterName, namespaceName string) (ScopeIssuer, bool) {

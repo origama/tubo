@@ -118,6 +118,43 @@ func TestResolveFallsBackToExactLookupAndBuildsBridge(t *testing.T) {
 	}
 }
 
+func TestResolveBypassesAmbientDiscoveryScopeForTokenFlow(t *testing.T) {
+	service := catalog.Service{
+		Name:            "svc",
+		ServiceID:       "svc-1",
+		DirectAddresses: []string{"/ip4/10.0.0.9/tcp/4101/p2p/peer-a"},
+	}
+	deps := stubDeps{
+		loadConfig: func(string) (cfgpkg.Config, error) { return cfgpkg.Config{}, nil },
+		setupShare: func(serviceRef, token, cluster, namespace string) (string, string, catalog.Scope, error) {
+			return serviceRef, "svc-1", catalog.Scope{Cluster: "home", Namespace: "default"}, nil
+		},
+		parseServiceRef: func(ref string) (string, error) { return ref, nil },
+		isServiceID:     func(string) bool { return false },
+		resolveScope:    func(cfgpkg.Config, string, string) (catalog.Scope, error) { return catalog.Scope{}, cfgpkg.ErrAmbientDiscoveryDisabled },
+		parseShareToken: func(string) (ShareTokenInfo, error) {
+			return ShareTokenInfo{Cluster: "home", Namespace: "default", TargetServiceID: "svc-1", DisplayNameHint: "svc"}, nil
+		},
+		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
+		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { return cfg, nil },
+		markInvite:      func(string, ShareTokenInfo) error { return nil },
+		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) {
+			return catalog.LookupResult{}, catalog.Service{}, errors.New("not found by name")
+		},
+		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) {
+			return catalog.LookupResult{}, service, nil
+		},
+		newBridge: func(context.Context, bridge.Config) (*bridge.App, error) { return &bridge.App{}, nil },
+	}
+	result, err := Resolve(context.Background(), deps, Request{ConfigPath: "/tmp/config.yaml", ServiceRef: "svc", Token: "token", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServiceID != "svc-1" || result.ServiceName != "svc" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
 func TestConnectCandidatesAndMessages(t *testing.T) {
 	service := catalog.Service{
 		Name:             "svc",

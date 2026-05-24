@@ -25,6 +25,9 @@ func DiscoverServices(configPath string, timeout time.Duration, cachedOnly, live
 	if err != nil {
 		return LookupResult{}, err
 	}
+	if err := cfgpkg.RequireAmbientDiscoveryScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: scope.Cluster, Namespace: scope.Namespace, AllNamespaces: scope.AllNamespaces}); err != nil {
+		return LookupResult{}, err
+	}
 	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
 		return LookupResult{}, err
 	}
@@ -32,6 +35,9 @@ func DiscoverServices(configPath string, timeout time.Duration, cachedOnly, live
 }
 
 func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope Scope) (LookupResult, error) {
+	if err := cfgpkg.RequireAmbientDiscoveryScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: scope.Cluster, Namespace: scope.Namespace, AllNamespaces: scope.AllNamespaces}); err != nil {
+		return LookupResult{}, err
+	}
 	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
 		return LookupResult{}, err
 	}
@@ -84,6 +90,9 @@ func DiscoverService(configPath, serviceName string, timeout time.Duration, cach
 	if err != nil {
 		return LookupResult{}, Service{}, err
 	}
+	if err := cfgpkg.RequireAmbientDiscoveryScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: scope.Cluster, Namespace: scope.Namespace, AllNamespaces: scope.AllNamespaces}); err != nil {
+		return LookupResult{}, Service{}, err
+	}
 	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
 		return LookupResult{}, Service{}, err
 	}
@@ -91,6 +100,9 @@ func DiscoverService(configPath, serviceName string, timeout time.Duration, cach
 }
 
 func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope Scope, serviceName string) (LookupResult, Service, error) {
+	if err := cfgpkg.RequireAmbientDiscoveryScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: scope.Cluster, Namespace: scope.Namespace, AllNamespaces: scope.AllNamespaces}); err != nil {
+		return LookupResult{}, Service{}, err
+	}
 	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
 		return LookupResult{}, Service{}, err
 	}
@@ -152,6 +164,9 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 }
 
 func DiscoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope Scope, serviceName, serviceID string) (LookupResult, Service, error) {
+	if err := cfgpkg.RequireAmbientDiscoveryScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: scope.Cluster, Namespace: scope.Namespace, AllNamespaces: scope.AllNamespaces}); err != nil {
+		return LookupResult{}, Service{}, err
+	}
 	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
 		return LookupResult{}, Service{}, err
 	}

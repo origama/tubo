@@ -900,6 +900,51 @@ service:
 	}
 }
 
+func TestPublicDefaultDisablesAmbientDiscoveryCommandsButNotConnectToken(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configPath := filepath.Join(configHome, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		Role:             "service",
+		CurrentOverlay:   joinDefaultNetworkName,
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays: map[string]cfgpkg.Overlay{
+			joinDefaultNetworkName: {
+				Kind:                   cfgpkg.OverlayKindPublicBundle,
+				PublicDefaultCluster:   "home",
+				PublicDefaultNamespace: "default",
+			},
+		},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				ClusterID:          "cluster-public-2026",
+				AuthorityPublicKey: "ssh-ed25519 AAAATEST public",
+				MembershipGrant:    &cfgpkg.ClusterMembershipGrant{ClusterName: "home", ClusterID: "cluster-public-2026", Namespace: "default", Role: "member", ExpiresAt: time.Now().Add(time.Hour)},
+				Namespaces:         map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}},
+			},
+		},
+		Network: cfgpkg.Network{PrivateKeyFile: "/tmp/swarm.key", RelayPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWPublicRelay"}, BootstrapPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWPublicRelay"}},
+		Service: cfgpkg.Service{Name: "api", Target: "http://127.0.0.1:9000"},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"get", "services"}, {"get", "service/api"}, {"describe", "service/api"}, {"inspect", "service/api"}, {"watch", "services", "--timeout", "1s"}, {"connect", "myapi"}} {
+		_, err := capture(func() error { return run(args) })
+		if err == nil || !strings.Contains(err.Error(), "tubo connect --token <invite>") {
+			t.Fatalf("expected discovery-disabled guidance for %v, got %v", args, err)
+		}
+	}
+	_, err := capture(func() error { return run([]string{"connect", "--token", "not-a-token"}) })
+	if err == nil || strings.Contains(err.Error(), "tubo connect --token <invite>") {
+		t.Fatalf("connect --token should not be blocked by public-default discovery policy, got %v", err)
+	}
+}
+
 func extractClusterInviteToken(t *testing.T, out string) string {
 	t.Helper()
 	idx := strings.Index(out, clusterInviteTokenPrefix)

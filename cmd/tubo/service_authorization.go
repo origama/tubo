@@ -22,6 +22,9 @@ func resolveAuthorizedServiceScopes(cfg cfgpkg.Config, clusterFlag, namespaceFla
 	if err != nil {
 		return nil, err
 	}
+	if err := cfgpkg.RequireAmbientDiscoveryScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: base.Cluster, Namespace: base.Namespace, AllNamespaces: allNamespaces}); err != nil {
+		return nil, err
+	}
 	runtime, err := cfg.RequireDiscoveryRuntime()
 	if err != nil {
 		return nil, err
