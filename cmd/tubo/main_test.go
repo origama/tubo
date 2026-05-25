@@ -2999,10 +2999,10 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 	}
 	serviceIDA := serviceidentity.ServiceIDFromPublicKey(pubA)
 	serviceIDB := serviceidentity.ServiceIDFromPublicKey(pubB)
-	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", serviceidentity.EncodePublicKey(pubA), []string{addr}, 30*time.Second); err != nil {
+	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", serviceidentity.EncodePublicKey(pubA), "", nil, []string{addr}, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", serviceidentity.EncodePublicKey(pubB), []string{addr}, 30*time.Second); err != nil {
+	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", serviceidentity.EncodePublicKey(pubB), "", nil, []string{addr}, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
@@ -3148,7 +3148,7 @@ func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SERVICE ID", "SCOPE", "service-a", "home/default"} {
+	for _, want := range []string{"SERVICE ID", "SCOPE", "ACCESS", "service-a", "home/default", "unknown"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("services table missing %q: %s", want, out)
 		}
@@ -3408,7 +3408,7 @@ func TestConnectStatusMessages(t *testing.T) {
 
 func TestPrintServiceDescriptionShowsAddressClasses(t *testing.T) {
 	out, err := capture(func() error {
-		printServiceDescription(serviceResource{Name: "myapi", Kind: "service", Status: "online", PeerID: "12D3KooWTestPeer", Addresses: []string{
+		printServiceDescription(serviceResource{Name: "myapi", Kind: "service", Status: "online", ConnectPolicy: "namespace_members", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWGrant"}}, PeerID: "12D3KooWTestPeer", Addresses: []string{
 			"/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWTestPeer",
 			"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/12D3KooWTestPeer",
 		}}, []string{"starting temporary observer for 5s..."})
@@ -3417,7 +3417,7 @@ func TestPrintServiceDescriptionShowsAddressClasses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Path: direct", "Dial policy:", "preferred: direct", "fallback: relay", "Addresses:", "  Direct:", "  Relayed:"} {
+	for _, want := range []string{"Connect policy: namespace_members", "Grant service:", "Protocol: /tubo/grants/1.0", "Path: direct", "Dial policy:", "preferred: direct", "fallback: relay", "Addresses:", "  Direct:", "  Relayed:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("description missing %q: %s", want, out)
 		}

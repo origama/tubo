@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -32,6 +33,78 @@ const (
 type GrantServiceEndpoint struct {
 	Protocol string   `json:"protocol,omitempty"`
 	Peers    []string `json:"peers,omitempty"`
+}
+
+func CloneGrantServiceEndpoint(ep *GrantServiceEndpoint) *GrantServiceEndpoint {
+	if ep == nil {
+		return nil
+	}
+	copy := GrantServiceEndpoint{Protocol: strings.TrimSpace(ep.Protocol), Peers: append([]string(nil), ep.Peers...)}
+	return &copy
+}
+
+func PreferredAdvertisedGrantServicePeers(addrs []string) []string {
+	relayed := make([]string, 0, len(addrs))
+	direct := make([]string, 0, len(addrs))
+	seen := make(map[string]struct{}, len(addrs))
+	for _, raw := range addrs {
+		addr := strings.TrimSpace(raw)
+		if addr == "" {
+			continue
+		}
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		if strings.Contains(addr, "/p2p-circuit") {
+			relayed = append(relayed, addr)
+			continue
+		}
+		if !IsRemoteDialableGrantServicePeer(addr) {
+			continue
+		}
+		direct = append(direct, addr)
+	}
+	if len(relayed) > 0 {
+		return relayed
+	}
+	return direct
+}
+
+func IsRemoteDialableGrantServicePeer(addr string) bool {
+	parts := strings.Split(strings.TrimSpace(addr), "/")
+	for i := 0; i < len(parts)-1; i++ {
+		switch parts[i] {
+		case "ip4", "ip6":
+			ip := net.ParseIP(parts[i+1])
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				return false
+			}
+			return true
+		case "dns", "dns4", "dns6", "dnsaddr":
+			host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(parts[i+1])), ".")
+			if host == "" || host == "localhost" || strings.HasSuffix(host, ".localhost") {
+				return false
+			}
+			return true
+		}
+	}
+	return false
+}
+
+func SanitizeGrantServiceEndpoint(ep *GrantServiceEndpoint) *GrantServiceEndpoint {
+	if ep == nil {
+		return nil
+	}
+	peers := PreferredAdvertisedGrantServicePeers(ep.Peers)
+	if len(peers) == 0 {
+		return nil
+	}
+	protocol := strings.TrimSpace(ep.Protocol)
+	if protocol == "" {
+		protocol = ProtocolID
+	}
+	return &GrantServiceEndpoint{Protocol: protocol, Peers: peers}
 }
 
 type ServiceEndpoint struct {

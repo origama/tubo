@@ -26,6 +26,47 @@ func TestPubSubSubscriberV2AcceptsValidAnnouncement(t *testing.T) {
 	assertV2Accepted(t, subscriber, 1, "myapi")
 }
 
+func TestPubSubSubscriberV2AcceptsConnectMetadata(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:   "myapi",
+		connectPolicy: "namespace_members",
+		grantService:  &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant"}},
+		addresses:     []string{"/ip4/127.0.0.1/tcp/8080"},
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Accepted(t, subscriber, 1, "myapi")
+	entry, ok := subscriber.cache.Resolve("myapi")
+	if !ok {
+		t.Fatal("expected cache entry")
+	}
+	if entry.ConnectPolicy != "namespace_members" {
+		t.Fatalf("connect policy = %q", entry.ConnectPolicy)
+	}
+	if entry.GrantService == nil || len(entry.GrantService.Peers) != 1 || entry.GrantService.Peers[0] != "/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant" {
+		t.Fatalf("grant service = %#v", entry.GrantService)
+	}
+}
+
+func TestPubSubSubscriberV2FiltersLocalOnlyGrantPeers(t *testing.T) {
+	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
+		serviceName:   "myapi",
+		connectPolicy: "namespace_members",
+		grantService:  &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWGrant", "/ip4/5.6.7.8/tcp/4001/p2p/12D3KooWGrant"}},
+		addresses:     []string{"/ip4/127.0.0.1/tcp/8080"},
+	})
+
+	subscriber.handleMessageV2(msg)
+	assertV2Accepted(t, subscriber, 1, "myapi")
+	entry, ok := subscriber.cache.Resolve("myapi")
+	if !ok {
+		t.Fatal("expected cache entry")
+	}
+	if entry.GrantService == nil || len(entry.GrantService.Peers) != 1 || entry.GrantService.Peers[0] != "/ip4/5.6.7.8/tcp/4001/p2p/12D3KooWGrant" {
+		t.Fatalf("grant service peers = %#v", entry.GrantService)
+	}
+}
+
 func TestPubSubSubscriberV2AcceptsNamespaceMembershipWithServiceClaim(t *testing.T) {
 	subscriber, msg := testV2SubscriberAndMessage(t, testV2Payload{
 		serviceName:       "myapi",
@@ -246,6 +287,8 @@ type testV2Payload struct {
 	authorityPriv            ed25519.PrivateKey
 	serviceName              string
 	serviceID                string
+	connectPolicy            string
+	grantService             *grantspkg.GrantServiceEndpoint
 	addresses                []string
 	registeredAt             time.Time
 	ttl                      time.Duration
@@ -412,6 +455,8 @@ func testV2SubscriberAndMessage(t *testing.T, payload testV2Payload) (*testV2Har
 		ServiceName:          payload.serviceName,
 		ServiceID:            serviceID,
 		ServicePublicKey:     servicePublicKey,
+		ConnectPolicy:        payload.connectPolicy,
+		GrantService:         grantspkg.CloneGrantServiceEndpoint(payload.grantService),
 		Addresses:            payload.addresses,
 		MembershipCapability: membershipBytes,
 		ServiceClaim:         serviceClaim,

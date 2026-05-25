@@ -1,24 +1,29 @@
 package catalog
 
-import discoveryquery "github.com/origama/tubo/internal/discovery/query"
+import (
+	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
+)
 
 type Service struct {
-	Kind             string   `json:"kind"`
-	Cluster          string   `json:"cluster,omitempty"`
-	Namespace        string   `json:"namespace,omitempty"`
-	Name             string   `json:"name"`
-	ServiceID        string   `json:"service_id,omitempty"`
-	ServicePublicKey string   `json:"service_public_key,omitempty"`
-	PeerID           string   `json:"peer_id"`
-	Addresses        []string `json:"addresses"`
-	DirectAddresses  []string `json:"direct_addresses"`
-	RelayedAddresses []string `json:"relayed_addresses"`
-	Status           string   `json:"status"`
-	Path             string   `json:"path"`
-	TTLSeconds       int64    `json:"ttl_seconds"`
-	ExpiresInSeconds int64    `json:"expires_in_seconds"`
-	Capabilities     []string `json:"capabilities"`
-	RegisteredAt     string   `json:"registered_at"`
+	Kind             string                          `json:"kind"`
+	Cluster          string                          `json:"cluster,omitempty"`
+	Namespace        string                          `json:"namespace,omitempty"`
+	Name             string                          `json:"name"`
+	ServiceID        string                          `json:"service_id,omitempty"`
+	ServicePublicKey string                          `json:"service_public_key,omitempty"`
+	ConnectPolicy    string                          `json:"connect_policy,omitempty"`
+	GrantService     *grantspkg.GrantServiceEndpoint `json:"grant_service,omitempty"`
+	PeerID           string                          `json:"peer_id"`
+	Addresses        []string                        `json:"addresses"`
+	DirectAddresses  []string                        `json:"direct_addresses"`
+	RelayedAddresses []string                        `json:"relayed_addresses"`
+	Status           string                          `json:"status"`
+	Path             string                          `json:"path"`
+	TTLSeconds       int64                           `json:"ttl_seconds"`
+	ExpiresInSeconds int64                           `json:"expires_in_seconds"`
+	Capabilities     []string                        `json:"capabilities"`
+	RegisteredAt     string                          `json:"registered_at"`
 }
 
 type Scope struct {

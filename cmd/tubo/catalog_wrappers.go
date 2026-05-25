@@ -7,6 +7,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 )
 
 func discoverServices(configPath string, timeout time.Duration, cachedOnly, live bool, scope serviceScope) (discoveryLookupResult, error) {
@@ -122,6 +123,8 @@ func toCatalogService(service serviceResource) catalog.Service {
 		Name:             service.Name,
 		ServiceID:        service.ServiceID,
 		ServicePublicKey: service.ServicePublicKey,
+		ConnectPolicy:    service.ConnectPolicy,
+		GrantService:     grantspkg.CloneGrantServiceEndpoint(service.GrantService),
 		PeerID:           service.PeerID,
 		Addresses:        append([]string(nil), service.Addresses...),
 		DirectAddresses:  append([]string(nil), service.DirectAddresses...),
@@ -143,6 +146,8 @@ func fromCatalogService(service catalog.Service) serviceResource {
 		Name:             service.Name,
 		ServiceID:        service.ServiceID,
 		ServicePublicKey: service.ServicePublicKey,
+		ConnectPolicy:    service.ConnectPolicy,
+		GrantService:     grantspkg.CloneGrantServiceEndpoint(service.GrantService),
 		PeerID:           service.PeerID,
 		Addresses:        append([]string(nil), service.Addresses...),
 		DirectAddresses:  append([]string(nil), service.DirectAddresses...),

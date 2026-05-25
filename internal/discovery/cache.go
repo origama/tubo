@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	grantspkg "github.com/origama/tubo/internal/grants"
 )
 
 // ServiceEntry represents a cached service registration.
@@ -12,6 +14,8 @@ type ServiceEntry struct {
 	ServiceID        string
 	ServiceName      string
 	ServicePublicKey string
+	ConnectPolicy    string
+	GrantService     *grantspkg.GrantServiceEndpoint
 	PeerID           peer.ID
 	Addresses        []string
 	TTL              time.Duration
@@ -58,12 +62,12 @@ func (c *Cache) SetExpiredCallback(fn func(serviceName string, peerID peer.ID)) 
 
 // Add registers or updates a legacy name-keyed service entry.
 func (c *Cache) Add(pID peer.ID, serviceName string, addresses []string, ttl time.Duration) error {
-	return c.AddV2(pID, "", serviceName, "", addresses, ttl)
+	return c.AddV2(pID, "", serviceName, "", "", nil, addresses, ttl)
 }
 
 // AddV2 registers or updates a service_id-keyed entry. Display name is metadata
 // and is not unique; multiple entries may share the same ServiceName.
-func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, servicePublicKey string, addresses []string, ttl time.Duration) error {
+func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, servicePublicKey, connectPolicy string, grantService *grantspkg.GrantServiceEndpoint, addresses []string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -79,6 +83,8 @@ func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, servicePublicKey stri
 		ServiceID:        serviceID,
 		ServiceName:      serviceName,
 		ServicePublicKey: servicePublicKey,
+		ConnectPolicy:    connectPolicy,
+		GrantService:     grantspkg.CloneGrantServiceEndpoint(grantService),
 		PeerID:           pID,
 		Addresses:        append([]string(nil), addresses...), // copy to prevent mutation
 		TTL:              ttl,
@@ -113,6 +119,7 @@ func (c *Cache) Resolve(serviceName string) (*ServiceEntry, bool) {
 	// Return a copy to prevent external mutation
 	e := *entry
 	e.Addresses = append([]string(nil), entry.Addresses...)
+	e.GrantService = grantspkg.CloneGrantServiceEndpoint(entry.GrantService)
 	return &e, true
 }
 
@@ -151,6 +158,7 @@ func (c *Cache) List() []*ServiceEntry {
 		}
 		copyEntry := *entry
 		copyEntry.Addresses = append([]string(nil), entry.Addresses...)
+		copyEntry.GrantService = grantspkg.CloneGrantServiceEndpoint(entry.GrantService)
 		entries = append(entries, &copyEntry)
 	}
 	onExpired := c.onExpired

@@ -12,6 +12,8 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	grantspkg "github.com/origama/tubo/internal/grants"
 )
 
 type AnnouncementV2 struct {
@@ -25,14 +27,16 @@ type AnnouncementV2 struct {
 }
 
 type AnnouncementV2Payload struct {
-	ServiceName          string    `json:"service_name"` // display name only; not an authorization key
-	ServiceID            string    `json:"service_id,omitempty"`
-	ServicePublicKey     string    `json:"service_public_key,omitempty"`
-	Addresses            []string  `json:"addresses"`
-	MembershipCapability []byte    `json:"membership_capability,omitempty"`
-	ServiceClaim         []byte    `json:"service_claim,omitempty"` // legacy compatibility when publish_lease is absent
-	PublishLease         []byte    `json:"publish_lease,omitempty"`
-	RegisteredAt         time.Time `json:"registered_at,omitempty"`
+	ServiceName          string                          `json:"service_name"` // display name only; not an authorization key
+	ServiceID            string                          `json:"service_id,omitempty"`
+	ServicePublicKey     string                          `json:"service_public_key,omitempty"`
+	ConnectPolicy        string                          `json:"connect_policy,omitempty"`
+	GrantService         *grantspkg.GrantServiceEndpoint `json:"grant_service,omitempty"`
+	Addresses            []string                        `json:"addresses"`
+	MembershipCapability []byte                          `json:"membership_capability,omitempty"`
+	ServiceClaim         []byte                          `json:"service_claim,omitempty"` // legacy compatibility when publish_lease is absent
+	PublishLease         []byte                          `json:"publish_lease,omitempty"`
+	RegisteredAt         time.Time                       `json:"registered_at,omitempty"`
 }
 
 type announcementV2SigBody struct {

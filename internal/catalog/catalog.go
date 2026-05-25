@@ -15,6 +15,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 )
 
@@ -487,11 +488,11 @@ func ServiceResourceFromEntry(entry *discovery.ServiceEntry) Service {
 	if expiresIn < 0 {
 		expiresIn = 0
 	}
-	return NormalizeService(Service{Kind: "service", Name: entry.ServiceName, ServiceID: entry.ServiceID, ServicePublicKey: entry.ServicePublicKey, PeerID: entry.PeerID.String(), Addresses: append([]string(nil), entry.Addresses...), Status: "online", TTLSeconds: int64(entry.TTL.Seconds()), ExpiresInSeconds: int64(expiresIn.Seconds()), Capabilities: []string{}, RegisteredAt: entry.Registered.Format(time.RFC3339)})
+	return NormalizeService(Service{Kind: "service", Name: entry.ServiceName, ServiceID: entry.ServiceID, ServicePublicKey: entry.ServicePublicKey, ConnectPolicy: entry.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(entry.GrantService), PeerID: entry.PeerID.String(), Addresses: append([]string(nil), entry.Addresses...), Status: "online", TTLSeconds: int64(entry.TTL.Seconds()), ExpiresInSeconds: int64(expiresIn.Seconds()), Capabilities: []string{}, RegisteredAt: entry.Registered.Format(time.RFC3339)})
 }
 
 func ServiceFromQueryService(service discoveryquery.Service) Service {
-	return NormalizeService(Service{Kind: service.Kind, Name: service.Name, ServiceID: service.ServiceID, ServicePublicKey: service.ServicePublicKey, PeerID: service.PeerID, Addresses: append([]string(nil), service.Addresses...), DirectAddresses: append([]string(nil), service.DirectAddresses...), RelayedAddresses: append([]string(nil), service.RelayedAddresses...), Status: service.Status, Path: service.Path, TTLSeconds: service.TTLSeconds, ExpiresInSeconds: service.ExpiresInSeconds, Capabilities: append([]string(nil), service.Capabilities...), RegisteredAt: service.RegisteredAt})
+	return NormalizeService(Service{Kind: service.Kind, Name: service.Name, ServiceID: service.ServiceID, ServicePublicKey: service.ServicePublicKey, ConnectPolicy: service.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(service.GrantService), PeerID: service.PeerID, Addresses: append([]string(nil), service.Addresses...), DirectAddresses: append([]string(nil), service.DirectAddresses...), RelayedAddresses: append([]string(nil), service.RelayedAddresses...), Status: service.Status, Path: service.Path, TTLSeconds: service.TTLSeconds, ExpiresInSeconds: service.ExpiresInSeconds, Capabilities: append([]string(nil), service.Capabilities...), RegisteredAt: service.RegisteredAt})
 }
 
 func NormalizeService(service Service) Service {

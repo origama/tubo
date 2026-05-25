@@ -14,6 +14,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	connectflow "github.com/origama/tubo/internal/connectflow"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	launcher "github.com/origama/tubo/internal/launcher"
 	"github.com/origama/tubo/internal/networkbundle"
 	"github.com/origama/tubo/internal/p2p"
@@ -1247,22 +1248,24 @@ func rmCmd(args []string) error {
 }
 
 type serviceResource struct {
-	Kind             string   `json:"kind"`
-	Cluster          string   `json:"cluster,omitempty"`
-	Namespace        string   `json:"namespace,omitempty"`
-	Name             string   `json:"name"`
-	ServiceID        string   `json:"service_id,omitempty"`
-	ServicePublicKey string   `json:"service_public_key,omitempty"`
-	PeerID           string   `json:"peer_id"`
-	Addresses        []string `json:"addresses"`
-	DirectAddresses  []string `json:"direct_addresses"`
-	RelayedAddresses []string `json:"relayed_addresses"`
-	Status           string   `json:"status"`
-	Path             string   `json:"path"`
-	TTLSeconds       int64    `json:"ttl_seconds"`
-	ExpiresInSeconds int64    `json:"expires_in_seconds"`
-	Capabilities     []string `json:"capabilities"`
-	RegisteredAt     string   `json:"registered_at"`
+	Kind             string                          `json:"kind"`
+	Cluster          string                          `json:"cluster,omitempty"`
+	Namespace        string                          `json:"namespace,omitempty"`
+	Name             string                          `json:"name"`
+	ServiceID        string                          `json:"service_id,omitempty"`
+	ServicePublicKey string                          `json:"service_public_key,omitempty"`
+	ConnectPolicy    string                          `json:"connect_policy,omitempty"`
+	GrantService     *grantspkg.GrantServiceEndpoint `json:"grant_service,omitempty"`
+	PeerID           string                          `json:"peer_id"`
+	Addresses        []string                        `json:"addresses"`
+	DirectAddresses  []string                        `json:"direct_addresses"`
+	RelayedAddresses []string                        `json:"relayed_addresses"`
+	Status           string                          `json:"status"`
+	Path             string                          `json:"path"`
+	TTLSeconds       int64                           `json:"ttl_seconds"`
+	ExpiresInSeconds int64                           `json:"expires_in_seconds"`
+	Capabilities     []string                        `json:"capabilities"`
+	RegisteredAt     string                          `json:"registered_at"`
 }
 
 type discoveryLookupResult struct {
@@ -1723,13 +1726,13 @@ func isServiceID(ref string) bool {
 
 func printServicesTable(services []serviceResource) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tPEER\tCAPABILITIES")
+	fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSTATUS\tACCESS\tPATH\tPEER\tCAPABILITIES")
 	for _, service := range services {
 		caps := "-"
 		if len(service.Capabilities) > 0 {
 			caps = strings.Join(service.Capabilities, ",")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayServiceID(service.ServiceID), displayServiceScope(service), service.Status, service.Path, service.PeerID, caps)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayServiceID(service.ServiceID), displayServiceScope(service), service.Status, displayServiceConnectPolicy(service), service.Path, service.PeerID, caps)
 	}
 	_ = w.Flush()
 }
@@ -1754,6 +1757,13 @@ func displayServiceScope(service serviceResource) string {
 	return service.Cluster + "/" + service.Namespace
 }
 
+func displayServiceConnectPolicy(service serviceResource) string {
+	if strings.TrimSpace(service.ConnectPolicy) == "" {
+		return "unknown"
+	}
+	return service.ConnectPolicy
+}
+
 func printServiceDescription(service serviceResource, messages []string) {
 	service = normalizeServiceResource(service)
 	fmt.Printf("Name: %s\n", service.Name)
@@ -1765,6 +1775,7 @@ func printServiceDescription(service serviceResource, messages []string) {
 		fmt.Printf("Scope: %s/%s\n", service.Cluster, service.Namespace)
 	}
 	fmt.Printf("Status: %s\n", service.Status)
+	fmt.Printf("Connect policy: %s\n", displayServiceConnectPolicy(service))
 	fmt.Printf("Peer ID: %s\n", service.PeerID)
 	fmt.Printf("Path: %s\n", service.Path)
 	fmt.Printf("TTL: %ds\n", service.TTLSeconds)
@@ -1789,6 +1800,16 @@ func printServiceDescription(service serviceResource, messages []string) {
 		fmt.Println("  direct: unavailable")
 	default:
 		fmt.Println("  preferred: unknown")
+	}
+	fmt.Println("Grant service:")
+	if service.GrantService == nil || len(service.GrantService.Peers) == 0 {
+		fmt.Println("  - none")
+	} else {
+		fmt.Printf("  Protocol: %s\n", service.GrantService.Protocol)
+		fmt.Println("  Peers:")
+		for _, peer := range service.GrantService.Peers {
+			fmt.Printf("    - %s\n", peer)
+		}
 	}
 	fmt.Println("Addresses:")
 	fmt.Println("  Direct:")

@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-25 07:28 UTC
+> **Last updated:** 2026-05-25 11:13 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -192,6 +192,14 @@
 | C.88 | Issue #146 — make `connect --token` independent from discovery for self-contained invites | ✅ | Done on `0.7.0.b0`: `connectflow` now uses `service_endpoint` from invite tokens directly and skips discovery when that endpoint is present, legacy tokens without endpoint still fall back to discovery only in discovery-enabled scopes, public-default legacy tokens without endpoint now fail with a clear compatibility error instead of attempting ambient discovery, and CLI/unit coverage plus `docs/cli.md` were updated accordingly. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.89 | Issue #158 — harden public-default share invite generation across attach and `share service` | ✅ | Done on `0.7.0.b0`: public-default `attach` and `share service/...` now require a self-contained remote-dialable `service_endpoint`, use endpoint-bearing invite builders in both authority-local and publish-lease paths, fail early instead of emitting endpoint-less invites, keep legacy/discovery fallback behavior in discovery-enabled namespaces, and extend tests across `cmd/tubo` plus `internal/grants` (including approval-path endpoint metadata). Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.90 | Issue #147 — add public-default invite-only E2E and black-box coverage | ✅ | Done on `0.7.0.b0`: added `tests/e2e/scenarios/public_default_invite_only`, which black-boxes the invite-only public-default flow by asserting `attach` runs unlisted, `get services`, `get services -A`, `watch services -A`, and `connect <name>` stay blocked with discovery-disabled guidance, emitted invite tokens contain only remote-dialable `service_endpoint` metadata, and `connect --token` still succeeds end-to-end. Fixed two regressions surfaced by the scenario: public-default `-A` ambient-discovery enforcement now applies at the shared config gate too, and unlisted service runtimes no longer panic on relay-reservation publication callbacks. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, and `tests/e2e/run.sh public_default_invite_only`. |
+| C.91 | Issue #148 — extend Discovery V2 with connect metadata | ✅ | Done on `0.7.0.b0`: Discovery V2 payload/query/cache now carry optional `connect_policy` + `grant_service`, relay/query/admin propagation stays backward-compatible, and local-only grant peers are filtered before they enter advertised metadata. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
+| C.92 | Issue #149 — propagate connect metadata through cache/catalog/CLI | ✅ | Done on `0.7.0.b0`: catalog/admin/query conversions now preserve connect metadata, `get services` surfaces an `ACCESS` column plus JSON `connect_policy`/`grant_service`, and `describe service/...` shows connect policy + grant endpoint details when present. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
+| C.93 | Issue #150 — expose attached-service connect-grant endpoints in discovery-enabled namespaces | 🔲 | Not started. |
+| C.94 | Issue #151 — delegated connect-lease signing/validation for collaboration namespaces | 🔲 | Not started. |
+| C.95 | Issue #152 — connect-grant endpoint policy evaluation | 🔲 | Not started. |
+| C.96 | Issue #153 — `connect <service>` collaboration discovery/grant/lease/proof flow | 🔲 | Not started. |
+| C.97 | Issue #154 — connect permission + member invitation/import flows | 🔲 | Not started. |
+| C.98 | Issue #155 — collaboration-namespace E2E coverage | 🔲 | Not started. |
 
 ---
 
