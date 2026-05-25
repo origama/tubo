@@ -9,27 +9,49 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	capability "github.com/origama/tubo/internal/capability"
+	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/serviceidentity"
+)
+
+const (
+	publicConnectRateLimitBurst  = 4
+	publicConnectRateLimitWindow = time.Minute
 )
 
 type serviceGrantEndpoint struct {
-	serviceID   string
-	clusterID   string
-	namespaceID string
-	server      *grantspkg.Server
+	serviceID         string
+	servicePeerID     string
+	clusterName       string
+	clusterID         string
+	namespaceID       string
+	connectPolicy     string
+	authorityPub      ed25519.PublicKey
+	authorityPriv     ed25519.PrivateKey
+	serviceOwnerKey   string
+	publishLeaseFile  string
+	server            *grantspkg.Server
+	publicRateLimitMu sync.Mutex
+	publicRateLimit   map[peer.ID][]time.Time
 }
 
-func newServiceGrantEndpoint(cfg Config, serviceID string) (*serviceGrantEndpoint, error) {
-	if strings.TrimSpace(serviceID) == "" || strings.TrimSpace(cfg.DiscoveryClusterID) == "" || strings.TrimSpace(cfg.DiscoveryNamespaceID) == "" {
+func newServiceGrantEndpoint(cfg Config, serviceID, servicePeerID string) (*serviceGrantEndpoint, error) {
+	if strings.TrimSpace(serviceID) == "" || strings.TrimSpace(servicePeerID) == "" || strings.TrimSpace(cfg.DiscoveryClusterID) == "" || strings.TrimSpace(cfg.DiscoveryNamespaceID) == "" {
 		return nil, errors.New("service-scoped grant endpoint requires service and scope identifiers")
+	}
+	authorityPub, err := discovery.ParseAuthorityPublicKey(cfg.AuthorityPublicKey)
+	if err != nil {
+		return nil, err
 	}
 	var authorityPriv ed25519.PrivateKey
 	if strings.TrimSpace(cfg.AuthorityPrivateKeyFile) != "" {
-		var err error
 		authorityPriv, err = loadAuthorityPrivateKey(cfg.AuthorityPrivateKeyFile)
 		if err != nil {
 			return nil, err
@@ -45,7 +67,24 @@ func newServiceGrantEndpoint(cfg Config, serviceID string) (*serviceGrantEndpoin
 	if err != nil {
 		return nil, err
 	}
-	return &serviceGrantEndpoint{serviceID: serviceID, clusterID: cfg.DiscoveryClusterID, namespaceID: cfg.DiscoveryNamespaceID, server: server}, nil
+	policy := strings.TrimSpace(cfg.ConnectPolicy)
+	if policy == "" {
+		policy = "invite_only"
+	}
+	return &serviceGrantEndpoint{
+		serviceID:        serviceID,
+		servicePeerID:    servicePeerID,
+		clusterName:      first(cfg.ClusterName, cfg.DiscoveryClusterID),
+		clusterID:        cfg.DiscoveryClusterID,
+		namespaceID:      cfg.DiscoveryNamespaceID,
+		connectPolicy:    policy,
+		authorityPub:     authorityPub,
+		authorityPriv:    authorityPriv,
+		serviceOwnerKey:  strings.TrimSpace(cfg.ServiceOwnerKeyFile),
+		publishLeaseFile: strings.TrimSpace(cfg.ServicePublishLeaseFile),
+		server:           server,
+		publicRateLimit:  make(map[peer.ID][]time.Time),
+	}, nil
 }
 
 func (e *serviceGrantEndpoint) HandleStream(stream network.Stream) {
@@ -64,26 +103,182 @@ func (e *serviceGrantEndpoint) HandleStream(stream network.Stream) {
 func (e *serviceGrantEndpoint) handleMessage(msg grantspkg.Message, requester peer.ID) grantspkg.Message {
 	switch msg.Type {
 	case grantspkg.TypeShareRedeem:
-		payload, err := grantspkg.ParseAndVerifyServiceShareToken(msg.ShareInviteToken)
-		if err != nil {
-			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: "share-redeem", Reason: err.Error()}
-		}
-		if payload.ClusterID != e.clusterID || payload.NamespaceID != e.namespaceID || payload.TargetServiceID != e.serviceID {
-			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: payload.JTI, Reason: "share invite does not match attached service scope"}
-		}
-		return e.server.HandleMessage(msg, requester)
+		return e.handleShareRedeem(msg, requester)
+	case grantspkg.TypeConnectRequest:
+		return e.handleConnectRequest(msg, requester)
 	case grantspkg.TypeConnectRefresh:
-		if msg.ConnectRefreshLease == nil {
-			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: "connect-refresh", Reason: "connect_refresh_lease is required"}
-		}
-		lease := msg.ConnectRefreshLease
-		if lease.ClusterID != e.clusterID || lease.NamespaceID != e.namespaceID || lease.ServiceID != e.serviceID {
-			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: lease.JTI, Reason: "connect refresh lease does not match attached service scope"}
-		}
-		return e.server.HandleMessage(msg, requester)
+		return e.handleConnectRefresh(msg, requester)
 	default:
 		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: fallbackGrantRequestID(msg.RequestID), Reason: "attached-service grant endpoint only exposes service-scoped connect operations"}
 	}
+}
+
+func (e *serviceGrantEndpoint) handleShareRedeem(msg grantspkg.Message, requester peer.ID) grantspkg.Message {
+	payload, err := grantspkg.ParseAndVerifyServiceShareToken(msg.ShareInviteToken)
+	if err != nil {
+		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: "share-redeem", Reason: err.Error()}
+	}
+	if payload.ClusterID != e.clusterID || payload.NamespaceID != e.namespaceID || payload.TargetServiceID != e.serviceID {
+		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: payload.JTI, Reason: "share invite does not match attached service scope"}
+	}
+	if artifacts, err := e.buildDelegatedArtifacts(payload.JTI, payload.AccessEpoch, msg.ClientPublicKey); err == nil {
+		return grantspkg.Message{Type: grantspkg.TypeShareRedeem, Version: grantspkg.VersionV1, RequestID: payload.JTI, ConnectAccessLease: &artifacts.AccessLease, ConnectRefreshLease: &artifacts.RefreshLease}
+	}
+	if len(e.authorityPriv) > 0 {
+		return e.server.HandleMessage(msg, requester)
+	}
+	return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: payload.JTI, Reason: "share invite redemption requires a valid local service delegation"}
+}
+
+func (e *serviceGrantEndpoint) handleConnectRequest(msg grantspkg.Message, requester peer.ID) grantspkg.Message {
+	requestID := fallbackGrantRequestID(msg.RequestID)
+	if msg.ClusterID != e.clusterID || msg.NamespaceID != e.namespaceID || msg.ServiceID != e.serviceID {
+		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: requestID, Reason: "connect lease request scope does not match attached service"}
+	}
+	if err := e.authorizeConnectRequest(requester, msg); err != nil {
+		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: requestID, Reason: err.Error()}
+	}
+	artifacts, err := e.buildDelegatedArtifacts("", 0, msg.ClientPublicKey)
+	if err != nil {
+		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: requestID, Reason: err.Error()}
+	}
+	return grantspkg.Message{Type: grantspkg.TypeConnectGranted, Version: grantspkg.VersionV1, RequestID: requestID, ConnectAccessLease: &artifacts.AccessLease, ConnectRefreshLease: &artifacts.RefreshLease}
+}
+
+func (e *serviceGrantEndpoint) handleConnectRefresh(msg grantspkg.Message, requester peer.ID) grantspkg.Message {
+	if msg.ConnectRefreshLease == nil {
+		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: "connect-refresh", Reason: "connect_refresh_lease is required"}
+	}
+	lease := msg.ConnectRefreshLease
+	if lease.ClusterID != e.clusterID || lease.NamespaceID != e.namespaceID || lease.ServiceID != e.serviceID {
+		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: lease.JTI, Reason: "connect refresh lease does not match attached service scope"}
+	}
+	owner, _, delegation, _, err := e.loadDelegatedSigner()
+	if err == nil {
+		access, err := grantspkg.RefreshDelegatedConnectAccessLease(e.authorityPub, owner.PrivateKey, *lease, grantspkg.DefaultConnectAccessLeaseTTL, delegation.PublisherPeerID)
+		if err == nil {
+			return grantspkg.Message{Type: grantspkg.TypeConnectRefresh, Version: grantspkg.VersionV1, RequestID: lease.JTI, ConnectAccessLease: &access}
+		}
+	}
+	if len(e.authorityPriv) > 0 {
+		return e.server.HandleMessage(msg, requester)
+	}
+	return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: lease.JTI, Reason: "connect refresh requires a valid local service delegation"}
+}
+
+func (e *serviceGrantEndpoint) buildDelegatedArtifacts(shareInviteJTI string, accessEpoch int64, clientPublicKey string) (grantspkg.ConnectLeaseArtifacts, error) {
+	owner, _, delegation, _, err := e.loadDelegatedSigner()
+	if err != nil {
+		return grantspkg.ConnectLeaseArtifacts{}, err
+	}
+	return grantspkg.BuildDelegatedConnectLeaseArtifacts(e.authorityPub, owner.PrivateKey, delegation, shareInviteJTI, clientPublicKey, accessEpoch, grantspkg.DefaultConnectAccessLeaseTTL, grantspkg.DefaultConnectRefreshLeaseTTL)
+}
+
+func (e *serviceGrantEndpoint) loadDelegatedSigner() (serviceidentity.Identity, []byte, grantspkg.PublishLease, []byte, error) {
+	if e.serviceOwnerKey == "" {
+		return serviceidentity.Identity{}, nil, grantspkg.PublishLease{}, nil, errors.New("service owner key file is not configured")
+	}
+	owner, _, err := serviceidentity.Load(e.serviceOwnerKey)
+	if err != nil {
+		return serviceidentity.Identity{}, nil, grantspkg.PublishLease{}, nil, err
+	}
+	if owner.ServiceID != e.serviceID {
+		return serviceidentity.Identity{}, nil, grantspkg.PublishLease{}, nil, fmt.Errorf("service owner key does not match service %q", e.serviceID)
+	}
+	if e.publishLeaseFile == "" {
+		return serviceidentity.Identity{}, nil, grantspkg.PublishLease{}, nil, errors.New("service publish lease file is not configured")
+	}
+	raw, err := os.ReadFile(e.publishLeaseFile)
+	if err != nil {
+		return serviceidentity.Identity{}, nil, grantspkg.PublishLease{}, nil, err
+	}
+	lease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(raw, e.authorityPub, e.clusterID, e.namespaceID, e.serviceID, e.servicePeerID)
+	if err != nil {
+		return serviceidentity.Identity{}, nil, grantspkg.PublishLease{}, nil, err
+	}
+	if lease.ServicePublicKey != serviceidentity.EncodePublicKey(owner.PublicKey) {
+		return serviceidentity.Identity{}, nil, grantspkg.PublishLease{}, nil, errors.New("publish lease service public key does not match local service owner key")
+	}
+	return owner, raw, lease, raw, nil
+}
+
+func (e *serviceGrantEndpoint) authorizeConnectRequest(requester peer.ID, msg grantspkg.Message) error {
+	switch e.connectPolicy {
+	case "invite_only":
+		return errors.New("service is invite_only; use `tubo connect --token <share-invite>`")
+	case "namespace_members":
+		if msg.MembershipCapability == nil {
+			return errors.New("namespace_members policy requires a membership capability with connect permission")
+		}
+		if err := verifyConnectMembership(*msg.MembershipCapability, e.authorityPub, e.clusterID, e.namespaceID, requester.String()); err != nil {
+			return fmt.Errorf("namespace_members policy denied connect: %w", err)
+		}
+		return nil
+	case "public":
+		if !e.allowPublicConnect(requester) {
+			return errors.New("public connect policy rate limit exceeded; retry later")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported connect policy %q", e.connectPolicy)
+	}
+}
+
+func (e *serviceGrantEndpoint) allowPublicConnect(requester peer.ID) bool {
+	now := time.Now().UTC()
+	e.publicRateLimitMu.Lock()
+	defer e.publicRateLimitMu.Unlock()
+	items := e.publicRateLimit[requester]
+	keep := items[:0]
+	for _, ts := range items {
+		if now.Sub(ts) < publicConnectRateLimitWindow {
+			keep = append(keep, ts)
+		}
+	}
+	if len(keep) >= publicConnectRateLimitBurst {
+		e.publicRateLimit[requester] = keep
+		return false
+	}
+	keep = append(keep, now)
+	e.publicRateLimit[requester] = keep
+	return true
+}
+
+func verifyConnectMembership(membership capability.MembershipCapability, authorityPub ed25519.PublicKey, clusterID, namespaceID, requesterPeerID string) error {
+	var lastErr error
+	for _, subject := range []string{requesterPeerID, clusterID} {
+		candidateNamespaces := []string{namespaceID}
+		if membership.NamespaceID == "*" {
+			candidateNamespaces = append(candidateNamespaces, "*")
+		}
+		for _, candidateNamespace := range candidateNamespaces {
+			if err := capability.VerifyMembershipCapability(membership, authorityPub, clusterID, candidateNamespace, subject); err != nil {
+				lastErr = err
+				continue
+			}
+			if membership.NamespaceID != namespaceID && membership.NamespaceID != "*" {
+				lastErr = fmt.Errorf("membership capability does not authorize namespace %q", namespaceID)
+				continue
+			}
+			if !containsConnectPermission(membership.Permissions) {
+				return errors.New("membership capability is missing connect permission")
+			}
+			return nil
+		}
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return errors.New("membership capability rejected")
+}
+
+func containsConnectPermission(perms []string) bool {
+	for _, perm := range perms {
+		if perm == capability.PermissionConnect {
+			return true
+		}
+	}
+	return false
 }
 
 func advertisedGrantServiceEndpoint(addrs []string) *grantspkg.GrantServiceEndpoint {

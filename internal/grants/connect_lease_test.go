@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/origama/tubo/internal/capability"
+	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -80,6 +82,94 @@ func TestConnectLeaseRejectsWrongClientKeyAndExpiredRefresh(t *testing.T) {
 	}
 	if _, err := RefreshConnectAccessLease(priv, expiredRefresh, time.Second); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired refresh rejection, got %v", err)
+	}
+}
+
+func TestDelegatedConnectLeaseVerifyAndRefresh(t *testing.T) {
+	authPub, authPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := serviceidentity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	servicePeerID := "12D3KooWDelegatedServicePeer"
+	req, err := SignPublishLeaseRequest(PublishLeaseRequest{
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		ServiceID:             owner.ServiceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(owner.PublicKey),
+		PublisherPeerID:       servicePeerID,
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
+		Nonce:                 "delegated-connect-lease",
+	}, owner.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := BuildPublishLeaseArtifacts(authPriv, req, "myapi", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases, err := BuildDelegatedConnectLeaseArtifacts(authPub, owner.PrivateKey, artifacts.Lease, "", testAuthorizedClientKey(t), 0, 2*time.Second, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyDelegatedConnectAccessLease(leases.AccessLease, authPub, "cluster-123", "default", owner.ServiceID, servicePeerID); err != nil {
+		t.Fatalf("verify delegated access lease: %v", err)
+	}
+	if err := VerifyDelegatedConnectRefreshLease(leases.RefreshLease, authPub, "cluster-123", "default", owner.ServiceID, servicePeerID); err != nil {
+		t.Fatalf("verify delegated refresh lease: %v", err)
+	}
+	refreshed, err := RefreshDelegatedConnectAccessLease(authPub, owner.PrivateKey, leases.RefreshLease, 2*time.Second, servicePeerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.JTI == leases.AccessLease.JTI {
+		t.Fatal("delegated refresh should rotate access lease jti")
+	}
+}
+
+func TestDelegatedConnectLeaseRejectsMissingDelegationAndScopeMismatch(t *testing.T) {
+	authPub, authPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, err := serviceidentity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	servicePeerID := "12D3KooWDelegatedServicePeer"
+	req, err := SignPublishLeaseRequest(PublishLeaseRequest{
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		ServiceID:             owner.ServiceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(owner.PublicKey),
+		PublisherPeerID:       servicePeerID,
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
+		Nonce:                 "delegated-connect-lease-reject",
+	}, owner.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := BuildPublishLeaseArtifacts(authPriv, req, "myapi", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leases, err := BuildDelegatedConnectLeaseArtifacts(authPub, owner.PrivateKey, artifacts.Lease, "", testAuthorizedClientKey(t), 0, time.Second, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingDelegation := leases.AccessLease
+	missingDelegation.DelegationPublishLease = nil
+	if err := VerifyDelegatedConnectAccessLease(missingDelegation, authPub, "cluster-123", "default", owner.ServiceID, servicePeerID); err == nil || (!strings.Contains(err.Error(), "delegation") && !strings.Contains(err.Error(), "signature")) {
+		t.Fatalf("expected missing delegation rejection, got %v", err)
+	}
+	if err := VerifyDelegatedConnectAccessLease(leases.AccessLease, authPub, "cluster-123", "other", owner.ServiceID, servicePeerID); err == nil || !strings.Contains(err.Error(), "namespace") {
+		t.Fatalf("expected namespace mismatch, got %v", err)
+	}
+	if err := VerifyDelegatedConnectAccessLease(leases.AccessLease, authPub, "cluster-123", "default", "service-wrong", servicePeerID); err == nil || !strings.Contains(err.Error(), "service") {
+		t.Fatalf("expected service mismatch, got %v", err)
 	}
 }
 

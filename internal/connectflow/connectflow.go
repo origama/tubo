@@ -2,8 +2,10 @@ package connectflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -198,6 +200,17 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		ConnectInviteToken: connectInviteToken,
 		ConnectGrantPeers:  connectGrantPeers,
 	}
+	if shareToken == "" && service.GrantService != nil && len(service.GrantService.Peers) > 0 {
+		bridgeCfg.ConnectGrantPeers = append([]string(nil), service.GrantService.Peers...)
+		bridgeCfg.ConnectServiceID = service.ServiceID
+		bridgeCfg.ConnectNamespaceID = scope.Namespace
+		if clusterCfg, ok := cfg.Clusters[scope.Cluster]; ok {
+			bridgeCfg.ConnectClusterID = clusterCfg.ClusterID
+		}
+		if membership, err := loadConnectMembershipCapability(cfg, scope); err == nil {
+			bridgeCfg.ConnectMembershipCapability = membership
+		}
+	}
 	if bridgeCfg.P2PListen == "" {
 		bridgeCfg.P2PListen = "/ip4/0.0.0.0/tcp/0"
 	}
@@ -338,6 +351,29 @@ func ConnectRelayMessage(service catalog.Service, selectedAddr, selectedPath str
 		return selectedAddr
 	}
 	return "selected"
+}
+
+func loadConnectMembershipCapability(cfg cfgpkg.Config, scope catalog.Scope) (*capability.MembershipCapability, error) {
+	cluster, ok := cfg.Clusters[scope.Cluster]
+	if !ok {
+		return nil, fmt.Errorf("cluster %q not found", scope.Cluster)
+	}
+	path := strings.TrimSpace(cluster.MembershipCapabilityFile)
+	if ns, ok := cluster.Namespaces[scope.Namespace]; ok && strings.TrimSpace(ns.MembershipCapabilityFile) != "" {
+		path = strings.TrimSpace(ns.MembershipCapabilityFile)
+	}
+	if path == "" {
+		return nil, fmt.Errorf("no membership capability file configured for %s/%s", scope.Cluster, scope.Namespace)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var membership capability.MembershipCapability
+	if err := json.Unmarshal(b, &membership); err != nil {
+		return nil, err
+	}
+	return &membership, nil
 }
 
 func splitServiceAddresses(addresses []string) (direct []string, relayed []string) {

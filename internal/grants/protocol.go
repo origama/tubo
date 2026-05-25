@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/origama/tubo/internal/capability"
@@ -24,6 +25,8 @@ const (
 	TypeExpired  = "grant_request.expired"
 
 	TypeShareRedeem    = "share_invite.redeem"
+	TypeConnectRequest = "connect_lease.request"
+	TypeConnectGranted = "connect_lease.granted"
 	TypeConnectRefresh = "connect_lease.refresh"
 
 	MaxMessageBytes = 64 << 10
@@ -129,6 +132,14 @@ func ValidateMessage(msg Message) error {
 			return nil
 		}
 		return errors.New("share invite redemption requires share_invite_token/client_public_key or connect leases")
+	case TypeConnectRequest:
+		if msg.ClusterID == "" || msg.NamespaceID == "" || msg.ServiceID == "" || strings.TrimSpace(msg.ClientPublicKey) == "" {
+			return errors.New("connect lease request requires cluster_id/namespace_id/service_id/client_public_key")
+		}
+	case TypeConnectGranted:
+		if msg.ConnectAccessLease == nil || msg.ConnectRefreshLease == nil {
+			return errors.New("connect lease granted response requires connect leases")
+		}
 	case TypeConnectRefresh:
 		if msg.ConnectRefreshLease != nil || msg.ConnectAccessLease != nil {
 			return nil

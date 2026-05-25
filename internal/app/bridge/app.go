@@ -33,6 +33,10 @@ type Config struct {
 	ConnectGrant                                                                                       *capability.ConnectCapability // legacy bearer fallback
 	ConnectInviteToken                                                                                 string
 	ConnectGrantPeers                                                                                  []string
+	ConnectClusterID                                                                                   string
+	ConnectNamespaceID                                                                                 string
+	ConnectServiceID                                                                                   string
+	ConnectMembershipCapability                                                                        *capability.MembershipCapability
 	ConnectAccessLease                                                                                 *grantspkg.ConnectAccessLease
 	ConnectRefreshLease                                                                                *grantspkg.ConnectRefreshLease
 	ConnectLeaseRefresher                                                                              ConnectLeaseRefresher
@@ -114,6 +118,17 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 			connectLease = &artifacts.AccessLease
 			log.Printf("bridge share invite redeemed service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 		}
+	}
+	if cfg.ConnectAccessLease == nil && cfg.ConnectRefreshLease == nil && cfg.ConnectGrant == nil && cfg.ConnectInviteToken == "" && len(cfg.ConnectGrantPeers) > 0 && cfg.ConnectClusterID != "" && cfg.ConnectNamespaceID != "" && cfg.ConnectServiceID != "" {
+		artifacts, err := requestDirectConnectLease(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectClusterID, cfg.ConnectNamespaceID, cfg.ConnectServiceID, cfg.ConnectMembershipCapability)
+		if err != nil {
+			_ = h.Close()
+			return nil, err
+		}
+		cfg.ConnectAccessLease = &artifacts.AccessLease
+		cfg.ConnectRefreshLease = &artifacts.RefreshLease
+		connectLease = &artifacts.AccessLease
+		log.Printf("bridge discovery connect lease acquired cluster=%s namespace=%s service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ClusterID, artifacts.AccessLease.NamespaceID, artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	if cfg.ConnectGrant != nil {
 		log.Printf("bridge legacy connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)
@@ -344,6 +359,34 @@ func (a *App) refreshConnectAccessLease(ctx context.Context, refresh grantspkg.C
 		return grantspkg.ConnectAccessLease{}, lastErr
 	}
 	return grantspkg.ConnectAccessLease{}, fmt.Errorf("no connect grant service peers configured")
+}
+
+func requestDirectConnectLease(ctx context.Context, h host.Host, grantPeers []string, clusterID, namespaceID, serviceID string, membership *capability.MembershipCapability) (grantspkg.ConnectLeaseArtifacts, error) {
+	clientPublicKey, err := connectClientPublicKey(h)
+	if err != nil {
+		return grantspkg.ConnectLeaseArtifacts{}, err
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	var attempted []string
+	var lastErr error
+	for _, rawPeer := range grantPeers {
+		attempted = append(attempted, rawPeer)
+		info, err := p2p.AddrInfoFromString(rawPeer)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		artifacts, err := grantspkg.RequestConnectLease(requestCtx, h, info, clusterID, namespaceID, serviceID, clientPublicKey, membership)
+		if err == nil {
+			return artifacts, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("request connect lease from advertised grant endpoint(s) %s: %w", strings.Join(attempted, ", "), lastErr)
+	}
+	return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("request connect lease: no advertised grant endpoint peers configured")
 }
 
 func redeemConnectInvite(ctx context.Context, h host.Host, grantPeers []string, token string) (grantspkg.ConnectLeaseArtifacts, error) {

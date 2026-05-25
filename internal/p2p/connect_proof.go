@@ -17,6 +17,7 @@ import (
 
 	capability "github.com/origama/tubo/internal/capability"
 	"github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -79,6 +80,7 @@ type ConnectProofValidation struct {
 	ClusterID          string
 	NamespaceID        string
 	ServiceID          string
+	ServicePeerID      string
 	Replay             *ConnectProofReplayCache
 }
 
@@ -174,7 +176,7 @@ func (v ConnectProofValidation) validateConnectAccessLeaseProof(remotePeer peer.
 	if err := json.Unmarshal(proof.Capability, &access); err != nil {
 		return fmt.Errorf("decode connect access lease: %w", err)
 	}
-	if err := verifyConnectAccessLease(access, v.AuthorityPublicKey, v.ClusterID, v.NamespaceID, v.ServiceID); err != nil {
+	if err := verifyConnectAccessLease(access, v.AuthorityPublicKey, v.ClusterID, v.NamespaceID, v.ServiceID, v.ServicePeerID); err != nil {
 		return err
 	}
 	if proof.ExpiresAt.UTC().After(access.ExpiresAt.UTC()) {
@@ -194,21 +196,22 @@ func (v ConnectProofValidation) validateConnectAccessLeaseProof(remotePeer peer.
 }
 
 type connectAccessLease struct {
-	Version             string    `json:"version"`
-	Kind                string    `json:"kind"`
-	JTI                 string    `json:"jti"`
-	SessionID           string    `json:"session_id"`
-	ShareInviteJTI      string    `json:"share_invite_jti,omitempty"`
-	ClusterID           string    `json:"cluster_id"`
-	NamespaceID         string    `json:"namespace_id"`
-	ServiceID           string    `json:"service_id"`
-	ClientPublicKey     string    `json:"client_public_key"`
-	ClientKeyThumbprint string    `json:"client_key_thumbprint"`
-	AccessEpoch         int64     `json:"access_epoch,omitempty"`
-	Permissions         []string  `json:"permissions"`
-	IssuedAt            time.Time `json:"issued_at"`
-	ExpiresAt           time.Time `json:"expires_at"`
-	Signature           []byte    `json:"signature,omitempty"`
+	Version                string    `json:"version"`
+	Kind                   string    `json:"kind"`
+	JTI                    string    `json:"jti"`
+	SessionID              string    `json:"session_id"`
+	ShareInviteJTI         string    `json:"share_invite_jti,omitempty"`
+	ClusterID              string    `json:"cluster_id"`
+	NamespaceID            string    `json:"namespace_id"`
+	ServiceID              string    `json:"service_id"`
+	ClientPublicKey        string    `json:"client_public_key"`
+	ClientKeyThumbprint    string    `json:"client_key_thumbprint"`
+	AccessEpoch            int64     `json:"access_epoch,omitempty"`
+	Permissions            []string  `json:"permissions"`
+	DelegationPublishLease []byte    `json:"delegation_publish_lease,omitempty"`
+	IssuedAt               time.Time `json:"issued_at"`
+	ExpiresAt              time.Time `json:"expires_at"`
+	Signature              []byte    `json:"signature,omitempty"`
 }
 
 type canonicalConnectAccessLease struct {
@@ -224,11 +227,31 @@ type canonicalConnectAccessLease struct {
 	ClientKeyThumbprint string   `json:"client_key_thumbprint"`
 	AccessEpoch         int64    `json:"access_epoch,omitempty"`
 	Permissions         []string `json:"permissions"`
+	DelegationHash      string   `json:"delegation_hash,omitempty"`
 	IssuedAt            string   `json:"issued_at"`
 	ExpiresAt           string   `json:"expires_at"`
 }
 
-func verifyConnectAccessLease(lease connectAccessLease, authorityPub ed25519.PublicKey, clusterID, namespaceID, serviceID string) error {
+type delegatedPublishLease struct {
+	Version                    string                  `json:"version"`
+	Kind                       string                  `json:"kind"`
+	ClusterID                  string                  `json:"cluster_id"`
+	NamespaceID                string                  `json:"namespace_id"`
+	ServiceID                  string                  `json:"service_id"`
+	ServicePublicKey           string                  `json:"service_public_key"`
+	PublisherPeerID            string                  `json:"publisher_peer_id"`
+	PublisherInstancePublicKey string                  `json:"publisher_instance_public_key,omitempty"`
+	RequestedCapabilities      []string                `json:"requested_capabilities"`
+	Nonce                      string                  `json:"nonce"`
+	PublishEpoch               int64                   `json:"publish_epoch,omitempty"`
+	IssuedAt                   time.Time               `json:"issued_at"`
+	ExpiresAt                  time.Time               `json:"expires_at"`
+	ServiceClaim               capability.ServiceClaim `json:"service_claim"`
+	ServiceOwnerSignature      []byte                  `json:"service_owner_signature,omitempty"`
+	Signature                  []byte                  `json:"signature"`
+}
+
+func verifyConnectAccessLease(lease connectAccessLease, authorityPub ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error {
 	if lease.Kind != connectAccessLeaseKind {
 		return fmt.Errorf("unsupported connect access lease kind %q", lease.Kind)
 	}
@@ -240,6 +263,20 @@ func verifyConnectAccessLease(lease connectAccessLease, authorityPub ed25519.Pub
 	}
 	if lease.ServiceID != serviceID {
 		return fmt.Errorf("connect lease service id mismatch: got %q want %q", lease.ServiceID, serviceID)
+	}
+	var signerPub ed25519.PublicKey = authorityPub
+	if len(lease.DelegationPublishLease) > 0 {
+		delegation, err := parseAndVerifyDelegatedPublishLease(lease.DelegationPublishLease, authorityPub, clusterID, namespaceID, serviceID, servicePeerID)
+		if err != nil {
+			return err
+		}
+		if !publishLeaseAllowsDelegatedConnect(delegation.RequestedCapabilities) {
+			return fmt.Errorf("publish lease does not allow delegated connect lease minting")
+		}
+		signerPub, err = serviceidentity.DecodePublicKey(delegation.ServicePublicKey)
+		if err != nil {
+			return err
+		}
 	}
 	if !connectLeaseHasConnectPermission(lease.Permissions) {
 		return fmt.Errorf("connect lease missing connect permission")
@@ -264,7 +301,7 @@ func verifyConnectAccessLease(lease connectAccessLease, authorityPub ed25519.Pub
 	if len(lease.Signature) == 0 {
 		return fmt.Errorf("connect lease signature is required")
 	}
-	if !ed25519.Verify(authorityPub, payload, lease.Signature) {
+	if !ed25519.Verify(signerPub, payload, lease.Signature) {
 		return fmt.Errorf("invalid connect lease signature")
 	}
 	return nil
@@ -286,9 +323,112 @@ func canonicalConnectAccessLeaseBytes(lease connectAccessLease) ([]byte, error) 
 		ClientKeyThumbprint: lease.ClientKeyThumbprint,
 		AccessEpoch:         lease.AccessEpoch,
 		Permissions:         perms,
+		DelegationHash:      connectLeaseDelegationHash(lease.DelegationPublishLease),
 		IssuedAt:            lease.IssuedAt.UTC().Format(time.RFC3339Nano),
 		ExpiresAt:           lease.ExpiresAt.UTC().Format(time.RFC3339Nano),
 	})
+}
+
+func parseAndVerifyDelegatedPublishLease(raw []byte, authorityPub ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) (delegatedPublishLease, error) {
+	var lease delegatedPublishLease
+	if err := json.Unmarshal(raw, &lease); err != nil {
+		return delegatedPublishLease{}, err
+	}
+	if lease.Kind != "publish-lease" {
+		return delegatedPublishLease{}, fmt.Errorf("unsupported publish lease kind %q", lease.Kind)
+	}
+	if lease.ClusterID != clusterID {
+		return delegatedPublishLease{}, fmt.Errorf("cluster id mismatch: got %q want %q", lease.ClusterID, clusterID)
+	}
+	if lease.NamespaceID != namespaceID {
+		return delegatedPublishLease{}, fmt.Errorf("namespace id mismatch: got %q want %q", lease.NamespaceID, namespaceID)
+	}
+	if lease.ServiceID != serviceID {
+		return delegatedPublishLease{}, fmt.Errorf("service id mismatch: got %q want %q", lease.ServiceID, serviceID)
+	}
+	if lease.PublisherPeerID != servicePeerID {
+		return delegatedPublishLease{}, fmt.Errorf("publisher peer id mismatch: got %q want %q", lease.PublisherPeerID, servicePeerID)
+	}
+	if lease.ServicePublicKey == "" {
+		return delegatedPublishLease{}, fmt.Errorf("service public key is required")
+	}
+	pub, err := serviceidentity.DecodePublicKey(lease.ServicePublicKey)
+	if err != nil {
+		return delegatedPublishLease{}, err
+	}
+	if err := serviceidentity.MatchServiceID(pub, serviceID); err != nil {
+		return delegatedPublishLease{}, err
+	}
+	if lease.ExpiresAt.IsZero() || time.Now().UTC().After(lease.ExpiresAt.UTC()) {
+		return delegatedPublishLease{}, fmt.Errorf("publish lease expired")
+	}
+	if err := capability.VerifyServiceClaim(lease.ServiceClaim, authorityPub, clusterID, namespaceID, serviceID, servicePeerID); err != nil {
+		return delegatedPublishLease{}, err
+	}
+	payload, err := canonicalDelegatedPublishLeaseBytes(lease)
+	if err != nil {
+		return delegatedPublishLease{}, err
+	}
+	if len(lease.Signature) == 0 || !ed25519.Verify(authorityPub, payload, lease.Signature) {
+		return delegatedPublishLease{}, fmt.Errorf("invalid publish lease signature")
+	}
+	return lease, nil
+}
+
+func canonicalDelegatedPublishLeaseBytes(lease delegatedPublishLease) ([]byte, error) {
+	caps := append([]string(nil), lease.RequestedCapabilities...)
+	sort.Strings(caps)
+	payload := struct {
+		Version                    string                  `json:"version"`
+		Kind                       string                  `json:"kind"`
+		ClusterID                  string                  `json:"cluster_id"`
+		NamespaceID                string                  `json:"namespace_id"`
+		ServiceID                  string                  `json:"service_id"`
+		ServicePublicKey           string                  `json:"service_public_key"`
+		PublisherPeerID            string                  `json:"publisher_peer_id"`
+		PublisherInstancePublicKey string                  `json:"publisher_instance_public_key,omitempty"`
+		RequestedCapabilities      []string                `json:"requested_capabilities"`
+		Nonce                      string                  `json:"nonce"`
+		PublishEpoch               int64                   `json:"publish_epoch,omitempty"`
+		IssuedAt                   time.Time               `json:"issued_at"`
+		ExpiresAt                  time.Time               `json:"expires_at"`
+		ServiceClaim               capability.ServiceClaim `json:"service_claim"`
+		ServiceOwnerSignature      []byte                  `json:"service_owner_signature,omitempty"`
+	}{
+		Version:                    lease.Version,
+		Kind:                       lease.Kind,
+		ClusterID:                  lease.ClusterID,
+		NamespaceID:                lease.NamespaceID,
+		ServiceID:                  lease.ServiceID,
+		ServicePublicKey:           lease.ServicePublicKey,
+		PublisherPeerID:            lease.PublisherPeerID,
+		PublisherInstancePublicKey: lease.PublisherInstancePublicKey,
+		RequestedCapabilities:      caps,
+		Nonce:                      lease.Nonce,
+		PublishEpoch:               lease.PublishEpoch,
+		IssuedAt:                   lease.IssuedAt.UTC(),
+		ExpiresAt:                  lease.ExpiresAt.UTC(),
+		ServiceClaim:               lease.ServiceClaim,
+		ServiceOwnerSignature:      lease.ServiceOwnerSignature,
+	}
+	return json.Marshal(payload)
+}
+
+func publishLeaseAllowsDelegatedConnect(perms []string) bool {
+	for _, perm := range perms {
+		if perm == capability.PermissionShareMint || perm == capability.PermissionConnect {
+			return true
+		}
+	}
+	return false
+}
+
+func connectLeaseDelegationHash(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	h := sha256.Sum256(bytes.TrimSpace(raw))
+	return base64.RawURLEncoding.EncodeToString(h[:])
 }
 
 func connectClientKeyThumbprint(clientPublicKey string) (string, error) {

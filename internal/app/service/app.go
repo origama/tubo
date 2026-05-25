@@ -42,6 +42,7 @@ type Config struct {
 	AuthorityPrivateKeyFile                                                                           string
 	ClusterName                                                                                       string
 	ServiceID                                                                                         string
+	ServiceOwnerKeyFile                                                                               string
 	ConnectPolicy                                                                                     string
 	GrantService                                                                                      *grantspkg.GrantServiceEndpoint
 	MembershipCapabilityFile                                                                          string
@@ -127,13 +128,13 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 			_ = h.Close()
 			return nil, fmt.Errorf("parse authority public key: %w", err)
 		}
-		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), Replay: p2p.NewConnectProofReplayCache(1024)}
+		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), ServicePeerID: h.ID().String(), Replay: p2p.NewConnectProofReplayCache(1024)}
 	}
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
 	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
 	grantEndpointEnabled := false
 	if cfg.DiscoveryEnabled {
-		grantEndpoint, err := newServiceGrantEndpoint(cfg, resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName))
+		grantEndpoint, err := newServiceGrantEndpoint(cfg, resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), h.ID().String())
 		if err != nil {
 			_ = h.Close()
 			return nil, fmt.Errorf("configure service grant endpoint: %w", err)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/origama/tubo/internal/capability"
+	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -27,39 +28,41 @@ const (
 )
 
 type ConnectAccessLease struct {
-	Version             string    `json:"version"`
-	Kind                string    `json:"kind"`
-	JTI                 string    `json:"jti"`
-	SessionID           string    `json:"session_id"`
-	ShareInviteJTI      string    `json:"share_invite_jti,omitempty"`
-	ClusterID           string    `json:"cluster_id"`
-	NamespaceID         string    `json:"namespace_id"`
-	ServiceID           string    `json:"service_id"`
-	ClientPublicKey     string    `json:"client_public_key"`
-	ClientKeyThumbprint string    `json:"client_key_thumbprint"`
-	AccessEpoch         int64     `json:"access_epoch,omitempty"`
-	Permissions         []string  `json:"permissions"`
-	IssuedAt            time.Time `json:"issued_at"`
-	ExpiresAt           time.Time `json:"expires_at"`
-	Signature           []byte    `json:"signature,omitempty"`
+	Version                string    `json:"version"`
+	Kind                   string    `json:"kind"`
+	JTI                    string    `json:"jti"`
+	SessionID              string    `json:"session_id"`
+	ShareInviteJTI         string    `json:"share_invite_jti,omitempty"`
+	ClusterID              string    `json:"cluster_id"`
+	NamespaceID            string    `json:"namespace_id"`
+	ServiceID              string    `json:"service_id"`
+	ClientPublicKey        string    `json:"client_public_key"`
+	ClientKeyThumbprint    string    `json:"client_key_thumbprint"`
+	AccessEpoch            int64     `json:"access_epoch,omitempty"`
+	Permissions            []string  `json:"permissions"`
+	DelegationPublishLease []byte    `json:"delegation_publish_lease,omitempty"`
+	IssuedAt               time.Time `json:"issued_at"`
+	ExpiresAt              time.Time `json:"expires_at"`
+	Signature              []byte    `json:"signature,omitempty"`
 }
 
 type ConnectRefreshLease struct {
-	Version             string    `json:"version"`
-	Kind                string    `json:"kind"`
-	JTI                 string    `json:"jti"`
-	SessionID           string    `json:"session_id"`
-	ShareInviteJTI      string    `json:"share_invite_jti,omitempty"`
-	ClusterID           string    `json:"cluster_id"`
-	NamespaceID         string    `json:"namespace_id"`
-	ServiceID           string    `json:"service_id"`
-	ClientPublicKey     string    `json:"client_public_key"`
-	ClientKeyThumbprint string    `json:"client_key_thumbprint"`
-	AccessEpoch         int64     `json:"access_epoch,omitempty"`
-	Permissions         []string  `json:"permissions"`
-	IssuedAt            time.Time `json:"issued_at"`
-	ExpiresAt           time.Time `json:"expires_at"`
-	Signature           []byte    `json:"signature,omitempty"`
+	Version                string    `json:"version"`
+	Kind                   string    `json:"kind"`
+	JTI                    string    `json:"jti"`
+	SessionID              string    `json:"session_id"`
+	ShareInviteJTI         string    `json:"share_invite_jti,omitempty"`
+	ClusterID              string    `json:"cluster_id"`
+	NamespaceID            string    `json:"namespace_id"`
+	ServiceID              string    `json:"service_id"`
+	ClientPublicKey        string    `json:"client_public_key"`
+	ClientKeyThumbprint    string    `json:"client_key_thumbprint"`
+	AccessEpoch            int64     `json:"access_epoch,omitempty"`
+	Permissions            []string  `json:"permissions"`
+	DelegationPublishLease []byte    `json:"delegation_publish_lease,omitempty"`
+	IssuedAt               time.Time `json:"issued_at"`
+	ExpiresAt              time.Time `json:"expires_at"`
+	Signature              []byte    `json:"signature,omitempty"`
 }
 
 type ConnectLeaseArtifacts struct {
@@ -80,6 +83,7 @@ type canonicalConnectLease struct {
 	ClientKeyThumbprint string   `json:"client_key_thumbprint"`
 	AccessEpoch         int64    `json:"access_epoch,omitempty"`
 	Permissions         []string `json:"permissions"`
+	DelegationHash      string   `json:"delegation_hash,omitempty"`
 	IssuedAt            string   `json:"issued_at"`
 	ExpiresAt           string   `json:"expires_at"`
 }
@@ -144,6 +148,77 @@ func BuildConnectLeaseArtifacts(priv ed25519.PrivateKey, invite ServiceSharePayl
 	return ConnectLeaseArtifacts{AccessLease: access, RefreshLease: refresh}, nil
 }
 
+func BuildDelegatedConnectLeaseArtifacts(authorityPub ed25519.PublicKey, ownerPriv ed25519.PrivateKey, delegation PublishLease, shareInviteJTI, clientPublicKey string, accessEpoch int64, accessTTL, refreshTTL time.Duration) (ConnectLeaseArtifacts, error) {
+	if len(ownerPriv) == 0 {
+		return ConnectLeaseArtifacts{}, errors.New("service owner private key is required")
+	}
+	if err := VerifyPublishLease(delegation, authorityPub, delegation.ClusterID, delegation.NamespaceID, delegation.ServiceID, delegation.PublisherPeerID); err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	if !publishLeaseAllowsDelegatedConnect(delegation.RequestedCapabilities) {
+		return ConnectLeaseArtifacts{}, errors.New("publish lease does not allow delegated connect lease minting")
+	}
+	if accessTTL <= 0 {
+		accessTTL = DefaultConnectAccessLeaseTTL
+	}
+	if refreshTTL <= 0 {
+		refreshTTL = DefaultConnectRefreshLeaseTTL
+	}
+	if refreshTTL < accessTTL {
+		accessTTL = refreshTTL
+	}
+	delegationBytes, err := json.Marshal(delegation)
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	thumbprint, err := ConnectClientKeyThumbprint(clientPublicKey)
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	now := time.Now().UTC()
+	if now.After(delegation.ExpiresAt.UTC()) {
+		return ConnectLeaseArtifacts{}, errors.New("publish lease expired")
+	}
+	sessionID, err := newConnectLeaseJTI("cs")
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	refreshJTI, err := newConnectLeaseJTI("cr")
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	accessJTI, err := newConnectLeaseJTI("ca")
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	refresh := ConnectRefreshLease{
+		Version:                ConnectAccessLeaseVersion,
+		Kind:                   ConnectRefreshLeaseKind,
+		JTI:                    refreshJTI,
+		SessionID:              sessionID,
+		ShareInviteJTI:         shareInviteJTI,
+		ClusterID:              delegation.ClusterID,
+		NamespaceID:            delegation.NamespaceID,
+		ServiceID:              delegation.ServiceID,
+		ClientPublicKey:        strings.TrimSpace(clientPublicKey),
+		ClientKeyThumbprint:    thumbprint,
+		AccessEpoch:            accessEpoch,
+		Permissions:            []string{capability.PermissionConnect},
+		DelegationPublishLease: append([]byte(nil), delegationBytes...),
+		IssuedAt:               now,
+		ExpiresAt:              minTime(now.Add(refreshTTL), delegation.ExpiresAt.UTC()),
+	}
+	refresh, err = SignConnectRefreshLease(refresh, ownerPriv)
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	access, err := signConnectAccessForRefresh(ownerPriv, refresh, accessJTI, accessTTL, now)
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	return ConnectLeaseArtifacts{AccessLease: access, RefreshLease: refresh}, nil
+}
+
 func RefreshConnectAccessLease(priv ed25519.PrivateKey, refresh ConnectRefreshLease, accessTTL time.Duration) (ConnectAccessLease, error) {
 	if len(priv) == 0 {
 		return ConnectAccessLease{}, errors.New("private key is required")
@@ -160,6 +235,23 @@ func RefreshConnectAccessLease(priv ed25519.PrivateKey, refresh ConnectRefreshLe
 		return ConnectAccessLease{}, err
 	}
 	return signConnectAccessForRefresh(priv, refresh, jti, accessTTL, time.Now().UTC())
+}
+
+func RefreshDelegatedConnectAccessLease(authorityPub ed25519.PublicKey, ownerPriv ed25519.PrivateKey, refresh ConnectRefreshLease, accessTTL time.Duration, servicePeerID string) (ConnectAccessLease, error) {
+	if len(ownerPriv) == 0 {
+		return ConnectAccessLease{}, errors.New("service owner private key is required")
+	}
+	if err := VerifyDelegatedConnectRefreshLease(refresh, authorityPub, refresh.ClusterID, refresh.NamespaceID, refresh.ServiceID, servicePeerID); err != nil {
+		return ConnectAccessLease{}, err
+	}
+	if accessTTL <= 0 {
+		accessTTL = DefaultConnectAccessLeaseTTL
+	}
+	jti, err := newConnectLeaseJTI("ca")
+	if err != nil {
+		return ConnectAccessLease{}, err
+	}
+	return signConnectAccessForRefresh(ownerPriv, refresh, jti, accessTTL, time.Now().UTC())
 }
 
 func SignConnectAccessLease(lease ConnectAccessLease, priv ed25519.PrivateKey) (ConnectAccessLease, error) {
@@ -215,7 +307,25 @@ func VerifyConnectAccessLease(lease ConnectAccessLease, authorityPub ed25519.Pub
 	if lease.Kind != ConnectAccessLeaseKind {
 		return fmt.Errorf("unsupported connect access lease kind %q", lease.Kind)
 	}
-	return verifyConnectLease(canonicalAccessLeaseBytes, lease, authorityPub, clusterID, namespaceID, serviceID)
+	return verifyConnectLease(canonicalAccessLeaseBytes, lease, authorityPub, clusterID, namespaceID, serviceID, delegationHash(lease.DelegationPublishLease))
+}
+
+func VerifyDelegatedConnectAccessLease(lease ConnectAccessLease, authorityPub ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error {
+	if len(lease.DelegationPublishLease) == 0 {
+		return VerifyConnectAccessLease(lease, authorityPub, clusterID, namespaceID, serviceID)
+	}
+	delegation, err := ParseAndVerifyPublishLeaseBytes(lease.DelegationPublishLease, authorityPub, clusterID, namespaceID, serviceID, servicePeerID)
+	if err != nil {
+		return err
+	}
+	if !publishLeaseAllowsDelegatedConnect(delegation.RequestedCapabilities) {
+		return errors.New("publish lease does not allow delegated connect lease minting")
+	}
+	signerPub, err := serviceidentity.DecodePublicKey(delegation.ServicePublicKey)
+	if err != nil {
+		return err
+	}
+	return verifyConnectLease(canonicalAccessLeaseBytes, lease, signerPub, clusterID, namespaceID, serviceID, delegationHash(lease.DelegationPublishLease))
 }
 
 func VerifyConnectRefreshLease(lease ConnectRefreshLease, authorityPub ed25519.PublicKey, clusterID, namespaceID, serviceID string) error {
@@ -225,7 +335,25 @@ func VerifyConnectRefreshLease(lease ConnectRefreshLease, authorityPub ed25519.P
 	if lease.Kind != ConnectRefreshLeaseKind {
 		return fmt.Errorf("unsupported connect refresh lease kind %q", lease.Kind)
 	}
-	return verifyConnectLease(canonicalRefreshLeaseBytes, lease, authorityPub, clusterID, namespaceID, serviceID)
+	return verifyConnectLease(canonicalRefreshLeaseBytes, lease, authorityPub, clusterID, namespaceID, serviceID, delegationHash(lease.DelegationPublishLease))
+}
+
+func VerifyDelegatedConnectRefreshLease(lease ConnectRefreshLease, authorityPub ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error {
+	if len(lease.DelegationPublishLease) == 0 {
+		return VerifyConnectRefreshLease(lease, authorityPub, clusterID, namespaceID, serviceID)
+	}
+	delegation, err := ParseAndVerifyPublishLeaseBytes(lease.DelegationPublishLease, authorityPub, clusterID, namespaceID, serviceID, servicePeerID)
+	if err != nil {
+		return err
+	}
+	if !publishLeaseAllowsDelegatedConnect(delegation.RequestedCapabilities) {
+		return errors.New("publish lease does not allow delegated connect lease minting")
+	}
+	signerPub, err := serviceidentity.DecodePublicKey(delegation.ServicePublicKey)
+	if err != nil {
+		return err
+	}
+	return verifyConnectLease(canonicalRefreshLeaseBytes, lease, signerPub, clusterID, namespaceID, serviceID, delegationHash(lease.DelegationPublishLease))
 }
 
 func ConnectClientKeyThumbprint(clientPublicKey string) (string, error) {
@@ -263,24 +391,25 @@ func signConnectAccessForRefresh(priv ed25519.PrivateKey, refresh ConnectRefresh
 		return ConnectAccessLease{}, errors.New("connect refresh lease expired; ask the service owner for a fresh token/invite")
 	}
 	return SignConnectAccessLease(ConnectAccessLease{
-		JTI:                 jti,
-		SessionID:           refresh.SessionID,
-		ShareInviteJTI:      refresh.ShareInviteJTI,
-		ClusterID:           refresh.ClusterID,
-		NamespaceID:         refresh.NamespaceID,
-		ServiceID:           refresh.ServiceID,
-		ClientPublicKey:     refresh.ClientPublicKey,
-		ClientKeyThumbprint: refresh.ClientKeyThumbprint,
-		AccessEpoch:         refresh.AccessEpoch,
-		Permissions:         []string{capability.PermissionConnect},
-		IssuedAt:            now.UTC(),
-		ExpiresAt:           expiresAt,
+		JTI:                    jti,
+		SessionID:              refresh.SessionID,
+		ShareInviteJTI:         refresh.ShareInviteJTI,
+		ClusterID:              refresh.ClusterID,
+		NamespaceID:            refresh.NamespaceID,
+		ServiceID:              refresh.ServiceID,
+		ClientPublicKey:        refresh.ClientPublicKey,
+		ClientKeyThumbprint:    refresh.ClientKeyThumbprint,
+		AccessEpoch:            refresh.AccessEpoch,
+		Permissions:            []string{capability.PermissionConnect},
+		DelegationPublishLease: append([]byte(nil), refresh.DelegationPublishLease...),
+		IssuedAt:               now.UTC(),
+		ExpiresAt:              expiresAt,
 	}, priv)
 }
 
-func verifyConnectLease[T ConnectAccessLease | ConnectRefreshLease](canonical func(T) ([]byte, error), lease T, authorityPub ed25519.PublicKey, clusterID, namespaceID, serviceID string) error {
+func verifyConnectLease[T ConnectAccessLease | ConnectRefreshLease](canonical func(T) ([]byte, error), lease T, signerPub ed25519.PublicKey, clusterID, namespaceID, serviceID, expectedDelegationHash string) error {
 	view := any(lease)
-	var version, kind, actualCluster, actualNamespace, actualService, clientPublicKey, clientThumbprint string
+	var version, kind, actualCluster, actualNamespace, actualService, clientPublicKey, clientThumbprint, actualDelegationHash string
 	var permissions []string
 	var expiresAt time.Time
 	var signature []byte
@@ -290,11 +419,13 @@ func verifyConnectLease[T ConnectAccessLease | ConnectRefreshLease](canonical fu
 		actualCluster, actualNamespace, actualService = v.ClusterID, v.NamespaceID, v.ServiceID
 		clientPublicKey, clientThumbprint = v.ClientPublicKey, v.ClientKeyThumbprint
 		permissions, expiresAt, signature = v.Permissions, v.ExpiresAt, v.Signature
+		actualDelegationHash = delegationHash(v.DelegationPublishLease)
 	case ConnectRefreshLease:
 		version, kind = v.Version, v.Kind
 		actualCluster, actualNamespace, actualService = v.ClusterID, v.NamespaceID, v.ServiceID
 		clientPublicKey, clientThumbprint = v.ClientPublicKey, v.ClientKeyThumbprint
 		permissions, expiresAt, signature = v.Permissions, v.ExpiresAt, v.Signature
+		actualDelegationHash = delegationHash(v.DelegationPublishLease)
 	default:
 		return errors.New("unsupported connect lease type")
 	}
@@ -309,6 +440,9 @@ func verifyConnectLease[T ConnectAccessLease | ConnectRefreshLease](canonical fu
 	}
 	if actualService != serviceID {
 		return fmt.Errorf("connect lease service id mismatch: got %q want %q", actualService, serviceID)
+	}
+	if expectedDelegationHash != actualDelegationHash {
+		return errors.New("connect lease delegation mismatch")
 	}
 	if !hasConnectPermission(permissions) {
 		return errors.New("connect lease missing connect permission")
@@ -333,7 +467,7 @@ func verifyConnectLease[T ConnectAccessLease | ConnectRefreshLease](canonical fu
 	if len(signature) == 0 {
 		return errors.New("connect lease signature is required")
 	}
-	if !ed25519.Verify(authorityPub, payload, signature) {
+	if !ed25519.Verify(signerPub, payload, signature) {
 		return errors.New("invalid connect lease signature")
 	}
 	return nil
@@ -353,6 +487,7 @@ func canonicalAccessLeaseBytes(lease ConnectAccessLease) ([]byte, error) {
 		ClientKeyThumbprint: lease.ClientKeyThumbprint,
 		AccessEpoch:         lease.AccessEpoch,
 		Permissions:         canonicalConnectLeasePermissions(lease.Permissions),
+		DelegationHash:      delegationHash(lease.DelegationPublishLease),
 		IssuedAt:            canonicalConnectLeaseTime(lease.IssuedAt),
 		ExpiresAt:           canonicalConnectLeaseTime(lease.ExpiresAt),
 	})
@@ -372,6 +507,7 @@ func canonicalRefreshLeaseBytes(lease ConnectRefreshLease) ([]byte, error) {
 		ClientKeyThumbprint: lease.ClientKeyThumbprint,
 		AccessEpoch:         lease.AccessEpoch,
 		Permissions:         canonicalConnectLeasePermissions(lease.Permissions),
+		DelegationHash:      delegationHash(lease.DelegationPublishLease),
 		IssuedAt:            canonicalConnectLeaseTime(lease.IssuedAt),
 		ExpiresAt:           canonicalConnectLeaseTime(lease.ExpiresAt),
 	})
@@ -408,6 +544,30 @@ func hasConnectPermission(perms []string) bool {
 		}
 	}
 	return false
+}
+
+func delegationHash(b []byte) string {
+	if len(b) == 0 {
+		return ""
+	}
+	h := sha256.Sum256(bytes.TrimSpace(b))
+	return base64.RawURLEncoding.EncodeToString(h[:])
+}
+
+func publishLeaseAllowsDelegatedConnect(perms []string) bool {
+	for _, perm := range perms {
+		if perm == capability.PermissionShareMint || perm == capability.PermissionConnect {
+			return true
+		}
+	}
+	return false
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
 }
 
 func newConnectLeaseJTI(prefix string) (string, error) {

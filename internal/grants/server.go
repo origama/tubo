@@ -9,6 +9,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	capability "github.com/origama/tubo/internal/capability"
 )
 
 const (
@@ -18,23 +19,23 @@ const (
 )
 
 type ServerConfig struct {
-	ClusterName            string
-	ClusterID              string
-	NamespaceID            string
-	Store                  *Store
-	Now                    func() time.Time
-	MaxPendingRequests     int
-	MaxPendingPerRequester int
-	MaxPendingPerService   int
-	AutoApprove            bool
-	AuthorityPrivateKey    ed25519.PrivateKey
-	ClaimTTL               time.Duration
-	ServiceShareTTL        time.Duration
+	ClusterName               string
+	ClusterID                 string
+	NamespaceID               string
+	Store                     *Store
+	Now                       func() time.Time
+	MaxPendingRequests        int
+	MaxPendingPerRequester    int
+	MaxPendingPerService      int
+	AutoApprove               bool
+	AuthorityPrivateKey       ed25519.PrivateKey
+	ClaimTTL                  time.Duration
+	ServiceShareTTL           time.Duration
 	GrantServicePeers         []string
 	GrantServicePeersProvider func() []string
 	ConnectAccessTTL          time.Duration
-	ConnectRefreshTTL      time.Duration
-	Revocations            *RevocationStore
+	ConnectRefreshTTL         time.Duration
+	Revocations               *RevocationStore
 }
 
 type Server struct {
@@ -346,6 +347,20 @@ func RedeemShareInvite(ctx context.Context, h host.Host, info peer.AddrInfo, tok
 	}
 	if resp.Type != TypeShareRedeem || resp.ConnectAccessLease == nil || resp.ConnectRefreshLease == nil {
 		return ConnectLeaseArtifacts{}, fmt.Errorf("invalid share invite redemption response")
+	}
+	return ConnectLeaseArtifacts{AccessLease: *resp.ConnectAccessLease, RefreshLease: *resp.ConnectRefreshLease}, nil
+}
+
+func RequestConnectLease(ctx context.Context, h host.Host, info peer.AddrInfo, clusterID, namespaceID, serviceID, clientPublicKey string, membership *capability.MembershipCapability) (ConnectLeaseArtifacts, error) {
+	resp, err := Query(ctx, h, info, Message{Type: TypeConnectRequest, Version: VersionV1, ClusterID: clusterID, NamespaceID: namespaceID, ServiceID: serviceID, ClientPublicKey: clientPublicKey, MembershipCapability: membership})
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	if resp.Type == TypeDenied || resp.Type == TypeExpired {
+		return ConnectLeaseArtifacts{}, fmt.Errorf("%s", resp.Reason)
+	}
+	if resp.Type != TypeConnectGranted || resp.ConnectAccessLease == nil || resp.ConnectRefreshLease == nil {
+		return ConnectLeaseArtifacts{}, fmt.Errorf("invalid connect lease response")
 	}
 	return ConnectLeaseArtifacts{AccessLease: *resp.ConnectAccessLease, RefreshLease: *resp.ConnectRefreshLease}, nil
 }

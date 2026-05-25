@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-25 12:56 UTC
+> **Last updated:** 2026-05-25 18:46 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -195,9 +195,9 @@
 | C.91 | Issue #148 — extend Discovery V2 with connect metadata | ✅ | Done on `0.7.0.b0`: Discovery V2 payload/query/cache now carry optional `connect_policy` + `grant_service`, relay/query/admin propagation stays backward-compatible, and local-only grant peers are filtered before they enter advertised metadata. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.92 | Issue #149 — propagate connect metadata through cache/catalog/CLI | ✅ | Done on `0.7.0.b0`: catalog/admin/query conversions now preserve connect metadata, `get services` surfaces an `ACCESS` column plus JSON `connect_policy`/`grant_service`, and `describe service/...` shows connect policy + grant endpoint details when present. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.93 | Issue #150 — expose attached-service connect-grant endpoints in discovery-enabled namespaces | ✅ | Done on `0.7.0.b0`: `attach` now registers a service-scoped `/tubo/grants/1.0` endpoint on the same peer as the attached service, Discovery V2 publishes filtered `grant_service` metadata for that endpoint, unsupported/non-scoped operations are rejected without implementing the full connect policy evaluator from #152 yet, and coverage now includes relay-aware metadata plus second-peer reachability. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
-| C.94 | Issue #151 — delegated connect-lease signing/validation for collaboration namespaces | 🔲 | Not started. |
-| C.95 | Issue #152 — connect-grant endpoint policy evaluation | 🔲 | Not started. |
-| C.96 | Issue #153 — `connect <service>` collaboration discovery/grant/lease/proof flow | 🔲 | Not started. |
+| C.94 | Issue #151 — delegated connect-lease signing/validation for collaboration namespaces | ✅ | Done on `0.7.0.b0`: collaboration services can now mint delegated connect leases with the local service owner key, backed by an authority-signed publish lease used as delegation material; service-side proof validation accepts delegated leases only with a valid authority -> publish lease -> owner-signed connect lease chain and still rejects missing delegation, wrong scope/service, expired leases, and requester/PoP mismatches. |
+| C.95 | Issue #152 — connect-grant endpoint policy evaluation | ✅ | Done on `0.7.0.b0`: attached-service grant endpoints now enforce `invite_only`, `namespace_members`, and `public` branches for discovery-driven connect requests; `invite_only` requires tokens, `namespace_members` requires a valid membership capability with `connect`, `public` is allowed with a simple in-memory rate limit, and deny responses stay actionable. |
+| C.96 | Issue #153 — `connect <service>` collaboration discovery/grant/lease/proof flow | ✅ | Done on `0.7.0.b0`: `connect <service>` now consumes discovery `grant_service` metadata, requests a connect lease from the advertised endpoint, starts the bridge with access/refresh leases, and reaches the service by name without an invite token in discovery-enabled collaboration namespaces; errors now distinguish grant authorization/unreachability from discovery misses and include attempted grant peers. |
 | C.97 | Issue #154 — connect permission + member invitation/import flows | 🔲 | Not started. |
 | C.98 | Issue #155 — collaboration-namespace E2E coverage | 🔲 | Not started. |
 

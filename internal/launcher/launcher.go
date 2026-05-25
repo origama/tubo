@@ -91,6 +91,7 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 			Seed:                    authz.Service.ServiceSeed,
 			ServiceName:             cfg.Service.Name,
 			ServiceID:               authz.Service.ServiceID,
+			ServiceOwnerKeyFile:     authz.Service.ServiceOwnerKeyFile,
 			Target:                  cfg.Service.Target,
 			HealthListen:            cfg.HealthListen,
 			PrivateKeyFile:          cfg.Network.PrivateKeyFile,

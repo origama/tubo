@@ -10,6 +10,7 @@ import (
 	"time"
 
 	hostpkg "github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"golang.org/x/crypto/ssh"
@@ -76,6 +77,58 @@ func TestBridgeReportsExpiredRefreshLeaseClearly(t *testing.T) {
 	_, err = app.connectProof()
 	if err == nil || !strings.Contains(err.Error(), "fresh token/invite") {
 		t.Fatalf("expected fresh token hint, got %v", err)
+	}
+}
+
+func TestBridgeDiscoveryConnectLeaseErrorsMentionAttemptedGrantPeers(t *testing.T) {
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-discovery-service", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	_, err = New(context.Background(), Config{
+		Listen:             "127.0.0.1:0",
+		Seed:               "bridge-discovery-client",
+		P2PListen:          "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:        p2p.PeerAddrs(serviceHost)[0],
+		ConnectClusterID:   "cluster-123",
+		ConnectNamespaceID: "default",
+		ConnectServiceID:   "svc-123",
+		ConnectGrantPeers:  []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWAttemptedGrantPeer"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "12D3KooWAttemptedGrantPeer") {
+		t.Fatalf("expected attempted grant peer in error, got %v", err)
+	}
+}
+
+func TestBridgeDiscoveryConnectAuthorizationFailureIsReturned(t *testing.T) {
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-discovery-service-authz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	grantHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-discovery-grant-authz", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer grantHost.Close()
+	grantHost.SetStreamHandler(grantspkg.ProtocolID, func(stream network.Stream) {
+		defer stream.Close()
+		_, _ = grantspkg.DecodeMessage(stream)
+		_ = grantspkg.EncodeMessage(stream, grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: "authz", Reason: "namespace_members policy denied connect"})
+	})
+	_, err = New(context.Background(), Config{
+		Listen:             "127.0.0.1:0",
+		Seed:               "bridge-discovery-client-authz",
+		P2PListen:          "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:        p2p.PeerAddrs(serviceHost)[0],
+		ConnectClusterID:   "cluster-123",
+		ConnectNamespaceID: "default",
+		ConnectServiceID:   "svc-123",
+		ConnectGrantPeers:  []string{p2p.PeerAddrs(grantHost)[0]},
+	})
+	if err == nil || !strings.Contains(err.Error(), "denied connect") {
+		t.Fatalf("expected authorization failure, got %v", err)
 	}
 }
 
