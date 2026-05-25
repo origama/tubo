@@ -1417,6 +1417,103 @@ func TestServiceShareTokenAndConnectSetup(t *testing.T) {
 	}
 }
 
+func configurePublicDefaultScopeForTests(t *testing.T, configPath string, relayPeers []string) cfgpkg.Config {
+	t.Helper()
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentOverlay = joinDefaultNetworkName
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	if cfg.Overlays == nil {
+		cfg.Overlays = map[string]cfgpkg.Overlay{}
+	}
+	cfg.Overlays[joinDefaultNetworkName] = cfgpkg.Overlay{Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}
+	cfg.Network.RelayPeers = append([]string(nil), relayPeers...)
+	cfg.Network.BootstrapPeers = append([]string(nil), relayPeers...)
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	ns.Discovery = cfgpkg.NamespaceDiscoveryDisabled
+	ns.ConnectPolicy = cfgpkg.ConnectPolicyInviteOnly
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestLocalShareServicePublicDefaultIncludesServiceEndpoint(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	relayPeerID, err := p2p.PeerIDFromSeed("relay-public-default-share")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayPeer := "/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeerID.String()
+	cfg := configurePublicDefaultScopeForTests(t, configPath, []string{relayPeer})
+	serviceSeed := cfg.Clusters["home"].Namespaces["default"].Services["myapi"].ServiceSeed
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := parseAndVerifyServiceShareToken(extractServiceShareToken(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAddr := relayPeer + "/p2p-circuit/p2p/" + servicePeerID.String()
+	if payload.ServiceEndpoint.PeerID != servicePeerID.String() || len(payload.ServiceEndpoint.Addresses) != 1 || payload.ServiceEndpoint.Addresses[0] != wantAddr {
+		t.Fatalf("unexpected service endpoint payload: %#v", payload.ServiceEndpoint)
+	}
+}
+
+func TestLocalShareServicePublicDefaultRejectsMissingServiceEndpoint(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	configurePublicDefaultScopeForTests(t, configPath, nil)
+	_, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "2h"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "remote-dialable service endpoint") {
+		t.Fatalf("expected missing endpoint error, got %v", err)
+	}
+}
+
+func TestBuildAttachServiceShareTokenPublicDefaultRejectsMissingServiceEndpoint(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg := configurePublicDefaultScopeForTests(t, configPath, nil)
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if _, err := buildAttachServiceShareToken(cfg, cluster, "home", "default", "myapi", svc); err == nil || !strings.Contains(err.Error(), "remote-dialable service endpoint") {
+		t.Fatalf("expected missing endpoint error, got %v", err)
+	}
+}
+
 func writeCreateClusterConfig(t *testing.T) string {
 	t.Helper()
 	configHome := filepath.Join(t.TempDir(), "xdg")

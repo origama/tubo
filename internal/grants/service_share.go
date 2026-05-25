@@ -113,9 +113,19 @@ func SignServiceShareToken(payload ServiceSharePayload, priv ed25519.PrivateKey)
 }
 
 func BuildServiceShareArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID string, shareTTL time.Duration) (ServiceShareArtifacts, error) {
+	return BuildServiceShareArtifactsWithEndpoints(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, shareTTL, nil, "", nil)
+}
+
+func BuildServiceShareArtifactsWithEndpoints(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID string, shareTTL time.Duration, grantPeers []string, servicePeerID string, serviceAddresses []string) (ServiceShareArtifacts, error) {
 	payload, err := buildServiceSharePayload(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, shareTTL)
 	if err != nil {
 		return ServiceShareArtifacts{}, err
+	}
+	if len(grantPeers) > 0 {
+		payload.GrantService = GrantServiceEndpoint{Protocol: ProtocolID, Peers: append([]string(nil), grantPeers...)}
+	}
+	if strings.TrimSpace(servicePeerID) != "" && len(serviceAddresses) > 0 {
+		payload.ServiceEndpoint = ServiceEndpoint{PeerID: strings.TrimSpace(servicePeerID), Addresses: append([]string(nil), serviceAddresses...)}
 	}
 	token, err := SignServiceShareToken(payload, priv)
 	if err != nil {
@@ -322,7 +332,7 @@ func BuildApprovalArtifactsWithGrantService(priv ed25519.PrivateKey, clusterName
 	}
 	shareArtifacts, err := BuildShareInviteArtifactsFromLeaseWithEndpoints(priv, clusterName, leaseArtifacts.Lease, serviceName, shareTTL, grantPeers, servicePeerID, serviceAddresses)
 	if err != nil {
-		shareArtifacts, err = BuildServiceShareArtifacts(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, shareTTL)
+		shareArtifacts, err = BuildServiceShareArtifactsWithEndpoints(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, shareTTL, grantPeers, servicePeerID, serviceAddresses)
 		if err != nil {
 			return ApprovalArtifacts{}, err
 		}

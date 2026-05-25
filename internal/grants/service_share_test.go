@@ -208,6 +208,44 @@ func TestSignServiceShareTokenOmitsEmptyGrantServiceMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildServiceShareArtifactsWithEndpointsIncludesMetadata(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantPeers := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWGrant"}
+	serviceAddrs := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWService"}
+	artifacts, err := BuildServiceShareArtifactsWithEndpoints(priv, "home", "cluster-123", "default", "myapi", "service-myapi", time.Hour, grantPeers, "12D3KooWService", serviceAddrs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := decodeServiceShareTokenPayloadJSON(t, artifacts.Token)
+	if endpointValue, ok := raw["service_endpoint"]; !ok {
+		t.Fatal("expected service_endpoint metadata to be present")
+	} else if endpoint, ok := endpointValue.(map[string]any); !ok {
+		t.Fatalf("service_endpoint payload has unexpected type %T", endpointValue)
+	} else if endpoint["peer_id"] != "12D3KooWService" {
+		t.Fatalf("service_endpoint peer_id = %#v", endpoint["peer_id"])
+	}
+	if grantValue, ok := raw["grant_service"]; !ok {
+		t.Fatal("expected grant_service metadata to be present")
+	} else if grantService, ok := grantValue.(map[string]any); !ok {
+		t.Fatalf("grant_service payload has unexpected type %T", grantValue)
+	} else if grantService["protocol"] != ProtocolID {
+		t.Fatalf("grant_service protocol = %#v, want %q", grantService["protocol"], ProtocolID)
+	}
+	parsed, err := ParseAndVerifyServiceShareToken(artifacts.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ServiceEndpoint.PeerID != "12D3KooWService" || len(parsed.ServiceEndpoint.Addresses) != 1 || parsed.ServiceEndpoint.Addresses[0] != serviceAddrs[0] {
+		t.Fatalf("parsed service endpoint = %#v", parsed.ServiceEndpoint)
+	}
+	if parsed.GrantService.Protocol != ProtocolID || len(parsed.GrantService.Peers) != 1 || parsed.GrantService.Peers[0] != grantPeers[0] {
+		t.Fatalf("parsed grant service = %#v", parsed.GrantService)
+	}
+}
+
 func TestBuildShareInviteArtifactsWithGrantServiceIncludesMetadata(t *testing.T) {
 	_, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

@@ -16,6 +16,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
 )
 
@@ -103,12 +104,30 @@ func localShareServiceCmd(args []string) error {
 	if serviceID == "" {
 		serviceID, _ = serviceIdentityFor(cluster.ClusterID, scope.Namespace, name)
 	}
-	artifacts, err := grantspkg.BuildServiceShareArtifacts(privKey, scope.Cluster, cluster.ClusterID, scope.Namespace, name, serviceID, *expires)
+	requireEndpoint, err := shareTokenRequiresPublicEndpoint(cfg, scope.Cluster, scope.Namespace)
+	if err != nil {
+		return err
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		return err
+	}
+	serviceEndpointAddrs := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
+	var artifacts grantspkg.ServiceShareArtifacts
+	if requireEndpoint {
+		artifacts, err = grantspkg.BuildServiceShareArtifactsWithEndpoints(privKey, scope.Cluster, cluster.ClusterID, scope.Namespace, name, serviceID, *expires, nil, servicePeerID.String(), serviceEndpointAddrs)
+	} else {
+		artifacts, err = grantspkg.BuildServiceShareArtifacts(privKey, scope.Cluster, cluster.ClusterID, scope.Namespace, name, serviceID, *expires)
+	}
 	if err == nil && svc.ServicePublishLeaseFile != "" {
 		if leaseBytes, readErr := os.ReadFile(svc.ServicePublishLeaseFile); readErr == nil {
 			var lease grantspkg.PublishLease
 			if json.Unmarshal(leaseBytes, &lease) == nil {
-				if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLease(privKey, scope.Cluster, lease, name, *expires); inviteErr == nil {
+				if requireEndpoint {
+					if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, scope.Cluster, lease, name, *expires, nil, servicePeerID.String(), serviceEndpointAddrs); inviteErr == nil {
+						artifacts = invite
+					}
+				} else if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLease(privKey, scope.Cluster, lease, name, *expires); inviteErr == nil {
 					artifacts = invite
 				}
 			}
@@ -120,6 +139,11 @@ func localShareServiceCmd(args []string) error {
 	finalToken, err := finalizeAuthorityServiceShareToken(artifacts.Token, privKey, serviceID)
 	if err != nil {
 		return err
+	}
+	if requireEndpoint {
+		if err := requireShareTokenEndpointForPublicDefault(cfg, finalToken); err != nil {
+			return err
+		}
 	}
 	artifacts.Token = finalToken
 	result := serviceShareResult{

@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-24 23:49 UTC
+> **Last updated:** 2026-05-25 06:58 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -190,6 +190,7 @@
 | C.86 | Issue #144 — add unlisted attach mode for public default invite-only services | ✅ | Done on `0.7.0.b0`: launcher/service runtime now distinguish discoverable vs unlisted attach from effective scope policy; public-default `attach` skips GossipSub join, discovery query handler, publisher, and announcement loops while keeping relay reservations, health, stream handling, and connect-proof validation alive; attach output now states `visibility: unlisted` and `access: invite token required`; and runtime/launcher/CLI/integration coverage was updated accordingly. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.87 | Issue #145 — add self-contained remote-dialable service endpoints to share invites | ✅ | Done on `0.7.0.b0`: extended share-invite payloads with optional `service_endpoint` metadata (`peer_id`, `addresses`), kept old tokens parseable by omitting empty metadata, propagated filtered relay-aware service endpoint candidates through publish-grant submit/approval and local attach share-token minting, rejected public-default attach/share-token outputs that would otherwise lack a remote-dialable endpoint, and added unit/CLI coverage for endpoint filtering, token roundtrip, public-default endpoint enforcement, and attach authorization token contents. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.88 | Issue #146 — make `connect --token` independent from discovery for self-contained invites | ✅ | Done on `0.7.0.b0`: `connectflow` now uses `service_endpoint` from invite tokens directly and skips discovery when that endpoint is present, legacy tokens without endpoint still fall back to discovery only in discovery-enabled scopes, public-default legacy tokens without endpoint now fail with a clear compatibility error instead of attempting ambient discovery, and CLI/unit coverage plus `docs/cli.md` were updated accordingly. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
+| C.89 | Issue #158 — harden public-default share invite generation across attach and `share service` | ✅ | Done on `0.7.0.b0`: public-default `attach` and `share service/...` now require a self-contained remote-dialable `service_endpoint`, use endpoint-bearing invite builders in both authority-local and publish-lease paths, fail early instead of emitting endpoint-less invites, keep legacy/discovery fallback behavior in discovery-enabled namespaces, and extend tests across `cmd/tubo` plus `internal/grants` (including approval-path endpoint metadata). Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 
 ---
 

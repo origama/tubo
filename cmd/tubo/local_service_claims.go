@@ -346,9 +346,17 @@ func serviceEndpointAddrsForTokens(cfg cfgpkg.Config, servicePeerID string) []st
 	return nil
 }
 
+func shareTokenRequiresPublicEndpoint(cfg cfgpkg.Config, clusterName, namespaceName string) (bool, error) {
+	scope, err := cfgpkg.ResolveEffectiveScope(cfg, clusterName, namespaceName, false)
+	if err != nil {
+		return false, err
+	}
+	return cfgpkg.IsPublicDefaultScope(cfg, scope), nil
+}
+
 func requireShareTokenEndpointForPublicDefault(cfg cfgpkg.Config, token string) error {
-	scope, err := cfgpkg.ResolveEffectiveScope(cfg, "", "", false)
-	if err != nil || !cfgpkg.IsPublicDefaultScope(cfg, scope) {
+	required, err := shareTokenRequiresPublicEndpoint(cfg, "", "")
+	if err != nil || !required {
 		return err
 	}
 	payload, err := parseAndVerifyServiceShareToken(token)
@@ -356,7 +364,7 @@ func requireShareTokenEndpointForPublicDefault(cfg cfgpkg.Config, token string) 
 		return err
 	}
 	if payload.ServiceEndpoint.PeerID == "" || len(payload.ServiceEndpoint.Addresses) == 0 {
-		return errors.New("share invite is missing a remote-dialable service endpoint; wait for relay readiness and retry attach")
+		return errors.New("share invite is missing a remote-dialable service endpoint; wait for relay readiness and retry once a remote endpoint is available")
 	}
 	return nil
 }
@@ -376,6 +384,10 @@ func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clu
 	if cluster.AuthorityPublicKey != pubAuthorized {
 		return "", fmt.Errorf("cluster %q authority public key mismatch", clusterName)
 	}
+	requireEndpoint, err := shareTokenRequiresPublicEndpoint(cfg, clusterName, namespaceName)
+	if err != nil {
+		return "", err
+	}
 	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
 	if err != nil {
 		return "", err
@@ -385,24 +397,50 @@ func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clu
 		if leaseBytes, err := os.ReadFile(svc.ServicePublishLeaseFile); err == nil {
 			var lease grantspkg.PublishLease
 			if err := json.Unmarshal(leaseBytes, &lease); err == nil {
-				if artifacts, err := grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL, nil, servicePeerID.String(), serviceEndpointAddrs); err == nil {
+				var artifacts grantspkg.ServiceShareArtifacts
+				if requireEndpoint {
+					artifacts, err = grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL, nil, servicePeerID.String(), serviceEndpointAddrs)
+				} else {
+					artifacts, err = grantspkg.BuildShareInviteArtifactsFromLease(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL)
+				}
+				if err == nil {
 					finalToken, err := finalizeAuthorityServiceShareToken(artifacts.Token, privKey, svc.ServiceID)
 					if err != nil {
 						return "", err
 					}
-					if err := requireShareTokenEndpointForPublicDefault(cfg, finalToken); err != nil {
-						return "", err
+					if requireEndpoint {
+						if err := requireShareTokenEndpointForPublicDefault(cfg, finalToken); err != nil {
+							return "", err
+						}
 					}
 					return finalToken, nil
 				}
 			}
 		}
 	}
-	token, err := grantspkg.BuildServiceShareToken(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL)
+	var token string
+	if requireEndpoint {
+		artifacts, err := grantspkg.BuildServiceShareArtifactsWithEndpoints(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL, nil, servicePeerID.String(), serviceEndpointAddrs)
+		if err != nil {
+			return "", err
+		}
+		token = artifacts.Token
+	} else {
+		token, err = grantspkg.BuildServiceShareToken(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL)
+		if err != nil {
+			return "", err
+		}
+	}
+	finalToken, err := finalizeAuthorityServiceShareToken(token, privKey, svc.ServiceID)
 	if err != nil {
 		return "", err
 	}
-	return finalizeAuthorityServiceShareToken(token, privKey, svc.ServiceID)
+	if requireEndpoint {
+		if err := requireShareTokenEndpointForPublicDefault(cfg, finalToken); err != nil {
+			return "", err
+		}
+	}
+	return finalToken, nil
 }
 
 func printAttachShareHint(cfg cfgpkg.Config, authz attachAuthorization) {
