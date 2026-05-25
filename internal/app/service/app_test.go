@@ -118,6 +118,123 @@ func writeTestPublishLease(t *testing.T, path string, authorityPriv ed25519.Priv
 	return owner.ServiceID
 }
 
+func TestCurrentAnnouncementV2AdvertisesRelayGrantEndpoint(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seed := "service-relay-grant-seed"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayID, err := p2p.PeerIDFromSeed("relay-relay-grant-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: servicePeerID.String(),
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", RelayPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/" + relayID.String()}, Autorelay: true, HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.reservationReadyUntil = time.Now().Add(time.Minute)
+	app.relayConnected[relayID] = true
+	_, payload, ok := app.currentAnnouncementV2()
+	if !ok {
+		t.Fatal("expected current announcement")
+	}
+	if payload.GrantService == nil || payload.GrantService.Protocol != grantspkg.ProtocolID || len(payload.GrantService.Peers) != 1 {
+		t.Fatalf("grant service = %#v", payload.GrantService)
+	}
+	if !strings.Contains(payload.GrantService.Peers[0], "/p2p-circuit/p2p/"+app.host.ID().String()) {
+		t.Fatalf("unexpected grant peer %q", payload.GrantService.Peers[0])
+	}
+}
+
+func TestServiceGrantEndpointIsReachableFromSecondPeer(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seed := "service-grant-endpoint-seed"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryTopic: discovery.NamespaceTopic("cluster-123", "default"), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	client, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-grant-endpoint-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	info, err := p2p.AddrInfoFromString(p2p.PeerAddrs(app.host)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := grantspkg.Query(ctx, client, info, grantspkg.Message{Type: grantspkg.TypePoll, Version: grantspkg.VersionV1, RequestID: "reachability-check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "attached-service grant endpoint") {
+		t.Fatalf("unexpected grant response: %#v", resp)
+	}
+}
+
 func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

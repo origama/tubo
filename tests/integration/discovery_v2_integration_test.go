@@ -24,6 +24,7 @@ import (
 	"github.com/origama/tubo/internal/app/service"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
@@ -268,6 +269,204 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 	}
 	if echoed["method"] != http.MethodPost {
 		t.Fatalf("unexpected proxied method: %#v", echoed)
+	}
+}
+
+func TestClusterModeDiscoveryV2PublishesReachableGrantEndpoint(t *testing.T) {
+	clusterName := "home"
+	namespaceName := "tenant-a"
+
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH)))
+	serviceOwnerPub, serviceOwnerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(serviceOwnerPub)
+	_, serviceSeed := serviceIdentityForTest("cluster-123", namespaceName, "myapi")
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   namespaceName,
+		SubjectPeerID: servicePeerID.String(),
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipBytes, err := json.MarshalIndent(membership, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	if err := os.WriteFile(capPath, append(membershipBytes, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{
+		ClusterID:             "cluster-123",
+		NamespaceID:           namespaceName,
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(serviceOwnerPub),
+		PublisherPeerID:       servicePeerID.String(),
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		Nonce:                 "discovery-v2-grant-endpoint-lease",
+	}, serviceOwnerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseArtifacts, err := grantspkg.BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "myapi", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseBytes, err := json.MarshalIndent(leaseArtifacts.Lease, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "service.publish-lease.json")
+	if err := os.WriteFile(leasePath, append(leaseBytes, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	edgeHTTP := freePort(t)
+	edgeAdmin := freePort(t)
+	edgeP2P := freePort(t)
+	serviceP2P := freePort(t)
+	serviceHealth := freePort(t)
+	topic := discovery.NamespaceTopic("cluster-123", namespaceName)
+
+	edgeApp, err := edge.New(context.Background(), edge.Config{
+		HTTPListen:             fmt.Sprintf("127.0.0.1:%d", edgeHTTP),
+		AdminListen:            fmt.Sprintf("127.0.0.1:%d", edgeAdmin),
+		P2PListen:              fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P),
+		Seed:                   "edge-grant-endpoint-seed",
+		BootstrapRetryInterval: 500 * time.Millisecond,
+		DirectStreamTimeout:    250 * time.Millisecond,
+		AuthorityPublicKey:     authorityKey,
+		DiscoveryTopic:         topic,
+		DiscoveryMode:          cfgpkg.DiscoveryModeNamespaceV2.String(),
+		DiscoveryClusterID:     "cluster-123",
+		DiscoveryNamespaceID:   namespaceName,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceApp, err := service.New(context.Background(), service.Config{
+		Listen:                   fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", serviceP2P),
+		Seed:                     serviceSeed,
+		ServiceName:              "myapi",
+		ServiceID:                serviceID,
+		Target:                   "http://127.0.0.1:1",
+		HealthListen:             fmt.Sprintf("127.0.0.1:%d", serviceHealth),
+		HeartbeatInterval:        500 * time.Millisecond,
+		BootstrapRetryInterval:   500 * time.Millisecond,
+		DiscoveryEnabled:         true,
+		DiscoveryTopic:           topic,
+		DiscoveryMode:            cfgpkg.DiscoveryModeNamespaceV2.String(),
+		DiscoveryClusterID:       "cluster-123",
+		DiscoveryNamespaceID:     namespaceName,
+		AuthorityPublicKey:       authorityKey,
+		ConnectPolicy:            string(cfgpkg.ConnectPolicyNamespaceMember),
+		MembershipCapabilityFile: capPath,
+		ServicePublishLeaseFile:  leasePath,
+		ClusterName:              clusterName,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	errCh := make(chan error, 2)
+	go func() { errCh <- edgeApp.Start(ctx) }()
+	go func() { errCh <- serviceApp.Start(ctx) }()
+	t.Cleanup(func() {
+		cancel()
+		for i := 0; i < 2; i++ {
+			<-errCh
+		}
+	})
+
+	waitUntil(t, 20*time.Second, func() bool {
+		return httpOK(fmt.Sprintf("http://127.0.0.1:%d/healthz", edgeHTTP)) && httpOK(fmt.Sprintf("http://127.0.0.1:%d/healthz", serviceHealth))
+	}, "grant-endpoint health")
+
+	edgeInfo := peer.AddrInfo{ID: edgeApp.Host().ID(), Addrs: mustMultiaddrs(t, p2p.PeerAddrs(edgeApp.Host())...)}
+	serviceInfo := peer.AddrInfo{ID: serviceApp.Host().ID(), Addrs: mustMultiaddrs(t, p2p.PeerAddrs(serviceApp.Host())...)}
+	connectCtx, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
+	if err := edgeApp.Host().Connect(connectCtx, serviceInfo); err != nil {
+		t.Fatalf("edge connect service: %v", err)
+	}
+	if err := serviceApp.Host().Connect(connectCtx, edgeInfo); err != nil {
+		t.Fatalf("service connect edge: %v", err)
+	}
+	cancelConnect()
+
+	var grantPeers []string
+	waitUntil(t, 30*time.Second, func() bool {
+		resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/services", edgeAdmin))
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		var payload struct {
+			Items []struct {
+				Name          string `json:"name"`
+				ConnectPolicy string `json:"connect_policy"`
+				GrantService  *struct {
+					Protocol string   `json:"protocol"`
+					Peers    []string `json:"peers"`
+				} `json:"grant_service"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return false
+		}
+		for _, item := range payload.Items {
+			if item.Name != "myapi" || item.GrantService == nil || len(item.GrantService.Peers) == 0 {
+				continue
+			}
+			if item.ConnectPolicy != string(cfgpkg.ConnectPolicyNamespaceMember) {
+				t.Fatalf("unexpected connect policy %q", item.ConnectPolicy)
+			}
+			grantPeers = append([]string(nil), item.GrantService.Peers...)
+			return true
+		}
+		return false
+	}, "grant endpoint discovery metadata")
+
+	client, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "client-grant-endpoint-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	info, err := p2p.AddrInfoFromString(grantPeers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	queryCtx, cancelQuery := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelQuery()
+	resp, err := grantspkg.Query(queryCtx, client, info, grantspkg.Message{Type: grantspkg.TypePoll, Version: grantspkg.VersionV1, RequestID: "reachability-check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "attached-service grant endpoint") {
+		t.Fatalf("unexpected grant response: %#v", resp)
 	}
 }
 

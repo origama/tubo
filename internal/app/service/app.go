@@ -39,6 +39,8 @@ type Config struct {
 	DiscoveryClusterID                                                                                string
 	DiscoveryNamespaceID                                                                              string
 	AuthorityPublicKey                                                                                string
+	AuthorityPrivateKeyFile                                                                           string
+	ClusterName                                                                                       string
 	ServiceID                                                                                         string
 	ConnectPolicy                                                                                     string
 	GrantService                                                                                      *grantspkg.GrantServiceEndpoint
@@ -58,6 +60,7 @@ type App struct {
 	serviceCapabilityFile   string
 	serviceClaimFile        string
 	servicePublishLeaseFile string
+	grantEndpointEnabled    bool
 	health                  *http.Server
 	cache                   *discovery.Cache
 	stopSubscriber          chan struct{}
@@ -128,6 +131,16 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
 	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
+	grantEndpointEnabled := false
+	if cfg.DiscoveryEnabled {
+		grantEndpoint, err := newServiceGrantEndpoint(cfg, resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName))
+		if err != nil {
+			_ = h.Close()
+			return nil, fmt.Errorf("configure service grant endpoint: %w", err)
+		}
+		h.SetStreamHandler(grantspkg.ProtocolID, grantEndpoint.HandleStream)
+		grantEndpointEnabled = true
+	}
 	var pub *discovery.Publisher
 	var cache *discovery.Cache
 	var stopSubscriber chan struct{}
@@ -181,6 +194,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		serviceCapabilityFile:   cfg.MembershipCapabilityFile,
 		serviceClaimFile:        cfg.ServiceClaimFile,
 		servicePublishLeaseFile: cfg.ServicePublishLeaseFile,
+		grantEndpointEnabled:    grantEndpointEnabled,
 	}
 	app.registerRelayNotifiee()
 	return app, nil
@@ -337,7 +351,11 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.Annou
 	if a.requireRelayReadyAnn {
 		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
 	}
-	payload := discovery.AnnouncementV2Payload{ServiceName: a.cfg.ServiceName, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantspkg.SanitizeGrantServiceEndpoint(a.cfg.GrantService), Addresses: addrs, RegisteredAt: time.Now().UTC()}
+	grantService := grantspkg.SanitizeGrantServiceEndpoint(a.cfg.GrantService)
+	if a.grantEndpointEnabled {
+		grantService = advertisedGrantServiceEndpoint(addrs)
+	}
+	payload := discovery.AnnouncementV2Payload{ServiceName: a.cfg.ServiceName, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, RegisteredAt: time.Now().UTC()}
 	if capBytes, err := a.loadMembershipCapabilityBytes(); err == nil && len(capBytes) > 0 {
 		payload.MembershipCapability = capBytes
 	}

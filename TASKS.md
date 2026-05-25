@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-25 11:13 UTC
+> **Last updated:** 2026-05-25 12:56 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -194,7 +194,7 @@
 | C.90 | Issue #147 — add public-default invite-only E2E and black-box coverage | ✅ | Done on `0.7.0.b0`: added `tests/e2e/scenarios/public_default_invite_only`, which black-boxes the invite-only public-default flow by asserting `attach` runs unlisted, `get services`, `get services -A`, `watch services -A`, and `connect <name>` stay blocked with discovery-disabled guidance, emitted invite tokens contain only remote-dialable `service_endpoint` metadata, and `connect --token` still succeeds end-to-end. Fixed two regressions surfaced by the scenario: public-default `-A` ambient-discovery enforcement now applies at the shared config gate too, and unlisted service runtimes no longer panic on relay-reservation publication callbacks. Validation passed with `go test ./...`, `./tests/smoke-compose.sh`, `RUN_INTEGRATION=1 go test -v ./tests/integration`, and `tests/e2e/run.sh public_default_invite_only`. |
 | C.91 | Issue #148 — extend Discovery V2 with connect metadata | ✅ | Done on `0.7.0.b0`: Discovery V2 payload/query/cache now carry optional `connect_policy` + `grant_service`, relay/query/admin propagation stays backward-compatible, and local-only grant peers are filtered before they enter advertised metadata. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.92 | Issue #149 — propagate connect metadata through cache/catalog/CLI | ✅ | Done on `0.7.0.b0`: catalog/admin/query conversions now preserve connect metadata, `get services` surfaces an `ACCESS` column plus JSON `connect_policy`/`grant_service`, and `describe service/...` shows connect policy + grant endpoint details when present. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
-| C.93 | Issue #150 — expose attached-service connect-grant endpoints in discovery-enabled namespaces | 🔲 | Not started. |
+| C.93 | Issue #150 — expose attached-service connect-grant endpoints in discovery-enabled namespaces | ✅ | Done on `0.7.0.b0`: `attach` now registers a service-scoped `/tubo/grants/1.0` endpoint on the same peer as the attached service, Discovery V2 publishes filtered `grant_service` metadata for that endpoint, unsupported/non-scoped operations are rejected without implementing the full connect policy evaluator from #152 yet, and coverage now includes relay-aware metadata plus second-peer reachability. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 | C.94 | Issue #151 — delegated connect-lease signing/validation for collaboration namespaces | 🔲 | Not started. |
 | C.95 | Issue #152 — connect-grant endpoint policy evaluation | 🔲 | Not started. |
 | C.96 | Issue #153 — `connect <service>` collaboration discovery/grant/lease/proof flow | 🔲 | Not started. |
