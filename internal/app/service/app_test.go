@@ -219,6 +219,27 @@ func TestNewSkipsDiscoveryPublisherForUnlistedMode(t *testing.T) {
 	}
 }
 
+func TestPublishCurrentAnnouncementV2SkipsWithoutPublisher(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "service-unlisted-publish-seed", ServiceName: "myapi", ServiceID: "svc-123", Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: false, Visibility: "unlisted", DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH)))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	if app.publishCurrentAnnouncementV2(ctx) {
+		t.Fatal("expected publishCurrentAnnouncementV2 to skip when discovery publisher is disabled")
+	}
+}
+
 func TestServiceDiscoveryQuerySuspendsWithoutValidPublishLease(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

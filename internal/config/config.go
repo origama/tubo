@@ -129,9 +129,9 @@ const (
 )
 
 type Namespace struct {
-	MembershipCapabilityFile string             `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
-	Discovery                NamespaceDiscovery `yaml:"discovery,omitempty" json:"discovery,omitempty"`
-	ConnectPolicy            ConnectPolicy      `yaml:"connect_policy,omitempty" json:"connect_policy,omitempty"`
+	MembershipCapabilityFile string                      `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
+	Discovery                NamespaceDiscovery          `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	ConnectPolicy            ConnectPolicy               `yaml:"connect_policy,omitempty" json:"connect_policy,omitempty"`
 	Services                 map[string]NamespaceService `yaml:"services,omitempty" json:"services,omitempty"`
 }
 
@@ -228,7 +228,7 @@ func ResolveEffectiveScope(cfg Config, clusterFlag, namespaceFlag string, allNam
 	return Scope{Overlay: overlay, Cluster: cluster, Namespace: namespace, AllNamespaces: allNamespaces}, nil
 }
 
-func IsPublicDefaultScope(cfg Config, scope Scope) bool {
+func publicDefaultClusterScope(cfg Config, scope Scope) (Overlay, bool) {
 	overlayName := strings.TrimSpace(scope.Overlay)
 	if overlayName == "" {
 		overlayName = strings.TrimSpace(cfg.CurrentOverlay)
@@ -237,18 +237,29 @@ func IsPublicDefaultScope(cfg Config, scope Scope) bool {
 	if clusterName == "" {
 		clusterName = strings.TrimSpace(cfg.CurrentCluster)
 	}
-	namespaceName := strings.TrimSpace(scope.Namespace)
-	if namespaceName == "" && !scope.AllNamespaces {
-		namespaceName = strings.TrimSpace(cfg.CurrentNamespace)
-	}
-	if overlayName == "" || clusterName == "" || namespaceName == "" || scope.AllNamespaces {
-		return false
+	if overlayName == "" || clusterName == "" {
+		return Overlay{}, false
 	}
 	overlay, ok := cfg.Overlays[overlayName]
 	if !ok || overlay.Kind != OverlayKindPublicBundle {
+		return Overlay{}, false
+	}
+	if overlay.PublicDefaultCluster == "" || overlay.PublicDefaultNamespace == "" || clusterName != overlay.PublicDefaultCluster {
+		return Overlay{}, false
+	}
+	return overlay, true
+}
+
+func IsPublicDefaultScope(cfg Config, scope Scope) bool {
+	overlay, ok := publicDefaultClusterScope(cfg, scope)
+	if !ok || scope.AllNamespaces {
 		return false
 	}
-	return overlay.PublicDefaultCluster != "" && overlay.PublicDefaultNamespace != "" && clusterName == overlay.PublicDefaultCluster && namespaceName == overlay.PublicDefaultNamespace
+	namespaceName := strings.TrimSpace(scope.Namespace)
+	if namespaceName == "" {
+		namespaceName = strings.TrimSpace(cfg.CurrentNamespace)
+	}
+	return namespaceName != "" && namespaceName == overlay.PublicDefaultNamespace
 }
 
 func EffectiveScopePolicy(cfg Config, scope Scope) ScopePolicy {
@@ -287,9 +298,17 @@ func EffectiveScopePolicy(cfg Config, scope Scope) ScopePolicy {
 func RequireAmbientDiscoveryScope(cfg Config, scope Scope) error {
 	policy := EffectiveScopePolicy(cfg, scope)
 	if policy.Discovery != NamespaceDiscoveryDisabled {
-		return nil
+		if !(scope.AllNamespaces && func() bool {
+			_, ok := publicDefaultClusterScope(cfg, scope)
+			return ok
+		}()) {
+			return nil
+		}
 	}
-	if policy.PublicDefault {
+	if policy.PublicDefault || (scope.AllNamespaces && func() bool {
+		_, ok := publicDefaultClusterScope(cfg, scope)
+		return ok
+	}()) {
 		return fmt.Errorf("%w; use `tubo connect --token <invite>` or switch to a private cluster/namespace", ErrAmbientDiscoveryDisabled)
 	}
 	return fmt.Errorf("ambient discovery is disabled for scope %s/%s", strings.TrimSpace(scope.Cluster), strings.TrimSpace(scope.Namespace))

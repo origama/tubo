@@ -395,8 +395,8 @@ func TestRequireAmbientDiscoveryScopeRejectsPublicDefault(t *testing.T) {
 		CurrentOverlay:   "tubo-public",
 		CurrentCluster:   "home",
 		CurrentNamespace: "default",
-		Overlays: map[string]Overlay{"tubo-public": {Kind: OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}},
-		Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}},
+		Overlays:         map[string]Overlay{"tubo-public": {Kind: OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}},
+		Clusters:         map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}},
 	}
 	scope, err := ResolveEffectiveScope(cfg, "", "", false)
 	if err != nil {
@@ -405,6 +405,14 @@ func TestRequireAmbientDiscoveryScopeRejectsPublicDefault(t *testing.T) {
 	err = RequireAmbientDiscoveryScope(cfg, scope)
 	if err == nil || !IsAmbientDiscoveryDisabled(err) || !strings.Contains(err.Error(), "tubo connect --token <invite>") {
 		t.Fatalf("expected public-default ambient discovery error, got %v", err)
+	}
+	allScope, err := ResolveEffectiveScope(cfg, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = RequireAmbientDiscoveryScope(cfg, allScope)
+	if err == nil || !IsAmbientDiscoveryDisabled(err) || !strings.Contains(err.Error(), "tubo connect --token <invite>") {
+		t.Fatalf("expected public-default all-namespaces ambient discovery error, got %v", err)
 	}
 	customScope, err := ResolveEffectiveScope(Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]Overlay{"manual": {}}, Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}}}, "", "", false)
 	if err != nil {

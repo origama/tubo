@@ -356,6 +356,9 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.Annou
 }
 
 func (a *App) publishCurrentAnnouncementV2(ctx context.Context) bool {
+	if a.publisher == nil {
+		return false
+	}
 	ann, payload, ok := a.currentAnnouncementV2()
 	if !ok {
 		return false
@@ -614,6 +617,9 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 	lastReady := false
 
 	publish := func() {
+		if !a.cfg.DiscoveryEnabled {
+			return
+		}
 		if a.discoveryMode == discovery.ModeNamespaceV2 {
 			if !a.publishCurrentAnnouncementV2(ctx) {
 				log.Printf("relay-ready publish skipped: announcement not ready")
