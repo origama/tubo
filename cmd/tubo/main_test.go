@@ -1065,6 +1065,9 @@ func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNa
 	if grant.InviteToken != wantToken || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
 		t.Fatalf("unexpected membership grant: %#v", grant)
 	}
+	if !stringSliceEqualSet(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
+		t.Fatalf("unexpected membership grant permissions: %#v", grant.Permissions)
+	}
 }
 
 func TestClusterInvitationShareAndJoin(t *testing.T) {
@@ -1107,6 +1110,38 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), token, "observability")
+}
+
+func TestViewerClusterInvitationShareJoinAllowsListButNotConnect(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--role", clusterInviteViewerRole, "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractClusterInviteToken(t, out)
+	joinHome := filepath.Join(t.TempDir(), "join-viewer")
+	if _, err := capture(func() error { return run([]string{"join", "cluster/home", "--token", token, "--config-dir", joinHome}) }); err != nil {
+		t.Fatal(err)
+	}
+	joined, err := cfgpkg.LoadFile(filepath.Join(joinHome, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := joined.Clusters["home"].MembershipGrant
+	if grant == nil || grant.Role != clusterInviteViewerRole {
+		t.Fatalf("unexpected viewer grant: %#v", grant)
+	}
+	if !clusterMembershipGrantAuthorizesNamespace(joined.Clusters["home"], "home", "default") {
+		t.Fatal("viewer grant should authorize namespace listing")
+	}
+	if clusterMembershipGrantAuthorizesConnect(joined.Clusters["home"], "home", "default") {
+		t.Fatal("viewer grant must not authorize connect")
+	}
 }
 
 func TestGrantRequesterClusterInvitationShareJoinAndRequest(t *testing.T) {
@@ -1251,8 +1286,8 @@ func TestClusterInviteGrantAuthorizesNamespaceQueries(t *testing.T) {
 					ClusterID:          "cluster-123",
 					AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))),
 					Namespace:          "pinamespace",
-					Role:               clusterInviteDefaultRole,
-					Permissions:        []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish},
+					Role:               clusterInviteViewerRole,
+					Permissions:        []string{capability.PermissionSubscribe, capability.PermissionList},
 					IssuedAt:           time.Now().Add(-time.Minute),
 					ExpiresAt:          time.Now().Add(time.Hour),
 				},
@@ -1290,13 +1325,32 @@ func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expiredOut, err := capture(func() error {
-		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "-1h"})
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	priv, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := invitationGrantForPermission(clusterInviteDefaultRole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredPayload := clusterInvitePayload{Version: clusterInviteVersion, Kind: clusterInviteKind, JTI: "expired-jti", ClusterName: "home", ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, Namespace: "default", Grant: grant, IssuedAt: time.Now().Add(-2 * time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Hour).UTC()}
+	expiredPayloadBytes, err := json.Marshal(expiredPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredToken := clusterInviteTokenPrefix + base64.RawURLEncoding.EncodeToString(expiredPayloadBytes) + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, expiredPayloadBytes))
+	shareOut, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "2h"})
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiredToken := extractClusterInviteToken(t, expiredOut)
+	validToken := extractClusterInviteToken(t, shareOut)
 	tamperedToken := func(token string) string {
 		parts := strings.Split(strings.TrimPrefix(token, clusterInviteTokenPrefix), ".")
 		if len(parts) != 2 {
@@ -1308,7 +1362,7 @@ func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 		}
 		payloadBytes = bytes.Replace(payloadBytes, []byte(`"cluster_name":"home"`), []byte(`"cluster_name":"evil"`), 1)
 		return clusterInviteTokenPrefix + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + parts[1]
-	}(expiredToken)
+	}(validToken)
 
 	if _, err := capture(func() error { return run([]string{"join", expiredToken}) }); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired invite error, got %v", err)
@@ -3383,6 +3437,37 @@ func TestConnectCandidatesPreferDirectThenRelay(t *testing.T) {
 	}
 	if candidates[1].Path != "relayed" || !strings.Contains(candidates[1].Addr, "/p2p-circuit") {
 		t.Fatalf("second candidate = %#v, want relayed", candidates[1])
+	}
+}
+
+func TestDoctorWarnsWhenCurrentNamespaceLacksConnectPermission(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	cap, err := loadMembershipCapability(cluster.MembershipCapabilityFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cap.Permissions = []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}
+	b, err := json.MarshalIndent(cap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cluster.MembershipCapabilityFile, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return run([]string{"doctor", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "lacks connect permission") {
+		t.Fatalf("expected doctor warning, got: %s", out)
 	}
 }
 

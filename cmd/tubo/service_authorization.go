@@ -11,6 +11,7 @@ import (
 
 	capability "github.com/origama/tubo/internal/capability"
 	catalog "github.com/origama/tubo/internal/catalog"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 )
@@ -102,7 +103,7 @@ func authorizeServiceNamespace(cfg cfgpkg.Config, clusterName, namespace string)
 	if cap.NamespaceID != namespace && cap.NamespaceID != broadNamespaceWildcard {
 		return fmt.Errorf("membership capability for %s/%s does not authorize namespace %q", clusterName, namespace, namespace)
 	}
-	if !containsAllStrings(cap.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}) {
+	if !containsAllStrings(cap.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList}) {
 		return fmt.Errorf("membership capability for %s/%s is missing discovery permissions", clusterName, namespace)
 	}
 	return nil
@@ -113,19 +114,15 @@ func clusterMembershipGrantAuthorizesNamespace(cluster cfgpkg.Cluster, clusterNa
 	if grant == nil {
 		return false
 	}
-	if grant.ClusterName != clusterName || grant.ClusterID != cluster.ClusterID || grant.Namespace != namespace {
+	return clusterinvite.AllowsPermissions(*grant, clusterName, cluster.ClusterID, namespace, capability.PermissionSubscribe, capability.PermissionList)
+}
+
+func clusterMembershipGrantAuthorizesConnect(cluster cfgpkg.Cluster, clusterName, namespace string) bool {
+	grant := cluster.MembershipGrant
+	if grant == nil {
 		return false
 	}
-	if grant.Role != clusterInviteDefaultRole {
-		return false
-	}
-	if !containsAllStrings(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}) {
-		return false
-	}
-	if grant.ExpiresAt.IsZero() || time.Now().UTC().After(grant.ExpiresAt.UTC()) {
-		return false
-	}
-	return true
+	return clusterinvite.AllowsPermissions(*grant, clusterName, cluster.ClusterID, namespace, capability.PermissionConnect)
 }
 
 func namespaceMembershipCapabilityFile(cluster cfgpkg.Cluster, namespace string) (string, error) {

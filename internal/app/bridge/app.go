@@ -37,6 +37,7 @@ type Config struct {
 	ConnectNamespaceID                                                                                 string
 	ConnectServiceID                                                                                   string
 	ConnectMembershipCapability                                                                        *capability.MembershipCapability
+	ConnectMembershipGrantToken                                                                        string
 	ConnectAccessLease                                                                                 *grantspkg.ConnectAccessLease
 	ConnectRefreshLease                                                                                *grantspkg.ConnectRefreshLease
 	ConnectLeaseRefresher                                                                              ConnectLeaseRefresher
@@ -120,7 +121,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		}
 	}
 	if cfg.ConnectAccessLease == nil && cfg.ConnectRefreshLease == nil && cfg.ConnectGrant == nil && cfg.ConnectInviteToken == "" && len(cfg.ConnectGrantPeers) > 0 && cfg.ConnectClusterID != "" && cfg.ConnectNamespaceID != "" && cfg.ConnectServiceID != "" {
-		artifacts, err := requestDirectConnectLease(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectClusterID, cfg.ConnectNamespaceID, cfg.ConnectServiceID, cfg.ConnectMembershipCapability)
+		artifacts, err := requestDirectConnectLease(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectClusterID, cfg.ConnectNamespaceID, cfg.ConnectServiceID, cfg.ConnectMembershipCapability, cfg.ConnectMembershipGrantToken)
 		if err != nil {
 			_ = h.Close()
 			return nil, err
@@ -361,7 +362,7 @@ func (a *App) refreshConnectAccessLease(ctx context.Context, refresh grantspkg.C
 	return grantspkg.ConnectAccessLease{}, fmt.Errorf("no connect grant service peers configured")
 }
 
-func requestDirectConnectLease(ctx context.Context, h host.Host, grantPeers []string, clusterID, namespaceID, serviceID string, membership *capability.MembershipCapability) (grantspkg.ConnectLeaseArtifacts, error) {
+func requestDirectConnectLease(ctx context.Context, h host.Host, grantPeers []string, clusterID, namespaceID, serviceID string, membership *capability.MembershipCapability, membershipGrantToken string) (grantspkg.ConnectLeaseArtifacts, error) {
 	clientPublicKey, err := connectClientPublicKey(h)
 	if err != nil {
 		return grantspkg.ConnectLeaseArtifacts{}, err
@@ -377,7 +378,7 @@ func requestDirectConnectLease(ctx context.Context, h host.Host, grantPeers []st
 			lastErr = err
 			continue
 		}
-		artifacts, err := grantspkg.RequestConnectLease(requestCtx, h, info, clusterID, namespaceID, serviceID, clientPublicKey, membership)
+		artifacts, err := grantspkg.RequestConnectLease(requestCtx, h, info, clusterID, namespaceID, serviceID, clientPublicKey, membership, membershipGrantToken)
 		if err == nil {
 			return artifacts, nil
 		}

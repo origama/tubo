@@ -59,6 +59,7 @@ type Message struct {
 	ServiceClaim          *capability.ServiceClaim         `json:"service_claim,omitempty"`
 	PublishLease          *PublishLease                    `json:"publish_lease,omitempty"`
 	MembershipCapability  *capability.MembershipCapability `json:"membership_capability,omitempty"`
+	MembershipGrantToken  string                           `json:"membership_grant_token,omitempty"`
 	ServiceShareToken     string                           `json:"service_share_token,omitempty"`
 	ShareInviteToken      string                           `json:"share_invite_token,omitempty"`
 	ClientPublicKey       string                           `json:"client_public_key,omitempty"`

@@ -13,6 +13,7 @@ import (
 	bridge "github.com/origama/tubo/internal/app/bridge"
 	capability "github.com/origama/tubo/internal/capability"
 	catalog "github.com/origama/tubo/internal/catalog"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 )
 
@@ -207,8 +208,9 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		if clusterCfg, ok := cfg.Clusters[scope.Cluster]; ok {
 			bridgeCfg.ConnectClusterID = clusterCfg.ClusterID
 		}
-		if membership, err := loadConnectMembershipCapability(cfg, scope); err == nil {
+		if membership, membershipGrantToken, err := loadConnectMembership(cfg, scope); err == nil {
 			bridgeCfg.ConnectMembershipCapability = membership
+			bridgeCfg.ConnectMembershipGrantToken = membershipGrantToken
 		}
 	}
 	if bridgeCfg.P2PListen == "" {
@@ -353,6 +355,28 @@ func ConnectRelayMessage(service catalog.Service, selectedAddr, selectedPath str
 	return "selected"
 }
 
+func loadConnectMembership(cfg cfgpkg.Config, scope catalog.Scope) (*capability.MembershipCapability, string, error) {
+	cluster, ok := cfg.Clusters[scope.Cluster]
+	if !ok {
+		return nil, "", fmt.Errorf("cluster %q not found", scope.Cluster)
+	}
+	membership, capErr := loadConnectMembershipCapability(cfg, scope)
+	if membership != nil && containsConnectPermission(membership.Permissions) {
+		return membership, "", nil
+	}
+	if grant := cluster.MembershipGrant; grant != nil && strings.TrimSpace(grant.InviteToken) != "" {
+		if payload, err := clusterinvite.ParseAndVerifyToken(grant.InviteToken); err == nil {
+			if payload.ClusterName == scope.Cluster && payload.ClusterID == cluster.ClusterID && payload.Namespace == scope.Namespace {
+				return nil, grant.InviteToken, nil
+			}
+		}
+	}
+	if membership != nil {
+		return membership, "", nil
+	}
+	return nil, "", capErr
+}
+
 func loadConnectMembershipCapability(cfg cfgpkg.Config, scope catalog.Scope) (*capability.MembershipCapability, error) {
 	cluster, ok := cfg.Clusters[scope.Cluster]
 	if !ok {
@@ -374,6 +398,15 @@ func loadConnectMembershipCapability(cfg cfgpkg.Config, scope catalog.Scope) (*c
 		return nil, err
 	}
 	return &membership, nil
+}
+
+func containsConnectPermission(perms []string) bool {
+	for _, perm := range perms {
+		if perm == capability.PermissionConnect {
+			return true
+		}
+	}
+	return false
 }
 
 func splitServiceAddresses(addresses []string) (direct []string, relayed []string) {

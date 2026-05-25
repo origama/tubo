@@ -2,6 +2,8 @@ package connectflow
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
@@ -12,8 +14,10 @@ import (
 	bridge "github.com/origama/tubo/internal/app/bridge"
 	capability "github.com/origama/tubo/internal/capability"
 	catalog "github.com/origama/tubo/internal/catalog"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	"golang.org/x/crypto/ssh"
 )
 
 type stubDeps struct {
@@ -283,6 +287,61 @@ func TestResolveConfiguresDiscoveryGrantEndpointConnectFlow(t *testing.T) {
 	}
 	if selected.ConnectMembershipCapability == nil || len(selected.ConnectMembershipCapability.Permissions) != 1 || selected.ConnectMembershipCapability.Permissions[0] != capability.PermissionConnect {
 		t.Fatalf("unexpected membership capability: %#v", selected.ConnectMembershipCapability)
+	}
+}
+
+func TestResolveFallsBackToMembershipGrantTokenForDiscoveryConnect(t *testing.T) {
+	authPub, authPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authSSH, err := ssh.NewPublicKey(authPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := clusterinvite.GrantForRole(clusterinvite.RoleMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "join-1", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authSSH))), Namespace: "default", Grant: grant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := catalog.Scope{Cluster: "home", Namespace: "default"}
+	cfg := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", MembershipGrant: &cfgpkg.ClusterMembershipGrant{InviteToken: token, ClusterName: "home", ClusterID: "cluster-123", Namespace: "default", Permissions: append([]string(nil), grant.Permissions...), ExpiresAt: time.Now().Add(time.Hour)}, Namespaces: map[string]cfgpkg.Namespace{"default": {}}}}}
+	service := catalog.Service{Name: "svc", ServiceID: "svc-1", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/grant"}}, DirectAddresses: []string{"/ip4/10.0.0.9/tcp/4101/p2p/peer-a"}}
+	var selected bridge.Config
+	deps := stubDeps{
+		loadConfig: func(string) (cfgpkg.Config, error) { return cfg, nil },
+		setupShare: func(serviceRef, token, cluster, namespace string) (string, string, catalog.Scope, error) {
+			return serviceRef, "", scope, nil
+		},
+		parseServiceRef: func(ref string) (string, error) { return ref, nil },
+		isServiceID:     func(string) bool { return false },
+		resolveScope:    func(cfgpkg.Config, string, string) (catalog.Scope, error) { return scope, nil },
+		parseShareToken: func(string) (ShareTokenInfo, error) { return ShareTokenInfo{}, nil },
+		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
+		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { return cfg, nil },
+		markInvite:      func(string, ShareTokenInfo) error { return nil },
+		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) {
+			return catalog.LookupResult{}, catalog.Service{}, errors.New("unused")
+		},
+		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) {
+			return catalog.LookupResult{}, service, nil
+		},
+		newBridge: func(_ context.Context, bridgeCfg bridge.Config) (*bridge.App, error) {
+			selected = bridgeCfg
+			return &bridge.App{}, nil
+		},
+	}
+	if _, err := Resolve(context.Background(), deps, Request{ConfigPath: t.TempDir() + "/config.yaml", ServiceRef: "svc", Timeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if selected.ConnectMembershipCapability != nil {
+		t.Fatalf("expected membership grant token path, got capability %#v", selected.ConnectMembershipCapability)
+	}
+	if selected.ConnectMembershipGrantToken != token {
+		t.Fatalf("unexpected membership grant token: %q", selected.ConnectMembershipGrantToken)
 	}
 }
 

@@ -56,6 +56,7 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 			capability.PermissionSubscribe,
 			capability.PermissionList,
 			capability.PermissionPublish,
+			capability.PermissionConnect,
 		},
 		ExpiresAt: time.Now().Add(365 * 24 * time.Hour),
 	}, priv)
@@ -121,6 +122,7 @@ func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, err
 			capability.PermissionSubscribe,
 			capability.PermissionList,
 			capability.PermissionPublish,
+			capability.PermissionConnect,
 		},
 		ExpiresAt: time.Now().Add(365 * 24 * time.Hour),
 	}, priv)

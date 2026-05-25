@@ -16,6 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	capability "github.com/origama/tubo/internal/capability"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/serviceidentity"
@@ -38,6 +39,7 @@ type serviceGrantEndpoint struct {
 	serviceOwnerKey   string
 	publishLeaseFile  string
 	server            *grantspkg.Server
+	revocations       *grantspkg.RevocationStore
 	publicRateLimitMu sync.Mutex
 	publicRateLimit   map[peer.ID][]time.Time
 }
@@ -57,12 +59,14 @@ func newServiceGrantEndpoint(cfg Config, serviceID, servicePeerID string) (*serv
 			return nil, err
 		}
 	}
+	revocations := grantspkg.NewRevocationStore(grantspkg.DefaultRevocationStorePath())
 	server, err := grantspkg.NewServer(grantspkg.ServerConfig{
 		ClusterName:         first(cfg.ClusterName, cfg.DiscoveryClusterID),
 		ClusterID:           cfg.DiscoveryClusterID,
 		NamespaceID:         cfg.DiscoveryNamespaceID,
 		Store:               grantspkg.NewStore(serviceGrantStorePath(cfg, serviceID)),
 		AuthorityPrivateKey: authorityPriv,
+		Revocations:         revocations,
 	})
 	if err != nil {
 		return nil, err
@@ -83,6 +87,7 @@ func newServiceGrantEndpoint(cfg Config, serviceID, servicePeerID string) (*serv
 		serviceOwnerKey:  strings.TrimSpace(cfg.ServiceOwnerKeyFile),
 		publishLeaseFile: strings.TrimSpace(cfg.ServicePublishLeaseFile),
 		server:           server,
+		revocations:      revocations,
 		publicRateLimit:  make(map[peer.ID][]time.Time),
 	}, nil
 }
@@ -207,13 +212,25 @@ func (e *serviceGrantEndpoint) authorizeConnectRequest(requester peer.ID, msg gr
 	case "invite_only":
 		return errors.New("service is invite_only; use `tubo connect --token <share-invite>`")
 	case "namespace_members":
-		if msg.MembershipCapability == nil {
-			return errors.New("namespace_members policy requires a membership capability with connect permission")
+		if msg.MembershipCapability == nil && strings.TrimSpace(msg.MembershipGrantToken) == "" {
+			return errors.New("namespace_members policy requires a membership capability or membership invite with connect permission")
 		}
-		if err := verifyConnectMembership(*msg.MembershipCapability, e.authorityPub, e.clusterID, e.namespaceID, requester.String()); err != nil {
-			return fmt.Errorf("namespace_members policy denied connect: %w", err)
+		var errs []string
+		if msg.MembershipCapability != nil {
+			if err := verifyConnectMembership(*msg.MembershipCapability, e.authorityPub, e.clusterID, e.namespaceID, requester.String()); err == nil {
+				return nil
+			} else {
+				errs = append(errs, err.Error())
+			}
 		}
-		return nil
+		if strings.TrimSpace(msg.MembershipGrantToken) != "" {
+			if err := e.verifyConnectMembershipGrantToken(msg.MembershipGrantToken); err == nil {
+				return nil
+			} else {
+				errs = append(errs, err.Error())
+			}
+		}
+		return fmt.Errorf("namespace_members policy denied connect: %s", strings.Join(errs, "; "))
 	case "public":
 		if !e.allowPublicConnect(requester) {
 			return errors.New("public connect policy rate limit exceeded; retry later")
@@ -270,6 +287,30 @@ func verifyConnectMembership(membership capability.MembershipCapability, authori
 		return lastErr
 	}
 	return errors.New("membership capability rejected")
+}
+
+func (e *serviceGrantEndpoint) verifyConnectMembershipGrantToken(token string) error {
+	payload, err := clusterinvite.ParseAndVerifyToken(token)
+	if err != nil {
+		return err
+	}
+	if !clusterinvite.MatchesAuthority(payload, e.authorityPub) {
+		return errors.New("membership invite authority does not match attached service authority")
+	}
+	if payload.ClusterID != e.clusterID || payload.Namespace != e.namespaceID {
+		return errors.New("membership invite does not authorize attached service scope")
+	}
+	if !containsConnectPermission(payload.Grant.Permissions) {
+		return errors.New("membership invite is missing connect permission")
+	}
+	if e.revocations != nil {
+		if revoked, _, err := e.revocations.IsInviteRevoked(payload.JTI); err != nil {
+			return err
+		} else if revoked {
+			return errors.New("membership invite revoked")
+		}
+	}
+	return nil
 }
 
 func containsConnectPermission(perms []string) bool {

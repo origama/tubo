@@ -351,8 +351,8 @@ func RedeemShareInvite(ctx context.Context, h host.Host, info peer.AddrInfo, tok
 	return ConnectLeaseArtifacts{AccessLease: *resp.ConnectAccessLease, RefreshLease: *resp.ConnectRefreshLease}, nil
 }
 
-func RequestConnectLease(ctx context.Context, h host.Host, info peer.AddrInfo, clusterID, namespaceID, serviceID, clientPublicKey string, membership *capability.MembershipCapability) (ConnectLeaseArtifacts, error) {
-	resp, err := Query(ctx, h, info, Message{Type: TypeConnectRequest, Version: VersionV1, ClusterID: clusterID, NamespaceID: namespaceID, ServiceID: serviceID, ClientPublicKey: clientPublicKey, MembershipCapability: membership})
+func RequestConnectLease(ctx context.Context, h host.Host, info peer.AddrInfo, clusterID, namespaceID, serviceID, clientPublicKey string, membership *capability.MembershipCapability, membershipGrantToken string) (ConnectLeaseArtifacts, error) {
+	resp, err := Query(ctx, h, info, Message{Type: TypeConnectRequest, Version: VersionV1, ClusterID: clusterID, NamespaceID: namespaceID, ServiceID: serviceID, ClientPublicKey: clientPublicKey, MembershipCapability: membership, MembershipGrantToken: membershipGrantToken})
 	if err != nil {
 		return ConnectLeaseArtifacts{}, err
 	}

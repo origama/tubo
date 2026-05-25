@@ -13,6 +13,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	capability "github.com/origama/tubo/internal/capability"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
@@ -47,6 +48,37 @@ func TestServiceGrantEndpointNamespaceMembersPolicy(t *testing.T) {
 	}
 	if err := grantspkg.VerifyDelegatedConnectAccessLease(*resp.ConnectAccessLease, authPub, "cluster-123", "default", owner.ServiceID, servicePeerID); err != nil {
 		t.Fatalf("verify delegated access lease: %v", err)
+	}
+	viewerGrant, err := clusterinvite.GrantForRole(clusterinvite.RoleViewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerToken, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "viewer-jti", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(mustSSHKey(t, authPub)))), Namespace: "default", Grant: viewerGrant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = endpoint.handleMessage(grantspkg.Message{Type: grantspkg.TypeConnectRequest, Version: grantspkg.VersionV1, RequestID: "req-4", ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ClientPublicKey: testAuthorizedClientKey(t), MembershipGrantToken: viewerToken}, requester)
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "missing connect permission") {
+		t.Fatalf("expected viewer grant denial, got %#v", resp)
+	}
+	memberGrant, err := clusterinvite.GrantForRole(clusterinvite.RoleMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	memberToken, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "member-jti", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(mustSSHKey(t, authPub)))), Namespace: "default", Grant: memberGrant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = endpoint.handleMessage(grantspkg.Message{Type: grantspkg.TypeConnectRequest, Version: grantspkg.VersionV1, RequestID: "req-5", ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ClientPublicKey: testAuthorizedClientKey(t), MembershipGrantToken: memberToken}, requester)
+	if resp.Type != grantspkg.TypeConnectGranted {
+		t.Fatalf("expected member grant approval, got %#v", resp)
+	}
+	if _, err := endpoint.revocations.RevokeInvite("member-jti", "test"); err != nil {
+		t.Fatal(err)
+	}
+	resp = endpoint.handleMessage(grantspkg.Message{Type: grantspkg.TypeConnectRequest, Version: grantspkg.VersionV1, RequestID: "req-6", ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ClientPublicKey: testAuthorizedClientKey(t), MembershipGrantToken: memberToken}, requester)
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "revoked") {
+		t.Fatalf("expected revoked member grant denial, got %#v", resp)
 	}
 }
 
@@ -101,6 +133,7 @@ func newGrantEndpointWithAuthorityForTest(t *testing.T, policy string) (*service
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", filepath.Join(dir, "xdg"))
 	ownerPath := filepath.Join(dir, "service.owner.key")
 	if err := serviceidentity.Save(ownerPath, owner.PrivateKey); err != nil {
 		t.Fatal(err)
@@ -127,4 +160,13 @@ func newGrantEndpointWithAuthorityForTest(t *testing.T, policy string) (*service
 		t.Fatal(err)
 	}
 	return endpoint, owner, authPub, servicePeerID, authPriv
+}
+
+func mustSSHKey(t *testing.T, pub ed25519.PublicKey) ssh.PublicKey {
+	t.Helper()
+	sshPub, err := ssh.NewPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sshPub
 }

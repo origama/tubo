@@ -323,7 +323,7 @@ Usage:
   tubo get services
   tubo use overlay/public
   tubo create cluster/home
-  tubo share cluster/home --permission member
+  tubo share cluster/home --role member
   tubo share service/myapp --expires 1h
   tubo share revoke <share-invite>
   tubo revoke <invite|session|service-access|publish> <id-or-service>
@@ -346,7 +346,7 @@ Discovery and process management:
   tubo watch services
   tubo use overlay/public
   tubo create cluster/home
-  tubo share cluster/home --permission member
+  tubo share cluster/home --role member
   tubo ps
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
@@ -462,7 +462,7 @@ Install local overlay config, swarm key, or cluster membership. Does not start p
 Select a local overlay/cluster/namespace context in the config file.`)
 	case "share":
 		fmt.Println(`Usage:
-  tubo share cluster/<name> [--permission member] [--namespace <name>] [--expires <duration>]
+  tubo share cluster/<name> [--role member|viewer|grant-requester] [--namespace <name>] [--expires <duration>]
   tubo share service/<name> [--cluster <name>] [--namespace <name>] [--expires <duration>]
   tubo share revoke <share-invite>
 
@@ -1936,7 +1936,13 @@ func doctor(args []string) error {
 		return err
 	}
 	c = cfgpkg.Merge(cfgpkg.Defaults(c.Role), c)
-	return cfgpkg.Doctor(c)
+	if err := cfgpkg.Doctor(c); err != nil {
+		return err
+	}
+	for _, warning := range doctorWarnings(c) {
+		fmt.Println(warning)
+	}
+	return nil
 }
 func versionCmd(args []string) error {
 	fs := flag.NewFlagSet("version", flag.ContinueOnError)
