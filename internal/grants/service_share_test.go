@@ -14,7 +14,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func TestBuildServiceShareArtifactsSignsConnectOnlyToken(t *testing.T) {
+func TestBuildServiceShareArtifactsSignsScopedInviteToken(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -29,8 +29,9 @@ func TestBuildServiceShareArtifactsSignsConnectOnlyToken(t *testing.T) {
 	if artifacts.Payload.ClusterName != "home" || artifacts.Payload.Namespace != "default" || artifacts.Payload.ServiceName != "myapi" {
 		t.Fatalf("unexpected payload: %#v", artifacts.Payload)
 	}
-	if len(artifacts.Payload.Grant.Permissions) != 1 || artifacts.Payload.Grant.Permissions[0] != "connect" {
-		t.Fatalf("grant is not connect-only: %#v", artifacts.Payload.Grant.Permissions)
+	raw := decodeServiceShareTokenPayloadJSON(t, artifacts.Token)
+	if _, ok := raw["grant"]; ok {
+		t.Fatalf("expected signed share invite to omit deprecated embedded grant, got %#v", raw["grant"])
 	}
 	parsed, err := ParseAndVerifyServiceShareToken(artifacts.Token)
 	if err != nil {
@@ -220,6 +221,9 @@ func TestBuildServiceShareArtifactsWithEndpointsIncludesMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := decodeServiceShareTokenPayloadJSON(t, artifacts.Token)
+	if _, ok := raw["grant"]; ok {
+		t.Fatalf("expected embedded grant to be omitted, got %#v", raw["grant"])
+	}
 	if endpointValue, ok := raw["service_endpoint"]; !ok {
 		t.Fatal("expected service_endpoint metadata to be present")
 	} else if endpoint, ok := endpointValue.(map[string]any); !ok {
@@ -318,7 +322,7 @@ func TestBuildShareInviteArtifactsWithGrantServiceIncludesMetadata(t *testing.T)
 	}
 }
 
-func TestParseAndVerifyServiceShareTokenRejectsExpiredAndScopeMismatch(t *testing.T) {
+func TestParseAndVerifyServiceShareTokenRejectsExpiredAndIncompleteEndpoint(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -336,16 +340,9 @@ func TestParseAndVerifyServiceShareTokenRejectsExpiredAndScopeMismatch(t *testin
 		NamespaceID:        "default",
 		ServiceName:        "myapi",
 		ServiceID:          "service-myapi",
-		Grant: capability.ConnectCapability{
-			ClusterID:     "cluster-123",
-			NamespaceID:   "default",
-			ServiceID:     "service-myapi",
-			SubjectPeerID: "",
-			Permissions:   []string{capability.PermissionConnect},
-			ExpiresAt:     time.Now().UTC().Add(-time.Minute),
-		},
-		IssuedAt:  time.Now().UTC().Add(-2 * time.Minute),
-		ExpiresAt: time.Now().UTC().Add(-time.Minute),
+		TargetServiceID:    "service-myapi",
+		IssuedAt:           time.Now().UTC().Add(-2 * time.Minute),
+		ExpiresAt:          time.Now().UTC().Add(-time.Minute),
 	}
 	expiredToken, err := SignServiceShareToken(expired, priv)
 	if err != nil {
@@ -355,27 +352,15 @@ func TestParseAndVerifyServiceShareTokenRejectsExpiredAndScopeMismatch(t *testin
 		t.Fatalf("expected expired token error, got %v", err)
 	}
 
-	mismatch := expired
-	mismatch.ExpiresAt = time.Now().UTC().Add(time.Hour)
-	mismatch.Grant = capability.ConnectCapability{
-		ClusterID:     "cluster-other",
-		NamespaceID:   "default",
-		ServiceID:     "service-myapi",
-		SubjectPeerID: "",
-		Permissions:   []string{capability.PermissionConnect},
-		ExpiresAt:     mismatch.ExpiresAt,
-	}
-	signedGrant, err := capability.SignConnectCapability(mismatch.Grant, priv)
+	incompleteEndpoint := expired
+	incompleteEndpoint.ExpiresAt = time.Now().UTC().Add(time.Hour)
+	incompleteEndpoint.ServiceEndpoint = ServiceEndpoint{PeerID: "12D3KooWOnlyPeerID"}
+	incompleteEndpointToken, err := SignServiceShareToken(incompleteEndpoint, priv)
 	if err != nil {
 		t.Fatal(err)
 	}
-	mismatch.Grant = signedGrant
-	mismatchToken, err := SignServiceShareToken(mismatch, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := ParseAndVerifyServiceShareToken(mismatchToken); err == nil || !strings.Contains(err.Error(), "cluster id mismatch") {
-		t.Fatalf("expected scope mismatch error, got %v", err)
+	if _, err := ParseAndVerifyServiceShareToken(incompleteEndpointToken); err == nil || !strings.Contains(err.Error(), "service endpoint is incomplete") {
+		t.Fatalf("expected incomplete endpoint error, got %v", err)
 	}
 }
 

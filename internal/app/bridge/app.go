@@ -30,7 +30,7 @@ type Config struct {
 	Listen, Seed, P2PListen, ServiceAddr, ServiceSeed, ServiceP2PListen, PrivateKeyFile, PrivateKeyB64 string
 	RelayPeers                                                                                         []string
 	Autorelay, HolePunching                                                                            bool
-	ConnectGrant                                                                                       *capability.ConnectCapability // legacy bearer fallback
+	ConnectGrant                                                                                       *capability.ConnectCapability // legacy/manual low-level connect capability support
 	ConnectInviteToken                                                                                 string
 	ConnectGrantPeers                                                                                  []string
 	ConnectClusterID                                                                                   string
@@ -105,20 +105,20 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectLease = &lease
 		log.Printf("bridge connect access lease enabled cluster=%s namespace=%s service=%s expires_at=%s", lease.ClusterID, lease.NamespaceID, lease.ServiceID, lease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
-	if cfg.ConnectInviteToken != "" && len(cfg.ConnectGrantPeers) > 0 && cfg.ConnectRefreshLease == nil {
+	if cfg.ConnectInviteToken != "" && cfg.ConnectRefreshLease == nil {
+		if len(cfg.ConnectGrantPeers) == 0 {
+			_ = h.Close()
+			return nil, fmt.Errorf("share invite is missing grant service metadata; ask the service owner to reissue the invite")
+		}
 		artifacts, err := redeemConnectInvite(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectInviteToken)
 		if err != nil {
-			if cfg.ConnectGrant == nil {
-				_ = h.Close()
-				return nil, err
-			}
-			log.Printf("bridge share invite redemption failed; falling back to embedded legacy connect grant err=%v", err)
-		} else {
-			cfg.ConnectAccessLease = &artifacts.AccessLease
-			cfg.ConnectRefreshLease = &artifacts.RefreshLease
-			connectLease = &artifacts.AccessLease
-			log.Printf("bridge share invite redeemed service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
+			_ = h.Close()
+			return nil, err
 		}
+		cfg.ConnectAccessLease = &artifacts.AccessLease
+		cfg.ConnectRefreshLease = &artifacts.RefreshLease
+		connectLease = &artifacts.AccessLease
+		log.Printf("bridge share invite redeemed service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	if cfg.ConnectAccessLease == nil && cfg.ConnectRefreshLease == nil && cfg.ConnectGrant == nil && cfg.ConnectInviteToken == "" && len(cfg.ConnectGrantPeers) > 0 && cfg.ConnectClusterID != "" && cfg.ConnectNamespaceID != "" && cfg.ConnectServiceID != "" {
 		artifacts, err := requestDirectConnectLease(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectClusterID, cfg.ConnectNamespaceID, cfg.ConnectServiceID, cfg.ConnectMembershipCapability, cfg.ConnectMembershipGrantToken)

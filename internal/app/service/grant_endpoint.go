@@ -368,25 +368,57 @@ func advertisedGrantServiceEndpoint(addrs []string) *grantspkg.GrantServiceEndpo
 }
 
 func serviceGrantStorePath(cfg Config, serviceID string) string {
-	base := strings.TrimSpace(cfg.ServicePublishLeaseFile)
-	if base == "" {
-		base = strings.TrimSpace(cfg.ServiceClaimFile)
-	}
-	if base != "" {
-		return filepath.Join(filepath.Dir(base), serviceID+".grant-endpoint.requests.json")
-	}
-	return filepath.Join(os.TempDir(), "tubo-"+serviceID+".grant-endpoint.requests.json")
+	return filepath.Join(serviceGrantStateDir(cfg, serviceID), serviceID+".grant-endpoint.requests.json")
 }
 
 func serviceGrantRedemptionStorePath(cfg Config, serviceID string) string {
+	return filepath.Join(serviceGrantStateDir(cfg, serviceID), serviceID+".grant-endpoint.share-redemptions.json")
+}
+
+func serviceGrantStateDir(cfg Config, serviceID string) string {
+	return serviceGrantStateDirWithCheck(cfg, serviceID, serviceGrantDirWritable)
+}
+
+func serviceGrantStateDirWithCheck(cfg Config, serviceID string, writable func(string) bool) string {
 	base := strings.TrimSpace(cfg.ServicePublishLeaseFile)
 	if base == "" {
 		base = strings.TrimSpace(cfg.ServiceClaimFile)
 	}
 	if base != "" {
-		return filepath.Join(filepath.Dir(base), serviceID+".grant-endpoint.share-redemptions.json")
+		dir := filepath.Dir(base)
+		if writable(dir) {
+			return dir
+		}
 	}
-	return filepath.Join(os.TempDir(), "tubo-"+serviceID+".grant-endpoint.share-redemptions.json")
+	return filepath.Join(serviceGrantDataRoot(), serviceID)
+}
+
+func serviceGrantDataRoot() string {
+	if xdg := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); xdg != "" {
+		return filepath.Join(xdg, "tubo", "services")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return filepath.Join(os.TempDir(), "tubo-services")
+	}
+	return filepath.Join(home, ".local", "share", "tubo", "services")
+}
+
+func serviceGrantDirWritable(dir string) bool {
+	if strings.TrimSpace(dir) == "" {
+		return false
+	}
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return false
+	}
+	probe, err := os.CreateTemp(dir, ".grant-endpoint-write-test-*")
+	if err != nil {
+		return false
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return true
 }
 
 func loadAuthorityPrivateKey(path string) (ed25519.PrivateKey, error) {

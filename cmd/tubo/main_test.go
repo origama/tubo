@@ -294,6 +294,50 @@ func TestBuildDetachedSpec(t *testing.T) {
 	}
 }
 
+func TestBuildDetachedConnectSpec(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "team",
+		Overlays:         map[string]cfgpkg.Overlay{"manual": {}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {Namespaces: map[string]cfgpkg.Namespace{"team": {}}},
+		},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"service/myapi", "--config", configPath, "--timeout", "3s"}
+	req, err := parseConnectCLIArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := buildDetachedConnectSpec(req, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.State.Command != "connect" || spec.State.Service != "myapi" {
+		t.Fatalf("unexpected connect state: %#v", spec.State)
+	}
+	if spec.State.Cluster != "home" || spec.State.Namespace != "team" {
+		t.Fatalf("unexpected connect scope: %#v", spec.State)
+	}
+	if spec.State.Local == "" || spec.HealthURL != "http://"+spec.State.Local+"/healthz" {
+		t.Fatalf("unexpected local/health: local=%q health=%q", spec.State.Local, spec.HealthURL)
+	}
+	if spec.State.Target != "myapi" {
+		t.Fatalf("target = %q", spec.State.Target)
+	}
+	if got := strings.Join(spec.ChildArgs, " "); !strings.Contains(got, "connect") || !strings.Contains(got, "--local "+spec.State.Local) {
+		t.Fatalf("child args missing injected local: %v", spec.ChildArgs)
+	}
+	if !strings.HasPrefix(spec.State.ID, "process/connect-myapi-") {
+		t.Fatalf("unexpected process id: %q", spec.State.ID)
+	}
+}
+
 func TestProcessStateListingAndLookup(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
@@ -700,8 +744,8 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(connectHelp, "connect --token") || !strings.Contains(connectHelp, "collaboration path") {
-		t.Fatalf("connect help missing mode distinction: %s", connectHelp)
+	if !strings.Contains(connectHelp, "connect --token") || !strings.Contains(connectHelp, "collaboration path") || !strings.Contains(connectHelp, "--detach") || !strings.Contains(connectHelp, "tubo ps") {
+		t.Fatalf("connect help missing detached/mode guidance: %s", connectHelp)
 	}
 }
 
@@ -1442,11 +1486,8 @@ func TestServiceShareTokenAndConnectSetup(t *testing.T) {
 	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" || payload.DisplayNameHint != "myapi" || payload.TargetServiceID != payload.ServiceID || payload.JTI == "" {
 		t.Fatalf("unexpected service share scope: %#v", payload)
 	}
-	if payload.Grant.ClusterID != payload.ClusterID || payload.Grant.NamespaceID != payload.NamespaceID || payload.Grant.ServiceID != payload.TargetServiceID {
-		t.Fatalf("grant scope mismatch: %#v", payload.Grant)
-	}
-	if len(payload.Grant.Permissions) != 1 || payload.Grant.Permissions[0] != capability.PermissionConnect {
-		t.Fatalf("service share is not connect-only: %#v", payload.Grant.Permissions)
+	if payload.Grant.ClusterID != "" || payload.Grant.NamespaceID != "" || payload.Grant.ServiceID != "" || len(payload.Grant.Permissions) != 0 {
+		t.Fatalf("expected no embedded legacy grant in service share token, got %#v", payload.Grant)
 	}
 	_, roguePriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

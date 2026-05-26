@@ -132,7 +132,7 @@ func TestBridgeDiscoveryConnectAuthorizationFailureIsReturned(t *testing.T) {
 	}
 }
 
-func TestBridgeFallsBackToLegacyGrantWhenInviteRedemptionPeersAreUnreachable(t *testing.T) {
+func TestBridgeInviteConnectFailsWhenGrantServicePeersAreUnreachable(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -155,25 +155,34 @@ func TestBridgeFallsBackToLegacyGrantWhenInviteRedemptionPeersAreUnreachable(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	app, err := New(context.Background(), Config{
+	_, err = New(context.Background(), Config{
 		Listen:             "127.0.0.1:0",
 		Seed:               "bridge-fallback-client",
 		P2PListen:          "/ip4/127.0.0.1/tcp/0",
 		ServiceAddr:        p2p.PeerAddrs(serviceHost)[0],
-		ConnectGrant:       &payload.Grant,
 		ConnectInviteToken: token,
 		ConnectGrantPeers:  append([]string(nil), payload.GrantService.Peers...),
 	})
-	if err != nil {
-		t.Fatalf("bridge.New() should fall back to embedded legacy grant, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "redeem share invite") {
+		t.Fatalf("expected redemption failure, got %v", err)
 	}
-	defer app.host.Close()
-	proof, err := app.connectProof()
+}
+
+func TestBridgeInviteConnectRequiresGrantServiceMetadata(t *testing.T) {
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-no-grant-service-service", nil)
 	if err != nil {
-		t.Fatalf("connectProof() after fallback: %v", err)
+		t.Fatal(err)
 	}
-	if proof == nil {
-		t.Fatal("expected connect proof from embedded legacy grant fallback")
+	defer serviceHost.Close()
+	_, err = New(context.Background(), Config{
+		Listen:             "127.0.0.1:0",
+		Seed:               "bridge-no-grant-service-client",
+		P2PListen:          "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:        p2p.PeerAddrs(serviceHost)[0],
+		ConnectInviteToken: "tubo-share-invite-v1.test",
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing grant service metadata") {
+		t.Fatalf("expected missing grant-service metadata error, got %v", err)
 	}
 }
 

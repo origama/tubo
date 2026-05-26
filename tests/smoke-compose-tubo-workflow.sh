@@ -10,7 +10,8 @@ export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 
 BIN_DIR="$(mktemp -d "${ROOT_DIR}/.tmp-smoke-workflow-bin.XXXXXX")"
 TUBO_BIN="$BIN_DIR/tubo"
-connect_pid=""
+connect_process_ref=""
+connect_log_path=""
 
 tubo() {
   "$TUBO_BIN" "$@"
@@ -18,10 +19,10 @@ tubo() {
 
 cleanup() {
   set +e
-  if [[ -n "$connect_pid" ]]; then
-    kill "$connect_pid" >/dev/null 2>&1 || true
-    wait "$connect_pid" >/dev/null 2>&1 || true
-    connect_pid=""
+  if [[ -n "$connect_process_ref" ]]; then
+    tubo stop "$connect_process_ref" >/dev/null 2>&1 || true
+    tubo rm --stale >/dev/null 2>&1 || true
+    connect_process_ref=""
   fi
   pkill -f 'generated/tubo-workflow/tubo/client.yaml' >/dev/null 2>&1 || true
   for _ in $(seq 1 40); do
@@ -292,6 +293,7 @@ fi
 relay_peer_id="$(tubo id from-seed relay-demo-seed | tr -d '\n')"
 edge_peer_id="$(tubo id from-seed edge-demo-seed | tr -d '\n')"
 relay_addr="/dns4/tubo-relay/tcp/4002/p2p/${relay_peer_id}"
+host_relay_addr="/ip4/127.0.0.1/tcp/4002/p2p/${relay_peer_id}"
 edge_addr="/dns4/tubo-edge/tcp/4001/p2p/${edge_peer_id}"
 
 cat > "${config_dir}/relay.yaml" <<YAML
@@ -456,7 +458,7 @@ node:
 network:
   private_key_file: ${host_swarm_key_file}
   relay_peers:
-    - ${relay_addr}
+    - ${host_relay_addr}
 edge:
   admin_listen: 127.0.0.1:8444
 current_cluster: home
@@ -477,9 +479,9 @@ current_namespace: tenant-a
 network:
   private_key_file: ${host_swarm_key_file}
   bootstrap_peers:
-    - ${relay_addr}
+    - ${host_relay_addr}
   relay_peers:
-    - ${relay_addr}
+    - ${host_relay_addr}
 clusters:
   home:
     cluster_id: ${cluster_id}
@@ -575,10 +577,20 @@ fi
 
 connect_port="$(free_tcp_port)"
 bad_connect_port="$(free_tcp_port)"
-connect_log="$(mktemp)"
 connect_resp="$(mktemp)"
-tubo connect --token "$share_token" --config "${config_dir}/client.yaml" --local 127.0.0.1:${connect_port} >"$connect_log" 2>&1 &
-connect_pid=$!
+connect_output="$(tubo connect --token "$share_token" --config "${config_dir}/client.yaml" --local 127.0.0.1:${connect_port} -d)"
+connect_process_ref="$(extract_field "id" "$connect_output")"
+connect_log_path="$(extract_field "logs" "$connect_output")"
+if [[ -z "$connect_process_ref" || -z "$connect_log_path" ]]; then
+  echo "[smoke-tubo-workflow] failed to parse detached connect process metadata"
+  echo "$connect_output"
+  exit 1
+fi
+if ! tubo ps --kind connect | grep -q "${connect_process_ref#process/}"; then
+  echo "[smoke-tubo-workflow] detached connect process not visible in tubo ps"
+  tubo ps --all --kind connect || true
+  exit 1
+fi
 
 for i in $(seq 1 60); do
   if curl -fsS -o "$connect_resp" -H 'Content-Type: text/plain' --data 'hello-service-share' "http://127.0.0.1:${connect_port}/v1/dummy?from=service-share" >/dev/null 2>&1; then
@@ -587,7 +599,7 @@ for i in $(seq 1 60); do
   sleep 1
   if [[ "$i" == "60" ]]; then
     echo "[smoke-tubo-workflow] connect token tunnel did not become ready"
-    cat "$connect_log"
+    cat "$connect_log_path"
     exit 1
   fi
 done

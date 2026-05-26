@@ -165,6 +165,25 @@ func TestServiceGrantEndpointPublicPolicyRateLimits(t *testing.T) {
 	}
 }
 
+func TestServiceGrantStateDirPrefersWritableLeaseDir(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{ServicePublishLeaseFile: filepath.Join(dir, "service.publish-lease.json")}
+	got := serviceGrantStateDirWithCheck(cfg, "svc-123", func(path string) bool { return path == dir })
+	if got != dir {
+		t.Fatalf("state dir = %q, want %q", got, dir)
+	}
+}
+
+func TestServiceGrantStateDirFallsBackToDataHomeWhenLeaseDirIsNotWritable(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "xdg"))
+	cfg := Config{ServicePublishLeaseFile: filepath.Join(t.TempDir(), "readonly", "service.publish-lease.json")}
+	got := serviceGrantStateDirWithCheck(cfg, "svc-123", func(string) bool { return false })
+	want := filepath.Join(os.Getenv("XDG_DATA_HOME"), "tubo", "services", "svc-123")
+	if got != want {
+		t.Fatalf("state dir = %q, want %q", got, want)
+	}
+}
+
 func newGrantEndpointForTest(t *testing.T, policy string) (*serviceGrantEndpoint, serviceidentity.Identity, ed25519.PublicKey, string) {
 	endpoint, owner, authPub, servicePeerID, _ := newGrantEndpointWithAuthorityForTest(t, policy)
 	return endpoint, owner, authPub, servicePeerID

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	bridgeapp "github.com/origama/tubo/internal/app/bridge"
 	serviceapp "github.com/origama/tubo/internal/app/service"
 	capability "github.com/origama/tubo/internal/capability"
 	"github.com/origama/tubo/internal/discovery"
@@ -102,6 +103,7 @@ func TestShareInviteRedeemIsOneTimeAcrossClientsAndServiceRestart(t *testing.T) 
 	}()
 
 	serviceInfo := serviceApp.Host().Peerstore().PeerInfo(serviceApp.Host().ID())
+	servicePeer := p2p.PeerAddrs(serviceApp.Host())[0]
 	bobHost, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "bob-redeemer", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -132,13 +134,34 @@ func TestShareInviteRedeemIsOneTimeAcrossClientsAndServiceRestart(t *testing.T) 
 	if _, err := grantspkg.RedeemShareInvite(ctx, bob2Host, serviceInfo, invite.Token, connectClientPublicKeyForTest(t, bob2Host)); err == nil || !strings.Contains(err.Error(), "already redeemed") {
 		t.Fatalf("expected fresh-client redemption denial, got %v", err)
 	}
+	if _, err := bridgeapp.New(ctx, bridgeapp.Config{
+		Listen:             "127.0.0.1:0",
+		Seed:               "share-redeem-once-bridge-fresh-client",
+		P2PListen:          "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:        servicePeer,
+		ConnectInviteToken: invite.Token,
+		ConnectGrantPeers:  []string{servicePeer},
+	}); err == nil || !strings.Contains(err.Error(), "already redeemed") {
+		t.Fatalf("expected fresh bridge connect denial, got %v", err)
+	}
 
 	serviceCancel()
 	<-serviceErr
 	serviceApp, serviceCancel, serviceErr = startService(ctx)
 	serviceInfo = serviceApp.Host().Peerstore().PeerInfo(serviceApp.Host().ID())
+	servicePeer = p2p.PeerAddrs(serviceApp.Host())[0]
 	if _, err := grantspkg.RedeemShareInvite(ctx, carolHost, serviceInfo, invite.Token, connectClientPublicKeyForTest(t, carolHost)); err == nil || !strings.Contains(err.Error(), "already redeemed") {
 		t.Fatalf("expected post-restart redemption denial, got %v", err)
+	}
+	if _, err := bridgeapp.New(ctx, bridgeapp.Config{
+		Listen:             "127.0.0.1:0",
+		Seed:               "share-redeem-once-bridge-post-restart",
+		P2PListen:          "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:        servicePeer,
+		ConnectInviteToken: invite.Token,
+		ConnectGrantPeers:  []string{servicePeer},
+	}); err == nil || !strings.Contains(err.Error(), "already redeemed") {
+		t.Fatalf("expected post-restart bridge denial, got %v", err)
 	}
 }
 

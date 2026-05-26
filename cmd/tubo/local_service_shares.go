@@ -113,9 +113,11 @@ func localShareServiceCmd(args []string) error {
 		return err
 	}
 	serviceEndpointAddrs := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
+	grantPeers := grantServicePeersForTokens(serviceEndpointAddrs)
+	useEndpointMetadata := requireEndpoint || len(grantPeers) > 0 || len(serviceEndpointAddrs) > 0
 	var artifacts grantspkg.ServiceShareArtifacts
-	if requireEndpoint {
-		artifacts, err = grantspkg.BuildServiceShareArtifactsWithEndpoints(privKey, scope.Cluster, cluster.ClusterID, scope.Namespace, name, serviceID, *expires, nil, servicePeerID.String(), serviceEndpointAddrs)
+	if useEndpointMetadata {
+		artifacts, err = grantspkg.BuildServiceShareArtifactsWithEndpoints(privKey, scope.Cluster, cluster.ClusterID, scope.Namespace, name, serviceID, *expires, grantPeers, servicePeerID.String(), serviceEndpointAddrs)
 	} else {
 		artifacts, err = grantspkg.BuildServiceShareArtifacts(privKey, scope.Cluster, cluster.ClusterID, scope.Namespace, name, serviceID, *expires)
 	}
@@ -123,8 +125,8 @@ func localShareServiceCmd(args []string) error {
 		if leaseBytes, readErr := os.ReadFile(svc.ServicePublishLeaseFile); readErr == nil {
 			var lease grantspkg.PublishLease
 			if json.Unmarshal(leaseBytes, &lease) == nil {
-				if requireEndpoint {
-					if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, scope.Cluster, lease, name, *expires, nil, servicePeerID.String(), serviceEndpointAddrs); inviteErr == nil {
+				if useEndpointMetadata {
+					if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, scope.Cluster, lease, name, *expires, grantPeers, servicePeerID.String(), serviceEndpointAddrs); inviteErr == nil {
 						artifacts = invite
 					}
 				} else if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLease(privKey, scope.Cluster, lease, name, *expires); inviteErr == nil {

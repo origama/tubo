@@ -393,13 +393,15 @@ func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clu
 		return "", err
 	}
 	serviceEndpointAddrs := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
+	grantPeers := grantServicePeersForTokens(serviceEndpointAddrs)
+	useEndpointMetadata := requireEndpoint || len(grantPeers) > 0 || len(serviceEndpointAddrs) > 0
 	if svc.ServicePublishLeaseFile != "" {
 		if leaseBytes, err := os.ReadFile(svc.ServicePublishLeaseFile); err == nil {
 			var lease grantspkg.PublishLease
 			if err := json.Unmarshal(leaseBytes, &lease); err == nil {
 				var artifacts grantspkg.ServiceShareArtifacts
-				if requireEndpoint {
-					artifacts, err = grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL, nil, servicePeerID.String(), serviceEndpointAddrs)
+				if useEndpointMetadata {
+					artifacts, err = grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL, grantPeers, servicePeerID.String(), serviceEndpointAddrs)
 				} else {
 					artifacts, err = grantspkg.BuildShareInviteArtifactsFromLease(privKey, clusterName, lease, serviceName, grantspkg.ServiceShareDefaultTTL)
 				}
@@ -419,8 +421,8 @@ func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clu
 		}
 	}
 	var token string
-	if requireEndpoint {
-		artifacts, err := grantspkg.BuildServiceShareArtifactsWithEndpoints(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL, nil, servicePeerID.String(), serviceEndpointAddrs)
+	if useEndpointMetadata {
+		artifacts, err := grantspkg.BuildServiceShareArtifactsWithEndpoints(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, grantspkg.ServiceShareDefaultTTL, grantPeers, servicePeerID.String(), serviceEndpointAddrs)
 		if err != nil {
 			return "", err
 		}

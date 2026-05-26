@@ -63,23 +63,21 @@ func (connectWorkflow) ParseShareToken(token string) (connectflow.ShareTokenInfo
 		return connectflow.ShareTokenInfo{}, err
 	}
 	info := connectflow.ShareTokenInfo{
-		JTI:                payload.JTI,
-		Cluster:            payload.ClusterName,
-		ClusterID:          payload.ClusterID,
-		AuthorityPublicKey: payload.AuthorityPublicKey,
-		Namespace:          payload.Namespace,
-		NamespaceID:        payload.NamespaceID,
-		TargetServiceID:    payload.TargetServiceID,
-		DisplayNameHint:    payload.DisplayNameHint,
+		JTI:                  payload.JTI,
+		Cluster:              payload.ClusterName,
+		ClusterID:            payload.ClusterID,
+		AuthorityPublicKey:   payload.AuthorityPublicKey,
+		Namespace:            payload.Namespace,
+		NamespaceID:          payload.NamespaceID,
+		TargetServiceID:      payload.TargetServiceID,
+		DisplayNameHint:      payload.DisplayNameHint,
 		ServiceEndpointPeer:  payload.ServiceEndpoint.PeerID,
 		ServiceEndpointAddrs: append([]string(nil), payload.ServiceEndpoint.Addresses...),
-		IssuedAt:           payload.IssuedAt,
-		ExpiresAt:          payload.ExpiresAt,
+		IssuedAt:             payload.IssuedAt,
+		ExpiresAt:            payload.ExpiresAt,
+		ConnectInviteToken:   token,
 	}
-	grant := payload.Grant
-	info.ConnectGrant = &grant
 	if payload.GrantService.Protocol == grantspkg.ProtocolID && len(payload.GrantService.Peers) > 0 {
-		info.ConnectInviteToken = token
 		info.ConnectGrantPeers = append([]string(nil), payload.GrantService.Peers...)
 	}
 	return info, nil

@@ -63,7 +63,6 @@ type ShareTokenInfo struct {
 	ServiceEndpointAddrs []string
 	IssuedAt             time.Time
 	ExpiresAt            time.Time
-	ConnectGrant         *capability.ConnectCapability
 	ConnectInviteToken   string
 	ConnectGrantPeers    []string
 }
@@ -95,7 +94,6 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 	}
 	cluster := req.Cluster
 	namespace := req.Namespace
-	var connectGrant *capability.ConnectCapability
 	var connectInviteToken string
 	var connectGrantPeers []string
 	var shareInfo ShareTokenInfo
@@ -122,7 +120,6 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		if serviceRef == "" {
 			serviceRef = info.DisplayNameHint
 		}
-		connectGrant = info.ConnectGrant
 		connectInviteToken = info.ConnectInviteToken
 		connectGrantPeers = append([]string(nil), info.ConnectGrantPeers...)
 	}
@@ -197,7 +194,6 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		RelayPeers:         cfg.Network.RelayPeers,
 		Autorelay:          cfg.Network.Autorelay,
 		HolePunching:       cfg.Network.HolePunching,
-		ConnectGrant:       connectGrant,
 		ConnectInviteToken: connectInviteToken,
 		ConnectGrantPeers:  connectGrantPeers,
 	}

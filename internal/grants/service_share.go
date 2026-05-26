@@ -125,7 +125,7 @@ type ServiceSharePayload struct {
 	DisplayNameHint    string                       `json:"display_name_hint,omitempty"`
 	ServiceID          string                       `json:"service_id,omitempty"`
 	TargetServiceID    string                       `json:"target_service_id,omitempty"`
-	Grant              capability.ConnectCapability `json:"grant"` // legacy bearer fallback for old tokens/bridges
+	Grant              capability.ConnectCapability `json:"grant"` // deprecated legacy bearer field; ignored for auth and omitted from newly signed tokens
 	GrantService       GrantServiceEndpoint         `json:"grant_service,omitempty"`
 	ServiceEndpoint    ServiceEndpoint              `json:"service_endpoint,omitempty"`
 	AccessEpoch        int64                        `json:"access_epoch,omitempty"`
@@ -143,6 +143,9 @@ func (p ServiceSharePayload) MarshalJSON() ([]byte, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(b, &payload); err != nil {
 		return nil, err
+	}
+	if p.Grant.ClusterID == "" && p.Grant.NamespaceID == "" && p.Grant.ServiceID == "" && len(p.Grant.Permissions) == 0 && p.Grant.ExpiresAt.IsZero() {
+		delete(payload, "grant")
 	}
 	if p.GrantService.Protocol == "" && len(p.GrantService.Peers) == 0 {
 		delete(payload, "grant_service")
@@ -329,18 +332,6 @@ func ParseAndVerifyServiceShareToken(token string) (ServiceSharePayload, error) 
 	if !payload.IssuedAt.IsZero() && payload.ExpiresAt.Before(payload.IssuedAt) {
 		return ServiceSharePayload{}, errors.New("service share expires before it was issued")
 	}
-	if err := capability.VerifyConnectCapability(payload.Grant, edPub, payload.ClusterID, payload.NamespaceID, payload.TargetServiceID, ""); err != nil {
-		return ServiceSharePayload{}, err
-	}
-	if !payload.Grant.ExpiresAt.UTC().Equal(payload.ExpiresAt.UTC()) {
-		return ServiceSharePayload{}, errors.New("service share expiry mismatch")
-	}
-	if len(payload.Grant.Permissions) != 1 || payload.Grant.Permissions[0] != capability.PermissionConnect {
-		return ServiceSharePayload{}, errors.New("service share must be connect-only")
-	}
-	if payload.Grant.ClusterID != payload.ClusterID || payload.Grant.NamespaceID != payload.NamespaceID || payload.Grant.ServiceID != payload.TargetServiceID {
-		return ServiceSharePayload{}, errors.New("service share grant scope mismatch")
-	}
 	if payload.ServiceEndpoint.PeerID != "" || len(payload.ServiceEndpoint.Addresses) > 0 {
 		if strings.TrimSpace(payload.ServiceEndpoint.PeerID) == "" || len(payload.ServiceEndpoint.Addresses) == 0 {
 			return ServiceSharePayload{}, errors.New("service share service endpoint is incomplete")
@@ -455,17 +446,6 @@ func buildShareInvitePayloadFromLease(priv ed25519.PrivateKey, clusterName strin
 
 func buildShareInvitePayload(clusterName, clusterID, namespaceID, displayName, serviceID, authorityPublicKey string, priv ed25519.PrivateKey, shareTTL time.Duration) (ServiceSharePayload, error) {
 	now := time.Now().UTC()
-	grant, err := capability.SignConnectCapability(capability.ConnectCapability{
-		ClusterID:     clusterID,
-		NamespaceID:   namespaceID,
-		ServiceID:     serviceID,
-		SubjectPeerID: "",
-		Permissions:   []string{capability.PermissionConnect},
-		ExpiresAt:     now.Add(shareTTL),
-	}, priv)
-	if err != nil {
-		return ServiceSharePayload{}, err
-	}
 	jti, err := newShareInviteJTI()
 	if err != nil {
 		return ServiceSharePayload{}, err
@@ -481,9 +461,8 @@ func buildShareInvitePayload(clusterName, clusterID, namespaceID, displayName, s
 		DisplayNameHint:    displayName,
 		ServiceID:          serviceID,
 		TargetServiceID:    serviceID,
-		Grant:              grant,
 		IssuedAt:           now,
-		ExpiresAt:          grant.ExpiresAt,
+		ExpiresAt:          now.Add(shareTTL),
 	}
 	normalizeShareInvitePayload(&payload)
 	return payload, nil

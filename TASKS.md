@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-26 07:41 UTC
+> **Last updated:** 2026-05-26 13:06 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -203,6 +203,8 @@
 | C.99 | Issue #156 — invite-only public-default docs/help refresh | ✅ | Done on `0.7.0.b0`: refreshed top-level/help text, join next-step guidance, README quickstart, `docs/cli.md`, `docs/OPERABILITY.md`, and `docs/security-model-0.7.md` so the public default is consistently explained as invite-only/unlisted, `connect --token` is the public happy path, collaboration namespaces are the discoverable connect-by-name path, and the shared public overlay is explicitly not anonymity/transport isolation by itself. |
 | C.100 | Issue #159 — server-side one-time share invite redemption | ✅ | Done on `0.7.0.b0`: added persistent JSON-backed share-redemption stores, enforced one successful share-invite redemption server-side in both the authority grant server and attached-service grant endpoint, kept pruning TTL-bounded, preserved denial across process restart when state dir survives, and added unit/service/integration coverage for same-token reuse across clients/configs/restarts. |
 | C.101 | Issue #157 — discovered connect-grant endpoint abuse controls | ✅ | Done on `0.7.0.b0`: attached-service grant endpoints now enforce per-peer/per-service rolling-window limits plus a deny cache for repeated invalid requests, log requester/service/policy/reason on denials, and use fake-clock-friendly tests to cover sporadic success, deny-cache activation, and service-level flood protection. |
+| C.102 | Share-invite redemption hardening — remove embedded legacy connect-grant fallback | ✅ | Done on `0.7.0.b0`: share invites no longer emit embedded bearer `ConnectCapability` fallback data in newly signed tokens, `connect --token` now requires grant-service redemption and surfaces redemption denial instead of silently degrading to legacy proof auth, authority-local `share service/...` / attach-issued invite tokens now include grant-service metadata whenever relay-aware endpoint metadata is available, attached-service grant endpoint state falls back to writable XDG data dirs when config files are mounted read-only, and unit/integration/smoke coverage now explicitly blocks second-connect reuse from a fresh client/config. |
+| C.103 | Detached `tubo connect` process mode + `tubo ps` visibility | ✅ | Done on `0.7.0.b0`: `tubo connect` now supports `-d/--detach`, detached client bridges are persisted as local `process/connect-...` entries visible in `tubo ps` / `get processes`, foreground `connect` arg parsing was refactored into a shared CLI parser, help/docs now advertise detached connect explicitly, and regression coverage now includes unit checks for detached connect spec generation plus smoke validation that `connect --token -d` becomes ready and appears in `tubo ps`. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 
 ---
 

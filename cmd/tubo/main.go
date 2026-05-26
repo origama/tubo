@@ -87,9 +87,13 @@ func run(args []string) error {
 	case "join":
 		return joinCmd(args[1:])
 	case "connect":
-		cleanArgs, noInit := stripNoInitArgs(args[1:])
+		cleanArgs, detach := stripDetachArgs(args[1:])
+		cleanArgs, noInit := stripNoInitArgs(cleanArgs)
 		if err := ensureJoinedPublicNetwork("connect", noInit); err != nil {
 			return err
+		}
+		if detach {
+			return detachConnectCommand(cleanArgs)
 		}
 		return connectCmd(cleanArgs)
 	case "ps":
@@ -318,8 +322,8 @@ func printTopLevelHelp() {
 Usage:
   tubo attach <url> --name <service> [-d]
   tubo attach <service> --port <port> [-d]
-  tubo connect <service> [--local 127.0.0.1:PORT]
-  tubo connect --token <share-invite> [--local 127.0.0.1:PORT]
+  tubo connect <service> [--local 127.0.0.1:PORT] [-d]
+  tubo connect --token <share-invite> [--local 127.0.0.1:PORT] [-d]
   tubo get services
   tubo use overlay/public
   tubo create cluster/home
@@ -396,8 +400,8 @@ Flags:
   --no-init                 fail instead of auto-joining the public bundle`)
 	case "connect":
 		fmt.Println(`Usage:
-  tubo connect <service> [--local 127.0.0.1:PORT]
-  tubo connect --token <share-invite> [--local 127.0.0.1:PORT]
+  tubo connect <service> [--local 127.0.0.1:PORT] [-d]
+  tubo connect --token <share-invite> [--local 127.0.0.1:PORT] [-d]
 
 Open a local HTTP/WebSocket listener to a remote service.
 
@@ -415,6 +419,7 @@ Flags:
   --live                    skip remote cache and observe pubsub live
   --cached-only             only use local edge cache
   --json                    print JSON result
+  -d, --detach              run in background and show up in tubo ps
   --no-init                 fail instead of auto-joining the public bundle
 
 Path selection:
@@ -1148,6 +1153,11 @@ func printDetachedSummary(commandName string, state detachedProcessState) {
 		if state.ServiceID != "" {
 			fmt.Printf("service id: %s\n", state.ServiceID)
 		}
+	case "connect":
+		fmt.Printf("connect tunnel for service %q\n", state.Service)
+		if state.ServiceID != "" {
+			fmt.Printf("service id: %s\n", state.ServiceID)
+		}
 	case "gateway":
 		fmt.Println("gateway running")
 	case "relay":
@@ -1317,51 +1327,18 @@ type servicesAdminResponse struct {
 const defaultDiscoveryTimeout = 20 * time.Second
 
 func connectCmd(args []string) error {
-	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
-	local := fs.String("local", "", "")
-	configPath := fs.String("config", defaultTuboConfigPath(), "")
-	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
-	jsonOut := fs.Bool("json", false, "")
-	cachedOnly := fs.Bool("cached-only", false, "")
-	live := fs.Bool("live", false, "")
-	token := fs.String("token", "", "")
-	cluster := fs.String("cluster", "", "")
-	namespace := fs.String("namespace", "", "")
-	namespaceShort := fs.String("n", "", "")
-	serviceRef := ""
-	parseArgs := args
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		serviceRef = args[0]
-		parseArgs = args[1:]
-	}
-	if err := fs.Parse(parseArgs); err != nil {
+	req, err := parseConnectCLIArgs(args)
+	if err != nil {
 		return err
-	}
-	if *namespace == "" {
-		*namespace = *namespaceShort
-	}
-	if serviceRef == "" {
-		switch fs.NArg() {
-		case 0:
-			if strings.TrimSpace(*token) == "" {
-				return errors.New("usage: tubo connect [--token <share-invite>] <service-name> [--local host:port] [flags]")
-			}
-		case 1:
-			serviceRef = fs.Arg(0)
-		default:
-			return errors.New("usage: tubo connect [--token <share-invite>] <service-name> [--local host:port] [flags]")
-		}
-	} else if fs.NArg() != 0 {
-		return errors.New("usage: tubo connect [--token <share-invite>] <service-name> [--local host:port] [flags]")
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	result, err := connectflow.Resolve(ctx, newConnectWorkflow(), connectflow.Request{ConfigPath: *configPath, ServiceRef: serviceRef, Token: *token, Cluster: *cluster, Namespace: *namespace, Local: *local, Timeout: *timeout, CachedOnly: *cachedOnly, Live: *live})
+	result, err := connectflow.Resolve(ctx, newConnectWorkflow(), connectflow.Request{ConfigPath: req.ConfigPath, ServiceRef: req.ServiceRef, Token: req.Token, Cluster: req.Cluster, Namespace: req.Namespace, Local: req.Local, Timeout: req.Timeout, CachedOnly: req.CachedOnly, Live: req.Live})
 	if err != nil {
 		return err
 	}
 	output := fromConnectWorkflowResult(result)
-	if *jsonOut {
+	if req.JSONOut {
 		if err := printJSON(output); err != nil {
 			return err
 		}

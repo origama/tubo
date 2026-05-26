@@ -137,8 +137,8 @@ tubo connect lmstudio --local 127.0.0.1:51234
 
 # Manage detached local Tubo processes
 tubo ps
-tubo logs process/attach-lmstudio
-tubo stop process/attach-lmstudio
+tubo logs process/connect-lmstudio-51234
+tubo stop process/connect-lmstudio-51234
 tubo rm --stale
 ```
 

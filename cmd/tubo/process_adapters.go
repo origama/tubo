@@ -28,11 +28,15 @@ func buildDetachedSpec(commandName string, cfg cfgpkg.Config, args []string) (de
 }
 
 func startDetachedProcess(spec detachedSpec) (detachedProcessState, error) {
+	return startDetachedProcessWithTimeout(spec, 5*time.Second)
+}
+
+func startDetachedProcessWithTimeout(spec detachedSpec, timeout time.Duration) (detachedProcessState, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return detachedProcessState{}, err
 	}
-	return processes.StartDetached(spec, exe, append(os.Environ(), "TUBO_DETACHED_CHILD=1"), configureDetachedCommand, 5*time.Second)
+	return processes.StartDetached(spec, exe, append(os.Environ(), "TUBO_DETACHED_CHILD=1"), configureDetachedCommand, timeout)
 }
 
 func processStateDir() string { return processes.StateDir(defaultTuboDataDir()) }
