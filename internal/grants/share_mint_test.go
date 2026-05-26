@@ -1,6 +1,7 @@
 package grants
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -116,16 +117,33 @@ func TestShareMintRequestFreshness(t *testing.T) {
 	}
 }
 
-func TestValidateShareMintServiceEndpointRejectsLocalOnly(t *testing.T) {
-	if _, err := validateShareMintServiceEndpoint("12D3KooWService", []string{"/ip4/127.0.0.1/tcp/1234/p2p/12D3KooWService"}); err == nil {
-		t.Fatal("expected local-only endpoint rejection")
-	}
+func TestValidateShareMintServiceEndpointRequiresMatchingEmbeddedServicePeer(t *testing.T) {
 	cleaned, err := validateShareMintServiceEndpoint("12D3KooWService", []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWService"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(cleaned) != 1 {
 		t.Fatalf("cleaned addrs = %#v", cleaned)
+	}
+	if _, err := validateShareMintServiceEndpoint("12D3KooWService", []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWOther"}); err == nil || !strings.Contains(err.Error(), "embeds peer") {
+		t.Fatalf("expected embedded peer mismatch rejection, got %v", err)
+	}
+	if _, err := validateShareMintServiceEndpoint("12D3KooWService", []string{"/dns4/relay.tubo.click/tcp/4001"}); err == nil || !strings.Contains(err.Error(), "must embed /p2p/") {
+		t.Fatalf("expected missing embedded peer rejection, got %v", err)
+	}
+}
+
+func TestValidateShareMintServiceEndpointRejectsLocalOnly(t *testing.T) {
+	for _, addr := range []string{
+		"/ip4/127.0.0.1/tcp/1234/p2p/12D3KooWService",
+		"/ip4/0.0.0.0/tcp/1234/p2p/12D3KooWService",
+		"/ip6/::1/tcp/1234/p2p/12D3KooWService",
+		"/ip6/::/tcp/1234/p2p/12D3KooWService",
+		"/dns4/localhost/tcp/1234/p2p/12D3KooWService",
+	} {
+		if _, err := validateShareMintServiceEndpoint("12D3KooWService", []string{addr}); err == nil {
+			t.Fatalf("expected local-only endpoint rejection for %q", addr)
+		}
 	}
 }
 

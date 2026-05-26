@@ -2168,6 +2168,154 @@ func TestServiceShareUsesDelegatedGrantServiceWhenAuthorityKeyMissing(t *testing
 	}
 }
 
+func TestServiceShareUsesAuthorityLocalMintWhenAuthorityKeyExists(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	svc := cluster.Namespaces["default"].Services["myapi"]
+	svc.GrantServicePeer = "not-a-multiaddr"
+	svc.ServiceOwnerKeyFile = ""
+	cluster.Namespaces["default"].Services["myapi"] = svc
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := parseAndVerifyServiceShareToken(extractServiceShareToken(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.TargetServiceID != svc.ServiceID {
+		t.Fatalf("unexpected authority-local share payload: %#v", payload)
+	}
+}
+
+func TestServiceShareDelegatedMintErrorsAreActionable(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceWithPaths := svc
+	clusterWithAuthority := cfg.Clusters["home"]
+	cluster := clusterWithAuthority
+	svc.ServicePublishLeaseFile = ""
+	svc.GrantServicePeer = "/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"
+	cluster.AuthorityPrivateKeyFile = ""
+	cluster.MembershipGrant = nil
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "service publish lease is required; attach or request a publish grant first") {
+		t.Fatalf("expected missing publish lease guidance, got %v", err)
+	}
+
+	cluster = clusterWithAuthority
+	svc = serviceWithPaths
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster = cfg.Clusters["home"]
+	svc = cluster.Namespaces["default"].Services["myapi"]
+	svc.ServicePublishLeaseFile = serviceWithPaths.ServicePublishLeaseFile
+	svc.ServiceClaimFile = serviceWithPaths.ServiceClaimFile
+	cluster.AuthorityPrivateKeyFile = ""
+	cluster.MembershipGrant = nil
+	svc.GrantServicePeer = ""
+	ns = cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing grant service peer; attach or request a publish grant from an authority node first") {
+		t.Fatalf("expected missing grant peer guidance, got %v", err)
+	}
+}
+
+func TestServiceShareByExactServiceIDUsesRequestedScopedService(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultSvc := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if _, err := capture(func() error { return run([]string{"create", "namespace/observability", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSvc := cfg.Clusters["home"].Namespaces["observability"].Services["myapi"]
+	if defaultSvc.ServiceID == otherSvc.ServiceID {
+		t.Fatalf("expected namespace-scoped duplicate service names to keep distinct ids: %#v %#v", defaultSvc, otherSvc)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/" + defaultSvc.ServiceID, "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := parseAndVerifyServiceShareToken(extractServiceShareToken(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.TargetServiceID != defaultSvc.ServiceID || payload.TargetServiceID == otherSvc.ServiceID {
+		t.Fatalf("share by exact service id minted wrong target: %#v default=%#v other=%#v", payload, defaultSvc, otherSvc)
+	}
+}
+
 func TestRequireShareTokenEndpointForPublicDefaultRejectsMissingEndpoint(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

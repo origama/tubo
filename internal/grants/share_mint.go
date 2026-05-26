@@ -181,6 +181,28 @@ func validateShareMintServiceEndpoint(servicePeerID string, addrs []string) ([]s
 		if !IsRemoteDialableGrantServicePeer(addr) {
 			return nil, fmt.Errorf("share mint request service endpoint %q is not remote-dialable", addr)
 		}
+		embeddedPeerID, ok := shareMintEndpointPeerID(addr)
+		if !ok {
+			return nil, fmt.Errorf("share mint request service endpoint %q must embed /p2p/%s", addr, servicePeerID)
+		}
+		if embeddedPeerID != servicePeerID {
+			return nil, fmt.Errorf("share mint request service endpoint %q embeds peer %q, want %q", addr, embeddedPeerID, servicePeerID)
+		}
 	}
 	return cleaned, nil
+}
+
+func shareMintEndpointPeerID(addr string) (string, bool) {
+	parts := strings.Split(strings.TrimSpace(addr), "/")
+	for i := len(parts) - 2; i >= 0; i-- {
+		if parts[i] != "p2p" {
+			continue
+		}
+		peerID := strings.TrimSpace(parts[i+1])
+		if peerID == "" {
+			return "", false
+		}
+		return peerID, true
+	}
+	return "", false
 }
