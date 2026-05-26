@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-26 13:06 UTC
+> **Last updated:** 2026-05-26 15:37 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -205,6 +205,7 @@
 | C.101 | Issue #157 — discovered connect-grant endpoint abuse controls | ✅ | Done on `0.7.0.b0`: attached-service grant endpoints now enforce per-peer/per-service rolling-window limits plus a deny cache for repeated invalid requests, log requester/service/policy/reason on denials, and use fake-clock-friendly tests to cover sporadic success, deny-cache activation, and service-level flood protection. |
 | C.102 | Share-invite redemption hardening — remove embedded legacy connect-grant fallback | ✅ | Done on `0.7.0.b0`: share invites no longer emit embedded bearer `ConnectCapability` fallback data in newly signed tokens, `connect --token` now requires grant-service redemption and surfaces redemption denial instead of silently degrading to legacy proof auth, authority-local `share service/...` / attach-issued invite tokens now include grant-service metadata whenever relay-aware endpoint metadata is available, attached-service grant endpoint state falls back to writable XDG data dirs when config files are mounted read-only, and unit/integration/smoke coverage now explicitly blocks second-connect reuse from a fresh client/config. |
 | C.103 | Detached `tubo connect` process mode + `tubo ps` visibility | ✅ | Done on `0.7.0.b0`: `tubo connect` now supports `-d/--detach`, detached client bridges are persisted as local `process/connect-...` entries visible in `tubo ps` / `get processes`, foreground `connect` arg parsing was refactored into a shared CLI parser, help/docs now advertise detached connect explicitly, and regression coverage now includes unit checks for detached connect spec generation plus smoke validation that `connect --token -d` becomes ready and appears in `tubo ps`. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
+| C.104 | Issue #160 — delegated `share service/...` minting via cluster grant service | ✅ | Done on `0.7.0.b0`: non-authority service owners can now mint fresh one-time share invites through the cluster grant service when they hold a valid `PublishLease` with `share.mint`; the new mint path uses a fresh service-owner-signed request bound to `service_id`, `publish_lease`, `service_peer_id`, remote-dialable service endpoints, TTL, nonce, and issued-at, while the authority server verifies lease scope/capability/revocation/freshness and returns a fresh authority-signed invite with updated JTI plus grant/service endpoint metadata. Coverage now includes grant-package unit tests, CLI regression for delegated `tubo share service/...`, and integration coverage proving the delegated invite redeems once and the second bridge is denied. Verified with `go test ./...`, `./tests/smoke-compose.sh`, and `RUN_INTEGRATION=1 go test -v ./tests/integration`. |
 
 ---
 

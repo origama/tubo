@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
@@ -79,20 +80,6 @@ func localShareServiceCmd(args []string) error {
 	cluster := ctx.Cluster
 	svc := ctx.Service
 	name = ctx.Name
-	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" || cluster.AuthorityPrivateKeyFile == "" {
-		return fmt.Errorf("cluster %q is missing authority metadata", scope.Cluster)
-	}
-	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
-	if err != nil {
-		return fmt.Errorf("load cluster authority key: %w", err)
-	}
-	pubAuthorized, err := clusterAuthorityPublicKeyString(privKey)
-	if err != nil {
-		return err
-	}
-	if cluster.AuthorityPublicKey != pubAuthorized {
-		return fmt.Errorf("cluster %q authority public key mismatch", scope.Cluster)
-	}
 	serviceID := svc.ServiceID
 	if serviceID == "" && svc.ServiceOwnerKeyFile != "" {
 		identity, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
@@ -104,50 +91,10 @@ func localShareServiceCmd(args []string) error {
 	if serviceID == "" {
 		serviceID, _ = serviceIdentityFor(cluster.ClusterID, scope.Namespace, name)
 	}
-	requireEndpoint, err := shareTokenRequiresPublicEndpoint(cfg, scope.Cluster, scope.Namespace)
+	artifacts, err := mintServiceShareArtifacts(*configPath, cfg, cluster, scope.Cluster, scope.Namespace, name, svc, *expires)
 	if err != nil {
 		return err
 	}
-	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
-	if err != nil {
-		return err
-	}
-	serviceEndpointAddrs := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
-	grantPeers := grantServicePeersForTokens(serviceEndpointAddrs)
-	useEndpointMetadata := requireEndpoint || len(grantPeers) > 0 || len(serviceEndpointAddrs) > 0
-	var artifacts grantspkg.ServiceShareArtifacts
-	if useEndpointMetadata {
-		artifacts, err = grantspkg.BuildServiceShareArtifactsWithEndpoints(privKey, scope.Cluster, cluster.ClusterID, scope.Namespace, name, serviceID, *expires, grantPeers, servicePeerID.String(), serviceEndpointAddrs)
-	} else {
-		artifacts, err = grantspkg.BuildServiceShareArtifacts(privKey, scope.Cluster, cluster.ClusterID, scope.Namespace, name, serviceID, *expires)
-	}
-	if err == nil && svc.ServicePublishLeaseFile != "" {
-		if leaseBytes, readErr := os.ReadFile(svc.ServicePublishLeaseFile); readErr == nil {
-			var lease grantspkg.PublishLease
-			if json.Unmarshal(leaseBytes, &lease) == nil {
-				if useEndpointMetadata {
-					if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, scope.Cluster, lease, name, *expires, grantPeers, servicePeerID.String(), serviceEndpointAddrs); inviteErr == nil {
-						artifacts = invite
-					}
-				} else if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLease(privKey, scope.Cluster, lease, name, *expires); inviteErr == nil {
-					artifacts = invite
-				}
-			}
-		}
-	}
-	if err != nil {
-		return err
-	}
-	finalToken, err := finalizeAuthorityServiceShareToken(artifacts.Token, privKey, serviceID)
-	if err != nil {
-		return err
-	}
-	if requireEndpoint {
-		if err := requireShareTokenEndpointForPublicDefault(cfg, finalToken); err != nil {
-			return err
-		}
-	}
-	artifacts.Token = finalToken
 	result := serviceShareResult{
 		ClusterName: scope.Cluster,
 		Namespace:   scope.Namespace,
@@ -167,6 +114,147 @@ func localShareServiceCmd(args []string) error {
 	fmt.Printf("expires: %s\n", artifacts.Payload.ExpiresAt.Format(time.RFC3339))
 	fmt.Printf("connect: %s\n", result.ConnectCmd)
 	return nil
+}
+
+func mintServiceShareArtifacts(configPath string, cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, shareTTL time.Duration) (grantspkg.ServiceShareArtifacts, error) {
+	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" {
+		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("cluster %q is missing authority metadata", clusterName)
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	requireEndpoint, err := shareTokenRequiresPublicEndpoint(cfg, clusterName, namespaceName)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	serviceEndpointAddrs := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
+	grantPeers := grantServicePeersForTokens(serviceEndpointAddrs)
+	useEndpointMetadata := requireEndpoint || len(grantPeers) > 0 || len(serviceEndpointAddrs) > 0
+	if cluster.AuthorityPrivateKeyFile != "" {
+		return mintAuthorityLocalServiceShareArtifacts(cfg, cluster, clusterName, namespaceName, serviceName, svc, shareTTL, servicePeerID.String(), serviceEndpointAddrs, grantPeers, useEndpointMetadata, requireEndpoint)
+	}
+	return mintDelegatedServiceShareArtifacts(configPath, cfg, cluster, clusterName, namespaceName, serviceName, svc, shareTTL, servicePeerID.String(), serviceEndpointAddrs, requireEndpoint)
+}
+
+func mintAuthorityLocalServiceShareArtifacts(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, shareTTL time.Duration, servicePeerID string, serviceEndpointAddrs, grantPeers []string, useEndpointMetadata, requireEndpoint bool) (grantspkg.ServiceShareArtifacts, error) {
+	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("load cluster authority key: %w", err)
+	}
+	pubAuthorized, err := clusterAuthorityPublicKeyString(privKey)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	if cluster.AuthorityPublicKey != pubAuthorized {
+		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("cluster %q authority public key mismatch", clusterName)
+	}
+	var artifacts grantspkg.ServiceShareArtifacts
+	if useEndpointMetadata {
+		artifacts, err = grantspkg.BuildServiceShareArtifactsWithEndpoints(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, shareTTL, grantPeers, servicePeerID, serviceEndpointAddrs)
+	} else {
+		artifacts, err = grantspkg.BuildServiceShareArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, shareTTL)
+	}
+	if err == nil && svc.ServicePublishLeaseFile != "" {
+		if leaseBytes, readErr := os.ReadFile(svc.ServicePublishLeaseFile); readErr == nil {
+			var lease grantspkg.PublishLease
+			if json.Unmarshal(leaseBytes, &lease) == nil {
+				if useEndpointMetadata {
+					if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(privKey, clusterName, lease, serviceName, shareTTL, grantPeers, servicePeerID, serviceEndpointAddrs); inviteErr == nil {
+						artifacts = invite
+					}
+				} else if invite, inviteErr := grantspkg.BuildShareInviteArtifactsFromLease(privKey, clusterName, lease, serviceName, shareTTL); inviteErr == nil {
+					artifacts = invite
+				}
+			}
+		}
+	}
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	finalToken, err := finalizeAuthorityServiceShareToken(artifacts.Token, privKey, svc.ServiceID)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	if requireEndpoint {
+		if err := requireShareTokenEndpointForPublicDefault(cfg, finalToken); err != nil {
+			return grantspkg.ServiceShareArtifacts{}, err
+		}
+	}
+	artifacts.Token = finalToken
+	artifacts.Payload, err = parseAndVerifyServiceShareToken(finalToken)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	return artifacts, nil
+}
+
+func mintDelegatedServiceShareArtifacts(configPath string, cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, shareTTL time.Duration, servicePeerID string, serviceEndpointAddrs []string, requireEndpoint bool) (grantspkg.ServiceShareArtifacts, error) {
+	grantPeer := strings.TrimSpace(svc.GrantServicePeer)
+	if grantPeer == "" {
+		grantPeer = clusterGrantServicePeer(cluster)
+	}
+	if grantPeer == "" {
+		return grantspkg.ServiceShareArtifacts{}, errors.New("missing grant service peer; attach or request a publish grant from an authority node first")
+	}
+	authorityPub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	lease, err := readPublishLeaseFile(svc.ServicePublishLeaseFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return grantspkg.ServiceShareArtifacts{}, errors.New("service publish lease is required; attach or request a publish grant first")
+		}
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	if err := grantspkg.VerifyPublishLease(lease, authorityPub, cluster.ClusterID, namespaceName, svc.ServiceID, servicePeerID); err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	if !strings.EqualFold(strings.TrimSpace(lease.ServiceID), strings.TrimSpace(svc.ServiceID)) {
+		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("publish lease service id mismatch: got %q want %q", lease.ServiceID, svc.ServiceID)
+	}
+	if !grantspkg.IsRemoteDialableGrantServicePeer(grantPeer) && !strings.Contains(grantPeer, "/p2p/") {
+		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("grant service peer %q is invalid", grantPeer)
+	}
+	if svc.ServiceOwnerKeyFile == "" {
+		return grantspkg.ServiceShareArtifacts{}, errors.New("service owner key file is required for delegated share minting")
+	}
+	owner, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("load service owner key: %w", err)
+	}
+	mintReq, err := grantspkg.SignShareMintRequest(grantspkg.ShareMintRequest{ClusterID: cluster.ClusterID, NamespaceID: namespaceName, ServiceID: svc.ServiceID, PublishLease: lease, ServicePeerID: servicePeerID, ServiceAddresses: serviceEndpointAddrs, RequestedTTLSeconds: int64(shareTTL.Seconds()), RequestNonce: randomNonce(), RequestIssuedAt: time.Now().UTC()}, owner.PrivateKey)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: grantsFirstNonEmpty(cfg.Node.Seed, "share-mint-client-"+svc.ServiceSeed), PrivateKeyFile: cfg.Network.PrivateKeyFile, PrivateKeyB64: cfg.Network.PrivateKeyB64, BootstrapPeers: cfg.Network.BootstrapPeers, RelayPeers: cfg.Network.RelayPeers, Autorelay: cfg.Network.Autorelay, HolePunching: cfg.Network.HolePunching, ForceReachability: cfg.Network.ForceReachability, Component: "share-mint-client"})
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	defer overlay.Close()
+	info, err := p2p.AddrInfoFromString(grantPeer)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("failed to parse multiaddr %q: %w", grantPeer, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	overlay.StartBootstrapRetry(ctx, 5*time.Second)
+	overlay.StartRelayReservations(ctx)
+	token, err := grantspkg.MintShareInvite(ctx, overlay.Host, info, mintReq, serviceName)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	if requireEndpoint {
+		if err := requireShareTokenEndpointForPublicDefault(cfg, token); err != nil {
+			return grantspkg.ServiceShareArtifacts{}, err
+		}
+	}
+	payload, err := parseAndVerifyServiceShareToken(token)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	return grantspkg.ServiceShareArtifacts{Payload: payload, Token: token}, nil
 }
 
 func localRevokeServiceShareCmd(args []string) error {

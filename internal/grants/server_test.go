@@ -285,6 +285,147 @@ func TestGrantServerAutoApproveOmitsGrantServiceMetadataWhenProviderHasNoUsableP
 	}
 }
 
+func TestGrantServerShareMintMintsFreshInviteAndCapsTTL(t *testing.T) {
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	authorityPriv, _ := testOwnerKey("share-mint-server-authority")
+	grantPeers := []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"}
+	server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: store, AuthorityPrivateKey: authorityPriv, ServiceShareTTL: 30 * time.Minute, GrantServicePeersProvider: func() []string { return grantPeers }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerPriv, ownerPub := testOwnerKey("share-mint-server-owner")
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	servicePeerID := "12D3KooWService"
+	leaseReq, err := SignPublishLeaseRequest(PublishLeaseRequest{ClusterID: "cluster-123", NamespaceID: "default", ServiceID: serviceID, ServicePublicKey: serviceidentity.EncodePublicKey(ownerPub), PublisherPeerID: servicePeerID, RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: "share-mint-server"}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseArtifacts, err := BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "myapi", time.Hour, 5*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceAddrs := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/" + servicePeerID}
+	request, err := SignShareMintRequest(ShareMintRequest{ClusterID: "cluster-123", NamespaceID: "default", ServiceID: serviceID, PublishLease: leaseArtifacts.Lease, ServicePeerID: servicePeerID, ServiceAddresses: serviceAddrs, RequestedTTLSeconds: int64((2 * time.Hour).Seconds()), RequestNonce: "share-mint-server-1", RequestIssuedAt: time.Now().UTC()}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := server.HandleMessage(Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: request.ClusterID, NamespaceID: request.NamespaceID, ServiceName: "myapi", ServiceID: request.ServiceID, PublishLease: &request.PublishLease, ServiceOwnerSignature: request.ServiceOwnerSignature, ServicePeerID: request.ServicePeerID, ServiceAddresses: request.ServiceAddresses, RequestedTTLSeconds: request.RequestedTTLSeconds, RequestNonce: request.RequestNonce, RequestIssuedAt: request.RequestIssuedAt}, peer.ID("12D3-requester"))
+	if resp.Type != TypeShareMintGranted || resp.ServiceShareToken == "" {
+		t.Fatalf("expected granted response, got %#v", resp)
+	}
+	payload, err := ParseAndVerifyServiceShareToken(resp.ServiceShareToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.TargetServiceID != serviceID || payload.ServiceEndpoint.PeerID != servicePeerID {
+		t.Fatalf("unexpected payload: %#v", payload)
+	}
+	if payload.GrantService.Protocol != ProtocolID || !reflect.DeepEqual(payload.GrantService.Peers, grantPeers) {
+		t.Fatalf("unexpected grant service metadata: %#v", payload.GrantService)
+	}
+	if payload.ExpiresAt.After(leaseArtifacts.Lease.ExpiresAt.Add(time.Second)) {
+		t.Fatalf("share token expiry %s exceeds lease expiry %s", payload.ExpiresAt, leaseArtifacts.Lease.ExpiresAt)
+	}
+	request.RequestNonce = "share-mint-server-2"
+	request.RequestIssuedAt = time.Now().UTC()
+	request, err = SignShareMintRequest(request, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2 := server.HandleMessage(Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: request.ClusterID, NamespaceID: request.NamespaceID, ServiceName: "myapi", ServiceID: request.ServiceID, PublishLease: &request.PublishLease, ServiceOwnerSignature: request.ServiceOwnerSignature, ServicePeerID: request.ServicePeerID, ServiceAddresses: request.ServiceAddresses, RequestedTTLSeconds: request.RequestedTTLSeconds, RequestNonce: request.RequestNonce, RequestIssuedAt: request.RequestIssuedAt}, peer.ID("12D3-requester"))
+	if resp2.Type != TypeShareMintGranted || resp2.ServiceShareToken == "" {
+		t.Fatalf("expected second granted response, got %#v", resp2)
+	}
+	payload2, err := ParseAndVerifyServiceShareToken(resp2.ServiceShareToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.JTI == payload2.JTI {
+		t.Fatalf("expected fresh JTI, got %q", payload.JTI)
+	}
+}
+
+func TestGrantServerShareMintRejectsInvalidRequests(t *testing.T) {
+	authorityPriv, _ := testOwnerKey("share-mint-server-reject-authority")
+	ownerPriv, ownerPub := testOwnerKey("share-mint-server-reject-owner")
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	servicePeerID := "12D3KooWService"
+	makeRequest := func(caps []string) ShareMintRequest {
+		t.Helper()
+		leaseReq, err := SignPublishLeaseRequest(PublishLeaseRequest{ClusterID: "cluster-123", NamespaceID: "default", ServiceID: serviceID, ServicePublicKey: serviceidentity.EncodePublicKey(ownerPub), PublisherPeerID: servicePeerID, RequestedCapabilities: caps, Nonce: "share-mint-reject"}, ownerPriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		leaseArtifacts, err := BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "myapi", time.Hour, time.Hour)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req, err := SignShareMintRequest(ShareMintRequest{ClusterID: "cluster-123", NamespaceID: "default", ServiceID: serviceID, PublishLease: leaseArtifacts.Lease, ServicePeerID: servicePeerID, ServiceAddresses: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/" + servicePeerID}, RequestedTTLSeconds: int64(time.Hour.Seconds()), RequestNonce: "share-mint-reject", RequestIssuedAt: time.Now().UTC()}, ownerPriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	t.Run("wrong peer id", func(t *testing.T) {
+		server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: NewStore(filepath.Join(t.TempDir(), "requests.json")), AuthorityPrivateKey: authorityPriv})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := makeRequest([]string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint})
+		req.ServicePeerID = "12D3KooWWrongPeer"
+		req, err = SignShareMintRequest(req, ownerPriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := server.HandleMessage(Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceID: req.ServiceID, PublishLease: &req.PublishLease, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: req.ServicePeerID, ServiceAddresses: req.ServiceAddresses, RequestedTTLSeconds: req.RequestedTTLSeconds, RequestNonce: req.RequestNonce, RequestIssuedAt: req.RequestIssuedAt}, peer.ID("12D3-requester"))
+		if resp.Type != TypeDenied || !strings.Contains(resp.Reason, "publisher peer id mismatch") {
+			t.Fatalf("expected wrong peer denial, got %#v", resp)
+		}
+	})
+	t.Run("missing share.mint", func(t *testing.T) {
+		server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: NewStore(filepath.Join(t.TempDir(), "requests.json")), AuthorityPrivateKey: authorityPriv})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := makeRequest([]string{capability.PermissionAttach, capability.PermissionAnnounce})
+		resp := server.HandleMessage(Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceID: req.ServiceID, PublishLease: &req.PublishLease, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: req.ServicePeerID, ServiceAddresses: req.ServiceAddresses, RequestedTTLSeconds: req.RequestedTTLSeconds, RequestNonce: req.RequestNonce, RequestIssuedAt: req.RequestIssuedAt}, peer.ID("12D3-requester"))
+		if resp.Type != TypeDenied || !strings.Contains(resp.Reason, "share invite minting") {
+			t.Fatalf("expected missing share.mint denial, got %#v", resp)
+		}
+	})
+	t.Run("publish revoked", func(t *testing.T) {
+		revocations := NewRevocationStore(filepath.Join(t.TempDir(), "revocations.json"))
+		if _, err := revocations.RevokePublish(serviceID, "test"); err != nil {
+			t.Fatal(err)
+		}
+		server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: NewStore(filepath.Join(t.TempDir(), "requests.json")), AuthorityPrivateKey: authorityPriv, Revocations: revocations})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := makeRequest([]string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint})
+		resp := server.HandleMessage(Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceID: req.ServiceID, PublishLease: &req.PublishLease, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: req.ServicePeerID, ServiceAddresses: req.ServiceAddresses, RequestedTTLSeconds: req.RequestedTTLSeconds, RequestNonce: req.RequestNonce, RequestIssuedAt: req.RequestIssuedAt}, peer.ID("12D3-requester"))
+		if resp.Type != TypeDenied || !strings.Contains(resp.Reason, "publish revoked") {
+			t.Fatalf("expected revoked denial, got %#v", resp)
+		}
+	})
+	t.Run("local-only endpoint", func(t *testing.T) {
+		server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: NewStore(filepath.Join(t.TempDir(), "requests.json")), AuthorityPrivateKey: authorityPriv})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := makeRequest([]string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint})
+		req.ServiceAddresses = []string{"/ip4/127.0.0.1/tcp/1234/p2p/" + servicePeerID}
+		req, err = SignShareMintRequest(req, ownerPriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := server.HandleMessage(Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceID: req.ServiceID, PublishLease: &req.PublishLease, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: req.ServicePeerID, ServiceAddresses: req.ServiceAddresses, RequestedTTLSeconds: req.RequestedTTLSeconds, RequestNonce: req.RequestNonce, RequestIssuedAt: req.RequestIssuedAt}, peer.ID("12D3-requester"))
+		if resp.Type != TypeDenied || !strings.Contains(resp.Reason, "not remote-dialable") {
+			t.Fatalf("expected endpoint denial, got %#v", resp)
+		}
+	})
+}
+
 func seedApprovedGrant(t *testing.T, store *Store, clusterName, clusterID, namespaceID, label, serviceName, requesterPeerID, servicePeerID string, expiresAt time.Time) Request {
 	t.Helper()
 	ownerPriv, ownerPub := testOwnerKey(label)

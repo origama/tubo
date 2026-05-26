@@ -486,7 +486,7 @@ Select a local overlay/cluster/namespace context in the config file.`)
   tubo share service/<name> [--cluster <name>] [--namespace <name>] [--expires <duration>]
   tubo share revoke <share-invite>
 
-Create a copyable cluster invitation or service-scoped connect token from local authority material. Service share invites are one-time at redemption time: one successful lease/session issuance, not one proxied HTTP request.`)
+Create a copyable cluster invitation or service-scoped connect token. share service/... uses local authority minting when available, otherwise it can delegate to the cluster grant service when the service owner holds a valid publish lease with share.mint. Service share invites are one-time at redemption time: one successful lease/session issuance, not one proxied HTTP request.`)
 	case "revoke":
 		fmt.Println(`Usage:
   tubo revoke invite <invite-id-or-token> [--reason <text>]

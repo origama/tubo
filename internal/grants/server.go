@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -104,6 +105,8 @@ func (s *Server) HandleMessage(msg Message, requester peer.ID) Message {
 		return s.handlePoll(msg)
 	case TypeShareRedeem:
 		return s.handleShareRedeem(msg, requester)
+	case TypeShareMintRequest:
+		return s.handleShareMint(msg, requester)
 	case TypeConnectRefresh:
 		return s.handleConnectRefresh(msg)
 	default:
@@ -264,6 +267,78 @@ func (s *Server) handleShareRedeem(msg Message, requester peer.ID) Message {
 	return Message{Type: TypeShareRedeem, Version: VersionV1, RequestID: payload.JTI, ConnectAccessLease: &artifacts.AccessLease, ConnectRefreshLease: &artifacts.RefreshLease}
 }
 
+func (s *Server) handleShareMint(msg Message, requester peer.ID) Message {
+	if len(s.cfg.AuthorityPrivateKey) == 0 {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: "share invite minting requires an authority private key"}
+	}
+	request := ShareMintRequest{
+		Version:               ShareMintRequestVersion,
+		Kind:                  ShareMintRequestKind,
+		ClusterID:             msg.ClusterID,
+		NamespaceID:           msg.NamespaceID,
+		ServiceID:             msg.ServiceID,
+		ServicePeerID:         msg.ServicePeerID,
+		ServiceAddresses:      append([]string(nil), msg.ServiceAddresses...),
+		RequestedTTLSeconds:   msg.RequestedTTLSeconds,
+		RequestNonce:          msg.RequestNonce,
+		RequestIssuedAt:       msg.RequestIssuedAt,
+		ServiceOwnerSignature: append([]byte(nil), msg.ServiceOwnerSignature...),
+	}
+	if msg.PublishLease != nil {
+		request.PublishLease = *msg.PublishLease
+	}
+	if request.ClusterID != s.cfg.ClusterID || request.NamespaceID != s.cfg.NamespaceID {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: "share mint request scope does not match authority server"}
+	}
+	if err := VerifyShareMintRequest(request); err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
+	}
+	if err := ShareMintRequestMatchesFreshness(request, s.cfg.Now()); err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
+	}
+	authorityPub := s.cfg.AuthorityPrivateKey.Public().(ed25519.PublicKey)
+	if err := VerifyPublishLease(request.PublishLease, authorityPub, request.ClusterID, request.NamespaceID, request.ServiceID, request.ServicePeerID); err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
+	}
+	if !leaseHasCapability(request.PublishLease.RequestedCapabilities, capability.PermissionShareMint) {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: "publish lease does not allow share invite minting"}
+	}
+	if s.cfg.Revocations != nil {
+		if revoked, _, err := s.cfg.Revocations.IsPublishRevoked(request.ServiceID); err != nil {
+			return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
+		} else if revoked {
+			return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: fmt.Sprintf("publish revoked for service %q", request.ServiceID)}
+		}
+	}
+	serviceAddrs, err := validateShareMintServiceEndpoint(request.ServicePeerID, request.ServiceAddresses)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
+	}
+	shareTTL := time.Duration(request.RequestedTTLSeconds) * time.Second
+	if s.cfg.ServiceShareTTL > 0 && shareTTL > s.cfg.ServiceShareTTL {
+		shareTTL = s.cfg.ServiceShareTTL
+	}
+	remaining := time.Until(request.PublishLease.ExpiresAt.UTC())
+	if shareTTL > remaining {
+		shareTTL = remaining
+	}
+	if shareTTL <= 0 {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: "publish lease expired"}
+	}
+	grantServicePeers := append([]string(nil), s.cfg.GrantServicePeers...)
+	if s.cfg.GrantServicePeersProvider != nil {
+		grantServicePeers = append([]string(nil), s.cfg.GrantServicePeersProvider()...)
+	}
+	artifacts, err := BuildShareInviteArtifactsFromLeaseWithEndpoints(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, request.PublishLease, firstNonEmpty(strings.TrimSpace(msg.ServiceName), request.ServiceID), shareTTL, grantServicePeers, request.ServicePeerID, serviceAddrs)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
+	}
+	if artifacts.Token, err = s.applyRevocationEpochsToServiceShareToken(artifacts.Token, request.ServiceID); err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
+	}
+	return Message{Type: TypeShareMintGranted, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), ServiceShareToken: artifacts.Token}
+}
+
 func (s *Server) handleConnectRefresh(msg Message) Message {
 	if len(s.cfg.AuthorityPrivateKey) == 0 {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "connect-refresh", Reason: "connect lease refresh requires an authority private key"}
@@ -285,22 +360,29 @@ func (s *Server) handleConnectRefresh(msg Message) Message {
 }
 
 func (s *Server) applyRevocationEpochsToApproval(artifacts ApprovalArtifacts, serviceID string) (ApprovalArtifacts, error) {
-	if s.cfg.Revocations == nil || artifacts.ServiceShareToken == "" {
+	if artifacts.ServiceShareToken == "" {
 		return artifacts, nil
 	}
-	epochs, err := s.cfg.Revocations.EpochsForService(serviceID)
-	if err != nil {
-		return ApprovalArtifacts{}, err
-	}
-	if epochs.AccessEpoch == 0 && epochs.PublishEpoch == 0 {
-		return artifacts, nil
-	}
-	token, err := ReissueServiceShareTokenWithEpochs(artifacts.ServiceShareToken, s.cfg.AuthorityPrivateKey, epochs)
+	token, err := s.applyRevocationEpochsToServiceShareToken(artifacts.ServiceShareToken, serviceID)
 	if err != nil {
 		return ApprovalArtifacts{}, err
 	}
 	artifacts.ServiceShareToken = token
 	return artifacts, nil
+}
+
+func (s *Server) applyRevocationEpochsToServiceShareToken(token, serviceID string) (string, error) {
+	if s.cfg.Revocations == nil || token == "" {
+		return token, nil
+	}
+	epochs, err := s.cfg.Revocations.EpochsForService(serviceID)
+	if err != nil {
+		return "", err
+	}
+	if epochs.AccessEpoch == 0 && epochs.PublishEpoch == 0 {
+		return token, nil
+	}
+	return ReissueServiceShareTokenWithEpochs(token, s.cfg.AuthorityPrivateKey, epochs)
 }
 
 func (s *Server) validateShareInviteRevocation(payload ServiceSharePayload) error {
@@ -366,6 +448,20 @@ func Poll(ctx context.Context, h host.Host, info peer.AddrInfo, requestID string
 	return Query(ctx, h, info, Message{Type: TypePoll, Version: VersionV1, RequestID: requestID})
 }
 
+func MintShareInvite(ctx context.Context, h host.Host, info peer.AddrInfo, req ShareMintRequest, displayNameHint string) (string, error) {
+	resp, err := Query(ctx, h, info, Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceName: displayNameHint, ServiceID: req.ServiceID, PublishLease: &req.PublishLease, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: req.ServicePeerID, ServiceAddresses: append([]string(nil), req.ServiceAddresses...), RequestedTTLSeconds: req.RequestedTTLSeconds, RequestNonce: req.RequestNonce, RequestIssuedAt: req.RequestIssuedAt})
+	if err != nil {
+		return "", err
+	}
+	if resp.Type == TypeDenied || resp.Type == TypeExpired {
+		return "", fmt.Errorf("%s", resp.Reason)
+	}
+	if resp.Type != TypeShareMintGranted || strings.TrimSpace(resp.ServiceShareToken) == "" {
+		return "", fmt.Errorf("invalid share invite mint response")
+	}
+	return resp.ServiceShareToken, nil
+}
+
 func RedeemShareInvite(ctx context.Context, h host.Host, info peer.AddrInfo, token, clientPublicKey string) (ConnectLeaseArtifacts, error) {
 	resp, err := Query(ctx, h, info, Message{Type: TypeShareRedeem, Version: VersionV1, ShareInviteToken: token, ClientPublicKey: clientPublicKey})
 	if err != nil {
@@ -406,6 +502,15 @@ func RefreshConnectLease(ctx context.Context, h host.Host, info peer.AddrInfo, r
 		return ConnectAccessLease{}, fmt.Errorf("invalid connect lease refresh response")
 	}
 	return *resp.ConnectAccessLease, nil
+}
+
+func firstNonEmpty(v ...string) string {
+	for _, item := range v {
+		if strings.TrimSpace(item) != "" {
+			return strings.TrimSpace(item)
+		}
+	}
+	return ""
 }
 
 func Query(ctx context.Context, h host.Host, info peer.AddrInfo, msg Message) (Message, error) {

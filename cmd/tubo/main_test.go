@@ -2091,6 +2091,83 @@ func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
 	}
 }
 
+func TestServiceShareUsesDelegatedGrantServiceWhenAuthorityKeyMissing(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	svc := cluster.Namespaces["default"].Services["myapi"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "delegated-share-mint-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           cluster.ClusterID,
+		NamespaceID:         "default",
+		Store:               grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")),
+		AuthorityPrivateKey: authorityPriv,
+		ServiceShareTTL:     time.Hour,
+		GrantServicePeersProvider: func() []string {
+			return []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWQZ6qwLp7C7mdkAXMJsa2zXKoGNSXYpQNsPxpQQz4g2v3"}
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	cluster.Namespaces["default"].Services["myapi"] = svc
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out1, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token1 := extractServiceShareToken(t, out1)
+	payload1, err := parseAndVerifyServiceShareToken(token1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload1.TargetServiceID != svc.ServiceID || payload1.ServiceEndpoint.PeerID == "" || len(payload1.GrantService.Peers) == 0 {
+		t.Fatalf("unexpected delegated share payload: %#v", payload1)
+	}
+	out2, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token2 := extractServiceShareToken(t, out2)
+	payload2, err := parseAndVerifyServiceShareToken(token2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload1.JTI == payload2.JTI {
+		t.Fatalf("expected fresh JTI across delegated mint invocations, got %q", payload1.JTI)
+	}
+}
+
 func TestRequireShareTokenEndpointForPublicDefaultRejectsMissingEndpoint(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
