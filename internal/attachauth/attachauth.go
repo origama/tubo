@@ -112,11 +112,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		result.ServiceShareToken = shareToken
 		result.PublishLeaseReused = true
 		if shareToken == "" {
-			grantPeer := svc.GrantServicePeer
-			if strings.TrimSpace(grantPeer) == "" {
-				grantPeer = grantServicePeer(cluster)
-			}
-			result.ShareRecoveryHint = shareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
+			result.ShareRecoveryHint = shareMintHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace)
 		}
 		return result, nil
 	} else if !errors.Is(err, os.ErrNotExist) && !isPublishLeaseExpiredError(err) {
@@ -124,7 +120,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	}
 
 	claimErr := r.deps.ArtifactStore.VerifyServiceClaim(svc.ServiceClaimFile, authorityPub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID)
-	if claimErr != nil && !errors.Is(claimErr, os.ErrNotExist) {
+	if claimErr != nil && !errors.Is(claimErr, os.ErrNotExist) && !isCapabilityExpiredError(claimErr) {
 		return ResolveResult{}, fmt.Errorf("service claim for cluster %q namespace %q service %q rejected: %w", cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, claimErr)
 	}
 	shareToken, err := r.deps.ArtifactStore.BuildShareToken(cfg, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
@@ -160,7 +156,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		result.ServiceShareToken = shareToken
 		result.MintedLocally = true
 		if shareToken == "" {
-			result.ShareRecoveryHint = shareRecoveryHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace, grantPeer, svc.GrantRequestID)
+			result.ShareRecoveryHint = shareMintHint(cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace)
 		}
 		return result, nil
 	}
@@ -183,7 +179,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 				ServiceShareToken:        updatedShareToken,
 			}
 			if updatedShareToken == "" {
-				result.ShareRecoveryHint = shareRecoveryHint(updatedCfg.Service.Name, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace, grantPeer, updatedSvc.GrantRequestID)
+				result.ShareRecoveryHint = shareMintHint(updatedCfg.Service.Name, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace)
 			}
 			return result, nil
 		}
@@ -265,6 +261,10 @@ func isPublishLeaseExpiredError(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "publish lease expired")
 }
 
+func isCapabilityExpiredError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "capability expired")
+}
+
 func grantServicePeer(cluster cfgpkg.Cluster) string {
 	if cluster.MembershipGrant == nil || cluster.MembershipGrant.GrantServiceProtocol != grantspkg.ProtocolID {
 		return ""
@@ -292,12 +292,13 @@ func classifyGrantError(err error) Decision {
 	}
 }
 
+func shareMintHint(serviceName, clusterName, namespaceName string) string {
+	return fmt.Sprintf("run `tubo share service/%s --cluster %s --namespace %s` to mint a fresh invite token", serviceName, clusterName, namespaceName)
+}
+
 func shareRecoveryHint(serviceName, clusterName, namespaceName, grantPeer, grantRequestID string) string {
-	if strings.TrimSpace(grantPeer) == "" {
-		return fmt.Sprintf("run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token", serviceName, clusterName, namespaceName)
-	}
-	if strings.TrimSpace(grantRequestID) != "" {
+	if strings.TrimSpace(grantRequestID) != "" && strings.TrimSpace(grantPeer) != "" {
 		return fmt.Sprintf("reprint the token with `tubo grants request service/%s --poll --peer %s --cluster %s --namespace %s` (request %s)", serviceName, grantPeer, clusterName, namespaceName, grantRequestID)
 	}
-	return fmt.Sprintf("request or poll the grant with `tubo grants request service/%s --peer %s --cluster %s --namespace %s`", serviceName, grantPeer, clusterName, namespaceName)
+	return shareMintHint(serviceName, clusterName, namespaceName)
 }

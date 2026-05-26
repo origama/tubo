@@ -140,8 +140,86 @@ func TestResolveReusableLeaseReturnsRecoveryHintWithoutLocalShareToken(t *testin
 	if got.ServiceShareToken != "" {
 		t.Fatalf("ServiceShareToken = %q, want empty", got.ServiceShareToken)
 	}
-	if !strings.Contains(got.ShareRecoveryHint, "tubo grants request service/myapi --poll --peer /ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant --cluster home --namespace default") || !strings.Contains(got.ShareRecoveryHint, "gr_reprint") {
+	if !strings.Contains(got.ShareRecoveryHint, "tubo share service/myapi --cluster home --namespace default") {
 		t.Fatalf("ShareRecoveryHint = %q", got.ShareRecoveryHint)
+	}
+}
+
+func TestResolveReusableLeaseIgnoresExpiredStoredClaim(t *testing.T) {
+	cfg := testAttachConfig()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
+	resolver := New(Dependencies{
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{serviceClaimErr: fmt.Errorf("capability expired"), membershipFile: "/tmp/membership.cap", shareToken: "share-token"},
+		Clock:         SystemClock{},
+	})
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
+	}
+	if got.Decision != DecisionReady || !got.PublishLeaseReused {
+		t.Fatalf("unexpected reusable-lease result: %#v", got)
+	}
+}
+
+func TestResolveTreatsExpiredClaimAsRenewableViaGrantPath(t *testing.T) {
+	cfg := testAttachConfigWithGrantPeer()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease", GrantServicePeer: "/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant"}
+	grantClient := &fakeGrantClient{cfg: cfg, svc: svc, token: "share-token"}
+	resolver := New(Dependencies{
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{publishLeaseErr: os.ErrNotExist, serviceClaimErr: fmt.Errorf("capability expired"), membershipFile: "/tmp/membership.cap"},
+		GrantClient:   grantClient,
+		Clock:         SystemClock{},
+	})
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
+	}
+	if got.Decision != DecisionReady || grantClient.calls != 1 {
+		t.Fatalf("expected grant renewal path, got result=%#v calls=%d", got, grantClient.calls)
+	}
+}
+
+func TestResolveTreatsExpiredClaimAsRenewableViaAuthorityPath(t *testing.T) {
+	cfg := testAttachConfig()
+	cfg.Clusters["home"] = cfgpkg.Cluster{
+		ClusterID:               "cluster-123",
+		AuthorityPublicKey:      testAuthorityPublicKey,
+		AuthorityPrivateKeyFile: "/tmp/authority.key",
+		Namespaces:              map[string]cfgpkg.Namespace{"default": {Services: map[string]cfgpkg.NamespaceService{}}},
+	}
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
+	signer := &fakeAuthoritySigner{}
+	resolver := New(Dependencies{
+		IdentityStore:   fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore:   fakeArtifactStore{publishLeaseErr: os.ErrNotExist, serviceClaimErr: fmt.Errorf("capability expired"), membershipFile: "/tmp/membership.cap", shareToken: "share-token"},
+		AuthoritySigner: signer,
+		Clock:           SystemClock{},
+	})
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
+	}
+	if got.Decision != DecisionReady || !got.MintedLocally || signer.calls != 1 {
+		t.Fatalf("expected local renewal path, got result=%#v calls=%d", got, signer.calls)
+	}
+}
+
+func TestResolveRejectsInvalidClaimErrors(t *testing.T) {
+	cfg := testAttachConfig()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
+	resolver := New(Dependencies{
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{publishLeaseErr: os.ErrNotExist, serviceClaimErr: fmt.Errorf("invalid signature")},
+		Clock:         SystemClock{},
+	})
+
+	if _, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg}); err == nil || !strings.Contains(err.Error(), "service claim") {
+		t.Fatalf("expected hard claim failure, got %v", err)
 	}
 }
 

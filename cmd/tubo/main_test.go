@@ -2333,7 +2333,7 @@ func TestRequireShareTokenEndpointForPublicDefaultRejectsMissingEndpoint(t *test
 
 func TestPrintAttachShareHintShowsRecoveryHint(t *testing.T) {
 	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Service: cfgpkg.Service{Name: "myapi"}}
-	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, PublishLeaseReused: true, ShareRecoveryHint: "tubo grants request service/myapi --poll --peer /ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant --cluster home --namespace default (request gr_reprint)"}
+	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, PublishLeaseReused: true, ShareRecoveryHint: "run `tubo share service/myapi --cluster home --namespace default` to mint a fresh invite token"}
 	out, err := capture(func() error {
 		printAttachShareHint(cfg, authz)
 		return nil
@@ -2341,7 +2341,7 @@ func TestPrintAttachShareHintShowsRecoveryHint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "publish lease: reused") || !strings.Contains(out, "tubo grants request service/myapi --poll --peer") {
+	if !strings.Contains(out, "publish lease: reused") || !strings.Contains(out, "tubo share service/myapi --cluster home --namespace default") {
 		t.Fatalf("unexpected attach output: %s", out)
 	}
 }
@@ -2480,6 +2480,144 @@ func expirePublishLeaseFile(t *testing.T, path string, expiresAt time.Time) {
 	}
 	if err := os.WriteFile(path, append(out, '\n'), 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestResolveAttachAuthorizationIgnoresExpiredServiceClaimWithValidPublishLease(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	cluster.AuthorityPrivateKeyFile = ""
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Service.Name = "myapi"
+	reloaded.Service.Target = "http://127.0.0.1:8080"
+	authz, err := resolveAttachAuthorization(configPath, reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authz.PublishLeaseReused {
+		t.Fatalf("expected valid publish lease reuse despite expired claim: %#v", authz)
+	}
+}
+
+func TestResolveAttachAuthorizationTreatsExpiredServiceClaimAsMissingWithAuthority(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authz.MintedServiceClaim {
+		t.Fatalf("expected local renewal despite expired claim: %#v", authz)
+	}
+}
+
+func TestResolveAttachAuthorizationTreatsExpiredServiceClaimAsMissingWithGrantPeer(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "expired-claim-renewal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store, AutoApprove: true, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	svc.GrantServicePeer = p2p.PeerAddrs(serverHost)[0]
+	cluster.AuthorityPrivateKeyFile = ""
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Service.Name = "myapi"
+	reloaded.Service.Target = "http://127.0.0.1:8080"
+	cluster = reloaded.Clusters["home"]
+	cluster.AuthorityPrivateKeyFile = ""
+	ns = cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	reloaded.Clusters["home"] = cluster
+	authz, err := resolveAttachAuthorization(configPath, reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.PublishLeaseReused {
+		t.Fatalf("expected grant renewal, not reused lease: %#v", authz)
+	}
+	if authz.ServicePublishLeaseFile == "" {
+		t.Fatalf("expected renewed publish authorization: %#v", authz)
 	}
 }
 
@@ -2738,13 +2876,43 @@ func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *t
 			wantErr: "subject peer id mismatch",
 		},
 		{
+			name: "wrong namespace claim",
+			mutate: func(t *testing.T, cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService) {
+				priv, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				peerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: cluster.ClusterID, NamespaceID: "observability", ServiceID: svc.ServiceID, SubjectPeerID: peerID.String(), Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: time.Now().Add(time.Hour)}, priv)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writeServiceClaimFile(svc.ServiceClaimFile, claim); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "namespace id mismatch",
+		},
+		{
+			name: "malformed claim",
+			mutate: func(t *testing.T, _ cfgpkg.Cluster, svc cfgpkg.NamespaceService) {
+				if err := os.WriteFile(svc.ServiceClaimFile, []byte("{not-json\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "invalid character",
+		},
+		{
 			name: "expired claim",
 			mutate: func(t *testing.T, cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService) {
 				if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
 					t.Fatal(err)
 				}
 			},
-			wantErr: "expired",
+			wantErr: "no service publish grant",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
