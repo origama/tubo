@@ -331,21 +331,27 @@ Usage:
   tubo gateway [-d]
   tubo join [overlay/public|tubo-public]
 
-Common flow:
+Public default happy path (invite-only):
   # Machine with a local app
   tubo attach http://127.0.0.1:8080 --name myapp -d
+  # then copy the printed share invite
 
   # Another machine
   tubo connect --token <share-invite> --local 127.0.0.1:9888
   curl http://127.0.0.1:9888/
 
-Discovery and process management:
+Collaboration namespace flow:
+  tubo create cluster/home
+  tubo create namespace/team
+  tubo attach http://127.0.0.1:8080 --name myapp -d
   tubo get services
+  tubo connect myapp
+
+Discovery and process management:
   tubo describe service/myapp
   tubo inspect service/myapp --json
   tubo watch services
   tubo use overlay/public
-  tubo create cluster/home
   tubo share cluster/home --role member
   tubo ps
   tubo logs process/attach-myapp
@@ -374,6 +380,11 @@ Examples:
   tubo attach http://127.0.0.1:8080 --name piweb -d
   tubo attach piweb --port 8080 -d
 
+Scope behavior:
+  - public default (tubo-public / home/default): unlisted + invite-only; attach prints a share invite for tubo connect --token ...
+  - discovery-enabled custom/private namespace: discoverable collaboration service; peers with membership can use tubo connect <service>
+  - private overlay: same product model, but with stronger transport isolation than the shared public overlay
+
 Flags:
   --name <service>          service name to publish
   --port <port>             shorthand target: http://127.0.0.1:<port>
@@ -388,11 +399,15 @@ Flags:
   tubo connect <service> [--local 127.0.0.1:PORT]
   tubo connect --token <share-invite> [--local 127.0.0.1:PORT]
 
-Open a local HTTP/WebSocket listener to a named service.
+Open a local HTTP/WebSocket listener to a remote service.
 
 Examples:
-  tubo connect piweb --local 127.0.0.1:9888
+  tubo connect --token <share-invite> --local 127.0.0.1:9888
   tubo connect piweb
+
+Connect modes:
+  - tubo connect --token ... = invite path; does not require ambient discovery when the token carries a self-contained endpoint
+  - tubo connect <service> = collaboration path; requires a discovery-enabled scope and the right namespace permissions
 
 Flags:
   --local <host:port>       local listener; random 127.0.0.1 port when omitted
@@ -466,7 +481,7 @@ Select a local overlay/cluster/namespace context in the config file.`)
   tubo share service/<name> [--cluster <name>] [--namespace <name>] [--expires <duration>]
   tubo share revoke <share-invite>
 
-Create a copyable cluster invitation or service-scoped connect token from local authority material.`)
+Create a copyable cluster invitation or service-scoped connect token from local authority material. Service share invites are one-time at redemption time: one successful lease/session issuance, not one proxied HTTP request.`)
 	case "revoke":
 		fmt.Println(`Usage:
   tubo revoke invite <invite-id-or-token> [--reason <text>]
@@ -893,9 +908,20 @@ func printJoinResult(title string, result joinResult) {
 	}
 	fmt.Println()
 	fmt.Println("next:")
-	fmt.Println("  tubo get services")
+	if result.NetworkName == joinDefaultNetworkName {
+		fmt.Println("  tubo attach http://127.0.0.1:1234 --name my-service")
+		fmt.Println("  # on another machine, use the printed share invite")
+		fmt.Println("  tubo connect --token <share-invite>")
+		fmt.Println("  # optional: create a collaboration namespace for connect-by-name")
+		fmt.Println("  tubo create cluster/home")
+		fmt.Println("  tubo create namespace/team")
+		return
+	}
+	fmt.Println("  tubo create cluster/home")
+	fmt.Println("  tubo create namespace/team")
 	fmt.Println("  tubo attach http://127.0.0.1:1234 --name my-service")
-	fmt.Println("  tubo connect lmstudio")
+	fmt.Println("  tubo get services")
+	fmt.Println("  tubo connect my-service")
 }
 
 func loadJoinSwarmKey(path, b64 string) ([]byte, error) {

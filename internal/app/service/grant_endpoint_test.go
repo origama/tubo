@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,8 +83,72 @@ func TestServiceGrantEndpointNamespaceMembersPolicy(t *testing.T) {
 	}
 }
 
+func TestServiceGrantEndpointShareRedeemIsOneTime(t *testing.T) {
+	endpoint, _, _, _, authPriv := newGrantEndpointWithAuthorityForTest(t, "namespace_members")
+	requester := peer.ID("12D3KooWShareRedeemRequester")
+	rawLease, err := os.ReadFile(endpoint.publishLeaseFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedLease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(rawLease, endpoint.authorityPub, endpoint.clusterID, endpoint.namespaceID, endpoint.serviceID, endpoint.servicePeerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := grantspkg.BuildShareInviteArtifactsFromLease(authPriv, "home", parsedLease, "myapi", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := endpoint.handleMessage(grantspkg.Message{Type: grantspkg.TypeShareRedeem, Version: grantspkg.VersionV1, ShareInviteToken: invite.Token, ClientPublicKey: testAuthorizedClientKey(t)}, requester)
+	if resp.Type != grantspkg.TypeShareRedeem || resp.ConnectAccessLease == nil || resp.ConnectRefreshLease == nil {
+		t.Fatalf("expected first share redeem success, got %#v", resp)
+	}
+	resp = endpoint.handleMessage(grantspkg.Message{Type: grantspkg.TypeShareRedeem, Version: grantspkg.VersionV1, ShareInviteToken: invite.Token, ClientPublicKey: testAuthorizedClientKey(t)}, peer.ID("12D3KooWAnotherRequester"))
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "already redeemed") {
+		t.Fatalf("expected share invite reuse denial, got %#v", resp)
+	}
+}
+
+func TestServiceGrantEndpointAbuseControlsDenyCacheAndServiceBurst(t *testing.T) {
+	endpoint, owner, _, _, authPriv := newGrantEndpointWithAuthorityForTest(t, "namespace_members")
+	now := time.Unix(1700001000, 0).UTC()
+	endpoint.now = func() time.Time { return now }
+	endpoint.abuse = newGrantEndpointAbuseController(grantEndpointAbuseConfig{now: endpoint.now, perPeerBurst: 8, perServiceBurst: 3, invalidBurst: 2, denyTTL: time.Minute, window: time.Minute})
+	requester := peer.ID("12D3KooWAbuseRequester")
+	invalid := grantspkg.Message{Type: grantspkg.TypeConnectRequest, Version: grantspkg.VersionV1, RequestID: "deny-cache", ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ClientPublicKey: testAuthorizedClientKey(t)}
+	resp := endpoint.handleMessage(invalid, requester)
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "requires a membership") {
+		t.Fatalf("expected first invalid denial, got %#v", resp)
+	}
+	resp = endpoint.handleMessage(invalid, requester)
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "requires a membership") {
+		t.Fatalf("expected second invalid denial, got %#v", resp)
+	}
+	resp = endpoint.handleMessage(invalid, requester)
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "deny cache") {
+		t.Fatalf("expected deny cache denial, got %#v", resp)
+	}
+	now = now.Add(2 * time.Minute)
+	capWithConnect, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(24 * time.Hour)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid := grantspkg.Message{Type: grantspkg.TypeConnectRequest, Version: grantspkg.VersionV1, RequestID: "service-burst", ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ClientPublicKey: testAuthorizedClientKey(t), MembershipCapability: &capWithConnect}
+	for i := 0; i < 3; i++ {
+		resp = endpoint.handleMessage(valid, peer.ID(fmt.Sprintf("12D3KooWServiceBurst%d", i)))
+		if resp.Type != grantspkg.TypeConnectGranted {
+			t.Fatalf("expected sporadic success before service burst, got %#v", resp)
+		}
+	}
+	resp = endpoint.handleMessage(valid, peer.ID("12D3KooWServiceBurstOverflow"))
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "rate limit exceeded for service") {
+		t.Fatalf("expected service burst denial, got %#v", resp)
+	}
+}
+
 func TestServiceGrantEndpointPublicPolicyRateLimits(t *testing.T) {
 	endpoint, owner, _, _ := newGrantEndpointForTest(t, "public")
+	endpoint.now = func() time.Time { return time.Unix(1700000000, 0).UTC() }
+	endpoint.abuse = newGrantEndpointAbuseController(grantEndpointAbuseConfig{now: endpoint.now, perPeerBurst: 64, perServiceBurst: 64})
 	requester := peer.ID("12D3KooWPublicRequester")
 	var denied bool
 	for i := 0; i < publicConnectRateLimitBurst+1; i++ {

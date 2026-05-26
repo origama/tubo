@@ -40,6 +40,9 @@ type serviceGrantEndpoint struct {
 	publishLeaseFile  string
 	server            *grantspkg.Server
 	revocations       *grantspkg.RevocationStore
+	shareRedemptions  *grantspkg.ShareRedemptionStore
+	now               func() time.Time
+	abuse             *grantEndpointAbuseController
 	publicRateLimitMu sync.Mutex
 	publicRateLimit   map[peer.ID][]time.Time
 }
@@ -60,6 +63,7 @@ func newServiceGrantEndpoint(cfg Config, serviceID, servicePeerID string) (*serv
 		}
 	}
 	revocations := grantspkg.NewRevocationStore(grantspkg.DefaultRevocationStorePath())
+	shareRedemptions := grantspkg.NewShareRedemptionStore(serviceGrantRedemptionStorePath(cfg, serviceID))
 	server, err := grantspkg.NewServer(grantspkg.ServerConfig{
 		ClusterName:         first(cfg.ClusterName, cfg.DiscoveryClusterID),
 		ClusterID:           cfg.DiscoveryClusterID,
@@ -67,6 +71,7 @@ func newServiceGrantEndpoint(cfg Config, serviceID, servicePeerID string) (*serv
 		Store:               grantspkg.NewStore(serviceGrantStorePath(cfg, serviceID)),
 		AuthorityPrivateKey: authorityPriv,
 		Revocations:         revocations,
+		ShareRedemptions:    shareRedemptions,
 	})
 	if err != nil {
 		return nil, err
@@ -75,7 +80,7 @@ func newServiceGrantEndpoint(cfg Config, serviceID, servicePeerID string) (*serv
 	if policy == "" {
 		policy = "invite_only"
 	}
-	return &serviceGrantEndpoint{
+	endpoint := &serviceGrantEndpoint{
 		serviceID:        serviceID,
 		servicePeerID:    servicePeerID,
 		clusterName:      first(cfg.ClusterName, cfg.DiscoveryClusterID),
@@ -88,8 +93,12 @@ func newServiceGrantEndpoint(cfg Config, serviceID, servicePeerID string) (*serv
 		publishLeaseFile: strings.TrimSpace(cfg.ServicePublishLeaseFile),
 		server:           server,
 		revocations:      revocations,
+		shareRedemptions: shareRedemptions,
+		now:              func() time.Time { return time.Now().UTC() },
 		publicRateLimit:  make(map[peer.ID][]time.Time),
-	}, nil
+	}
+	endpoint.abuse = newGrantEndpointAbuseController(grantEndpointAbuseConfig{now: endpoint.now})
+	return endpoint, nil
 }
 
 func (e *serviceGrantEndpoint) HandleStream(stream network.Stream) {
@@ -106,16 +115,24 @@ func (e *serviceGrantEndpoint) HandleStream(stream network.Stream) {
 }
 
 func (e *serviceGrantEndpoint) handleMessage(msg grantspkg.Message, requester peer.ID) grantspkg.Message {
+	if err := e.applyAbuseControls(msg.Type, requester); err != nil {
+		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: fallbackGrantRequestID(msg.RequestID), Reason: err.Error()}
+	}
+	var resp grantspkg.Message
 	switch msg.Type {
 	case grantspkg.TypeShareRedeem:
-		return e.handleShareRedeem(msg, requester)
+		resp = e.handleShareRedeem(msg, requester)
 	case grantspkg.TypeConnectRequest:
-		return e.handleConnectRequest(msg, requester)
+		resp = e.handleConnectRequest(msg, requester)
 	case grantspkg.TypeConnectRefresh:
-		return e.handleConnectRefresh(msg, requester)
+		resp = e.handleConnectRefresh(msg, requester)
 	default:
-		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: fallbackGrantRequestID(msg.RequestID), Reason: "attached-service grant endpoint only exposes service-scoped connect operations"}
+		resp = grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: fallbackGrantRequestID(msg.RequestID), Reason: "attached-service grant endpoint only exposes service-scoped connect operations"}
 	}
+	if resp.Type == grantspkg.TypeDenied {
+		e.recordDeniedGrantRequest(msg.Type, requester, resp.Reason)
+	}
+	return resp
 }
 
 func (e *serviceGrantEndpoint) handleShareRedeem(msg grantspkg.Message, requester peer.ID) grantspkg.Message {
@@ -127,6 +144,9 @@ func (e *serviceGrantEndpoint) handleShareRedeem(msg grantspkg.Message, requeste
 		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: payload.JTI, Reason: "share invite does not match attached service scope"}
 	}
 	if artifacts, err := e.buildDelegatedArtifacts(payload.JTI, payload.AccessEpoch, msg.ClientPublicKey); err == nil {
+		if err := e.consumeShareInvite(payload, requester, msg.ClientPublicKey, artifacts.RefreshLease.SessionID); err != nil {
+			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: payload.JTI, Reason: err.Error()}
+		}
 		return grantspkg.Message{Type: grantspkg.TypeShareRedeem, Version: grantspkg.VersionV1, RequestID: payload.JTI, ConnectAccessLease: &artifacts.AccessLease, ConnectRefreshLease: &artifacts.RefreshLease}
 	}
 	if len(e.authorityPriv) > 0 {
@@ -242,7 +262,7 @@ func (e *serviceGrantEndpoint) authorizeConnectRequest(requester peer.ID, msg gr
 }
 
 func (e *serviceGrantEndpoint) allowPublicConnect(requester peer.ID) bool {
-	now := time.Now().UTC()
+	now := e.now().UTC()
 	e.publicRateLimitMu.Lock()
 	defer e.publicRateLimitMu.Unlock()
 	items := e.publicRateLimit[requester]
@@ -313,6 +333,23 @@ func (e *serviceGrantEndpoint) verifyConnectMembershipGrantToken(token string) e
 	return nil
 }
 
+func (e *serviceGrantEndpoint) consumeShareInvite(payload grantspkg.ServiceSharePayload, requester peer.ID, clientPublicKey, sessionID string) error {
+	if e.shareRedemptions == nil {
+		return nil
+	}
+	thumbprint, err := grantspkg.ConnectClientKeyThumbprint(clientPublicKey)
+	if err != nil {
+		return err
+	}
+	if err := e.shareRedemptions.TryConsume(grantspkg.ShareRedemptionRecord{JTI: payload.JTI, ClusterID: payload.ClusterID, NamespaceID: payload.NamespaceID, ServiceID: payload.TargetServiceID, RedeemedByPeerID: requester.String(), ClientKeyThumbprint: thumbprint, SessionID: sessionID, TokenExpiresAt: payload.ExpiresAt.UTC()}); err != nil {
+		if err == grantspkg.ErrShareInviteAlreadyRedeemed {
+			return errors.New("share invite already redeemed")
+		}
+		return err
+	}
+	return nil
+}
+
 func containsConnectPermission(perms []string) bool {
 	for _, perm := range perms {
 		if perm == capability.PermissionConnect {
@@ -339,6 +376,17 @@ func serviceGrantStorePath(cfg Config, serviceID string) string {
 		return filepath.Join(filepath.Dir(base), serviceID+".grant-endpoint.requests.json")
 	}
 	return filepath.Join(os.TempDir(), "tubo-"+serviceID+".grant-endpoint.requests.json")
+}
+
+func serviceGrantRedemptionStorePath(cfg Config, serviceID string) string {
+	base := strings.TrimSpace(cfg.ServicePublishLeaseFile)
+	if base == "" {
+		base = strings.TrimSpace(cfg.ServiceClaimFile)
+	}
+	if base != "" {
+		return filepath.Join(filepath.Dir(base), serviceID+".grant-endpoint.share-redemptions.json")
+	}
+	return filepath.Join(os.TempDir(), "tubo-"+serviceID+".grant-endpoint.share-redemptions.json")
 }
 
 func loadAuthorityPrivateKey(path string) (ed25519.PrivateKey, error) {

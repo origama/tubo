@@ -70,7 +70,7 @@ automatically extending public trust semantics
 
 ## 3.1 Level 1 — public overlay + `home/default`
 
-Purpose: easiest public sharing path.
+Purpose: easiest public sharing path. The shared public overlay is convenience transport only: it is not anonymity, hidden participation, or transport isolation by itself.
 
 ```text
 overlay:   public
@@ -100,6 +100,7 @@ Level 1 does **not** guarantee:
 - anonymity from relays;
 - hidden participation;
 - traffic-pattern privacy;
+- transport isolation from the shared public relay/operator path;
 - immediate revocation without fresh online/cached state.
 
 ### Revocation model

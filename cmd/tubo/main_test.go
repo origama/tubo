@@ -581,6 +581,9 @@ func TestJoinDefaultPublicNetworkFromSignedBundle(t *testing.T) {
 	if !strings.Contains(out, "joined public overlay") || !strings.Contains(out, "network: tubo-public") {
 		t.Fatalf("unexpected output: %s", out)
 	}
+	if !strings.Contains(out, "tubo connect --token <share-invite>") || strings.Contains(out, "tubo get services") || strings.Contains(out, "tubo connect lmstudio") {
+		t.Fatalf("unexpected public join next steps: %s", out)
+	}
 	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
 	if _, err := os.Stat(configPath); err != nil {
 		t.Fatalf("config not written: %v", err)
@@ -672,6 +675,33 @@ func TestJoinDefaultPublicNetworkUsesEnvOverrideBundleURL(t *testing.T) {
 	}
 	if !strings.Contains(out, "joined public overlay") {
 		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing.T) {
+	out, err := capture(func() error { return run([]string{"help"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Public default happy path (invite-only)") || !strings.Contains(out, "tubo connect --token <share-invite>") {
+		t.Fatalf("top-level help missing invite-only flow: %s", out)
+	}
+	if !strings.Contains(out, "Collaboration namespace flow") || !strings.Contains(out, "tubo connect myapp") {
+		t.Fatalf("top-level help missing collaboration flow: %s", out)
+	}
+	attachHelp, err := capture(func() error { return run([]string{"help", "attach"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(attachHelp, "public default") || !strings.Contains(attachHelp, "discovery-enabled custom/private namespace") {
+		t.Fatalf("attach help missing scope behavior: %s", attachHelp)
+	}
+	connectHelp, err := capture(func() error { return run([]string{"help", "connect"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(connectHelp, "connect --token") || !strings.Contains(connectHelp, "collaboration path") {
+		t.Fatalf("connect help missing mode distinction: %s", connectHelp)
 	}
 }
 

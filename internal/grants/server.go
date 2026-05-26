@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -36,6 +37,7 @@ type ServerConfig struct {
 	ConnectAccessTTL          time.Duration
 	ConnectRefreshTTL         time.Duration
 	Revocations               *RevocationStore
+	ShareRedemptions          *ShareRedemptionStore
 }
 
 type Server struct {
@@ -48,6 +50,13 @@ func NewServer(cfg ServerConfig) (*Server, error) {
 	}
 	if cfg.Store == nil {
 		cfg.Store = NewStore(DefaultStorePath())
+	}
+	if cfg.ShareRedemptions == nil {
+		path := DefaultShareRedemptionStorePath()
+		if cfg.Store != nil && cfg.Store.Path() != "" {
+			path = filepath.Join(filepath.Dir(cfg.Store.Path()), "share-redemptions.json")
+		}
+		cfg.ShareRedemptions = NewShareRedemptionStore(path)
 	}
 	if cfg.Now == nil {
 		cfg.Now = func() time.Time { return time.Now().UTC() }
@@ -94,7 +103,7 @@ func (s *Server) HandleMessage(msg Message, requester peer.ID) Message {
 	case TypePoll:
 		return s.handlePoll(msg)
 	case TypeShareRedeem:
-		return s.handleShareRedeem(msg)
+		return s.handleShareRedeem(msg, requester)
 	case TypeConnectRefresh:
 		return s.handleConnectRefresh(msg)
 	default:
@@ -224,7 +233,7 @@ func (s *Server) handlePoll(msg Message) Message {
 	return ResponseForRequest(req)
 }
 
-func (s *Server) handleShareRedeem(msg Message) Message {
+func (s *Server) handleShareRedeem(msg Message, requester peer.ID) Message {
 	if len(s.cfg.AuthorityPrivateKey) == 0 {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "share-redeem", Reason: "share invite redemption requires an authority private key"}
 	}
@@ -247,6 +256,9 @@ func (s *Server) handleShareRedeem(msg Message) Message {
 	}
 	artifacts, err := BuildConnectLeaseArtifacts(s.cfg.AuthorityPrivateKey, payload, msg.ClientPublicKey, s.cfg.ConnectAccessTTL, s.cfg.ConnectRefreshTTL)
 	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: err.Error()}
+	}
+	if err := s.consumeShareInvite(payload, requester, msg.ClientPublicKey, artifacts.RefreshLease.SessionID); err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: payload.JTI, Reason: err.Error()}
 	}
 	return Message{Type: TypeShareRedeem, Version: VersionV1, RequestID: payload.JTI, ConnectAccessLease: &artifacts.AccessLease, ConnectRefreshLease: &artifacts.RefreshLease}
@@ -306,6 +318,23 @@ func (s *Server) validateShareInviteRevocation(payload ServiceSharePayload) erro
 	}
 	if payload.AccessEpoch < epoch {
 		return fmt.Errorf("service access revoked for service %q", payload.TargetServiceID)
+	}
+	return nil
+}
+
+func (s *Server) consumeShareInvite(payload ServiceSharePayload, requester peer.ID, clientPublicKey, sessionID string) error {
+	if s.cfg.ShareRedemptions == nil {
+		return nil
+	}
+	thumbprint, err := ConnectClientKeyThumbprint(clientPublicKey)
+	if err != nil {
+		return err
+	}
+	if err := s.cfg.ShareRedemptions.TryConsume(ShareRedemptionRecord{JTI: payload.JTI, ClusterID: payload.ClusterID, NamespaceID: payload.NamespaceID, ServiceID: payload.TargetServiceID, RedeemedByPeerID: requester.String(), ClientKeyThumbprint: thumbprint, SessionID: sessionID, TokenExpiresAt: payload.ExpiresAt.UTC()}); err != nil {
+		if err == ErrShareInviteAlreadyRedeemed {
+			return fmt.Errorf("share invite already redeemed")
+		}
+		return err
 	}
 	return nil
 }

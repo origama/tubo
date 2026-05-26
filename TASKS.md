@@ -1,6 +1,6 @@
 # TASKS.md — Implementation Tracker
 
-> **Last updated:** 2026-05-25 20:30 UTC
+> **Last updated:** 2026-05-26 07:41 UTC
 > **Status legend:** ✅ Done | ⏳ In progress | 🔲 Not started | ❌ Broken/needs fix
 
 ---
@@ -200,6 +200,9 @@
 | C.96 | Issue #153 — `connect <service>` collaboration discovery/grant/lease/proof flow | ✅ | Done on `0.7.0.b0`: `connect <service>` now consumes discovery `grant_service` metadata, requests a connect lease from the advertised endpoint, starts the bridge with access/refresh leases, and reaches the service by name without an invite token in discovery-enabled collaboration namespaces; errors now distinguish grant authorization/unreachability from discovery misses and include attempted grant peers. |
 | C.97 | Issue #154 — connect permission + member invitation/import flows | ✅ | Done on `0.7.0.b0`: new collaboration namespace creators now get `connect` in their local membership capability by default; `share cluster/...` now supports `member` (`subscribe,list,publish,connect`) and `viewer` (`subscribe,list`) invites; imported cluster invites can satisfy `namespace_members` connect authorization via signed membership invite tokens; `tubo doctor` warns when the current discovery-enabled namespace lacks `connect`; and revoked membership invites are rejected for new direct connect leases. |
 | C.98 | Issue #155 — collaboration-namespace E2E coverage | ✅ | Done on `0.7.0.b0`: added deterministic Docker E2E scenario `tests/e2e/scenarios/collaboration_namespace_flows` covering (1) discover+connect by name with a `member` invite, (2) discovery visible but connect denied with a `viewer` invite, and (3) cross-scope `connect --token` still succeeding without namespace membership; logs assert discovery grant lease acquisition plus service-side connect-proof acceptance. |
+| C.99 | Issue #156 — invite-only public-default docs/help refresh | ✅ | Done on `0.7.0.b0`: refreshed top-level/help text, join next-step guidance, README quickstart, `docs/cli.md`, `docs/OPERABILITY.md`, and `docs/security-model-0.7.md` so the public default is consistently explained as invite-only/unlisted, `connect --token` is the public happy path, collaboration namespaces are the discoverable connect-by-name path, and the shared public overlay is explicitly not anonymity/transport isolation by itself. |
+| C.100 | Issue #159 — server-side one-time share invite redemption | ✅ | Done on `0.7.0.b0`: added persistent JSON-backed share-redemption stores, enforced one successful share-invite redemption server-side in both the authority grant server and attached-service grant endpoint, kept pruning TTL-bounded, preserved denial across process restart when state dir survives, and added unit/service/integration coverage for same-token reuse across clients/configs/restarts. |
+| C.101 | Issue #157 — discovered connect-grant endpoint abuse controls | ✅ | Done on `0.7.0.b0`: attached-service grant endpoints now enforce per-peer/per-service rolling-window limits plus a deny cache for repeated invalid requests, log requester/service/policy/reason on denials, and use fake-clock-friendly tests to cover sporadic success, deny-cache activation, and service-level flood protection. |
 
 ---
 
