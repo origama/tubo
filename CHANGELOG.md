@@ -21,6 +21,35 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.7.0] - 2026-05-27
+
+Invite-only public-default, collaboration connect flow, one-time share hardening, delegated share minting, detached connect management, and CLI output/logging cleanup release.
+
+### Added
+- Collaboration namespace direct-connect flow: Discovery V2 connect metadata, attached-service service-scoped grant endpoints, delegated connect leases, membership-based connect authorization, member/viewer invite roles, and Docker E2E coverage for discover-by-name plus cross-scope token flows.
+- Revocation and redemption hardening for service sharing: issuer-side invite/session/service-access/publish revocation primitives, persistent one-time share redemption stores, grant-endpoint abuse controls, and new public-default/one-time invite regression scenarios.
+- Delegated `share service/...` minting through the cluster grant service when the local authority key is absent but a valid publish lease with `share.mint` exists.
+- Detached `tubo connect -d/--detach` process support with local process-state/log management and `tubo ps` visibility.
+- Shared CLI logging/output abstraction with verbosity controls (`--quiet`, `-v`, `-vv`, `-vvv`, `--log-level ...`) plus regression coverage for clean stdout and JSON safety.
+
+### Changed
+- Public default (`tubo-public` / `home/default`) is now explicitly invite-only and unlisted: ambient discovery is disabled, `attach` runs unlisted, `connect --token` is the happy path, and share invites must carry self-contained remote-dialable service endpoint metadata.
+- `connect --token` now uses self-contained invite endpoint/grant metadata instead of depending on discovery in invite-only public scopes, while collaboration namespaces use discovery-driven grant-service metadata for `connect <service>`.
+- `attach` and `share service/...` now treat expired local publish authorization artifacts as stale renewable state for the same `service_id` rather than forcing a new service name/identity.
+- CLI output now follows a clearer contract: stdout for stable command results, stderr for progress/hints/warnings, diagnostics hidden by default unless verbosity/log-level is enabled.
+
+### Fixed
+- Removed the share-token path that silently fell back to embedded legacy connect grants after redemption failure, closing the fresh-client one-time invite reuse bypass.
+- Hardened share/grant metadata so relay-aware, remote-dialable peers/endpoints are preferred and local-only or peer-mismatched endpoint metadata is rejected.
+- Fixed `share service/...` so expired/missing publish leases can renew/re-request authorization for the existing local service identity before minting a fresh invite.
+- Fixed noisy internal grant refresh output so `share service/...` no longer prints internal final-looking grant result blocks onto stdout during authorization refresh.
+
+### Compatibility
+- Product version: v0.7.0
+- Protocol version: 1.1
+- Protocol compatibility change: none; this is a backward-compatible feature and hardening release on top of protocol 1.1
+- Operator action required: update public relay/grant-service/client binaries if you want invite-only public-default behavior, collaboration namespace connect-by-name flow, one-time share enforcement, delegated share minting, detached connect management, and the cleaned-up CLI output/logging model
+
 ## [v0.6.0] - 2026-05-17
 
 Scoped discovery/grants and public quick-share release.
