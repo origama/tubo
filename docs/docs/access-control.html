@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access Control — Tubo Docs</title>
+  <meta name="description" content="Invite tokens, publish grants, connect leases, and revocation in Tubo.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html" class="active">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Access Control</h1>
+    <p class="doc-lead">
+      Tubo uses a layered capability model. Publishing a service requires authority approval.
+      Connecting to a service requires a signed lease. Every token is one-time and cryptographically scoped.
+    </p>
+
+    <h2>Overview</h2>
+    <p>There are three layers of access control:</p>
+    <ol>
+      <li><strong>Transport isolation</strong> — PSK swarm key. Nodes without the key are rejected at the TCP level.</li>
+      <li><strong>Publish authorisation</strong> — a service peer must hold a <code>PublishLease</code> signed by the cluster authority to appear in discovery.</li>
+      <li><strong>Connect authorisation</strong> — a client must hold a <code>ConnectAccessLease</code> to open data-plane streams. The service verifies a signed proof-of-possession on every stream open.</li>
+    </ol>
+
+    <h2>Share invites (the simplest flow)</h2>
+    <p>
+      The most common flow is: Alice runs <code>tubo attach</code>, gets a share invite token,
+      and gives it to Bob.
+    </p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># Alice: publish a service and get a share token</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> myapi <span style="color:#86efac">--port</span> 8080 <span style="color:#86efac">-d</span>
+<span style="color:#86efac">✓ Share token:  tubo connect --token eyJ...</span>
+
+<span style="color:#6b7280"># Bob: connect with the token (no account needed)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> <span style="color:#86efac">--token</span> eyJ... <span style="color:#86efac">--local</span> 127.0.0.1:9000</pre>
+    </div>
+    <p>
+      The token is self-contained: it includes the service endpoint, the grant service peer,
+      and all metadata needed to redeem it for a <code>ConnectAccessLease</code>. No discovery
+      is needed.
+    </p>
+    <div class="warning">
+      <strong>One-time tokens.</strong> Each share invite can be redeemed exactly once.
+      A second connect attempt with the same token will be denied. Use <code>tubo share service/...</code>
+      to generate additional tokens.
+    </div>
+
+    <h2>Sharing a service manually</h2>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># Generate a new one-time connect token for myapi</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo share service/</span>myapi <span style="color:#86efac">--expires</span> 24h
+<span style="color:#86efac">✓ Share invite (valid for 24h):</span>
+<span style="color:#fde68a">  tubo connect --token eyJ...</span></pre>
+    </div>
+
+    <h2>Collaboration namespaces</h2>
+    <p>
+      For teams, create a private cluster and invite members. Members can discover and connect
+      to services by name without an explicit token:
+    </p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># Authority: invite a team member</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo share cluster/</span>myteam <span style="color:#86efac">--role</span> member
+<span style="color:#86efac">✓  tubo join cluster/myteam --token eyJ...</span>
+
+<span style="color:#6b7280"># Member: join and connect by name</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo join cluster/</span>myteam <span style="color:#86efac">--token</span> eyJ...
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo get services</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> myapi <span style="color:#86efac">--local</span> 127.0.0.1:9000</pre>
+    </div>
+    <p>
+      Viewer invites (<code>--role viewer</code>) allow discovery but not connect.
+      Members automatically get connect permission.
+    </p>
+
+    <h2>Publish Grants</h2>
+    <p>
+      On private clusters, a service host that doesn't own the authority key must request a
+      <strong>Publish Grant</strong> before <code>tubo attach</code> can succeed:
+    </p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># Authority host: start the grant service</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo grants serve</span> <span style="color:#86efac">--cluster</span> myteam <span style="color:#86efac">--namespace</span> default <span style="color:#86efac">-d</span>
+
+<span style="color:#6b7280"># Service host: request a grant</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo grants request service/</span>myapi \
+    <span style="color:#86efac">--peer</span> /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+<span style="color:#c4b5fd">  Waiting for approval... (Ctrl-C to cancel)</span>
+
+<span style="color:#6b7280"># Authority host: approve the grant</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo grants pending</span>
+  <span style="color:#c4b5fd">gr_abc123  myapi  pending</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo grants approve</span> gr_abc123 <span style="color:#86efac">--ttl</span> 168h
+
+<span style="color:#6b7280"># Service host: now attach works</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> myapi <span style="color:#86efac">--port</span> 8080 <span style="color:#86efac">-d</span></pre>
+    </div>
+
+    <h2>Revocation</h2>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># Revoke a share invite (prevents future redemptions)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke invite</span> eyJ...
+
+<span style="color:#6b7280"># Revoke an active session</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke session</span> &lt;session-id&gt;
+
+<span style="color:#6b7280"># Revoke service access (all existing leases for a service)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke service-access</span> myapi
+
+<span style="color:#6b7280"># Revoke a publish lease (service can no longer publish)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke publish</span> myapi</pre>
+    </div>
+
+    <h2>Connect lease lifecycle</h2>
+    <p>
+      When Bob connects with a token, Tubo exchanges the one-time invite for two leases:
+    </p>
+    <ul>
+      <li><strong>ConnectAccessLease</strong> — short-lived (default 10 min). Used to open data-plane streams. The service verifies a proof-of-possession on each stream open.</li>
+      <li><strong>ConnectRefreshLease</strong> — longer-lived (default 48h). Used to renew the access lease before it expires. The bridge renews automatically in the background.</li>
+    </ul>
+    <p>
+      Leases are bound to the client's local keypair — they cannot be forwarded to a different machine.
+    </p>
+
+    <h2>Namespace connect policies</h2>
+    <p>Each namespace has a configurable connect policy:</p>
+    <div style="overflow-x:auto;margin:12px 0 20px">
+      <table style="width:100%;border-collapse:collapse;font-size:.88rem">
+        <thead>
+          <tr style="background:var(--surface-3)">
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Policy</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Who can connect</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)"><code>invite_only</code></td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Only holders of a valid share invite token (public default)</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)"><code>namespace_members</code></td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Cluster members with <code>connect</code> permission (private clusters default)</td></tr>
+          <tr><td style="padding:9px 14px"><code>public</code></td><td style="padding:9px 14px">Anyone on the swarm (rate-limited)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Next steps</h2>
+    <ul>
+      <li><a href="security.html">Security Model</a> — full trust chain and non-goals</li>
+      <li><a href="cli-reference.html">CLI Reference</a> — all grant and share commands</li>
+      <li><a href="deployment.html">Deployment</a> — running grants serve in production</li>
+    </ul>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

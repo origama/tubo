@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wire Protocol — Tubo Docs</title>
+  <meta name="description" content="Tubo wire protocol: binary framing, message types, streaming body, and version negotiation.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html" class="active">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Wire Protocol</h1>
+    <p class="doc-lead">
+      Tubo uses a simple binary framing protocol over libp2p streams. This document describes the
+      frame format, message types, streaming body model, and version negotiation.
+    </p>
+
+    <h2>Protocol IDs</h2>
+    <p>Tubo registers two libp2p protocol IDs:</p>
+    <ul>
+      <li><code>/p2p-tunnel/1.1</code> — current version, with hello handshake and capability negotiation.</li>
+      <li><code>/p2p-tunnel/1.0</code> — legacy, no handshake. Supported for backwards compatibility.</li>
+    </ul>
+    <p>
+      Clients (edge/bridge) negotiate in order: <code>1.1</code> first, fallback to <code>1.0</code>.
+      Services accept both.
+    </p>
+
+    <h2>Frame format</h2>
+    <p>Each frame on the wire is:</p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre style="color:#e2e8f0">+----------+--------+-----------+
+| type (1) | len (varint) | payload   |
++----------+--------+-----------+</pre>
+    </div>
+    <ul>
+      <li><strong>type</strong> — 1 byte, see table below.</li>
+      <li><strong>len</strong> — unsigned varint (protobuf-style), length of payload in bytes.</li>
+      <li><strong>payload</strong> — frame-type-specific bytes.</li>
+    </ul>
+
+    <h2>Frame types</h2>
+    <div style="overflow-x:auto;margin:12px 0 24px">
+      <table style="width:100%;border-collapse:collapse;font-size:.88rem">
+        <thead>
+          <tr style="background:var(--surface-3)">
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Type byte</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Name</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Direction</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Description</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)"><code>0x01</code></td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Hello</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Client → Service</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Protocol version, role, capabilities (v1.1 only)</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)"><code>0x02</code></td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">RequestHeader</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Client → Service</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">HTTP method, path, headers, connect proof</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)"><code>0x03</code></td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">ResponseHeader</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Service → Client</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">HTTP status code and response headers</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)"><code>0x04</code></td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">BodyChunk</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Both</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Streaming body data; empty chunk signals end-of-body</td></tr>
+          <tr><td style="padding:9px 14px"><code>0x05</code></td><td style="padding:9px 14px">Error</td><td style="padding:9px 14px">Both</td><td style="padding:9px 14px">Error message; terminates the stream</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Request / Response flow</h2>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre style="color:#e2e8f0">Client                              Service
+  │                                    │
+  │── Hello (optional, v1.1) ─────────▶│
+  │── RequestHeader ──────────────────▶│
+  │── BodyChunk (0..N) ───────────────▶│
+  │── BodyChunk (empty, end) ─────────▶│  ← required even for GET
+  │                                    │── [forward to origin HTTP] ──▶
+  │                                    │◀─ [HTTP response] ────────────
+  │◀─ ResponseHeader ──────────────────│
+  │◀─ BodyChunk (0..N) ────────────────│
+  │◀─ BodyChunk (empty, end) ──────────│
+  │                    [stream closed] │</pre>
+    </div>
+    <div class="note">
+      GET and other requests with no body must still send a final empty <code>BodyChunk</code>
+      to signal end-of-request. Omitting it will cause the service to hang waiting for more data.
+    </div>
+
+    <h2>Connect proof (v1.1)</h2>
+    <p>
+      In protocol 1.1, the <code>RequestHeader</code> carries a connect proof (PoP) that the service
+      validates before forwarding the request. The proof binds:
+    </p>
+    <ul>
+      <li>cluster/namespace/service scope</li>
+      <li>access lease hash</li>
+      <li>nonce (anti-replay)</li>
+      <li>issued-at timestamp</li>
+    </ul>
+    <p>The proof is an Ed25519 signature over the above fields using the client's key.</p>
+
+    <h2>Version negotiation</h2>
+    <p>
+      libp2p multistream-select handles protocol negotiation. The client proposes
+      <code>/p2p-tunnel/1.1</code>; if the service does not support it, the client falls back
+      to <code>/p2p-tunnel/1.0</code> automatically.
+    </p>
+    <p>
+      Tubo 0.7+ supports both versions on the service side. Legacy Tubo (pre-0.40) only
+      supports <code>/p2p-tunnel/1.0</code>. Mixed-version clusters work transparently.
+    </p>
+
+    <h2>Discovery protocol</h2>
+    <p>
+      Service announcements are published on a GossipSub topic derived from the cluster and namespace IDs.
+      The topic string is an opaque hash — nodes outside the cluster cannot enumerate services.
+      Each announcement is JSON-encoded and Ed25519-signed. Subscribers validate the full chain before
+      admitting an entry into the discovery cache.
+    </p>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

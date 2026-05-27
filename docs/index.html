@@ -1,297 +1,541 @@
-<!doctype html>
-<html lang="it">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#08101c" />
-    <meta name="description" content="tubo — un tunnel minimale per API e servizi privati. Installa, pubblica un servizio con attach, connettiti per nome e usa HTTP/WebSocket da localhost." />
-    <title>tubo — minimal tunnel for API services</title>
-    <style>
-      :root {
-        --bg: #08101c;
-        --bg2: #0d1730;
-        --panel: rgba(11, 18, 32, 0.76);
-        --panel-strong: rgba(14, 22, 40, 0.94);
-        --border: rgba(153, 175, 255, 0.15);
-        --text: #edf3ff;
-        --muted: #9caac6;
-        --accent: #7cc4ff;
-        --accent-2: #93f2d0;
-        --shadow: 0 18px 56px rgba(0, 0, 0, 0.35);
-        --radius: 24px;
-        --radius-sm: 16px;
-        --max: 1140px;
-      }
-      * { box-sizing: border-box; }
-      html, body { margin: 0; min-height: 100%; }
-      body {
-        color: var(--text);
-        background:
-          radial-gradient(circle at 18% 16%, rgba(124, 196, 255, 0.20), transparent 26%),
-          radial-gradient(circle at 80% 8%, rgba(179, 140, 255, 0.18), transparent 22%),
-          linear-gradient(180deg, var(--bg), var(--bg2));
-        font: 16px/1.65 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      }
-      a { color: inherit; text-decoration: none; }
-      code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
-      .wrap { width: min(var(--max), calc(100% - 32px)); margin: 0 auto; }
-      .topbar {
-        position: sticky; top: 0; z-index: 20;
-        backdrop-filter: blur(12px);
-        background: linear-gradient(180deg, rgba(8,16,28,0.96), rgba(8,16,28,0.72));
-        border-bottom: 1px solid rgba(255,255,255,0.06);
-      }
-      .topbar-inner {
-        display: flex; align-items: center; justify-content: space-between;
-        min-height: 72px; gap: 20px;
-      }
-      .brand { display: inline-flex; align-items: center; gap: 12px; font-weight: 760; letter-spacing: -0.03em; }
-      .mark {
-        width: 40px; height: 40px; display: grid; place-items: center;
-        border-radius: 14px;
-        background: linear-gradient(135deg, rgba(124,196,255,0.25), rgba(179,140,255,0.20));
-        border: 1px solid rgba(255,255,255,0.10);
-      }
-      .mark svg { width: 22px; height: 22px; display: block; }
-      .nav { display: flex; gap: 18px; flex-wrap: wrap; color: var(--muted); font-size: 14px; }
-      .nav a:hover { color: var(--text); }
-      .hero { padding: 72px 0 44px; }
-      .hero-grid { display: grid; grid-template-columns: 1.35fr 0.9fr; gap: 24px; align-items: stretch; }
-      .hero-copy, .hero-card, .panel, .feature, .cmd, .footer-box {
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: var(--radius);
-        box-shadow: var(--shadow);
-      }
-      .hero-copy { padding: 42px; }
-      .eyebrow {
-        display: inline-flex; align-items: center; gap: 8px;
-        color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.16em;
-      }
-      .eyebrow::before {
-        content: ""; width: 10px; height: 10px; border-radius: 999px;
-        background: linear-gradient(135deg, var(--accent), var(--accent-2));
-        box-shadow: 0 0 0 6px rgba(124,196,255,0.08);
-      }
-      h1 { margin: 18px 0 16px; font-size: clamp(42px, 7vw, 76px); line-height: 0.95; letter-spacing: -0.07em; }
-      .lead { max-width: 60ch; color: #c8d4f2; font-size: 18px; }
-      .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 26px; }
-      .btn {
-        display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-        padding: 12px 16px; border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.12);
-        font-weight: 650; font-size: 14px;
-      }
-      .btn.primary { background: linear-gradient(135deg, rgba(124,196,255,0.18), rgba(147,242,208,0.12)); }
-      .btn.secondary { color: var(--muted); background: rgba(255,255,255,0.03); }
-      .hero-card { padding: 24px; display: flex; flex-direction: column; gap: 14px; justify-content: space-between; }
-      .hero-card .panel { padding: 18px; border-radius: var(--radius-sm); background: var(--panel-strong); }
-      .small { color: var(--muted); font-size: 14px; }
-      .code { font-size: 13px; line-height: 1.65; color: #dfe8ff; white-space: pre-wrap; }
-      .tag-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
-      .tag { display: inline-flex; align-items: center; padding: 7px 10px; border-radius: 999px; font-size: 12px; color: #d8e3ff; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); }
-      .section { padding: 14px 0 34px; }
-      .section h2 { margin: 0 0 18px; font-size: 22px; letter-spacing: -0.03em; }
-      .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-      .feature, .cmd { padding: 20px; }
-      .feature h3, .cmd h3 { margin: 0 0 8px; font-size: 16px; }
-      .feature p, .cmd p { margin: 0; color: var(--muted); }
-      .cmd pre { margin: 14px 0 0; padding: 14px 16px; border-radius: 16px; overflow: auto; background: rgba(0,0,0,0.26); border: 1px solid rgba(255,255,255,0.08); color: #dce6ff; font-size: 13px; line-height: 1.6; }
-      .split { display: grid; grid-template-columns: 0.95fr 1.05fr; gap: 16px; }
-      .steps { counter-reset: step; }
-      .step { position: relative; padding-left: 56px; }
-      .step::before { counter-increment: step; content: counter(step); position: absolute; left: 18px; top: 18px; width: 26px; height: 26px; border-radius: 999px; display: grid; place-items: center; background: linear-gradient(135deg, rgba(124,196,255,0.22), rgba(147,242,208,0.18)); color: #fff; font-size: 13px; font-weight: 700; border: 1px solid rgba(255,255,255,0.12); }
-      .step + .step { margin-top: 14px; }
-      .step pre { margin-top: 12px; }
-      .quote { padding: 24px; color: #d9e4ff; font-size: 18px; line-height: 1.55; }
-      .quote strong { color: #fff; }
-      .footer { padding: 26px 0 56px; }
-      .footer-box { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; justify-content: space-between; padding: 22px 24px; background: rgba(11,18,32,0.82); }
-      .footer-links { display: flex; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 14px; }
-      .footer-links a:hover { color: var(--text); }
-      @media (max-width: 900px) {
-        .hero-grid, .grid-3, .split { grid-template-columns: 1fr; }
-        .hero-copy { padding: 28px; }
-        .hero { padding-top: 40px; }
-        .topbar-inner { flex-direction: column; align-items: flex-start; padding: 14px 0; }
-      }
-    </style>
-  </head>
-  <body>
-    <header class="topbar">
-      <div class="wrap topbar-inner">
-        <a class="brand" href="#top" aria-label="tubo home">
-          <span class="mark" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M6 8.2C6 6.43 7.43 5 9.2 5h5.6C16.57 5 18 6.43 18 8.2v7.6c0 1.77-1.43 3.2-3.2 3.2H9.2C7.43 19 6 17.57 6 15.8V8.2Z" stroke="white" stroke-opacity="0.9" stroke-width="1.6"/>
-              <path d="M9 8h6M9 12h6M9 16h3" stroke="white" stroke-opacity="0.9" stroke-width="1.6" stroke-linecap="round"/>
-            </svg>
-          </span>
-          <span>tubo</span>
-        </a>
-        <nav class="nav" aria-label="primary">
-          <a href="#install">install</a>
-          <a href="#quickstart">quickstart</a>
-          <a href="#why">why</a>
-          <a href="https://github.com/origama/tubo" target="_blank" rel="noreferrer">github</a>
-        </nav>
-      </div>
-    </header>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tubo — P2P API Tunnels for Services Behind NAT</title>
+  <meta name="description" content="Publish any local HTTP service into a private libp2p swarm. Connect from anywhere, no port forwarding, no VPN, no cloud proxy required.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+  <link rel="icon" href="assets/img/favicon.svg" type="image/svg+xml">
+</head>
+<body>
 
-    <main id="top" class="wrap">
-      <section class="hero">
-        <div class="hero-grid">
-          <div class="hero-copy">
-            <div class="eyebrow">tubo.click</div>
-            <h1>Minimal tunnel for private API services.</h1>
-            <p class="lead">
-              <strong>tubo</strong> keeps the path simple: install it, attach a local HTTP/WebSocket service,
-              connect by name, and use it from localhost. First run auto-joins the signed public network.
-            </p>
-            <div class="cta-row">
-              <a class="btn primary" href="#install">Get started</a>
-              <a class="btn secondary" href="https://github.com/origama/tubo/releases" target="_blank" rel="noreferrer">Latest release</a>
-              <a class="btn secondary" href="https://github.com/origama/tubo/blob/main/docs/cli.md" target="_blank" rel="noreferrer">CLI docs</a>
-            </div>
-          </div>
-          <aside class="hero-card">
-            <div class="panel">
-              <div class="small">The shortest path</div>
-              <div class="code mono">1. install tubo
-2. attach a service
-3. connect by name
-4. curl it</div>
-            </div>
-            <div class="panel">
-              <div class="small">What you get</div>
-              <div class="code mono">a single binary
-signed public onboarding
-named services
-local HTTP/WebSocket listeners</div>
-            </div>
-            <div class="tag-row">
-              <span class="tag">intent-based CLI</span>
-              <span class="tag">signed bundle</span>
-              <span class="tag">relay fallback</span>
-              <span class="tag">WebSocket ready</span>
-            </div>
-          </aside>
-        </div>
-      </section>
+<!-- ===== NAV ===== -->
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">
+      <span class="logo-icon">
+        <svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg>
+      </span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="#how-it-works">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#quickstart">Quickstart</a>
+      <a href="docs/index.html">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="docs/getting-started.html" class="nav-cta btn-cta">Get started →</a>
+    </div>
+    <button class="nav-burger" aria-label="Menu" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
 
-      <section id="install" class="section">
-        <h2>Install tubo</h2>
-        <div class="grid-3">
-          <article class="feature">
-            <h3>1. Install</h3>
-            <p>Use the one-line installer published on tubo.click.</p>
-          </article>
-          <article class="feature">
-            <h3>2. Verify</h3>
-            <p>Run <span class="mono">tubo version</span> and make sure it starts cleanly.</p>
-          </article>
-          <article class="feature">
-            <h3>3. First run joins the default network</h3>
-            <p><span class="mono">attach</span>, <span class="mono">connect</span>, <span class="mono">get</span>, <span class="mono">watch</span> and <span class="mono">relay</span> auto-join the signed default public Tubo network when no local config exists yet.</p>
-          </article>
-        </div>
-        <div class="split" style="margin-top: 16px;">
-          <article class="cmd">
-            <h3>One-line install</h3>
-            <p>Install the latest release and verify the binary.</p>
-            <pre class="mono">curl -fsSL https://www.tubo.click/install.sh | sh
+<!-- ===== HERO ===== -->
+<section class="hero">
+  <div class="hero-eyebrow">✦ Private libp2p tunnels · No cloud proxy required</div>
+  <h1>Expose any HTTP service<br><span>through a P2P tunnel</span></h1>
+  <p class="hero-sub">
+    Tubo lets you publish local HTTP endpoints into a private libp2p swarm
+    and consume them from anywhere — even behind NAT — with end-to-end encryption,
+    signed discovery, and cryptographic access control.
+  </p>
+  <div class="hero-actions">
+    <a href="docs/getting-started.html" class="btn btn-primary">
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+      Get started
+    </a>
+    <a href="#quickstart" class="btn btn-secondary">See quickstart</a>
+    <a href="https://github.com/origama/tubo" class="btn btn-ghost" target="_blank" rel="noopener">
+      <svg width="16" height="16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.604-3.369-1.34-3.369-1.34-.454-1.154-1.11-1.462-1.11-1.462-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836a9.59 9.59 0 012.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z"/></svg>
+      View on GitHub
+    </a>
+  </div>
+  <div class="hero-install">
+    <div class="install-box">
+      <span class="prompt">$</span>
+      <span class="cmd" id="installCmd">curl -fsSL https://www.tubo.click/install.sh | sh</span>
+      <button class="copy-btn" id="installCopy">Copy</button>
+    </div>
+  </div>
+</section>
 
-tubo version</pre>
-          </article>
-          <article class="cmd">
-            <h3>Build from source</h3>
-            <p>If you prefer to build locally, tubo is a single Go binary.</p>
-            <pre class="mono">git clone https://github.com/origama/tubo.git
-cd tubo
-go build ./cmd/tubo
-./tubo version</pre>
-          </article>
-        </div>
-      </section>
+<!-- ===== HOW IT WORKS ===== -->
+<section id="how-it-works" class="how-it-works">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-eyebrow">Architecture</div>
+      <h2 class="section-title">How Tubo works</h2>
+      <p class="section-sub">
+        A minimal set of roles connect over an encrypted libp2p swarm.
+        No central server sees your traffic — streams are end-to-end encrypted
+        and routed peer-to-peer.
+      </p>
+    </div>
 
-      <section id="quickstart" class="section">
-        <h2>Quickstart in 4 steps</h2>
-        <div class="split steps">
-          <article class="cmd step">
-            <h3>Machine A: install and attach</h3>
-            <p>Publish a local HTTP/WebSocket service into the default public Tubo network.</p>
-            <pre class="mono">curl -fsSL https://www.tubo.click/install.sh | sh
+    <div class="flow-diagram">
+<pre><span class="c-comment"># Every request travels through an encrypted libp2p stream</span>
 
-tubo attach myapi --port 1234 -d</pre>
-          </article>
-          <article class="cmd step">
-            <h3>Machine B: install and connect</h3>
-            <p>Resolve the service by name and open a local listener for it.</p>
-            <pre class="mono">curl -fsSL https://www.tubo.click/install.sh | sh
+<span class="c-node">Client</span> <span class="c-arrow">─── HTTP ──▶</span> <span class="c-node">tubo connect</span> <span class="c-arrow">──── libp2p stream ────▶</span> <span class="c-node">tubo attach</span> <span class="c-arrow">─── HTTP ──▶</span> <span class="c-node">Origin Service</span>
+               <span class="c-enc">      [encrypted · authenticated · signed discovery]</span>
+                                    <span class="c-arrow">│</span>
+                           <span class="c-node">tubo relay</span> <span class="c-label">(bootstrap + circuit v2)</span>
+                     <span class="c-label">  assists NAT traversal when peers can't dial directly</span></pre>
+    </div>
 
-tubo connect myapi --local 127.0.0.1:51234</pre>
-          </article>
-        </div>
-        <div class="cmd step" style="margin-top: 16px;">
-          <h3>What happens on first run</h3>
-          <p>If no local config exists yet, tubo downloads and verifies the signed default network bundle before starting.</p>
-          <pre class="mono">No Tubo network configured.
-Fetching default network bundle: tubo-public
-Signature verified: tubo-root-2026
-Joined network: tubo-public</pre>
-        </div>
-        <div class="cmd step" style="margin-top: 16px;">
-          <h3>Test with curl or WebSocket</h3>
-          <p>Once connect is up, send real HTTP or WebSocket traffic through the tunnel.</p>
-          <pre class="mono">curl -X POST \
-  -H 'Content-Type: text/plain' \
-  -d 'hello tubo' \
-  'http://127.0.0.1:51234/v1/dummy?from=website'</pre>
-        </div>
-      </section>
-
-      <section id="why" class="section">
-        <h2>Why tubo</h2>
-        <div class="split">
-          <div class="quote panel">
-            The goal is to keep the setup <strong>small, explicit, and easy to reason about</strong>:
-            one signed swarm bundle, named services, relay fallback, local listeners, and real HTTP/WebSocket traffic.
-          </div>
-          <div class="cmd">
-            <h3>Good defaults, simple operations</h3>
-            <p>
-              tubo is designed to be installed quickly, run on a few hosts, and verified with an actual curl.
-            </p>
-            <pre class="mono">install  →  attach  →  connect  →  curl
-
-No dashboard required.
-Just enough tooling to get traffic flowing.</pre>
-          </div>
-        </div>
-      </section>
-    </main>
-
-    <footer class="footer">
-      <div class="wrap footer-box">
-        <div>
-          <div class="brand" style="gap: 10px;">
-            <span class="mark" aria-hidden="true" style="width: 34px; height: 34px; border-radius: 12px;">
-              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M6 8.2C6 6.43 7.43 5 9.2 5h5.6C16.57 5 18 6.43 18 8.2v7.6c0 1.77-1.43 3.2-3.2 3.2H9.2C7.43 19 6 17.57 6 15.8V8.2Z" stroke="white" stroke-opacity="0.9" stroke-width="1.6"/>
-                <path d="M9 8h6M9 12h6M9 16h3" stroke="white" stroke-opacity="0.9" stroke-width="1.6" stroke-linecap="round"/>
-              </svg>
-            </span>
-            <span>tubo.click</span>
-          </div>
-          <div class="small" style="margin-top: 8px;">A minimal static homepage for tubo, served via GitHub Pages.</div>
-        </div>
-        <div class="footer-links">
-          <a href="https://github.com/origama/tubo" target="_blank" rel="noreferrer">GitHub</a>
-          <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noreferrer">Releases</a>
-          <a href="https://github.com/origama/tubo/blob/main/docs/cli.md" target="_blank" rel="noreferrer">Docs</a>
+    <div class="flow-steps">
+      <div class="flow-step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h3>Start a relay</h3>
+          <p>A public relay node bootstraps the swarm and assists with NAT traversal via libp2p circuit v2. One relay handles many service/client pairs.</p>
         </div>
       </div>
-    </footer>
-  </body>
+      <div class="flow-step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h3>Attach your service</h3>
+          <p>Run <code>tubo attach</code> next to any HTTP process. It joins the swarm, signs a service announcement, and starts serving libp2p streams.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h3>Connect from anywhere</h3>
+          <p>Run <code>tubo connect</code> on any machine. It discovers the service, opens a tunnel, and exposes a local HTTP port you can use immediately.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h3>Traffic flows P2P</h3>
+          <p>libp2p dials directly when possible; falls back to relay-assisted circuit automatically. No port forwarding. No cloud proxy in the data path.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== FEATURES ===== -->
+<section id="features">
+  <div class="container">
+    <div class="section-header centered">
+      <div class="section-eyebrow">Features</div>
+      <h2 class="section-title">Everything you need, nothing you don't</h2>
+      <p class="section-sub">Tubo is small, self-hosted, and built on open standards.</p>
+    </div>
+    <div class="features-grid">
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#eff6ff">🔒</div>
+        <h3>End-to-end encrypted</h3>
+        <p>All traffic travels over libp2p Noise-encrypted streams. No relay or gateway sees plaintext data — only the origin service and the authorized client do.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#f0fdf4">🌐</div>
+        <h3>Works behind NAT</h3>
+        <p>Uses libp2p circuit relay v2 and hole punching to traverse NAT and firewalls. No inbound ports required on service hosts.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#faf5ff">🔑</div>
+        <h3>Signed discovery</h3>
+        <p>Service announcements are Ed25519-signed. Clients validate the signature before connecting — no spoofing, no unauthenticated routing.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#fff7ed">🏗️</div>
+        <h3>Private swarm (PSK)</h3>
+        <p>Generate a swarm key with <code>tubo keygen swarm</code> and share it among your nodes for a fully isolated private network.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#f0fdf4">🎟️</div>
+        <h3>Invite-based access</h3>
+        <p>Share signed invite tokens for one-time service access. Each token is cryptographically bound to the recipient and cannot be reused.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#eff6ff">🗂️</div>
+        <h3>Clusters &amp; namespaces</h3>
+        <p>Organise services into clusters and namespaces. Discovery, access control, and grants are all scoped — no cross-namespace leakage.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#fdf4ff">⚡</div>
+        <h3>Single binary</h3>
+        <p>One static binary for all roles: <code>relay</code>, <code>attach</code>, <code>connect</code>, <code>gateway</code>. No runtime dependencies, no Docker required.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#fff7ed">🔄</div>
+        <h3>Daemonless process model</h3>
+        <p>Long-running commands stay in foreground or detach with <code>-d</code>. Inspect with <code>tubo ps</code>, tail logs with <code>tubo logs</code>, stop with <code>tubo stop</code>.</p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon" style="background:#f0fdf4">🤖</div>
+        <h3>AI &amp; LLM ready</h3>
+        <p>Expose LM Studio, Ollama, or any OpenAI-compatible API to collaborators. Streams and WebSocket upgrades work transparently.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ===== QUICKSTART ===== -->
+<section id="quickstart" class="quickstart">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-eyebrow">Quickstart</div>
+      <h2 class="section-title">Up and running in minutes</h2>
+      <p class="section-sub">Three commands on two machines and you have a working encrypted tunnel.</p>
+    </div>
+
+    <div class="tab-group" style="max-width:860px">
+      <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab(this,0)">Public network</button>
+        <button class="tab-btn" onclick="switchTab(this,1)">Private swarm</button>
+        <button class="tab-btn" onclick="switchTab(this,2)">LM Studio / Ollama</button>
+      </div>
+
+      <!-- PUBLIC -->
+      <div class="tab-panel active">
+        <div class="code-block" style="border-radius:0 var(--radius-lg) var(--radius-lg)">
+          <button class="copy-code" onclick="copyCode(this)">Copy</button>
+          <pre><span class="hl-comment"># — Machine A: publish your local service —</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo join</span>                     <span class="hl-comment"># join the public Tubo network</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-flag">myapi</span> <span class="hl-flag">--port</span> <span class="hl-val">8080</span> <span class="hl-flag">-d</span>
+
+<span class="hl-ok">✓</span> <span class="hl-info">Service published   name=myapi  visibility=unlisted</span>
+<span class="hl-ok">✓</span> <span class="hl-info">Share token         tubo connect --token eyJ...</span>
+
+<span class="hl-comment"># — Machine B: connect with the token —</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo connect</span> <span class="hl-flag">--token</span> <span class="hl-val">eyJ...</span> <span class="hl-flag">--local</span> <span class="hl-val">127.0.0.1:9000</span>
+
+<span class="hl-ok">✓</span> <span class="hl-info">Tunnel ready        http://127.0.0.1:9000  →  myapi</span>
+
+<span class="hl-prompt">$</span> <span class="hl-cmd">curl</span> http://127.0.0.1:9000/healthz
+<span class="hl-ok">OK</span></pre>
+        </div>
+      </div>
+
+      <!-- PRIVATE -->
+      <div class="tab-panel">
+        <div class="code-block" style="border-radius:0 var(--radius-lg) var(--radius-lg)">
+          <button class="copy-code" onclick="copyCode(this)">Copy</button>
+          <pre><span class="hl-comment"># — Relay host (public IP): start the relay —</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo keygen swarm</span> <span class="hl-flag">--out</span> <span class="hl-val">swarm.key</span>   <span class="hl-comment"># generate once, share to all nodes</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo relay</span> <span class="hl-flag">--swarm-key</span> <span class="hl-val">./swarm.key</span> <span class="hl-flag">--public-addr</span> <span class="hl-val">/ip4/1.2.3.4/tcp/4001</span> <span class="hl-flag">-d</span>
+
+<span class="hl-comment"># — Service host: join and publish —</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo join overlay/manual</span> \
+    <span class="hl-flag">--relay</span> <span class="hl-val">/ip4/1.2.3.4/tcp/4001/p2p/12D3...</span> \
+    <span class="hl-flag">--swarm-key</span> <span class="hl-val">./swarm.key</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo create cluster/</span><span class="hl-val">myteam</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-flag">myapi</span> <span class="hl-flag">--port</span> <span class="hl-val">8080</span> <span class="hl-flag">-d</span>
+
+<span class="hl-comment"># — Client host: discover and connect —</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo join</span> <span class="hl-flag">cluster/myteam</span> <span class="hl-flag">--token</span> <span class="hl-val">&lt;invite&gt;</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo get services</span>
+  <span class="hl-info">NAME    SERVICE ID   ACCESS</span>
+  <span class="hl-info">myapi   svc_abc123   namespace_members</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo connect</span> <span class="hl-val">myapi</span> <span class="hl-flag">--local</span> <span class="hl-val">127.0.0.1:9000</span></pre>
+        </div>
+      </div>
+
+      <!-- LM STUDIO -->
+      <div class="tab-panel">
+        <div class="code-block" style="border-radius:0 var(--radius-lg) var(--radius-lg)">
+          <button class="copy-code" onclick="copyCode(this)">Copy</button>
+          <pre><span class="hl-comment"># — On the machine running LM Studio (port 1234) —</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">lmstudio</span> <span class="hl-flag">--port</span> <span class="hl-val">1234</span> <span class="hl-flag">-d</span>
+
+<span class="hl-ok">✓</span> <span class="hl-info">Service published   name=lmstudio</span>
+<span class="hl-ok">✓</span> <span class="hl-info">Share token         tubo connect --token eyJ...</span>
+
+<span class="hl-comment"># — On the client machine —</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo connect</span> <span class="hl-flag">--token</span> <span class="hl-val">eyJ...</span> <span class="hl-flag">--local</span> <span class="hl-val">127.0.0.1:51234</span> <span class="hl-flag">-d</span>
+
+<span class="hl-comment"># Use the OpenAI-compatible endpoint as if it were local</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">curl</span> http://127.0.0.1:51234/v1/chat/completions \
+    <span class="hl-flag">-H</span> <span class="hl-str">"Content-Type: application/json"</span> \
+    <span class="hl-flag">-d</span> <span class="hl-str">'{"model":"local-model","messages":[{"role":"user","content":"Hello"}]}'</span>
+
+<span class="hl-comment"># Works with Ollama too</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">ollama</span> <span class="hl-flag">--port</span> <span class="hl-val">11434</span> <span class="hl-flag">-d</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <p style="margin-top:24px;font-size:.9rem;color:var(--text-2)">
+      Want the full picture?
+      <a href="docs/getting-started.html">Read the Getting Started guide →</a>
+    </p>
+  </div>
+</section>
+
+<!-- ===== USE CASES ===== -->
+<section id="use-cases">
+  <div class="container">
+    <div class="section-header centered">
+      <div class="section-eyebrow">Use cases</div>
+      <h2 class="section-title">What people build with Tubo</h2>
+    </div>
+    <div class="usecases-grid">
+
+      <div class="usecase-card">
+        <div class="uc-icon">🤖</div>
+        <h3>Share local AI models</h3>
+        <p>Run LM Studio or Ollama on your workstation and give teammates a working API endpoint — no cloud GPU required.</p>
+        <div class="uc-tags"><span class="uc-tag">LM Studio</span><span class="uc-tag">Ollama</span><span class="uc-tag">OpenAI API</span></div>
+      </div>
+
+      <div class="usecase-card">
+        <div class="uc-icon">🔧</div>
+        <h3>Webhook development</h3>
+        <p>Receive webhooks from Stripe, GitHub, or any SaaS directly to your local dev server without ngrok or open firewall rules.</p>
+        <div class="uc-tags"><span class="uc-tag">Webhooks</span><span class="uc-tag">Dev</span><span class="uc-tag">Local</span></div>
+      </div>
+
+      <div class="usecase-card">
+        <div class="uc-icon">🏠</div>
+        <h3>Self-hosted API access</h3>
+        <p>Expose a Home Assistant, Nextcloud, or Gitea instance to trusted users without touching your router.</p>
+        <div class="uc-tags"><span class="uc-tag">Self-hosted</span><span class="uc-tag">Home network</span></div>
+      </div>
+
+      <div class="usecase-card">
+        <div class="uc-icon">🧪</div>
+        <h3>Remote staging environments</h3>
+        <p>Share a local staging build with a remote reviewer via a one-time signed token. No deployment needed.</p>
+        <div class="uc-tags"><span class="uc-tag">Staging</span><span class="uc-tag">Preview</span><span class="uc-tag">Tokens</span></div>
+      </div>
+
+      <div class="usecase-card">
+        <div class="uc-icon">🏢</div>
+        <h3>Private team APIs</h3>
+        <p>Run a cluster with namespace-scoped discovery. Services are only visible to members with the right capability.</p>
+        <div class="uc-tags"><span class="uc-tag">Clusters</span><span class="uc-tag">Namespaces</span><span class="uc-tag">Team</span></div>
+      </div>
+
+      <div class="usecase-card">
+        <div class="uc-icon">🔬</div>
+        <h3>Edge &amp; IoT services</h3>
+        <p>Publish sensor APIs or edge compute endpoints from devices behind carrier-grade NAT — no static IPs needed.</p>
+        <div class="uc-tags"><span class="uc-tag">IoT</span><span class="uc-tag">Edge</span><span class="uc-tag">NAT</span></div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ===== COMPARISON ===== -->
+<section id="comparison" class="comparison">
+  <div class="container">
+    <div class="section-header">
+      <div class="section-eyebrow">Comparison</div>
+      <h2 class="section-title">Tubo vs alternatives</h2>
+      <p class="section-sub">See how Tubo compares to similar tunneling and overlay tools.</p>
+    </div>
+    <div class="compare-table-wrap">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th class="highlight">Tubo</th>
+            <th>ngrok</th>
+            <th>Tailscale</th>
+            <th>Cloudflare Tunnel</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Self-hostable</td>
+            <td class="highlight"><span class="check">✓</span> Fully</td>
+            <td><span class="partial">~</span> Partial</td>
+            <td><span class="partial">~</span> Headscale</td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>No cloud proxy in data path</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>P2P NAT traversal</td>
+            <td class="highlight"><span class="check">✓</span> libp2p</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span> WireGuard</td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>Signed discovery</td>
+            <td class="highlight"><span class="check">✓</span> Ed25519</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>Invite-only / token access</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="partial">~</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="partial">~</span></td>
+          </tr>
+          <tr>
+            <td>HTTP API tunneling</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="partial">~</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Private swarm (PSK)</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>Open source</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:16px;font-size:.85rem;color:var(--text-3)">
+      <a href="docs/comparison.html">See full comparison →</a>
+    </p>
+  </div>
+</section>
+
+<!-- ===== DOCS LANDING ===== -->
+<section id="docs-landing">
+  <div class="container">
+    <div class="section-header centered">
+      <div class="section-eyebrow">Documentation</div>
+      <h2 class="section-title">Explore the docs</h2>
+      <p class="section-sub">Everything from a 5-minute quickstart to the full security model.</p>
+    </div>
+    <div class="docs-grid">
+      <a href="docs/getting-started.html" class="doc-card">
+        <span class="dc-icon">🚀</span>
+        <h3>Getting Started</h3>
+        <p>Install Tubo, join the public network, and publish your first service in under 5 minutes.</p>
+        <span class="dc-arrow">Read guide →</span>
+      </a>
+      <a href="docs/concepts.html" class="doc-card">
+        <span class="dc-icon">🧠</span>
+        <h3>Core Concepts</h3>
+        <p>Understand roles, clusters, namespaces, service identities, and the discovery model.</p>
+        <span class="dc-arrow">Read guide →</span>
+      </a>
+      <a href="docs/cli-reference.html" class="doc-card">
+        <span class="dc-icon">⌨️</span>
+        <h3>CLI Reference</h3>
+        <p>Every command, flag, and environment variable explained with examples.</p>
+        <span class="dc-arrow">Read reference →</span>
+      </a>
+      <a href="docs/private-swarm.html" class="doc-card">
+        <span class="dc-icon">🔐</span>
+        <h3>Private Swarms</h3>
+        <p>Generate a PSK swarm key, distribute it to your nodes, and run a fully isolated private network.</p>
+        <span class="dc-arrow">Read guide →</span>
+      </a>
+      <a href="docs/access-control.html" class="doc-card">
+        <span class="dc-icon">🎟️</span>
+        <h3>Access Control</h3>
+        <p>Invite tokens, publish grants, connect leases, and revocation — the full trust model explained.</p>
+        <span class="dc-arrow">Read guide →</span>
+      </a>
+      <a href="docs/deployment.html" class="doc-card">
+        <span class="dc-icon">🏗️</span>
+        <h3>Deployment</h3>
+        <p>Docker Compose, systemd units, multi-host setup, and production relay configuration.</p>
+        <span class="dc-arrow">Read guide →</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ===== FOOTER ===== -->
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon">
+          <svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg>
+        </span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="docs/getting-started.html">Getting Started</a>
+      <a href="docs/concepts.html">Concepts</a>
+      <a href="docs/cli-reference.html">CLI Reference</a>
+      <a href="docs/deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="docs/private-swarm.html">Private Swarms</a>
+      <a href="docs/access-control.html">Access Control</a>
+      <a href="docs/comparison.html">Comparison</a>
+      <a href="docs/security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+
+<script>
+// Tab switching
+function switchTab(btn, idx) {
+  const group = btn.closest('.tab-group');
+  group.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', i===idx));
+  group.querySelectorAll('.tab-panel').forEach((p,i) => p.classList.toggle('active', i===idx));
+}
+
+// Copy code
+function copyCode(btn) {
+  const pre = btn.nextElementSibling;
+  const text = pre ? pre.innerText : '';
+  navigator.clipboard.writeText(text.trim()).then(() => {
+    btn.textContent = '✓ Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  });
+}
+
+// Install copy
+document.getElementById('installCopy').addEventListener('click', function() {
+  navigator.clipboard.writeText(document.getElementById('installCmd').textContent.trim()).then(() => {
+    this.textContent = '✓ Copied!';
+    this.classList.add('copied');
+    setTimeout(() => { this.textContent = 'Copy'; this.classList.remove('copied'); }, 2000);
+  });
+});
+</script>
+</body>
 </html>
