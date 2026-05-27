@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	attachauth "github.com/origama/tubo/internal/attachauth"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
@@ -77,6 +78,9 @@ func localShareServiceCmd(args []string) error {
 	cfg = ctx.Config
 	scope.Cluster = ctx.ClusterName
 	scope.Namespace = ctx.Namespace
+	cfg.CurrentCluster = scope.Cluster
+	cfg.CurrentNamespace = scope.Namespace
+	cfg.Service.Name = ctx.Name
 	cluster := ctx.Cluster
 	svc := ctx.Service
 	name = ctx.Name
@@ -190,26 +194,19 @@ func mintAuthorityLocalServiceShareArtifacts(cfg cfgpkg.Config, cluster cfgpkg.C
 }
 
 func mintDelegatedServiceShareArtifacts(configPath string, cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, shareTTL time.Duration, servicePeerID string, serviceEndpointAddrs []string, requireEndpoint bool) (grantspkg.ServiceShareArtifacts, error) {
+	cfg.CurrentCluster = clusterName
+	cfg.CurrentNamespace = namespaceName
+	cfg.Service.Name = serviceName
+	lease, cfg, cluster, svc, err := resolveDelegatedSharePublishLease(configPath, cfg, cluster, clusterName, namespaceName, serviceName, svc, servicePeerID)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
 	grantPeer := strings.TrimSpace(svc.GrantServicePeer)
 	if grantPeer == "" {
 		grantPeer = clusterGrantServicePeer(cluster)
 	}
 	if grantPeer == "" {
 		return grantspkg.ServiceShareArtifacts{}, errors.New("missing grant service peer; attach or request a publish grant from an authority node first")
-	}
-	authorityPub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
-	if err != nil {
-		return grantspkg.ServiceShareArtifacts{}, err
-	}
-	lease, err := readPublishLeaseFile(svc.ServicePublishLeaseFile)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return grantspkg.ServiceShareArtifacts{}, errors.New("service publish lease is required; attach or request a publish grant first")
-		}
-		return grantspkg.ServiceShareArtifacts{}, err
-	}
-	if err := grantspkg.VerifyPublishLease(lease, authorityPub, cluster.ClusterID, namespaceName, svc.ServiceID, servicePeerID); err != nil {
-		return grantspkg.ServiceShareArtifacts{}, err
 	}
 	if !strings.EqualFold(strings.TrimSpace(lease.ServiceID), strings.TrimSpace(svc.ServiceID)) {
 		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("publish lease service id mismatch: got %q want %q", lease.ServiceID, svc.ServiceID)
@@ -255,6 +252,49 @@ func mintDelegatedServiceShareArtifacts(configPath string, cfg cfgpkg.Config, cl
 		return grantspkg.ServiceShareArtifacts{}, err
 	}
 	return grantspkg.ServiceShareArtifacts{Payload: payload, Token: token}, nil
+}
+
+func resolveDelegatedSharePublishLease(configPath string, cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, servicePeerID string) (grantspkg.PublishLease, cfgpkg.Config, cfgpkg.Cluster, cfgpkg.NamespaceService, error) {
+	authorityPub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
+	if err != nil {
+		return grantspkg.PublishLease{}, cfg, cluster, svc, err
+	}
+	lease, err := readPublishLeaseFile(svc.ServicePublishLeaseFile)
+	if err == nil {
+		if err := grantspkg.VerifyPublishLease(lease, authorityPub, cluster.ClusterID, namespaceName, svc.ServiceID, servicePeerID); err == nil {
+			return lease, cfg, cluster, svc, nil
+		} else if !isRenewableSharePublishLeaseError(err) {
+			return grantspkg.PublishLease{}, cfg, cluster, svc, err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return grantspkg.PublishLease{}, cfg, cluster, svc, err
+	}
+	result, err := newAttachAuthResolver().Renew(context.Background(), attachauth.RenewRequest{ConfigPath: configPath, Config: cfg, Service: svc, ServicePeerID: servicePeerID})
+	if err != nil {
+		return grantspkg.PublishLease{}, cfg, cluster, svc, err
+	}
+	updatedCfg := result.Config
+	updatedCluster := updatedCfg.Clusters[updatedCfg.CurrentCluster]
+	updatedSvc := result.Service
+	if strings.TrimSpace(svc.ServiceID) != "" && strings.TrimSpace(updatedSvc.ServiceID) != "" && !strings.EqualFold(strings.TrimSpace(updatedSvc.ServiceID), strings.TrimSpace(svc.ServiceID)) {
+		return grantspkg.PublishLease{}, updatedCfg, updatedCluster, updatedSvc, fmt.Errorf("publish authorization renewal changed service id: got %q want %q", updatedSvc.ServiceID, svc.ServiceID)
+	}
+	authorityPub, err = discovery.ParseAuthorityPublicKey(updatedCluster.AuthorityPublicKey)
+	if err != nil {
+		return grantspkg.PublishLease{}, updatedCfg, updatedCluster, updatedSvc, err
+	}
+	lease, err = readPublishLeaseFile(updatedSvc.ServicePublishLeaseFile)
+	if err != nil {
+		return grantspkg.PublishLease{}, updatedCfg, updatedCluster, updatedSvc, err
+	}
+	if err := grantspkg.VerifyPublishLease(lease, authorityPub, updatedCluster.ClusterID, updatedCfg.CurrentNamespace, updatedSvc.ServiceID, servicePeerID); err != nil {
+		return grantspkg.PublishLease{}, updatedCfg, updatedCluster, updatedSvc, err
+	}
+	return lease, updatedCfg, updatedCluster, updatedSvc, nil
+}
+
+func isRenewableSharePublishLeaseError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "publish lease expired")
 }
 
 func localRevokeServiceShareCmd(args []string) error {

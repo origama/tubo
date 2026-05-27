@@ -1076,6 +1076,26 @@ func extractServiceShareToken(t *testing.T, out string) string {
 	return token
 }
 
+func extractLastServiceShareToken(t *testing.T, out string) string {
+	t.Helper()
+	idx := strings.LastIndex(out, serviceShareTokenPrefix)
+	if idx < 0 {
+		t.Fatalf("service share token not found in output: %s", out)
+	}
+	end := idx
+	for end < len(out) {
+		if strings.ContainsRune(" \t\r\n", rune(out[end])) {
+			break
+		}
+		end++
+	}
+	token := out[idx:end]
+	if !strings.HasPrefix(token, serviceShareTokenPrefix) {
+		t.Fatalf("invalid service share token extraction: %q", token)
+	}
+	return token
+}
+
 func mustClusterAuthorityKey(t *testing.T, configPath string) ed25519.PrivateKey {
 	t.Helper()
 	cfg, err := cfgpkg.LoadFile(configPath)
@@ -2204,6 +2224,150 @@ func TestServiceShareUsesAuthorityLocalMintWhenAuthorityKeyExists(t *testing.T) 
 	}
 }
 
+func TestServiceShareRenewsExpiredPublishLeaseForExistingServiceID(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	originalServiceID := svc.ServiceID
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "share-expired-lease-renew")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: true, AuthorityPrivateKey: authorityPriv, ServiceShareTTL: time.Hour, GrantServicePeersProvider: func() []string { return []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWQZ6qwLp7C7mdkAXMJsa2zXKoGNSXYpQNsPxpQQz4g2v3"}
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := parseAndVerifyServiceShareToken(extractLastServiceShareToken(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.TargetServiceID != originalServiceID {
+		t.Fatalf("expected renewed share token to keep same service id %q, got %#v", originalServiceID, payload)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewedSvc := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if renewedSvc.ServiceID != originalServiceID {
+		t.Fatalf("expected renewal to keep service id %q, got %#v", originalServiceID, renewedSvc)
+	}
+	lease, err := readPublishLeaseFile(renewedSvc.ServicePublishLeaseFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.ServiceID != originalServiceID {
+		t.Fatalf("expected renewed lease for same service id %q, got %#v", originalServiceID, lease)
+	}
+	if !lease.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("expected renewed lease expiry in the future, got %#v", lease)
+	}
+}
+
+func TestServiceShareMissingPublishLeaseRequestsGrantAndSurfacesPending(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalServiceID := svc.ServiceID
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	cluster := cfg.Clusters["home"]
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "share-missing-lease-pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: false, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(svc.ServicePublishLeaseFile)
+	_, err = capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "is pending; publication requires an approved publish lease") {
+		t.Fatalf("expected pending renewal guidance, got %v", err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingSvc := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if pendingSvc.ServiceID != originalServiceID {
+		t.Fatalf("expected pending request to keep service id %q, got %#v", originalServiceID, pendingSvc)
+	}
+	if strings.TrimSpace(pendingSvc.GrantRequestID) == "" {
+		t.Fatalf("expected pending grant request to be saved: %#v", pendingSvc)
+	}
+}
+
 func TestServiceShareDelegatedMintErrorsAreActionable(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -2226,7 +2390,7 @@ func TestServiceShareDelegatedMintErrorsAreActionable(t *testing.T) {
 	clusterWithAuthority := cfg.Clusters["home"]
 	cluster := clusterWithAuthority
 	svc.ServicePublishLeaseFile = ""
-	svc.GrantServicePeer = "/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"
+	svc.GrantServicePeer = ""
 	cluster.AuthorityPrivateKeyFile = ""
 	cluster.MembershipGrant = nil
 	ns := cluster.Namespaces["default"]
@@ -2239,8 +2403,8 @@ func TestServiceShareDelegatedMintErrorsAreActionable(t *testing.T) {
 	_, err = capture(func() error {
 		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
 	})
-	if err == nil || !strings.Contains(err.Error(), "service publish lease is required; attach or request a publish grant first") {
-		t.Fatalf("expected missing publish lease guidance, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "service publish lease renewal requires a grant service peer or local authority key") {
+		t.Fatalf("expected missing renewal path guidance, got %v", err)
 	}
 
 	cluster = clusterWithAuthority
