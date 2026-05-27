@@ -363,6 +363,15 @@ section { padding: 80px 24px; }
 .badge-purple { background: #ede9fe; color: #7c3aed; }
 .badge-green { background: #dcfce7; color: #166534; }
 
+/* ===== MERMAID ===== */
+.mermaid-wrap {
+  background: var(--code-bg); border-radius: var(--radius-lg);
+  padding: 32px 24px; overflow-x: auto;
+  box-shadow: var(--shadow-lg);
+}
+.mermaid-wrap .mermaid { display: flex; justify-content: center; }
+.mermaid svg { max-width: 100%; height: auto; }
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 900px) {
   .qs-grid { grid-template-columns: 1fr; }

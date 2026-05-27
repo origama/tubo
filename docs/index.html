@@ -78,14 +78,27 @@
       </p>
     </div>
 
-    <div class="flow-diagram">
-<pre><span class="c-comment"># Every request travels through an encrypted libp2p stream</span>
+    <div class="mermaid-wrap">
+      <div class="mermaid">
+flowchart LR
+    Client(["🖥️ Client\nHTTP"])
+    Connect["tubo connect"]
+    Relay(["tubo relay\nbootstrap · circuit v2"])
+    Attach["tubo attach"]
+    Origin(["⚙️ Origin Service\nHTTP"])
 
-<span class="c-node">Client</span> <span class="c-arrow">─── HTTP ──▶</span> <span class="c-node">tubo connect</span> <span class="c-arrow">──── libp2p stream ────▶</span> <span class="c-node">tubo attach</span> <span class="c-arrow">─── HTTP ──▶</span> <span class="c-node">Origin Service</span>
-               <span class="c-enc">      [encrypted · authenticated · signed discovery]</span>
-                                    <span class="c-arrow">│</span>
-                           <span class="c-node">tubo relay</span> <span class="c-label">(bootstrap + circuit v2)</span>
-                     <span class="c-label">  assists NAT traversal when peers can't dial directly</span></pre>
+    Client -- "HTTP" --> Connect
+    Connect -- "libp2p stream\n🔒 encrypted" --> Attach
+    Attach -- "HTTP" --> Origin
+    Connect -. "NAT traversal\nfallback" .-> Relay
+    Relay -. "NAT traversal\nfallback" .-> Attach
+
+    style Connect fill:#2563eb,color:#fff,stroke:#1d4ed8
+    style Attach  fill:#2563eb,color:#fff,stroke:#1d4ed8
+    style Relay   fill:#7c3aed,color:#fff,stroke:#6d28d9
+    style Client  fill:#0f172a,color:#e2e8f0,stroke:#334155
+    style Origin  fill:#059669,color:#fff,stroke:#047857
+      </div>
     </div>
 
     <div class="flow-steps">
@@ -536,6 +549,10 @@ document.getElementById('installCopy').addEventListener('click', function() {
     setTimeout(() => { this.textContent = 'Copy'; this.classList.remove('copied'); }, 2000);
   });
 });
+</script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'dark', darkMode: true });
 </script>
 </body>
 </html>

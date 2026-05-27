@@ -100,19 +100,29 @@
     </div>
 
     <h2>Request / Response flow</h2>
-    <div class="code-block" style="margin:12px 0 20px">
-      <pre style="color:#e2e8f0">Client                              Service
-  │                                    │
-  │── Hello (optional, v1.1) ─────────▶│
-  │── RequestHeader ──────────────────▶│
-  │── BodyChunk (0..N) ───────────────▶│
-  │── BodyChunk (empty, end) ─────────▶│  ← required even for GET
-  │                                    │── [forward to origin HTTP] ──▶
-  │                                    │◀─ [HTTP response] ────────────
-  │◀─ ResponseHeader ──────────────────│
-  │◀─ BodyChunk (0..N) ────────────────│
-  │◀─ BodyChunk (empty, end) ──────────│
-  │                    [stream closed] │</pre>
+    <div class="mermaid-wrap" style="margin:12px 0 20px">
+      <div class="mermaid">
+sequenceDiagram
+    participant C as Client
+    participant S as tubo attach / Service
+    participant O as Origin HTTP
+
+    Note over C,S: libp2p stream (Noise encrypted)
+
+    C->>S: Hello (optional, v1.1 only)
+    C->>S: RequestHeader
+    C->>S: BodyChunk (0..N)
+    C->>S: BodyChunk (empty — end of request)
+    Note right of S: required even for GET
+
+    S->>O: Forward HTTP request
+    O-->>S: HTTP response
+
+    S-->>C: ResponseHeader
+    S-->>C: BodyChunk (0..N)
+    S-->>C: BodyChunk (empty — end of response)
+    Note over C,S: stream closed
+      </div>
     </div>
     <div class="note">
       GET and other requests with no body must still send a final empty <code>BodyChunk</code>
@@ -188,5 +198,9 @@
     <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
   </div>
 </footer>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'dark', darkMode: true });
+</script>
 </body>
 </html>
