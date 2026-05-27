@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Comparison — Tubo Docs</title>
+  <meta name="description" content="How Tubo compares to ngrok, Tailscale, Cloudflare Tunnel, and other tunneling tools.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html" class="active">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Comparison</h1>
+    <p class="doc-lead">
+      How Tubo compares to ngrok, Tailscale, Cloudflare Tunnel, and other tools.
+      Every tool has different goals — pick the right one for your use case.
+    </p>
+
+    <h2>Feature comparison</h2>
+    <div style="overflow-x:auto;margin:12px 0 24px">
+      <table class="compare-table" style="font-size:.875rem">
+        <thead>
+          <tr>
+            <th>Capability</th>
+            <th class="highlight">Tubo</th>
+            <th>ngrok</th>
+            <th>Tailscale</th>
+            <th>Cloudflare Tunnel</th>
+            <th>frp</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Self-hostable</td>
+            <td class="highlight"><span class="check">✓</span> Fully</td>
+            <td><span class="partial">~</span> Partial</td>
+            <td><span class="partial">~</span> Headscale</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>No cloud in data path</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>P2P / direct dial</td>
+            <td class="highlight"><span class="check">✓</span> libp2p</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span> WireGuard</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>NAT traversal (no open ports)</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="partial">~</span></td>
+          </tr>
+          <tr>
+            <td>HTTP API tunneling</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="partial">~</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>WebSocket support</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Signed service discovery</td>
+            <td class="highlight"><span class="check">✓</span> Ed25519</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>Invite-only / token access</td>
+            <td class="highlight"><span class="check">✓</span> One-time</td>
+            <td><span class="partial">~</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="partial">~</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>Private swarm (PSK)</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>Cluster / namespace model</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="cross">✗</span></td>
+          </tr>
+          <tr>
+            <td>Single binary, no deps</td>
+            <td class="highlight"><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="partial">~</span></td>
+            <td><span class="check">✓</span></td>
+            <td><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Open source</td>
+            <td class="highlight"><span class="check">✓</span> Apache 2.0</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span> BSD</td>
+            <td><span class="cross">✗</span></td>
+            <td><span class="check">✓</span> Apache 2.0</td>
+          </tr>
+          <tr>
+            <td>Account / signup required</td>
+            <td class="highlight"><span class="cross">✗</span> No</td>
+            <td><span class="check">✓</span> Yes</td>
+            <td><span class="check">✓</span> Yes</td>
+            <td><span class="check">✓</span> Yes</td>
+            <td><span class="cross">✗</span> No</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="font-size:.8rem;color:var(--text-3);margin-top:8px">
+      ✓ = supported, ~ = partial / with caveats, ✗ = not supported. Information is approximate; check each project's current docs.
+    </p>
+
+    <h2>When to use Tubo</h2>
+    <ul>
+      <li>You want a <strong>fully self-hosted</strong> tunnel with no mandatory cloud account.</li>
+      <li>You want traffic to flow <strong>P2P without a cloud proxy</strong> in the data path.</li>
+      <li>You need <strong>cryptographic access control</strong> — signed discovery, one-time invite tokens, and revocation.</li>
+      <li>You're sharing <strong>AI/LLM endpoints</strong> (LM Studio, Ollama) between team members.</li>
+      <li>You want <strong>private swarm isolation</strong> — only nodes with the same PSK can even see each other.</li>
+    </ul>
+
+    <h2>When to use something else</h2>
+    <ul>
+      <li><strong>ngrok</strong> — if you need a public URL with TLS termination immediately, without running your own relay.</li>
+      <li><strong>Tailscale</strong> — if you want a full device mesh VPN, not just HTTP API tunneling.</li>
+      <li><strong>Cloudflare Tunnel</strong> — if you need DDoS protection and CDN in front of your service.</li>
+      <li><strong>frp</strong> — if you need TCP/UDP tunneling (Tubo currently focuses on HTTP).</li>
+    </ul>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

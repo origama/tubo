@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started — Tubo Docs</title>
+  <meta name="description" content="Install Tubo, join the public network, and publish your first service in under 5 minutes.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html" class="active">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Getting Started</h1>
+    <p class="doc-lead">Install Tubo, join the public network, and publish your first service in under 5 minutes.</p>
+
+    <h2>1. Install</h2>
+    <p>The easiest way to install Tubo is the one-line installer:</p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> <span style="color:#86efac">-fsSL</span> https://www.tubo.click/install.sh | sh</pre>
+    </div>
+    <p>This downloads and installs the latest <code>tubo</code> binary to <code>/usr/local/bin</code>.</p>
+
+    <p><strong>Install a specific version:</strong></p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> <span style="color:#86efac">-fsSL</span> https://www.tubo.click/install.sh | sh <span style="color:#86efac">-s</span> <span style="color:#fde68a">-- --version v0.7.0</span></pre>
+    </div>
+
+    <p><strong>Build from source:</strong></p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">git clone</span> https://github.com/origama/tubo.git
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">cd</span> tubo <span style="color:#6b7280">&amp;&amp;</span> <span style="color:#a5f3fc">go build</span> <span style="color:#86efac">-o</span> tubo ./cmd/tubo</pre>
+    </div>
+
+    <p>Verify the installation:</p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo version</span>
+<span style="color:#86efac">tubo v0.7.0  protocol 1.1</span></pre>
+    </div>
+
+    <h2>2. Join the public network</h2>
+    <p>
+      Tubo ships with a public relay network. Joining it takes one command and saves configuration
+      to <code>~/.config/tubo/config.yaml</code>:
+    </p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo join</span>
+<span style="color:#86efac">✓ Joined public Tubo network</span>
+<span style="color:#c4b5fd">  relay   relay.tubo.click:4001</span>
+<span style="color:#c4b5fd">  cluster home  namespace default</span></pre>
+    </div>
+    <div class="note">
+      <strong>Tip:</strong> The public network is invite-only by default.
+      Services you publish are <em>unlisted</em> — only people with your share token can connect.
+      For team-visible services, see <a href="access-control.html">Access Control</a> and private clusters.
+    </div>
+
+    <h2>3. Publish a service</h2>
+    <p>
+      Run <code>tubo attach</code> next to any HTTP service. Tubo joins the swarm, signs
+      a service announcement, and starts accepting libp2p streams.
+    </p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6b7280"># Attach a service running on port 8080</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> <span style="color:#fde68a">myapi</span> <span style="color:#86efac">--port</span> <span style="color:#fde68a">8080</span> <span style="color:#86efac">-d</span>
+
+<span style="color:#86efac">✓ Service published</span>
+<span style="color:#c4b5fd">  name        myapi</span>
+<span style="color:#c4b5fd">  service id  svc_abc123def456</span>
+<span style="color:#c4b5fd">  visibility  unlisted</span>
+<span style="color:#c4b5fd">  access      invite token required</span>
+
+<span style="color:#86efac">✓ Share token (give this to the person who needs access):</span>
+<span style="color:#fde68a">  tubo connect --token eyJhbGci...   --local 127.0.0.1:9000</span></pre>
+    </div>
+    <p>Copy the <code>tubo connect --token ...</code> line and give it to whoever needs access.</p>
+
+    <h2>4. Connect from another machine</h2>
+    <p>On any machine with Tubo installed, run the connect command with the token:</p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> <span style="color:#86efac">--token</span> <span style="color:#fde68a">eyJhbGci...</span> <span style="color:#86efac">--local</span> <span style="color:#fde68a">127.0.0.1:9000</span>
+
+<span style="color:#86efac">✓ Tunnel ready</span>
+<span style="color:#c4b5fd">  local       http://127.0.0.1:9000</span>
+<span style="color:#c4b5fd">  service     myapi  (svc_abc123def456)</span>
+<span style="color:#c4b5fd">  path        relayed via relay.tubo.click</span>
+
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> http://127.0.0.1:9000/healthz
+<span style="color:#86efac">OK</span></pre>
+    </div>
+
+    <h2>5. Manage processes</h2>
+    <p>
+      Tubo uses a daemonless model. Long-running commands (<code>attach</code>, <code>connect</code>,
+      <code>relay</code>, <code>gateway</code>) stay in the foreground by default.
+      Use <code>-d</code> to detach them.
+    </p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6b7280"># List all detached processes on this machine</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo ps</span>
+<span style="color:#c4b5fd">  PROCESS                  STATUS   PORT</span>
+<span style="color:#c4b5fd">  attach-myapi             running  —</span>
+<span style="color:#c4b5fd">  connect-myapi-9000       running  9000</span>
+
+<span style="color:#6b7280"># Follow logs</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo logs</span> process/attach-myapi
+
+<span style="color:#6b7280"># Stop a process</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo stop</span> process/attach-myapi
+
+<span style="color:#6b7280"># Clean up terminated processes</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo rm</span> <span style="color:#86efac">--stale</span></pre>
+    </div>
+
+    <h2>Next steps</h2>
+    <ul>
+      <li><a href="concepts.html">Core Concepts</a> — understand roles, clusters, namespaces, and trust</li>
+      <li><a href="private-swarm.html">Private Swarms</a> — run a fully isolated network with a PSK swarm key</li>
+      <li><a href="access-control.html">Access Control</a> — grants, leases, revocation</li>
+      <li><a href="cli-reference.html">CLI Reference</a> — every command and flag</li>
+    </ul>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

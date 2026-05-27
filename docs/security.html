@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Security Model — Tubo Docs</title>
+  <meta name="description" content="Tubo security model: trust roots, capabilities, discovery validation, and non-goals.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html" class="active">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Security Model</h1>
+    <p class="doc-lead">
+      Tubo's security model is built on three orthogonal layers: transport isolation, service identity,
+      and capability-based access. Understanding what each layer provides — and does <em>not</em> provide —
+      is essential for safe deployment.
+    </p>
+
+    <div class="warning">
+      <strong>Non-goal:</strong> Tubo is not an anonymity tool. The relay sees connection metadata
+      (source IP, timing). Tubo does not hide who is talking to whom at the network level.
+    </div>
+
+    <h2>Layer 1 — Transport isolation (PSK)</h2>
+    <p>
+      When a swarm key is configured, libp2p rejects any peer that cannot prove knowledge of the PSK
+      during the pnet handshake. This happens before any libp2p protocol negotiation.
+    </p>
+    <p><strong>Provides:</strong></p>
+    <ul>
+      <li>Network-level isolation — an outsider can't even see which peers are in the swarm.</li>
+      <li>Defence against relay-assisted attacks from outside the swarm.</li>
+    </ul>
+    <p><strong>Does not provide:</strong></p>
+    <ul>
+      <li>Per-service access control. Any peer in the swarm can dial any other peer.</li>
+      <li>Anonymity or traffic analysis resistance.</li>
+    </ul>
+
+    <h2>Layer 2 — Service identity and publish authorisation</h2>
+    <p>
+      Every service has a stable <strong>service ID</strong> derived from an Ed25519 owner key.
+      Before a service can publish into a namespace, it must hold a <code>PublishLease</code>
+      signed by the cluster authority.
+    </p>
+    <p>Discovery subscribers validate:</p>
+    <ol>
+      <li>The GossipSub topic matches the expected cluster/namespace-derived topic.</li>
+      <li>The announcement signature is valid against the service owner key.</li>
+      <li>The <code>ServiceClaim</code> is signed by a trusted cluster authority.</li>
+      <li>The nonce has not been seen before (bounded replay window).</li>
+      <li>The TTL is within the claim's expiry.</li>
+    </ol>
+    <p>
+      A compromised or rogue peer that has the swarm key but no valid authority-signed claim
+      will have its announcements silently dropped.
+    </p>
+
+    <h2>Layer 3 — Connect authorisation (leases + PoP)</h2>
+    <p>
+      Connecting to a service requires a <code>ConnectAccessLease</code> bound to the client's
+      local keypair. On every stream open, the client presents a signed
+      <strong>proof-of-possession</strong> (PoP) that binds: scope, service ID, access lease hash,
+      nonce, and timestamp.
+    </p>
+    <p>The service validates:</p>
+    <ul>
+      <li>PoP signature matches the client keypair in the lease.</li>
+      <li>Scope and service ID match the connected service.</li>
+      <li>Nonce has not been replayed (rolling window).</li>
+      <li>Timestamp is within the allowed skew.</li>
+      <li>Access lease is not expired or revoked.</li>
+    </ul>
+
+    <h2>Trust roots</h2>
+    <p>There are two trust roots:</p>
+    <ul>
+      <li>
+        <strong>Public trust root</strong> — the public Tubo bundle is verified on install.
+        The public authority key is pinned locally; tokens cannot redefine it.
+      </li>
+      <li>
+        <strong>Private trust root</strong> — for private clusters, the authority keypair is
+        created by <code>tubo create cluster/&lt;name&gt;</code> and stored locally.
+        Cluster invites use TOFU (trust on first use) for introducing a private authority.
+      </li>
+    </ul>
+
+    <h2>What Tubo does NOT guarantee</h2>
+    <ul>
+      <li><strong>Anonymity:</strong> relay nodes see IP addresses and connection timing.</li>
+      <li><strong>Content confidentiality from relay:</strong> while relay does not decrypt stream content, it can correlate connections by timing.</li>
+      <li><strong>Protection against a compromised relay:</strong> a relay under attacker control can drop traffic or perform denial-of-service. It cannot decrypt or forge valid signed leases.</li>
+      <li><strong>Forward secrecy of old tokens:</strong> revocation is not retroactive for already-established sessions. New streams after revocation are blocked.</li>
+      <li><strong>OS-level isolation:</strong> Tubo does not sandbox origin services. If the origin process is compromised, the attacker can serve arbitrary responses.</li>
+    </ul>
+
+    <h2>Cryptographic primitives</h2>
+    <div style="overflow-x:auto;margin:12px 0 24px">
+      <table style="width:100%;border-collapse:collapse;font-size:.88rem">
+        <thead>
+          <tr style="background:var(--surface-3)">
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Use</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Primitive</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Transport encryption</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">libp2p Noise (XX handshake)</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Peer identity</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Ed25519 keypair (libp2p)</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Service/authority signing</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Ed25519</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)">PSK swarm key</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">32-byte random PSK (libp2p pnet)</td></tr>
+          <tr><td style="padding:9px 14px">Token encoding</td><td style="padding:9px 14px">JSON + Ed25519 signatures (base64url)</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Reporting vulnerabilities</h2>
+    <p>
+      Please report security issues via GitHub private vulnerability reporting or directly to the
+      maintainers. Do not open public issues for security bugs.
+    </p>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

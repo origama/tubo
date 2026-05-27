@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Core Concepts — Tubo Docs</title>
+  <meta name="description" content="Understand Tubo roles, clusters, namespaces, service identities, discovery, and the trust model.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html" class="active">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Core Concepts</h1>
+    <p class="doc-lead">
+      Tubo is built around a small set of orthogonal concepts: roles, overlays, clusters,
+      namespaces, service identities, and a capability-based trust model. Understanding these
+      makes every command and configuration option obvious.
+    </p>
+
+    <h2>Roles</h2>
+    <p>Every <code>tubo</code> process runs in one of four roles:</p>
+
+    <div style="overflow-x:auto;margin:16px 0 24px">
+      <table style="width:100%;border-collapse:collapse;font-size:.9rem">
+        <thead>
+          <tr style="background:var(--surface-3)">
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Role</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Command</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">What it does</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td style="padding:10px 14px;border-bottom:1px solid var(--border)"><strong>relay</strong></td><td style="padding:10px 14px;border-bottom:1px solid var(--border)"><code>tubo relay</code></td><td style="padding:10px 14px;border-bottom:1px solid var(--border)">Public bootstrap node. Assists NAT traversal via libp2p circuit relay v2. Does not see traffic content.</td></tr>
+          <tr><td style="padding:10px 14px;border-bottom:1px solid var(--border)"><strong>attach</strong></td><td style="padding:10px 14px;border-bottom:1px solid var(--border)"><code>tubo attach</code></td><td style="padding:10px 14px;border-bottom:1px solid var(--border)">Publishes a local HTTP service into the swarm. Signs announcements, accepts libp2p streams, forwards to origin.</td></tr>
+          <tr><td style="padding:10px 14px;border-bottom:1px solid var(--border)"><strong>connect</strong></td><td style="padding:10px 14px;border-bottom:1px solid var(--border)"><code>tubo connect</code></td><td style="padding:10px 14px;border-bottom:1px solid var(--border)">Opens a local HTTP listener. Discovers the service, dials it, and proxies traffic through a libp2p stream.</td></tr>
+          <tr><td style="padding:10px 14px"><strong>gateway</strong></td><td style="padding:10px 14px"><code>tubo gateway</code></td><td style="padding:10px 14px">HTTP ingress gateway that routes requests to swarm services by <code>Host</code> header. Acts as a shared connect proxy.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Overlays, clusters and namespaces</h2>
+    <p>Tubo organises its address space into a three-level hierarchy:</p>
+    <ul>
+      <li><strong>Overlay</strong> — a libp2p swarm defined by a shared swarm key (PSK) and a set of bootstrap/relay peers. The public Tubo network is the <code>tubo-public</code> overlay.</li>
+      <li><strong>Cluster</strong> — a trust domain within an overlay. A cluster has an authority keypair; only signed announcements from authority-approved peers are accepted inside it.</li>
+      <li><strong>Namespace</strong> — a sub-scope within a cluster. Discovery, service identities, and access policies are all namespace-scoped.</li>
+    </ul>
+    <p>
+      When you run <code>tubo join</code> you join the public overlay and are placed in the
+      <code>home/default</code> cluster/namespace. You can create your own clusters with
+      <code>tubo create cluster/&lt;name&gt;</code>.
+    </p>
+
+    <h2>Service identity</h2>
+    <p>
+      Every service has two names:
+    </p>
+    <ul>
+      <li><strong>display name</strong> — a human-readable label (e.g. <code>lmstudio</code>). Display names are not unique.</li>
+      <li><strong>service ID</strong> — a stable cryptographic identity derived from the service owner key (e.g. <code>svc_abc123def456</code>). Authorisation always binds to the service ID.</li>
+    </ul>
+    <p>
+      When you run <code>tubo attach lmstudio --port 1234</code>, Tubo generates or reuses a
+      stable service owner key under <code>~/.config/tubo/clusters/.../services/</code> and
+      derives the service ID from it. The service ID remains stable across restarts.
+    </p>
+
+    <h2>Discovery</h2>
+    <p>
+      Service announcements are published over libp2p GossipSub on an opaque topic derived from
+      the cluster and namespace IDs. Each announcement is Ed25519-signed by the service owner key
+      and carries a <code>ServiceClaim</code> signed by the cluster authority.
+    </p>
+    <p>Clients validate the full chain before routing to a peer:</p>
+    <ol>
+      <li>Topic is correct for the current cluster/namespace.</li>
+      <li>Announcement signature is valid (service owner key).</li>
+      <li>ServiceClaim is signed by a trusted authority.</li>
+      <li>Nonce has not been seen before (replay protection).</li>
+    </ol>
+    <div class="note">
+      In the public <code>home/default</code> namespace, ambient discovery is <strong>disabled</strong>.
+      Services are unlisted — only reachable via a signed invite token.
+      Use a private cluster for ambient discovery.
+    </div>
+
+    <h2>Access control</h2>
+    <p>Tubo uses a capability-based access model with three main concepts:</p>
+    <ul>
+      <li><strong>PublishLease</strong> — authorises a service peer to publish in a namespace. Signed by the cluster authority.</li>
+      <li><strong>ConnectAccessLease</strong> — short-lived token authorising a client to open streams to a specific service. Renewed via a ConnectRefreshLease.</li>
+      <li><strong>ShareInvite</strong> — signed one-time invitation token. Carrying it redeems a ConnectAccessLease from the service's grant endpoint. One-time: a second redemption is denied.</li>
+    </ul>
+
+    <h2>NAT traversal</h2>
+    <p>
+      Tubo uses libp2p's built-in NAT traversal stack:
+    </p>
+    <ul>
+      <li><strong>Direct dial</strong> — attempted first with a short timeout (default 750ms).</li>
+      <li><strong>Circuit relay v2</strong> — automatic fallback when direct dial fails. Traffic relayed end-to-end encrypted through a relay node.</li>
+      <li><strong>Hole punching</strong> — libp2p coordination protocol that upgrades relayed connections to direct ones when NAT allows it.</li>
+    </ul>
+    <p>No inbound ports are required on service hosts. Only the relay needs a public TCP port.</p>
+
+    <h2>Configuration precedence</h2>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre style="color:#e2e8f0">CLI flag  >  env var  >  config file  >  default  >  interactive prompt</pre>
+    </div>
+    <p>
+      Configuration lives at <code>~/.config/tubo/config.yaml</code> by default.
+      Override with <code>--config-dir</code> or <code>XDG_CONFIG_HOME</code>.
+    </p>
+
+    <h2>Next steps</h2>
+    <ul>
+      <li><a href="private-swarm.html">Private Swarms</a> — build an isolated network with a PSK</li>
+      <li><a href="access-control.html">Access Control</a> — grants, leases, revocation</li>
+      <li><a href="security.html">Security Model</a> — full trust model and non-goals</li>
+    </ul>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

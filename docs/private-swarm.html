@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Private Swarms — Tubo Docs</title>
+  <meta name="description" content="Generate a PSK swarm key and run a fully isolated private libp2p network with Tubo.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html" class="active">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Private Swarms (PSK)</h1>
+    <p class="doc-lead">
+      A private swarm uses a Pre-Shared Key (PSK) to create a fully isolated libp2p network.
+      Nodes without the correct key are rejected at the connection level — they can't even
+      see which peers are in the swarm.
+    </p>
+
+    <h2>1. Generate a swarm key</h2>
+    <p>Generate a 32-byte random PSK on any machine (you only do this once per swarm):</p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo keygen swarm</span> <span style="color:#86efac">--out</span> swarm.key
+<span style="color:#86efac">✓ Swarm key written to swarm.key</span>
+
+<span style="color:#6366f1">$</span> chmod 600 swarm.key
+<span style="color:#6366f1">$</span> cat swarm.key</pre>
+    </div>
+    <p>The file uses the standard libp2p pnet format:</p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre style="color:#e2e8f0">/key/swarm/psk/1.0.0/
+/base16/
+&lt;64 hex characters&gt;</pre>
+    </div>
+    <div class="warning">
+      <strong>Keep this file secret.</strong> Anyone with <code>swarm.key</code> can join your private network.
+      Never commit it to version control.
+    </div>
+
+    <h2>2. Distribute the key</h2>
+    <p>
+      Copy <code>swarm.key</code> to every machine that should be part of the private swarm
+      (relay, service hosts, client hosts). Use a secure channel — SCP, age encryption, or a
+      secrets manager.
+    </p>
+
+    <h2>3. Start the relay</h2>
+    <p>On the machine with a public IP:</p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># Get the relay's PeerID (so other nodes can address it)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo id from-seed</span> my-relay-seed
+
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo relay</span> \
+    <span style="color:#86efac">--swarm-key</span>   ./swarm.key \
+    <span style="color:#86efac">--public-addr</span> /ip4/1.2.3.4/tcp/4001 \
+    <span style="color:#86efac">-d</span></pre>
+    </div>
+    <p>Note the printed relay multiaddress — it looks like:</p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre style="color:#a5f3fc">/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWExample...</pre>
+    </div>
+
+    <h2>4. Join from service and client hosts</h2>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># On each host that needs to join the private swarm</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo join overlay/manual</span> \
+    <span style="color:#86efac">--relay</span>     /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWExample... \
+    <span style="color:#86efac">--swarm-key</span> ./swarm.key
+
+<span style="color:#86efac">✓ Joined private swarm</span>
+<span style="color:#c4b5fd">  relay  /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWExample...</span></pre>
+    </div>
+
+    <h2>5. Create a cluster (recommended)</h2>
+    <p>
+      On the service host, create a cluster and namespace. This adds a cryptographic trust root
+      on top of the PSK transport isolation:
+    </p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo create cluster/</span>myteam
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo create namespace/</span>production
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo use cluster/</span>myteam
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo use namespace/</span>production</pre>
+    </div>
+
+    <h2>6. Publish a service</h2>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> myapi <span style="color:#86efac">--port</span> 8080 <span style="color:#86efac">-d</span></pre>
+    </div>
+
+    <h2>7. Invite a client and connect</h2>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># On the authority host: create a member invite</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo share cluster/</span>myteam <span style="color:#86efac">--role</span> member
+<span style="color:#86efac">✓ Invite token:</span>
+<span style="color:#fde68a">  tubo join cluster/myteam --token eyJ...</span>
+
+<span style="color:#6b7280"># On the client host: join and connect</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo join overlay/manual</span> <span style="color:#86efac">--relay</span> ... <span style="color:#86efac">--swarm-key</span> ./swarm.key
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo join cluster/</span>myteam <span style="color:#86efac">--token</span> eyJ...
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo get services</span>
+  <span style="color:#c4b5fd">NAME    ACCESS</span>
+  <span style="color:#c4b5fd">myapi   namespace_members</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> myapi <span style="color:#86efac">--local</span> 127.0.0.1:9000</pre>
+    </div>
+
+    <h2>PeerID allowlist</h2>
+    <p>
+      For additional lockdown, you can restrict which PeerIDs are allowed to connect to a node,
+      regardless of swarm key:
+    </p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6366f1">$</span> export LIBP2P_ALLOWED_PEERS=12D3KooWAlice...,12D3KooWBob...</pre>
+    </div>
+    <p>
+      Connections from any peer not in this list will be gated at the transport level.
+      This is especially useful on relay nodes to prevent abuse.
+    </p>
+
+    <h2>Using environment variables instead of a file</h2>
+    <p>In containerised environments you can pass the swarm key as a base64-encoded env var:</p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6366f1">$</span> export LIBP2P_PRIVATE_NETWORK_KEY_B64=$(base64 -w0 swarm.key)</pre>
+    </div>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

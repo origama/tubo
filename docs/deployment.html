@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Deployment — Tubo Docs</title>
+  <meta name="description" content="Docker Compose, systemd, multi-host setup, and production relay configuration for Tubo.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html" class="active">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Deployment</h1>
+    <p class="doc-lead">
+      Deploy Tubo with Docker Compose for local testing or run it directly on VMs with systemd
+      for production. The relay only needs one machine with a public IP and an open TCP port.
+    </p>
+
+    <h2>Docker Compose (local testing)</h2>
+    <p>The repository ships with a <code>docker-compose.yml</code> that starts a relay, a gateway, and a demo service:</p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">git clone</span> https://github.com/origama/tubo.git
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">cd</span> tubo
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">docker compose up</span> <span style="color:#86efac">-d --build</span>
+
+<span style="color:#6b7280"># Verify everything is healthy</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> http://127.0.0.1:8092/healthz  <span style="color:#6b7280"># relay</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> http://127.0.0.1:8443/healthz  <span style="color:#6b7280"># gateway</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> http://127.0.0.1:8444/services <span style="color:#6b7280"># admin API</span>
+
+<span style="color:#6b7280"># Run the end-to-end smoke test</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">./tests/smoke-compose.sh</span></pre>
+    </div>
+
+    <h2>Multi-host production setup</h2>
+    <p>A typical 3-machine production setup:</p>
+    <ul>
+      <li><strong>Relay host</strong> — public VPS (e.g. Linode, DigitalOcean). TCP 4001 open inbound.</li>
+      <li><strong>Service host</strong> — any machine, behind NAT or not. No inbound ports required.</li>
+      <li><strong>Client host</strong> — developer laptop, CI runner, etc. No inbound ports required.</li>
+    </ul>
+
+    <h3>Relay host setup</h3>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># Install tubo</span>
+<span style="color:#6366f1">$</span> curl -fsSL https://www.tubo.click/install.sh | sh
+
+<span style="color:#6b7280"># Generate swarm key (do this only once, store securely)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo keygen swarm</span> <span style="color:#86efac">--out</span> /etc/tubo/swarm.key
+<span style="color:#6366f1">$</span> chmod 600 /etc/tubo/swarm.key
+
+<span style="color:#6b7280"># Start relay</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo relay</span> \
+    <span style="color:#86efac">--swarm-key</span>   /etc/tubo/swarm.key \
+    <span style="color:#86efac">--public-addr</span> /ip4/1.2.3.4/tcp/4001 \
+    <span style="color:#86efac">-d</span>
+
+<span style="color:#6b7280"># Note the printed multiaddr, e.g.:</span>
+<span style="color:#c4b5fd">  /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWExample...</span></pre>
+    </div>
+
+    <h3>systemd unit (relay)</h3>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre style="color:#e2e8f0">[Unit]
+Description=Tubo relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/tubo relay \
+  --swarm-key /etc/tubo/swarm.key \
+  --public-addr /ip4/1.2.3.4/tcp/4001
+Restart=on-failure
+RestartSec=5s
+User=tubo
+ProtectSystem=strict
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target</pre>
+    </div>
+
+    <h3>Service host setup</h3>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6b7280"># Copy swarm.key from relay host (use scp or your secrets manager)</span>
+<span style="color:#6366f1">$</span> scp relay-host:/etc/tubo/swarm.key ~/.config/tubo/swarm.key
+<span style="color:#6366f1">$</span> chmod 600 ~/.config/tubo/swarm.key
+
+<span style="color:#6b7280"># Join the private swarm</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo join overlay/manual</span> \
+    <span style="color:#86efac">--relay</span>     /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWExample... \
+    <span style="color:#86efac">--swarm-key</span> ~/.config/tubo/swarm.key
+
+<span style="color:#6b7280"># Publish a service</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> myapi <span style="color:#86efac">--port</span> 8080 <span style="color:#86efac">-d</span></pre>
+    </div>
+
+    <h3>systemd unit (service)</h3>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre style="color:#e2e8f0">[Unit]
+Description=Tubo attach - myapi
+After=network-online.target myapi.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/tubo attach myapi --port 8080
+Restart=on-failure
+RestartSec=10s
+User=myapp
+EnvironmentFile=/etc/tubo/env
+
+[Install]
+WantedBy=multi-user.target</pre>
+    </div>
+    <p><code>/etc/tubo/env</code> can contain <code>LIBP2P_PRIVATE_NETWORK_KEY=/etc/tubo/swarm.key</code>.</p>
+
+    <h2>Firewall rules</h2>
+    <div style="overflow-x:auto;margin:12px 0 24px">
+      <table style="width:100%;border-collapse:collapse;font-size:.88rem">
+        <thead>
+          <tr style="background:var(--surface-3)">
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Host</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Port</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Direction</th>
+            <th style="padding:10px 14px;text-align:left;border-bottom:1px solid var(--border)">Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Relay</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)"><code>tcp/4001</code></td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Inbound</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">libp2p bootstrap + circuit relay</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Relay</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)"><code>tcp/8092</code></td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Inbound (optional)</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Health check endpoint</td></tr>
+          <tr><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Service host</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">none</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Outbound only</td><td style="padding:9px 14px;border-bottom:1px solid var(--border)">Connects outbound to relay</td></tr>
+          <tr><td style="padding:9px 14px">Client host</td><td style="padding:9px 14px">none</td><td style="padding:9px 14px">Outbound only</td><td style="padding:9px 14px">Connects outbound to relay</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Health checks</h2>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6366f1">$</span> curl http://RELAY_HOST:8092/healthz
+<span style="color:#86efac">{"status":"ok","peer_id":"12D3KooW..."}</span>
+
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo doctor</span>          <span style="color:#6b7280"># local connectivity checks</span></pre>
+    </div>
+
+    <h2>Process supervisors</h2>
+    <p>
+      When <code>-d</code> is not enough — for example, when you need restart-on-failure across reboots —
+      use the OS process supervisor directly. Tubo processes are plain executables with no daemon.
+      See the <a href="https://github.com/origama/tubo/blob/main/docs/PROCESS_SUPERVISORS.md" target="_blank" rel="noopener">Process Supervisors guide</a>
+      for systemd, launchd, and runit examples.
+    </p>
+
+    <h2>Next steps</h2>
+    <ul>
+      <li><a href="private-swarm.html">Private Swarms</a> — PSK key setup</li>
+      <li><a href="access-control.html">Access Control</a> — grants and leases in production</li>
+      <li><a href="security.html">Security Model</a> — what Tubo guarantees and what it doesn't</li>
+    </ul>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. Released under the Apache 2.0 license.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>
