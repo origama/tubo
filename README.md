@@ -2,23 +2,21 @@
 
 **Tubo creates private libp2p tunnels for HTTP APIs, services, and AI agents.**
 
-It lets you publish a local HTTP endpoint from one machine and consume it from another machine as if it were local, even when one or both hosts are behind NAT or firewalls. A Tubo network is made of a relay/bootstrap node, one or more attached services, and clients that connect to those services through the swarm.
+It lets you publish a local HTTP endpoint from one machine and consume it from another as if it were local, even when one or both hosts are behind NAT or firewalls. A Tubo network is made of a relay/bootstrap node, one or more attached services, and clients that connect to those services through the swarm.
 
 Tubo is designed for self-hosted, private networks: the libp2p transport is encrypted and authenticated, and an optional private swarm key adds network-level isolation.
 
 ## Why Tubo?
 
-- **Publish local services without opening inbound firewall rules**: attach LM Studio, Ollama, internal APIs, dashboards, or agent endpoints.
-- **Consume remote services through a local port**: connect to a service by name and talk to `127.0.0.1`.
-- **Run your own relay**: no central hosted control plane is required.
-- **Use one binary**: relay, attach, connect, gateway, discovery, and process management are all exposed through `tubo`.
-- **Keep long-running processes daemonless**: run in the foreground for debugging, or detach with local process state.
+- **Publish local services without opening inbound firewall rules** — attach LM Studio, Ollama, internal APIs, dashboards, or agent endpoints.
+- **Consume remote services through a local port** — connect to a service by name and talk to `127.0.0.1`.
+- **Run your own relay** — no central hosted control plane is required.
+- **Use one binary** — relay, attach, connect, gateway, discovery, and process management are all in `tubo`.
+- **Keep long-running processes daemonless** — run in the foreground for debugging, or detach with `-d`.
 
 ## Install
 
 ### One-line installer
-
-The installer downloads the latest prebuilt release for your platform, verifies `SHA256SUMS.txt` when possible, and installs `tubo` into `$HOME/.local/bin` by default.
 
 ```bash
 curl -fsSL https://www.tubo.click/install.sh | sh
@@ -27,18 +25,18 @@ curl -fsSL https://www.tubo.click/install.sh | sh
 Install a specific release:
 
 ```bash
-curl -fsSL https://www.tubo.click/install.sh | sh -s -- --version v0.5.1
+curl -fsSL https://www.tubo.click/install.sh | sh -s -- --version v0.7.0
 ```
 
-Install somewhere else:
+Install to a custom directory:
 
 ```bash
 curl -fsSL https://www.tubo.click/install.sh | sh -s -- --install-dir /usr/local/bin
 ```
 
-> The same installer is also published on the GitHub Pages site under `https://www.tubo.click/install.sh`.
-
 ### Build from source
+
+Requires Go 1.24+.
 
 ```bash
 git clone https://github.com/origama/tubo.git
@@ -47,130 +45,194 @@ go build -o tubo ./cmd/tubo
 ./tubo version
 ```
 
-The project currently uses the Go version declared in [`go.mod`](./go.mod).
+## Quick start: public network (invite-only)
 
-## Quick start: relay, attach, connect
+The simplest flow uses the public Tubo relay. No config needed on first run — `attach` and `connect` auto-join on first use.
 
-This example creates a small Tubo network with three roles:
-
-- a **relay host** reachable by the other nodes;
-- a **service host** running an HTTP API, for example LM Studio on `127.0.0.1:1234`;
-- a **client host** that opens a local port to that remote service.
-
-### 1. Start the relay host
-
-Generate a private swarm key and start a relay. Replace `RELAY_IP_OR_DNS` with the public IP or DNS name that service/client hosts can reach.
+**Machine A — publish a local service:**
 
 ```bash
-tubo keygen swarm --out swarm.key
+tubo attach http://127.0.0.1:8080 --name myapp -d
+# or shorthand:
+tubo attach myapp --port 8080 -d
+```
 
-export RELAY_IP="RELAY_IP_OR_DNS"
-export RELAY_PEER="$(tubo id from-seed public-relay-seed)"
-export RELAY_ADDR="/ip4/${RELAY_IP}/tcp/4001/p2p/${RELAY_PEER}"
+`attach` prints a share invite token:
 
+```
+✓ Service published   name=myapp  visibility=unlisted
+✓ Share token:  tubo connect --token eyJ...
+```
+
+Copy the `tubo connect --token ...` line and give it to whoever needs access.
+
+**Machine B — connect with the token:**
+
+```bash
+tubo connect --token eyJ... --local 127.0.0.1:9000
+curl http://127.0.0.1:9000/
+```
+
+Share tokens are one-time: each token can be redeemed by one client. Generate additional tokens with `tubo share service/myapp`.
+
+## Quick start: private swarm
+
+For stronger isolation, run your own relay with a private swarm key.
+
+**Relay host (needs a public IP, TCP 4001 open):**
+
+```bash
+tubo keygen swarm --out swarm.key   # generate once, distribute securely
 tubo relay \
-  --listen /ip4/0.0.0.0/tcp/4001 \
-  --public-addr /ip4/${RELAY_IP}/tcp/4001 \
-  --swarm-key ./swarm.key \
+  --swarm-key   ./swarm.key \
+  --public-addr /ip4/<RELAY_IP>/tcp/4001 \
   -d
+# note the printed multiaddr: /ip4/<RELAY_IP>/tcp/4001/p2p/12D3...
 ```
 
-Copy `swarm.key` securely to the service and client hosts. Share `RELAY_ADDR` with them too.
-
-### 2. Attach a service
-
-On the machine that runs the HTTP service:
+**Service host:**
 
 ```bash
-curl -fsSL https://www.tubo.click/install.sh | sh
-
-tubo attach lmstudio --port 1234 -d
+tubo join overlay/manual \
+  --relay     /ip4/<RELAY_IP>/tcp/4001/p2p/12D3... \
+  --swarm-key ./swarm.key
+tubo create cluster/myteam
+tubo attach myapp --port 8080 -d
 ```
 
-In the public default (`tubo-public` / `home/default`), `attach` is invite-only and unlisted: copy the printed `tubo connect --token ...` command or mint one explicitly with `tubo share service/lmstudio`.
-
-### 3. Connect from a client
-
-On the client machine:
+**Client host:**
 
 ```bash
-curl -fsSL https://www.tubo.click/install.sh | sh
-
-tubo connect --token <share-invite> --local 127.0.0.1:51234
+tubo join overlay/manual \
+  --relay     /ip4/<RELAY_IP>/tcp/4001/p2p/12D3... \
+  --swarm-key ./swarm.key
+tubo join cluster/myteam --token <cluster-invite>
+tubo get services
+tubo connect myapp --local 127.0.0.1:9000
 ```
-
-Now the remote service is available locally:
-
-```bash
-curl http://127.0.0.1:51234/healthz
-```
-
-`connect` runs in the foreground so you can see logs and stop it with `Ctrl+C`.
 
 ## Common commands
 
 ```bash
-# Start a relay/bootstrap node
-tubo relay -d
+# ── Network setup ──────────────────────────────────────────────────────────
+tubo join                                     # join the public Tubo network
+tubo join overlay/manual \
+  --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
+  --swarm-key ./swarm.key                     # join a private swarm
 
-# Join an existing Tubo swarm manually
-tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
+# ── Runtime roles ──────────────────────────────────────────────────────────
+tubo relay -d                                 # start a relay/bootstrap node
+tubo gateway --listen :8443 -d               # start an HTTP gateway
+tubo attach myapp --port 8080 -d             # publish a local service
+tubo connect --token eyJ... \
+  --local 127.0.0.1:9000                     # connect via invite token
+tubo connect myapp --local 127.0.0.1:9000    # connect by name (collab namespaces)
 
-# Or join the default public Tubo network from a signed bundle
-tubo join
-
-# Public default: attach a local HTTP endpoint and share by invite
-# attach prints a `tubo connect --token ...` command
-tubo attach lmstudio --port 1234 -d
-tubo share service/lmstudio --expires 1h
-
-# Client side: connect with the invite token
-tubo connect --token <share-invite> --local 127.0.0.1:51234
-
-# Collaboration namespace flow: create a discovery-enabled scope and connect by name
-tubo create cluster/home
-tubo create namespace/team
+# ── Discovery ──────────────────────────────────────────────────────────────
 tubo get services
-tubo describe service/lmstudio
-tubo inspect service/lmstudio --json
-tubo connect lmstudio --local 127.0.0.1:51234
+tubo describe service/myapp
+tubo inspect service/myapp --json
+tubo watch services --timeout 30s
 
-# Manage detached local Tubo processes
+# ── Clusters, namespaces, sharing ──────────────────────────────────────────
+tubo create cluster/myteam
+tubo create namespace/production
+tubo create service/myapp
+tubo share cluster/myteam --role member       # invite a team member
+tubo share cluster/myteam --role viewer
+tubo share service/myapp --expires 1h         # one-time connect token
+tubo join cluster/myteam --token <invite>
+tubo use cluster/myteam
+tubo use namespace/production
+
+# ── Publish grants (non-authority nodes) ───────────────────────────────────
+tubo grants serve --cluster myteam --namespace default -d
+tubo grants pending
+tubo grants approve gr_123 --ttl 168h
+tubo grants request service/myapp --poll
+
+# ── Revocation ─────────────────────────────────────────────────────────────
+tubo revoke invite <token>
+tubo revoke session <session-id>
+tubo revoke service-access myapp
+tubo revoke publish myapp
+
+# ── Process management ─────────────────────────────────────────────────────
 tubo ps
-tubo logs process/connect-lmstudio-51234
-tubo stop process/connect-lmstudio-51234
+tubo logs process/attach-myapp
+tubo stop process/attach-myapp
 tubo rm --stale
+
+# ── Utilities ──────────────────────────────────────────────────────────────
+tubo keygen swarm --out swarm.key
+tubo id from-seed my-seed
+tubo config validate
+tubo config print
+tubo doctor
+tubo version
 ```
 
-`attach`, `connect`, `gateway`, `relay`, and discovery commands (`get`, `describe`, `inspect`, `watch`) will also auto-join the default public Tubo network on first run when no local config exists, unless `--no-init` or `CI=true` disables that behavior. The shared public overlay is convenience transport, not anonymity or transport isolation by itself; use a private overlay when you need stronger network isolation.
-
-During prerelease/dev testing, before the GitHub Pages site is updated, you can point both `tubo join` and the implicit public join flow at a temporary bundle URL with:
+## LM Studio / Ollama
 
 ```bash
-export TUBO_DEFAULT_PUBLIC_BUNDLE_URL=https://example.com/tubo-public.bundle
+# Publish LM Studio (port 1234)
+tubo attach lmstudio --port 1234 -d
+
+# Publish Ollama (port 11434)
+tubo attach ollama --port 11434 -d
+
+# Connect from another machine
+tubo connect --token eyJ... --local 127.0.0.1:51234
+
+# Use the OpenAI-compatible endpoint as if it were local
+curl http://127.0.0.1:51234/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"local-model","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
 ## Process model
 
-Tubo does not require a central local daemon. Long-running commands stay in the foreground by default. Commands that support `-d` / `--detach` write local process state under XDG-style directories:
+Tubo does not require a central daemon. Long-running commands stay in the foreground by default; use `-d` / `--detach` to run in the background. Detached process state is stored under XDG-style directories:
 
 ```text
-~/.local/share/tubo/processes/
-~/.local/share/tubo/logs/
-~/.local/share/tubo/run/
+~/.config/tubo/            — configuration, swarm key, cluster/namespace state
+~/.local/share/tubo/processes/  — detached process metadata
+~/.local/share/tubo/logs/       — process log files
+~/.local/share/tubo/run/        — PID files
 ```
 
-Use `tubo ps`, `tubo logs`, `tubo stop`, and `tubo rm --stale` to inspect and manage those detached processes.
+Use `tubo ps`, `tubo logs`, `tubo stop`, and `tubo rm --stale` to manage detached processes.
+
+## Configuration precedence
+
+```
+CLI flag  >  env var  >  config file  >  default  >  interactive prompt
+```
+
+Interactive prompts are disabled when `CI=true` or `--non-interactive` is set.
+
+Key environment variables:
+
+| Variable | Description |
+|---|---|
+| `LIBP2P_PRIVATE_NETWORK_KEY` | Path to swarm key file |
+| `LIBP2P_PRIVATE_NETWORK_KEY_B64` | Base64-encoded 32-byte PSK |
+| `LIBP2P_ALLOWED_PEERS` | Comma-separated PeerID allowlist |
+| `TUBO_DEFAULT_PUBLIC_BUNDLE_URL` | Override the default public bundle URL |
+| `CI` | Set to `true` to disable interactive prompts and implicit join |
 
 ## Documentation
 
-- [Docs index](./docs/README.md)
-- [CLI guide](./docs/cli.md)
-- [Operational runbook](./docs/OPERABILITY.md)
-- [Security notes](./docs/SECURITY.md)
-- [Security model 0.7](./docs/security-model-0.7.md)
-- [Protocol notes](./docs/PROTOCOL.md)
-- [Release process](./docs/RELEASING.md)
+Full documentation is at **[www.tubo.click/docs/](https://www.tubo.click/docs/)**.
+
+Key references in this repository:
+
+- [docs/cli.md](./docs/cli.md) — full CLI reference
+- [docs/OPERABILITY.md](./docs/OPERABILITY.md) — operational runbook (relay setup, multi-host, private swarm)
+- [docs/security-model-0.7.md](./docs/security-model-0.7.md) — security model and trust chain
+- [docs/VERSIONING.md](./docs/VERSIONING.md) — versioning and compatibility policy
+- [docs/RELEASING.md](./docs/RELEASING.md) — release process
+- [CHANGELOG.md](./CHANGELOG.md) — release history
 
 ## For coding agents
 
@@ -178,4 +240,4 @@ Start here before making code changes:
 
 - [AGENTS.md](./AGENTS.md)
 - [TASKS.md](./TASKS.md)
-- [Versioning policy](./docs/VERSIONING.md)
+- [docs/VERSIONING.md](./docs/VERSIONING.md)
