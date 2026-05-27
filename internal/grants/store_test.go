@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/origama/tubo/internal/capability"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 func TestStoreCreateReloadApproveDenyExpireAndDedupe(t *testing.T) {
@@ -42,7 +43,7 @@ func TestStoreCreateReloadApproveDenyExpireAndDedupe(t *testing.T) {
 		t.Fatalf("unexpected pending after reload: %#v", pending)
 	}
 
-	approved, err := reloaded.Approve(created.ID, capability.ServiceClaim{ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceID: req.ServiceID, SubjectPeerID: req.ServicePeerID, Permissions: req.RequestedPermissions, ExpiresAt: base.Add(time.Hour), Signature: []byte("sig")}, nil, "")
+	approved, err := reloaded.Approve(created.ID, capability.ServiceClaim{ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceID: req.ServiceID, SubjectPeerID: req.ServicePeerID, Permissions: req.RequestedPermissions, ExpiresAt: base.Add(time.Hour), Signature: []byte("sig")}, nil, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,6 +51,23 @@ func TestStoreCreateReloadApproveDenyExpireAndDedupe(t *testing.T) {
 		t.Fatalf("unexpected approved request: %#v", approved)
 	}
 
+	reloaded.now = func() time.Time { return base.Add(2 * time.Hour) }
+	all, err := reloaded.ListAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundApprovedExpired := false
+	for _, req := range all {
+		if req.ID == approved.ID {
+			foundApprovedExpired = req.Status == StatusExpired
+			break
+		}
+	}
+	if !foundApprovedExpired {
+		t.Fatalf("approved request did not expire after lease expiry: %#v", all)
+	}
+
+	reloaded.now = func() time.Time { return base }
 	second := sampleRequest(base)
 	second.ServiceName = "other"
 	second.ServiceID = "service-other"
@@ -83,7 +101,7 @@ func TestStoreCreateReloadApproveDenyExpireAndDedupe(t *testing.T) {
 	if changed != 1 {
 		t.Fatalf("expired count = %d, want 1", changed)
 	}
-	if _, err := reloaded.Approve(createdExpiring.ID, capability.ServiceClaim{}, nil, ""); err == nil || !strings.Contains(err.Error(), "expired") {
+	if _, err := reloaded.Approve(createdExpiring.ID, capability.ServiceClaim{}, nil, nil, ""); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired approval error, got %v", err)
 	}
 }
@@ -100,17 +118,25 @@ func TestStoreCorruptFileFailsClearly(t *testing.T) {
 }
 
 func sampleRequest(now time.Time) Request {
+	priv, pub := testOwnerKey("store-sample")
+	req, err := SignPublishLeaseRequest(PublishLeaseRequest{ClusterID: "cluster-123", NamespaceID: "default", ServiceID: serviceidentity.ServiceIDFromPublicKey(pub), ServicePublicKey: serviceidentity.EncodePublicKey(pub), PublisherPeerID: "12D3-service", RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce}, Nonce: "store-sample-nonce"}, priv)
+	if err != nil {
+		panic(err)
+	}
 	return Request{
-		ClusterName:          "home",
-		ClusterID:            "cluster-123",
-		NamespaceID:          "default",
-		RequesterPeerID:      "12D3-requester",
-		ServiceName:          "myapi",
-		ServiceID:            "service-myapi",
-		ServicePeerID:        "12D3-service",
-		RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce},
-		RequestedTTLSeconds:  int64((7 * 24 * time.Hour).Seconds()),
-		RequestedAt:          now,
-		ExpiresAt:            now.Add(time.Hour),
+		ClusterName:           "home",
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		RequesterPeerID:       "12D3-requester",
+		ServiceName:           "myapi",
+		ServiceID:             serviceidentity.ServiceIDFromPublicKey(pub),
+		ServicePublicKey:      req.ServicePublicKey,
+		ServiceOwnerSignature: req.ServiceOwnerSignature,
+		RequestNonce:          req.Nonce,
+		ServicePeerID:         "12D3-service",
+		RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		RequestedTTLSeconds:   int64((7 * 24 * time.Hour).Seconds()),
+		RequestedAt:           now,
+		ExpiresAt:             now.Add(time.Hour),
 	}
 }

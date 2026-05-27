@@ -8,14 +8,33 @@ COMPOSE="${COMPOSE_CMD:-docker compose} -f docker-compose.tubo-workflow.yml"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 
+BIN_DIR="$(mktemp -d "${ROOT_DIR}/.tmp-smoke-workflow-bin.XXXXXX")"
+TUBO_BIN="$BIN_DIR/tubo"
+connect_process_ref=""
+connect_log_path=""
+
 tubo() {
-  go run ./cmd/tubo "$@"
+  "$TUBO_BIN" "$@"
 }
 
 cleanup() {
+  set +e
+  if [[ -n "$connect_process_ref" ]]; then
+    tubo stop "$connect_process_ref" >/dev/null 2>&1 || true
+    tubo rm --stale >/dev/null 2>&1 || true
+    connect_process_ref=""
+  fi
+  pkill -f 'generated/tubo-workflow/tubo/client.yaml' >/dev/null 2>&1 || true
+  for _ in $(seq 1 40); do
+    if ! pgrep -f 'generated/tubo-workflow/tubo/client.yaml' >/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.25
+  done
   $COMPOSE down --remove-orphans >/dev/null 2>&1 || true
+  rm -rf "$BIN_DIR"
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 wait_http_ok() {
   local url="$1"
@@ -27,6 +46,14 @@ wait_http_ok() {
     sleep 1
   done
   return 1
+}
+
+assert_no_workflow_connect_leaks() {
+  if pgrep -af 'generated/tubo-workflow/tubo/client.yaml' >/dev/null 2>&1; then
+    echo "[smoke-tubo-workflow] leaked host-side tubo connect process"
+    pgrep -af 'generated/tubo-workflow/tubo/client.yaml' || true
+    return 1
+  fi
 }
 
 free_tcp_port() {
@@ -45,18 +72,33 @@ extract_field() {
   printf '%s\n' "$text" | awk -v p="$prefix" 'index($0, p) == 1 {sub(p, "", $0); sub(/^: /, "", $0); print; exit}'
 }
 
-service_identity() {
-  local cluster_id="$1"
-  local namespace="$2"
-  local name="$3"
-  python3 - "$cluster_id" "$namespace" "$name" <<'PY'
-import hashlib
-import sys
-cluster_id, namespace, name = sys.argv[1:]
-raw = hashlib.sha256((cluster_id + "\x00" + namespace + "\x00" + name).encode()).hexdigest()
-print("service-" + raw[:16])
-print("service-" + raw[16:48])
-PY
+service_id_from_owner_key() {
+  local key_file="$1"
+  local workdir
+  workdir="$(mktemp -d "${ROOT_DIR}/.tmp-smoke-workflow.XXXXXX")"
+  trap 'rm -rf "$workdir"' RETURN
+  cat > "$workdir/service-id-from-owner-key.go" <<'EOF'
+package main
+
+import (
+  "fmt"
+  "os"
+
+  "github.com/origama/tubo/internal/serviceidentity"
+)
+
+func main() {
+  if len(os.Args) != 2 {
+    panic("usage: service-id-from-owner-key <key-file>")
+  }
+  identity, _, err := serviceidentity.Load(os.Args[1])
+  if err != nil {
+    panic(err)
+  }
+  fmt.Println(identity.ServiceID)
+}
+EOF
+  go run "$workdir/service-id-from-owner-key.go" "$key_file"
 }
 
 generate_membership_cap() {
@@ -140,6 +182,9 @@ compose_build_serial() {
   COMPOSE_PARALLEL_LIMIT=1 $COMPOSE build
 }
 
+echo "[smoke-tubo-workflow] building local tubo binary"
+go build -o "$TUBO_BIN" ./cmd/tubo
+
 config_dir="generated/tubo-workflow/tubo"
 container_root="/home/nonroot/.config/tubo"
 config_path="${config_dir}/config.yaml"
@@ -181,8 +226,13 @@ tubo create namespace/tenant-a --config "$config_path" >/dev/null
 tenant_a_out="$(tubo create service/myapi --config "$config_path")"
 service_a_id="$(extract_field "service id" "$tenant_a_out")"
 service_a_seed="$(extract_field "service seed" "$tenant_a_out")"
+service_a_owner_key_file="$(extract_field "service owner key file" "$tenant_a_out")"
+host_service_a_owner_key_file="${config_dir}/clusters/home/namespaces/tenant-a/services/myapi.owner.key"
 host_service_a_claim_file="${config_dir}/clusters/home/namespaces/tenant-a/services/myapi.claim.json"
+host_service_a_publish_lease_file="${config_dir}/clusters/home/namespaces/tenant-a/services/myapi.publish-lease.json"
+service_a_owner_key_file_container="${container_root}/clusters/home/namespaces/tenant-a/services/myapi.owner.key"
 service_a_claim_file="${container_root}/clusters/home/namespaces/tenant-a/services/myapi.claim.json"
+service_a_publish_lease_file="${container_root}/clusters/home/namespaces/tenant-a/services/myapi.publish-lease.json"
 service_a_peer_id="$(tubo id from-seed "$service_a_seed" | tr -d '\n')"
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_tenant_a_cluster_cap_file"
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_tenant_a_cluster_cap_file"
@@ -193,39 +243,57 @@ tubo use namespace/tenant-b --config "$config_path" >/dev/null
 service_b_out="$(tubo create service/myapi --config "$config_path")"
 service_b_id="$(extract_field "service id" "$service_b_out")"
 service_b_seed="$(extract_field "service seed" "$service_b_out")"
+service_b_owner_key_file="$(extract_field "service owner key file" "$service_b_out")"
+host_service_b_owner_key_file="${config_dir}/clusters/home/namespaces/tenant-b/services/myapi.owner.key"
 host_service_b_claim_file="${config_dir}/clusters/home/namespaces/tenant-b/services/myapi.claim.json"
+host_service_b_publish_lease_file="${config_dir}/clusters/home/namespaces/tenant-b/services/myapi.publish-lease.json"
+service_b_owner_key_file_container="${container_root}/clusters/home/namespaces/tenant-b/services/myapi.owner.key"
 service_b_claim_file="${container_root}/clusters/home/namespaces/tenant-b/services/myapi.claim.json"
+service_b_publish_lease_file="${container_root}/clusters/home/namespaces/tenant-b/services/myapi.publish-lease.json"
 service_b_peer_id="$(tubo id from-seed "$service_b_seed" | tr -d '\n')"
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$service_b_peer_id" "$host_tenant_b_cluster_cap_file"
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$service_b_peer_id" "$host_tenant_b_cluster_cap_file"
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$cluster_id" "$host_tenant_b_namespace_cap_file"
 
-mapfile -t expected_a < <(service_identity "$cluster_id" tenant-a myapi)
-mapfile -t expected_b < <(service_identity "$cluster_id" tenant-b myapi)
-expected_a_id="${expected_a[0]}"
-expected_a_seed="${expected_a[1]}"
-expected_b_id="${expected_b[0]}"
-expected_b_seed="${expected_b[1]}"
-if [[ "$service_a_id" != "$expected_a_id" || "$service_a_seed" != "$expected_a_seed" ]]; then
-  echo "[smoke-tubo-workflow] tenant-a service identity mismatch"
-  echo "got id=$service_a_id seed=$service_a_seed"
-  echo "want id=$expected_a_id seed=$expected_a_seed"
+if [[ -z "$service_a_id" || -z "$service_a_seed" || -z "$service_a_owner_key_file" ]]; then
+  echo "[smoke-tubo-workflow] tenant-a service metadata incomplete"
+  echo "$tenant_a_out"
   exit 1
 fi
-if [[ "$service_b_id" != "$expected_b_id" || "$service_b_seed" != "$expected_b_seed" ]]; then
-  echo "[smoke-tubo-workflow] tenant-b service identity mismatch"
-  echo "got id=$service_b_id seed=$service_b_seed"
-  echo "want id=$expected_b_id seed=$expected_b_seed"
+if [[ -z "$service_b_id" || -z "$service_b_seed" || -z "$service_b_owner_key_file" ]]; then
+  echo "[smoke-tubo-workflow] tenant-b service metadata incomplete"
+  echo "$service_b_out"
+  exit 1
+fi
+if [[ ! -f "$service_a_owner_key_file" || ! -f "$service_b_owner_key_file" ]]; then
+  echo "[smoke-tubo-workflow] missing service owner key file"
+  exit 1
+fi
+expected_a_id="$(service_id_from_owner_key "$service_a_owner_key_file" | tr -d '\n')"
+expected_b_id="$(service_id_from_owner_key "$service_b_owner_key_file" | tr -d '\n')"
+if [[ "$service_a_id" != "$expected_a_id" ]]; then
+  echo "[smoke-tubo-workflow] tenant-a service id does not match owner key"
+  echo "got id=$service_a_id want=$expected_a_id"
+  exit 1
+fi
+if [[ "$service_b_id" != "$expected_b_id" ]]; then
+  echo "[smoke-tubo-workflow] tenant-b service id does not match owner key"
+  echo "got id=$service_b_id want=$expected_b_id"
   exit 1
 fi
 if [[ "$service_a_id" == "$service_b_id" ]]; then
   echo "[smoke-tubo-workflow] service id should differ across namespaces"
   exit 1
 fi
+if [[ "$service_a_seed" == "$service_b_seed" ]]; then
+  echo "[smoke-tubo-workflow] service seed should differ across namespaces"
+  exit 1
+fi
 
 relay_peer_id="$(tubo id from-seed relay-demo-seed | tr -d '\n')"
 edge_peer_id="$(tubo id from-seed edge-demo-seed | tr -d '\n')"
 relay_addr="/dns4/tubo-relay/tcp/4002/p2p/${relay_peer_id}"
+host_relay_addr="/ip4/127.0.0.1/tcp/4002/p2p/${relay_peer_id}"
 edge_addr="/dns4/tubo-edge/tcp/4001/p2p/${edge_peer_id}"
 
 cat > "${config_dir}/relay.yaml" <<YAML
@@ -272,14 +340,18 @@ clusters:
           myapi:
             service_id: ${service_a_id}
             service_seed: ${service_a_seed}
+            service_owner_key_file: ${service_a_owner_key_file_container}
             service_claim_file: ${service_a_claim_file}
+            service_publish_lease_file: ${service_a_publish_lease_file}
       tenant-b:
         membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_b_id}
             service_seed: ${service_b_seed}
+            service_owner_key_file: ${service_b_owner_key_file_container}
             service_claim_file: ${service_b_claim_file}
+            service_publish_lease_file: ${service_b_publish_lease_file}
 YAML
 
 cat > "${config_dir}/service-tenant-a.yaml" <<YAML
@@ -316,14 +388,18 @@ clusters:
           myapi:
             service_id: ${service_a_id}
             service_seed: ${service_a_seed}
+            service_owner_key_file: ${service_a_owner_key_file_container}
             service_claim_file: ${service_a_claim_file}
+            service_publish_lease_file: ${service_a_publish_lease_file}
       tenant-b:
         membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_b_id}
             service_seed: ${service_b_seed}
+            service_owner_key_file: ${service_b_owner_key_file_container}
             service_claim_file: ${service_b_claim_file}
+            service_publish_lease_file: ${service_b_publish_lease_file}
 YAML
 
 cat > "${config_dir}/service-tenant-b.yaml" <<YAML
@@ -360,14 +436,18 @@ clusters:
           myapi:
             service_id: ${service_a_id}
             service_seed: ${service_a_seed}
+            service_owner_key_file: ${service_a_owner_key_file_container}
             service_claim_file: ${service_a_claim_file}
+            service_publish_lease_file: ${service_a_publish_lease_file}
       tenant-b:
         membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_b_id}
             service_seed: ${service_b_seed}
+            service_owner_key_file: ${service_b_owner_key_file_container}
             service_claim_file: ${service_b_claim_file}
+            service_publish_lease_file: ${service_b_publish_lease_file}
 YAML
 
 cat > "${config_dir}/client.yaml" <<YAML
@@ -378,7 +458,7 @@ node:
 network:
   private_key_file: ${host_swarm_key_file}
   relay_peers:
-    - ${relay_addr}
+    - ${host_relay_addr}
 edge:
   admin_listen: 127.0.0.1:8444
 current_cluster: home
@@ -399,9 +479,9 @@ current_namespace: tenant-a
 network:
   private_key_file: ${host_swarm_key_file}
   bootstrap_peers:
-    - ${relay_addr}
+    - ${host_relay_addr}
   relay_peers:
-    - ${relay_addr}
+    - ${host_relay_addr}
 clusters:
   home:
     cluster_id: ${cluster_id}
@@ -415,19 +495,23 @@ clusters:
           myapi:
             service_id: ${service_a_id}
             service_seed: ${service_a_seed}
+            service_owner_key_file: ${host_service_a_owner_key_file}
             service_claim_file: ${host_service_a_claim_file}
+            service_publish_lease_file: ${host_service_a_publish_lease_file}
       tenant-b:
         membership_capability_file: ${host_tenant_b_namespace_cap_file}
         services:
           myapi:
             service_id: ${service_b_id}
             service_seed: ${service_b_seed}
+            service_owner_key_file: ${host_service_b_owner_key_file}
             service_claim_file: ${host_service_b_claim_file}
+            service_publish_lease_file: ${host_service_b_publish_lease_file}
 YAML
 
 find "$config_dir" -type d -exec chmod 755 {} +
 find "$config_dir" -type f -exec chmod 644 {} +
-chmod 644 "$host_authority_key_file" "$host_tenant_a_cluster_cap_file" "$host_tenant_a_namespace_cap_file" "$host_tenant_b_cluster_cap_file" "$host_tenant_b_namespace_cap_file" "$host_service_a_claim_file" "$host_service_b_claim_file" "$host_swarm_key_file"
+chmod 644 "$host_authority_key_file" "$host_tenant_a_cluster_cap_file" "$host_tenant_a_namespace_cap_file" "$host_tenant_b_cluster_cap_file" "$host_tenant_b_namespace_cap_file" "$host_service_a_owner_key_file" "$host_service_a_claim_file" "$host_service_b_owner_key_file" "$host_service_b_claim_file" "$host_swarm_key_file"
 
 if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
   echo "[smoke-tubo-workflow] forcing image rebuild"
@@ -484,20 +568,29 @@ if ! tubo describe namespace/tenant-a --config "$config_path" >/dev/null; then
 fi
 
 share_output="$(tubo share service/myapi --config "$config_path" --cluster home --namespace tenant-a --expires 2h)"
-share_token="$(printf '%s\n' "$share_output" | grep -o 'tubo-service-share-v1\.[^[:space:]]*' | head -n1)"
+share_token="$(printf '%s\n' "$share_output" | grep -o 'tubo-share-invite-v1\.[^[:space:]]*' | head -n1)"
 if [[ -z "$share_token" ]]; then
-  echo "[smoke-tubo-workflow] failed to extract share token"
+  echo "[smoke-tubo-workflow] failed to extract share invite token"
   echo "$share_output"
   exit 1
 fi
 
 connect_port="$(free_tcp_port)"
 bad_connect_port="$(free_tcp_port)"
-connect_log="$(mktemp)"
 connect_resp="$(mktemp)"
-tubo connect --token "$share_token" --config "${config_dir}/client.yaml" --local 127.0.0.1:${connect_port} >"$connect_log" 2>&1 &
-connect_pid=$!
-trap 'if [[ -n "${connect_pid:-}" ]]; then kill "$connect_pid" >/dev/null 2>&1 || true; fi; cleanup' EXIT
+connect_output="$(tubo connect --token "$share_token" --config "${config_dir}/client.yaml" --local 127.0.0.1:${connect_port} -d)"
+connect_process_ref="$(extract_field "id" "$connect_output")"
+connect_log_path="$(extract_field "logs" "$connect_output")"
+if [[ -z "$connect_process_ref" || -z "$connect_log_path" ]]; then
+  echo "[smoke-tubo-workflow] failed to parse detached connect process metadata"
+  echo "$connect_output"
+  exit 1
+fi
+if ! tubo ps --kind connect | grep -q "${connect_process_ref#process/}"; then
+  echo "[smoke-tubo-workflow] detached connect process not visible in tubo ps"
+  tubo ps --all --kind connect || true
+  exit 1
+fi
 
 for i in $(seq 1 60); do
   if curl -fsS -o "$connect_resp" -H 'Content-Type: text/plain' --data 'hello-service-share' "http://127.0.0.1:${connect_port}/v1/dummy?from=service-share" >/dev/null 2>&1; then
@@ -506,7 +599,7 @@ for i in $(seq 1 60); do
   sleep 1
   if [[ "$i" == "60" ]]; then
     echo "[smoke-tubo-workflow] connect token tunnel did not become ready"
-    cat "$connect_log"
+    cat "$connect_log_path"
     exit 1
   fi
 done
@@ -552,5 +645,9 @@ if ! grep -q "\"body_b64\":\"$payload_b64\"" "$resp_body"; then
   cat "$resp_body"
   exit 1
 fi
+
+cleanup
+trap - EXIT INT TERM
+assert_no_workflow_connect_leaks
 
 echo "[smoke-tubo-workflow] PASS: cluster/namespace/service workflow works and namespace isolation is preserved"

@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	cfgpkg "github.com/origama/tubo/internal/config"
 )
 
 type serviceScope struct {
@@ -30,26 +28,6 @@ func parseServiceRef(ref string) (string, error) {
 		return "", fmt.Errorf("unsupported service reference %q", ref)
 	}
 	return ref, nil
-}
-
-func resolveServiceScope(cfg cfgpkg.Config, clusterFlag, namespaceFlag string, allNamespaces bool) (serviceScope, error) {
-	cluster := strings.TrimSpace(clusterFlag)
-	if cluster == "" {
-		cluster = strings.TrimSpace(cfg.CurrentCluster)
-	}
-	namespace := strings.TrimSpace(namespaceFlag)
-	if allNamespaces {
-		if namespace != "" {
-			return serviceScope{}, errors.New("--all-namespaces cannot be combined with --namespace")
-		}
-		namespace = ""
-	} else if namespace == "" {
-		namespace = strings.TrimSpace(cfg.CurrentNamespace)
-	}
-	if namespace != "" && cluster == "" {
-		return serviceScope{}, errors.New("namespace requires a cluster context; pass --cluster or set a current cluster")
-	}
-	return serviceScope{Cluster: cluster, Namespace: namespace, AllNamespaces: allNamespaces}, nil
 }
 
 func applyServiceScope(service serviceResource, scope serviceScope) serviceResource {

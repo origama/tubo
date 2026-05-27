@@ -14,6 +14,7 @@ import (
 	libprotocol "github.com/libp2p/go-libp2p/core/protocol"
 
 	"github.com/origama/tubo/internal/discovery"
+	grantspkg "github.com/origama/tubo/internal/grants"
 )
 
 const (
@@ -30,6 +31,7 @@ type Cache interface {
 	Resolve(serviceName string) (*discovery.ServiceEntry, bool)
 	List() []*discovery.ServiceEntry
 	Add(peer.ID, string, []string, time.Duration) error
+	AddV2(peer.ID, string, string, string, string, *grantspkg.GrantServiceEndpoint, []string, time.Duration) error
 }
 
 type Request struct {
@@ -45,18 +47,22 @@ type Metadata struct {
 }
 
 type Service struct {
-	Kind             string   `json:"kind"`
-	Name             string   `json:"name"`
-	PeerID           string   `json:"peer_id"`
-	Addresses        []string `json:"addresses"`
-	DirectAddresses  []string `json:"direct_addresses"`
-	RelayedAddresses []string `json:"relayed_addresses"`
-	Status           string   `json:"status"`
-	Path             string   `json:"path"`
-	TTLSeconds       int64    `json:"ttl_seconds"`
-	ExpiresInSeconds int64    `json:"expires_in_seconds"`
-	Capabilities     []string `json:"capabilities"`
-	RegisteredAt     string   `json:"registered_at"`
+	Kind             string                          `json:"kind"`
+	Name             string                          `json:"name"`
+	ServiceID        string                          `json:"service_id,omitempty"`
+	ServicePublicKey string                          `json:"service_public_key,omitempty"`
+	ConnectPolicy    string                          `json:"connect_policy,omitempty"`
+	GrantService     *grantspkg.GrantServiceEndpoint `json:"grant_service,omitempty"`
+	PeerID           string                          `json:"peer_id"`
+	Addresses        []string                        `json:"addresses"`
+	DirectAddresses  []string                        `json:"direct_addresses"`
+	RelayedAddresses []string                        `json:"relayed_addresses"`
+	Status           string                          `json:"status"`
+	Path             string                          `json:"path"`
+	TTLSeconds       int64                           `json:"ttl_seconds"`
+	ExpiresInSeconds int64                           `json:"expires_in_seconds"`
+	Capabilities     []string                        `json:"capabilities"`
+	RegisteredAt     string                          `json:"registered_at"`
 }
 
 type Response struct {
@@ -130,7 +136,7 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 			resp.Error = fmt.Sprintf("invalid service peer id: %v", err)
 			return resp
 		}
-		if err := cache.Add(pID, req.Service.Name, append([]string(nil), req.Service.Addresses...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
+		if err := cache.AddV2(pID, req.Service.ServiceID, req.Service.Name, req.Service.ServicePublicKey, req.Service.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(req.Service.GrantService), append([]string(nil), req.Service.Addresses...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
 			resp.Error = fmt.Sprintf("cache announce: %v", err)
 			return resp
 		}
@@ -198,6 +204,10 @@ func serviceFromEntry(entry *discovery.ServiceEntry) Service {
 	return Service{
 		Kind:             "service",
 		Name:             entry.ServiceName,
+		ServiceID:        entry.ServiceID,
+		ServicePublicKey: entry.ServicePublicKey,
+		ConnectPolicy:    entry.ConnectPolicy,
+		GrantService:     grantspkg.CloneGrantServiceEndpoint(entry.GrantService),
 		PeerID:           entry.PeerID.String(),
 		Addresses:        append([]string(nil), entry.Addresses...),
 		DirectAddresses:  direct,

@@ -5,15 +5,21 @@ import (
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+
+	grantspkg "github.com/origama/tubo/internal/grants"
 )
 
 // ServiceEntry represents a cached service registration.
 type ServiceEntry struct {
-	ServiceName string
-	PeerID      peer.ID
-	Addresses   []string
-	TTL         time.Duration
-	Registered  time.Time // when the entry was last registered/renewed
+	ServiceID        string
+	ServiceName      string
+	ServicePublicKey string
+	ConnectPolicy    string
+	GrantService     *grantspkg.GrantServiceEndpoint
+	PeerID           peer.ID
+	Addresses        []string
+	TTL              time.Duration
+	Registered       time.Time // when the entry was last registered/renewed
 }
 
 // Expired returns true if the entry's TTL has elapsed since registration.
@@ -21,11 +27,13 @@ func (e *ServiceEntry) Expired() bool {
 	return time.Since(e.Registered) > e.TTL
 }
 
-// Cache maintains a map of service names to their current registrations.
+// Cache maintains service registrations keyed primarily by service_id.
+// A secondary display-name index preserves legacy Resolve(name) behavior.
 // It runs a background goroutine that periodically removes expired entries.
 type Cache struct {
 	mu          sync.Mutex
-	entries     map[string]*ServiceEntry // keyed by serviceName
+	entries     map[string]*ServiceEntry // keyed by serviceID when available, otherwise serviceName
+	nameIndex   map[string][]string      // display name -> entry keys
 	defaultTTL  time.Duration
 	cleanupTick time.Duration
 	stopCh      chan struct{}
@@ -36,6 +44,7 @@ type Cache struct {
 func NewCache(defaultTTL, cleanupTick time.Duration) *Cache {
 	c := &Cache{
 		entries:     make(map[string]*ServiceEntry),
+		nameIndex:   make(map[string][]string),
 		defaultTTL:  defaultTTL,
 		cleanupTick: cleanupTick,
 		stopCh:      make(chan struct{}),
@@ -51,25 +60,42 @@ func (c *Cache) SetExpiredCallback(fn func(serviceName string, peerID peer.ID)) 
 	c.onExpired = fn
 }
 
-// Add registers or updates a service entry. If the service already exists, it's renewed
-// with fresh TTL and updated addresses. Returns nil on success.
+// Add registers or updates a legacy name-keyed service entry.
 func (c *Cache) Add(pID peer.ID, serviceName string, addresses []string, ttl time.Duration) error {
+	return c.AddV2(pID, "", serviceName, "", "", nil, addresses, ttl)
+}
+
+// AddV2 registers or updates a service_id-keyed entry. Display name is metadata
+// and is not unique; multiple entries may share the same ServiceName.
+func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, servicePublicKey, connectPolicy string, grantService *grantspkg.GrantServiceEndpoint, addresses []string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if ttl <= 0 {
 		ttl = c.defaultTTL
 	}
-
-	entry := &ServiceEntry{
-		ServiceName: serviceName,
-		PeerID:      pID,
-		Addresses:   append([]string(nil), addresses...), // copy to prevent mutation
-		TTL:         ttl,
-		Registered:  time.Now(),
+	key := serviceID
+	if key == "" {
+		key = serviceName
 	}
 
-	c.entries[serviceName] = entry
+	entry := &ServiceEntry{
+		ServiceID:        serviceID,
+		ServiceName:      serviceName,
+		ServicePublicKey: servicePublicKey,
+		ConnectPolicy:    connectPolicy,
+		GrantService:     grantspkg.CloneGrantServiceEndpoint(grantService),
+		PeerID:           pID,
+		Addresses:        append([]string(nil), addresses...), // copy to prevent mutation
+		TTL:              ttl,
+		Registered:       time.Now(),
+	}
+
+	if old, ok := c.entries[key]; ok && old.ServiceName != serviceName {
+		c.removeNameIndexLocked(old.ServiceName, key)
+	}
+	c.entries[key] = entry
+	c.addNameIndexLocked(serviceName, key)
 	return nil
 }
 
@@ -79,19 +105,21 @@ func (c *Cache) Resolve(serviceName string) (*ServiceEntry, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	entry, ok := c.entries[serviceName]
+	entry, key, ok := c.resolveLocked(serviceName)
 	if !ok {
 		return nil, false
 	}
 	if entry.Expired() {
-		delete(c.entries, serviceName) // lazy cleanup
+		c.removeLocked(key, entry)
 		if c.onExpired != nil {
-			go c.onExpired(serviceName, entry.PeerID)
+			go c.onExpired(entry.ServiceName, entry.PeerID)
 		}
 		return nil, false
 	}
 	// Return a copy to prevent external mutation
 	e := *entry
+	e.Addresses = append([]string(nil), entry.Addresses...)
+	e.GrantService = grantspkg.CloneGrantServiceEndpoint(entry.GrantService)
 	return &e, true
 }
 
@@ -99,7 +127,11 @@ func (c *Cache) Resolve(serviceName string) (*ServiceEntry, bool) {
 func (c *Cache) Remove(serviceName string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.entries, serviceName)
+	entry, key, ok := c.resolveLocked(serviceName)
+	if !ok {
+		return
+	}
+	c.removeLocked(key, entry)
 }
 
 // Count returns the number of active (non-expired) entries in the cache.
@@ -115,17 +147,18 @@ func (c *Cache) List() []*ServiceEntry {
 		name string
 		pid  peer.ID
 	}
-	for name, entry := range c.entries {
+	for key, entry := range c.entries {
 		if entry.Expired() {
-			delete(c.entries, name)
+			c.removeLocked(key, entry)
 			expired = append(expired, struct {
 				name string
 				pid  peer.ID
-			}{name, entry.PeerID})
+			}{entry.ServiceName, entry.PeerID})
 			continue
 		}
 		copyEntry := *entry
 		copyEntry.Addresses = append([]string(nil), entry.Addresses...)
+		copyEntry.GrantService = grantspkg.CloneGrantServiceEndpoint(entry.GrantService)
 		entries = append(entries, &copyEntry)
 	}
 	onExpired := c.onExpired
@@ -144,6 +177,50 @@ func (c *Cache) Stop() {
 	close(c.stopCh)
 }
 
+func (c *Cache) resolveLocked(value string) (*ServiceEntry, string, bool) {
+	if entry, ok := c.entries[value]; ok {
+		return entry, value, true
+	}
+	for _, key := range c.nameIndex[value] {
+		if entry, ok := c.entries[key]; ok {
+			return entry, key, true
+		}
+	}
+	return nil, "", false
+}
+
+func (c *Cache) addNameIndexLocked(serviceName, key string) {
+	if serviceName == "" || key == "" {
+		return
+	}
+	for _, existing := range c.nameIndex[serviceName] {
+		if existing == key {
+			return
+		}
+	}
+	c.nameIndex[serviceName] = append(c.nameIndex[serviceName], key)
+}
+
+func (c *Cache) removeNameIndexLocked(serviceName, key string) {
+	keys := c.nameIndex[serviceName]
+	for i, existing := range keys {
+		if existing == key {
+			keys = append(keys[:i], keys[i+1:]...)
+			break
+		}
+	}
+	if len(keys) == 0 {
+		delete(c.nameIndex, serviceName)
+		return
+	}
+	c.nameIndex[serviceName] = keys
+}
+
+func (c *Cache) removeLocked(key string, entry *ServiceEntry) {
+	delete(c.entries, key)
+	c.removeNameIndexLocked(entry.ServiceName, key)
+}
+
 // cleanupLoop periodically removes expired entries from the cache.
 func (c *Cache) cleanupLoop() {
 	ticker := time.NewTicker(c.cleanupTick)
@@ -157,13 +234,13 @@ func (c *Cache) cleanupLoop() {
 				pid  peer.ID
 			}
 			c.mu.Lock()
-			for name, entry := range c.entries {
+			for key, entry := range c.entries {
 				if entry.Expired() {
-					delete(c.entries, name)
+					c.removeLocked(key, entry)
 					expired = append(expired, struct {
 						name string
 						pid  peer.ID
-					}{name, entry.PeerID})
+					}{entry.ServiceName, entry.PeerID})
 				}
 			}
 			c.mu.Unlock()

@@ -9,6 +9,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/origama/tubo/internal/discovery"
+	grantspkg "github.com/origama/tubo/internal/grants"
 )
 
 // --- Announcement signing and verification ---
@@ -43,6 +44,8 @@ func TestAnnouncementV2SignVerifyAndDecrypt(t *testing.T) {
 	payload := discovery.AnnouncementV2Payload{
 		ServiceName:          "my-api",
 		ServiceID:            "service-123",
+		ConnectPolicy:        "namespace_members",
+		GrantService:         &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWGrant"}},
 		Addresses:            []string{"/ip4/127.0.0.1/tcp/8080"},
 		MembershipCapability: []byte("membership-capability-bytes"),
 		ServiceClaim:         []byte("service-claim-bytes"),
@@ -86,6 +89,12 @@ func TestAnnouncementV2SignVerifyAndDecrypt(t *testing.T) {
 	}
 	if len(decoded.Addresses) != 1 || decoded.Addresses[0] != payload.Addresses[0] {
 		t.Fatalf("addresses = %#v want %#v", decoded.Addresses, payload.Addresses)
+	}
+	if decoded.ConnectPolicy != payload.ConnectPolicy {
+		t.Fatalf("connect policy = %q want %q", decoded.ConnectPolicy, payload.ConnectPolicy)
+	}
+	if decoded.GrantService == nil || decoded.GrantService.Protocol != payload.GrantService.Protocol || len(decoded.GrantService.Peers) != 1 || decoded.GrantService.Peers[0] != payload.GrantService.Peers[0] {
+		t.Fatalf("grant service = %#v want %#v", decoded.GrantService, payload.GrantService)
 	}
 	if !bytes.Equal(decoded.MembershipCapability, payload.MembershipCapability) {
 		t.Fatalf("membership capability bytes mismatch")

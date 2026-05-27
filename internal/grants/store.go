@@ -22,24 +22,28 @@ const (
 )
 
 type Request struct {
-	ID                   string                           `json:"id"`
-	ClusterName          string                           `json:"cluster_name"`
-	ClusterID            string                           `json:"cluster_id"`
-	NamespaceID          string                           `json:"namespace_id"`
-	RequesterPeerID      string                           `json:"requester_peer_id"`
-	ServiceName          string                           `json:"service_name"`
-	ServiceID            string                           `json:"service_id"`
-	ServicePeerID        string                           `json:"service_peer_id"`
-	RequestedPermissions []string                         `json:"requested_permissions"`
-	RequestedTTLSeconds  int64                            `json:"requested_ttl_seconds,omitempty"`
-	Status               string                           `json:"status"`
-	RequestedAt          time.Time                        `json:"requested_at"`
-	ExpiresAt            time.Time                        `json:"expires_at"`
-	DecidedAt            time.Time                        `json:"decided_at,omitempty"`
-	DenialReason         string                           `json:"denial_reason,omitempty"`
-	ServiceClaim         *capability.ServiceClaim         `json:"service_claim,omitempty"`
-	MembershipCapability *capability.MembershipCapability `json:"membership_capability,omitempty"`
-	ServiceShareToken    string                           `json:"service_share_token,omitempty"`
+	ID                    string                           `json:"id"`
+	ClusterName           string                           `json:"cluster_name"`
+	ClusterID             string                           `json:"cluster_id"`
+	NamespaceID           string                           `json:"namespace_id"`
+	RequesterPeerID       string                           `json:"requester_peer_id"`
+	ServiceName           string                           `json:"service_name"`
+	ServiceID             string                           `json:"service_id"`
+	ServicePublicKey      string                           `json:"service_public_key"`
+	ServiceOwnerSignature []byte                           `json:"service_owner_signature,omitempty"`
+	RequestNonce          string                           `json:"request_nonce"`
+	ServicePeerID         string                           `json:"service_peer_id"`
+	RequestedPermissions  []string                         `json:"requested_permissions"`
+	RequestedTTLSeconds   int64                            `json:"requested_ttl_seconds,omitempty"`
+	Status                string                           `json:"status"`
+	RequestedAt           time.Time                        `json:"requested_at"`
+	ExpiresAt             time.Time                        `json:"expires_at"`
+	DecidedAt             time.Time                        `json:"decided_at,omitempty"`
+	DenialReason          string                           `json:"denial_reason,omitempty"`
+	ServiceClaim          *capability.ServiceClaim         `json:"service_claim,omitempty"`
+	PublishLease          *PublishLease                    `json:"publish_lease,omitempty"`
+	MembershipCapability  *capability.MembershipCapability `json:"membership_capability,omitempty"`
+	ServiceShareToken     string                           `json:"service_share_token,omitempty"`
 }
 
 type fileState struct {
@@ -152,7 +156,7 @@ func (s *Store) Get(id string) (Request, bool, error) {
 	return Request{}, false, nil
 }
 
-func (s *Store) Approve(id string, claim capability.ServiceClaim, membership *capability.MembershipCapability, serviceShareToken string) (Request, error) {
+func (s *Store) Approve(id string, claim capability.ServiceClaim, lease *PublishLease, membership *capability.MembershipCapability, serviceShareToken string) (Request, error) {
 	state, err := s.load()
 	if err != nil {
 		return Request{}, err
@@ -174,8 +178,12 @@ func (s *Store) Approve(id string, claim capability.ServiceClaim, membership *ca
 		state.Requests[i].Status = StatusApproved
 		state.Requests[i].DecidedAt = now
 		state.Requests[i].ServiceClaim = &claim
+		state.Requests[i].PublishLease = lease
 		state.Requests[i].MembershipCapability = membership
 		state.Requests[i].ServiceShareToken = serviceShareToken
+		if expiry, ok := approvedRequestExpiry(state.Requests[i]); ok {
+			state.Requests[i].ExpiresAt = expiry
+		}
 		if err := s.save(state); err != nil {
 			return Request{}, err
 		}
@@ -279,7 +287,10 @@ func (s *Store) save(state fileState) error {
 func (s *fileState) expire(now time.Time) int {
 	changed := 0
 	for i := range s.Requests {
-		if s.Requests[i].Status == StatusPending && !s.Requests[i].ExpiresAt.IsZero() && now.After(s.Requests[i].ExpiresAt.UTC()) {
+		if isRequestExpired(s.Requests[i], now) && s.Requests[i].Status != StatusExpired {
+			if expiry, ok := requestExpiry(s.Requests[i]); ok {
+				s.Requests[i].ExpiresAt = expiry
+			}
 			s.Requests[i].Status = StatusExpired
 			changed++
 		}
@@ -292,14 +303,53 @@ func (s *fileState) sort() {
 }
 
 func equivalentActive(a, b Request) bool {
-	return a.ClusterID == b.ClusterID && a.NamespaceID == b.NamespaceID && a.RequesterPeerID == b.RequesterPeerID && a.ServiceName == b.ServiceName && a.ServiceID == b.ServiceID && a.ServicePeerID == b.ServicePeerID
+	return a.ClusterID == b.ClusterID && a.NamespaceID == b.NamespaceID && a.RequesterPeerID == b.RequesterPeerID && a.ServiceID == b.ServiceID && a.ServicePeerID == b.ServicePeerID && a.RequestNonce == b.RequestNonce
 }
 
 func validateStoreRequest(req Request) error {
-	if req.ClusterName == "" || req.ClusterID == "" || req.NamespaceID == "" || req.RequesterPeerID == "" || req.ServiceName == "" || req.ServiceID == "" || req.ServicePeerID == "" {
+	if req.ClusterName == "" || req.ClusterID == "" || req.NamespaceID == "" || req.RequesterPeerID == "" || req.ServiceName == "" || req.ServiceID == "" || req.ServicePublicKey == "" || len(req.ServiceOwnerSignature) == 0 || req.RequestNonce == "" || req.ServicePeerID == "" {
 		return errors.New("grant request is missing required fields")
 	}
 	return nil
+}
+
+func requestExpiry(req Request) (time.Time, bool) {
+	switch req.Status {
+	case StatusPending:
+		if req.ExpiresAt.IsZero() {
+			return time.Time{}, false
+		}
+		return req.ExpiresAt.UTC(), true
+	case StatusApproved:
+		return approvedRequestExpiry(req)
+	default:
+		return time.Time{}, false
+	}
+}
+
+func approvedRequestExpiry(req Request) (time.Time, bool) {
+	var expiry time.Time
+	if req.PublishLease != nil && !req.PublishLease.ExpiresAt.IsZero() {
+		expiry = req.PublishLease.ExpiresAt.UTC()
+	}
+	if req.ServiceClaim != nil && !req.ServiceClaim.ExpiresAt.IsZero() {
+		claimExpiry := req.ServiceClaim.ExpiresAt.UTC()
+		if expiry.IsZero() || claimExpiry.Before(expiry) {
+			expiry = claimExpiry
+		}
+	}
+	if expiry.IsZero() && !req.ExpiresAt.IsZero() {
+		expiry = req.ExpiresAt.UTC()
+	}
+	if expiry.IsZero() {
+		return time.Time{}, false
+	}
+	return expiry, true
+}
+
+func isRequestExpired(req Request, now time.Time) bool {
+	expiry, ok := requestExpiry(req)
+	return ok && now.After(expiry)
 }
 
 func randomID(prefix string) (string, error) {

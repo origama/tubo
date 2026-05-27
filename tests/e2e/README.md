@@ -2,9 +2,13 @@
 
 Questo harness esegue scenari Docker-based, uno per volta, con container separati per attori e stato persistente per actor sotto `generated/e2e/<scenario>-<run-id>/`.
 
-Scenario iniziale:
+Scenari disponibili:
 
 - `001-default-cluster-default-namespace`
+- `collaboration_namespace_flows`
+- `public_duplicate_display_names`
+- `public_one_time_share_invite`
+- `public_stolen_access_token_rejected`
 
 Uso:
 
@@ -36,3 +40,7 @@ Il primo scenario valida il happy path base:
 - relay container `admin`;
 - Alice pubblica un servizio `e2e-echo` e genera il token `tubo share service/...`;
 - Bob parte da config pulita, fa implicit public join e si collega direttamente con `tubo connect --token`, senza `tubo join cluster/home`.
+
+Lo scenario `collaboration_namespace_flows` copre il ramo collaboration: invite `member` che puo' discover+connect by name, invite `viewer` che puo' listare ma non aprire lease di connect, e share invite che continua a funzionare cross-scope anche senza membership di namespace.
+
+Gli scenari `public_*` coprono i gate security/discovery di `0.7.0.b0`: duplicate display name accettate solo come record distinti per `service_id`, lease non valide respinte, connect proof rubati/scaduti/replay respinti, auto-renew dei `ConnectAccessLease`, invite one-time anche dopo attach restart e fresh-client retry, e revoche issuer-side per invite/session/service-access.

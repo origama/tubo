@@ -16,6 +16,7 @@ const (
 	PermissionConnect   = "connect"
 	PermissionAttach    = "attach"
 	PermissionAnnounce  = "announce"
+	PermissionShareMint = "share.mint"
 )
 
 type MembershipCapability struct {

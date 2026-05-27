@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/protocol"
 )
@@ -36,29 +39,39 @@ type Config struct {
 	DiscoveryClusterID                                                                                string
 	DiscoveryNamespaceID                                                                              string
 	AuthorityPublicKey                                                                                string
+	AuthorityPrivateKeyFile                                                                           string
+	ClusterName                                                                                       string
 	ServiceID                                                                                         string
+	ServiceOwnerKeyFile                                                                               string
+	ConnectPolicy                                                                                     string
+	GrantService                                                                                      *grantspkg.GrantServiceEndpoint
 	MembershipCapabilityFile                                                                          string
 	ServiceClaimFile                                                                                  string
+	ServicePublishLeaseFile                                                                           string
+	DiscoveryEnabled                                                                                  bool
+	Visibility                                                                                        string
 }
 type App struct {
-	cfg                   Config
-	host                  host.Host
-	publisher             *discovery.Publisher
-	hb                    *discovery.HeartbeatLoop
-	discoveryMode         discovery.Mode
-	serviceID             string
-	serviceCapabilityFile string
-	serviceClaimFile      string
-	health                *http.Server
-	cache                 *discovery.Cache
-	stopSubscriber        chan struct{}
-	relayInfos            []peer.AddrInfo
-	announcementTTL       time.Duration
-	requireRelayReadyAnn  bool
-	reservationMu         sync.RWMutex
-	reservationReadyUntil time.Time
-	relayConnMu           sync.RWMutex
-	relayConnected        map[peer.ID]bool
+	cfg                     Config
+	host                    host.Host
+	publisher               *discovery.Publisher
+	hb                      *discovery.HeartbeatLoop
+	discoveryMode           discovery.Mode
+	serviceID               string
+	serviceCapabilityFile   string
+	serviceClaimFile        string
+	servicePublishLeaseFile string
+	grantEndpointEnabled    bool
+	health                  *http.Server
+	cache                   *discovery.Cache
+	stopSubscriber          chan struct{}
+	relayInfos              []peer.AddrInfo
+	announcementTTL         time.Duration
+	requireRelayReadyAnn    bool
+	reservationMu           sync.RWMutex
+	reservationReadyUntil   time.Time
+	relayConnMu             sync.RWMutex
+	relayConnected          map[peer.ID]bool
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -115,58 +128,75 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 			_ = h.Close()
 			return nil, fmt.Errorf("parse authority public key: %w", err)
 		}
-		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), Replay: p2p.NewConnectProofReplayCache(1024)}
+		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), ServicePeerID: h.ID().String(), Replay: p2p.NewConnectProofReplayCache(1024)}
 	}
 	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
 	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
-	gs, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
-	if err != nil {
-		_ = h.Close()
-		return nil, err
+	grantEndpointEnabled := false
+	if cfg.DiscoveryEnabled {
+		grantEndpoint, err := newServiceGrantEndpoint(cfg, resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), h.ID().String())
+		if err != nil {
+			_ = h.Close()
+			return nil, fmt.Errorf("configure service grant endpoint: %w", err)
+		}
+		h.SetStreamHandler(grantspkg.ProtocolID, grantEndpoint.HandleStream)
+		grantEndpointEnabled = true
 	}
-	topicName := cfg.DiscoveryTopic
-	if topicName == "" {
-		topicName = discovery.DiscoveryTopic
-	}
-	topic, err := gs.Join(topicName)
-	if err != nil {
-		_ = h.Close()
-		return nil, err
-	}
-	cache := discovery.NewCache(30*time.Second, time.Second)
-	subscriber := discovery.NewPubSubSubscriber(topic, cache)
-	if mode == discovery.ModeNamespaceV2 {
-		subscriber = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
-	}
-	if pubKey := h.Peerstore().PubKey(h.ID()); pubKey != nil {
-		subscriber.AddPublicKey(h.ID(), pubKey)
-	}
-	stopSubscriber := subscriber.Start(ctx)
+	var pub *discovery.Publisher
+	var cache *discovery.Cache
+	var stopSubscriber chan struct{}
+	if cfg.DiscoveryEnabled {
+		gs, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
+		if err != nil {
+			_ = h.Close()
+			return nil, err
+		}
+		topicName := cfg.DiscoveryTopic
+		if topicName == "" {
+			topicName = discovery.DiscoveryTopic
+		}
+		topic, err := gs.Join(topicName)
+		if err != nil {
+			_ = h.Close()
+			return nil, err
+		}
+		cache = discovery.NewCache(30*time.Second, time.Second)
+		subscriber := discovery.NewPubSubSubscriber(topic, cache)
+		if mode == discovery.ModeNamespaceV2 {
+			subscriber = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
+		}
+		if pubKey := h.Peerstore().PubKey(h.ID()); pubKey != nil {
+			subscriber.AddPublicKey(h.ID(), pubKey)
+		}
+		stopSubscriber = subscriber.Start(ctx)
 
-	pk := h.Peerstore().PrivKey(h.ID())
-	if pk == nil {
-		close(stopSubscriber)
-		cache.Stop()
-		_ = h.Close()
-		return nil, fmt.Errorf("no private key for peer")
+		pk := h.Peerstore().PrivKey(h.ID())
+		if pk == nil {
+			close(stopSubscriber)
+			cache.Stop()
+			_ = h.Close()
+			return nil, fmt.Errorf("no private key for peer")
+		}
+		pub = discovery.NewPublisher(topic, pk)
+		h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
 	}
-	pub := discovery.NewPublisher(topic, pk)
 	app := &App{
-		cfg:                   cfg,
-		host:                  h,
-		publisher:             pub,
-		cache:                 cache,
-		stopSubscriber:        stopSubscriber,
-		relayInfos:            relays,
-		announcementTTL:       computeAnnouncementTTL(cfg.HeartbeatInterval),
-		requireRelayReadyAnn:  len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
-		relayConnected:        make(map[peer.ID]bool),
-		discoveryMode:         mode,
-		serviceID:             resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName),
-		serviceCapabilityFile: cfg.MembershipCapabilityFile,
-		serviceClaimFile:      cfg.ServiceClaimFile,
+		cfg:                     cfg,
+		host:                    h,
+		publisher:               pub,
+		cache:                   cache,
+		stopSubscriber:          stopSubscriber,
+		relayInfos:              relays,
+		announcementTTL:         computeAnnouncementTTL(cfg.HeartbeatInterval),
+		requireRelayReadyAnn:    len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
+		relayConnected:          make(map[peer.ID]bool),
+		discoveryMode:           mode,
+		serviceID:               resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName),
+		serviceCapabilityFile:   cfg.MembershipCapabilityFile,
+		serviceClaimFile:        cfg.ServiceClaimFile,
+		servicePublishLeaseFile: cfg.ServicePublishLeaseFile,
+		grantEndpointEnabled:    grantEndpointEnabled,
 	}
-	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
 	app.registerRelayNotifiee()
 	return app, nil
 }
@@ -201,12 +231,12 @@ func (a *App) Start(ctx context.Context) error {
 		}()
 	}
 	go a.maintainRelayReservations(ctx)
-	if a.discoveryMode == discovery.ModeNamespaceV2 {
+	if a.cfg.DiscoveryEnabled && a.discoveryMode == discovery.ModeNamespaceV2 {
 		if !a.publishCurrentAnnouncementV2(ctx) {
-			log.Printf("initial announcement deferred: relay reservation not ready yet")
+			log.Printf("initial announcement deferred: publish lease unavailable or relay reservation not ready yet")
 		}
 		go a.runAnnouncementLoopV2(ctx)
-	} else {
+	} else if a.cfg.DiscoveryEnabled {
 		if !a.hb.PublishNow(ctx) {
 			log.Printf("initial announcement deferred: relay reservation not ready yet")
 		}
@@ -322,11 +352,21 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.Annou
 	if a.requireRelayReadyAnn {
 		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
 	}
-	payload := discovery.AnnouncementV2Payload{ServiceName: a.cfg.ServiceName, ServiceID: a.serviceID, Addresses: addrs, RegisteredAt: time.Now().UTC()}
+	grantService := grantspkg.SanitizeGrantServiceEndpoint(a.cfg.GrantService)
+	if a.grantEndpointEnabled {
+		grantService = advertisedGrantServiceEndpoint(addrs)
+	}
+	payload := discovery.AnnouncementV2Payload{ServiceName: a.cfg.ServiceName, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, RegisteredAt: time.Now().UTC()}
 	if capBytes, err := a.loadMembershipCapabilityBytes(); err == nil && len(capBytes) > 0 {
 		payload.MembershipCapability = capBytes
 	}
-	if claimBytes, err := a.loadServiceClaimBytes(); err == nil && len(claimBytes) > 0 {
+	leaseBytes, lease, err := a.loadPublishLeaseBytes()
+	if err != nil || len(leaseBytes) == 0 {
+		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
+	}
+	payload.PublishLease = leaseBytes
+	payload.ServicePublicKey = lease.ServicePublicKey
+	if claimBytes, err := json.Marshal(lease.ServiceClaim); err == nil {
 		payload.ServiceClaim = claimBytes
 	}
 	ann, err := discovery.NewAnnouncementV2(a.discoveryClusterID(), a.discoveryNamespaceID(), a.host.ID(), a.announcementTTL, payload)
@@ -337,6 +377,9 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.Annou
 }
 
 func (a *App) publishCurrentAnnouncementV2(ctx context.Context) bool {
+	if a.publisher == nil {
+		return false
+	}
 	ann, payload, ok := a.currentAnnouncementV2()
 	if !ok {
 		return false
@@ -364,7 +407,7 @@ func (a *App) runAnnouncementLoopV2(ctx context.Context) {
 		case <-ticker.C:
 			ann, payload, ok := a.currentAnnouncementV2()
 			if !ok {
-				log.Printf("heartbeat skipped: service announcement not ready yet")
+				log.Printf("heartbeat skipped: publish lease unavailable or expired; service remains running but is not advertised")
 				continue
 			}
 			if err := a.publisher.PublishV2(ctx, ann); err != nil {
@@ -382,7 +425,7 @@ func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.Ann
 	peers := append([]string(nil), a.cfg.BootstrapPeers...)
 	peers = append(peers, a.cfg.RelayPeers...)
 	seen := make(map[string]struct{}, len(peers))
-	service := discoveryquery.Service{Kind: "service", Name: payload.ServiceName, PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
+	service := discoveryquery.Service{Kind: "service", Name: payload.ServiceName, ServiceID: payload.ServiceID, ServicePublicKey: payload.ServicePublicKey, ConnectPolicy: payload.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(payload.GrantService), PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
 	for _, raw := range peers {
 		if raw == "" {
 			continue
@@ -407,6 +450,31 @@ func (a *App) loadMembershipCapabilityBytes() ([]byte, error) {
 		return nil, nil
 	}
 	return os.ReadFile(a.serviceCapabilityFile)
+}
+
+func (a *App) loadPublishLeaseBytes() ([]byte, grantspkg.PublishLease, error) {
+	if a.servicePublishLeaseFile == "" {
+		return nil, grantspkg.PublishLease{}, nil
+	}
+	b, err := os.ReadFile(a.servicePublishLeaseFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, grantspkg.PublishLease{}, nil
+		}
+		return nil, grantspkg.PublishLease{}, err
+	}
+	if len(b) == 0 {
+		return nil, grantspkg.PublishLease{}, nil
+	}
+	authorityPub, err := discovery.ParseAuthorityPublicKey(a.cfg.AuthorityPublicKey)
+	if err != nil {
+		return nil, grantspkg.PublishLease{}, err
+	}
+	lease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(b, authorityPub, a.discoveryClusterIDValue(), a.discoveryNamespaceIDValue(), a.serviceID, a.host.ID().String())
+	if err != nil {
+		return nil, grantspkg.PublishLease{}, err
+	}
+	return b, lease, nil
 }
 
 func (a *App) loadServiceClaimBytes() ([]byte, error) {
@@ -570,6 +638,9 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 	lastReady := false
 
 	publish := func() {
+		if !a.cfg.DiscoveryEnabled {
+			return
+		}
 		if a.discoveryMode == discovery.ModeNamespaceV2 {
 			if !a.publishCurrentAnnouncementV2(ctx) {
 				log.Printf("relay-ready publish skipped: announcement not ready")

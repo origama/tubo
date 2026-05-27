@@ -16,6 +16,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/origama/tubo/internal/capability"
+	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 const broadNamespaceWildcard = "*"
@@ -23,6 +25,7 @@ const broadNamespaceWildcard = "*"
 // DiscoveryEvent is emitted when a service registration changes.
 type DiscoveryEvent struct {
 	Type        string // "added" or "removed"
+	ServiceID   string
 	ServiceName string
 	PeerID      peer.ID
 }
@@ -256,20 +259,44 @@ func (s *PubSubSubscriber) handleMessageV2(msg *pubsub.Message) {
 	if err := verifyAnnouncementMembership(membership, s.authorityPublicKey, s.clusterID, s.namespaceID, ann.PeerID.String()); err != nil {
 		return
 	}
-	if payload.ServiceID == "" || len(payload.ServiceClaim) == 0 {
+	if payload.ServiceID == "" || payload.ServicePublicKey == "" {
 		return
 	}
-	var claim capability.ServiceClaim
-	if err := json.Unmarshal(payload.ServiceClaim, &claim); err != nil {
+	servicePub, err := serviceidentity.DecodePublicKey(payload.ServicePublicKey)
+	if err != nil {
 		return
 	}
-	if err := capability.VerifyServiceClaim(claim, s.authorityPublicKey, s.clusterID, s.namespaceID, payload.ServiceID, ann.PeerID.String()); err != nil {
+	if err := serviceidentity.MatchServiceID(servicePub, payload.ServiceID); err != nil {
 		return
 	}
 	expiresAt := payload.RegisteredAt.UTC().Add(ann.TTL)
-	claimExpiresAt := claim.ExpiresAt.UTC()
-	if claimExpiresAt.Before(expiresAt) {
-		expiresAt = claimExpiresAt
+	if len(payload.PublishLease) > 0 {
+		lease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(payload.PublishLease, s.authorityPublicKey, s.clusterID, s.namespaceID, payload.ServiceID, ann.PeerID.String())
+		if err != nil {
+			return
+		}
+		if lease.ServicePublicKey != payload.ServicePublicKey {
+			return
+		}
+		leaseExpiresAt := lease.ExpiresAt.UTC()
+		if leaseExpiresAt.Before(expiresAt) {
+			expiresAt = leaseExpiresAt
+		}
+	} else {
+		if len(payload.ServiceClaim) == 0 {
+			return
+		}
+		var claim capability.ServiceClaim
+		if err := json.Unmarshal(payload.ServiceClaim, &claim); err != nil {
+			return
+		}
+		if err := capability.VerifyServiceClaim(claim, s.authorityPublicKey, s.clusterID, s.namespaceID, payload.ServiceID, ann.PeerID.String()); err != nil {
+			return
+		}
+		claimExpiresAt := claim.ExpiresAt.UTC()
+		if claimExpiresAt.Before(expiresAt) {
+			expiresAt = claimExpiresAt
+		}
 	}
 	cacheTTL := time.Until(expiresAt)
 	if cacheTTL <= 0 {
@@ -279,11 +306,11 @@ func (s *PubSubSubscriber) handleMessageV2(msg *pubsub.Message) {
 	if s.replay != nil && s.replay.Seen(replayKey, expiresAt) {
 		return
 	}
-	if err := s.cache.Add(ann.PeerID, payload.ServiceName, payload.Addresses, cacheTTL); err != nil {
+	if err := s.cache.AddV2(ann.PeerID, payload.ServiceID, payload.ServiceName, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), payload.Addresses, cacheTTL); err != nil {
 		return
 	}
 	log.Printf("discovery v2 announcement accepted service=%q peer=%s namespace=%s/%s addrs=%d ttl=%s", payload.ServiceName, ann.PeerID, s.clusterID, s.namespaceID, len(payload.Addresses), ann.TTL)
-	s.events <- DiscoveryEvent{Type: "added", ServiceName: payload.ServiceName, PeerID: ann.PeerID}
+	s.events <- DiscoveryEvent{Type: "added", ServiceID: payload.ServiceID, ServiceName: payload.ServiceName, PeerID: ann.PeerID}
 }
 
 func verifyAnnouncementMembership(membership capability.MembershipCapability, pub ed25519.PublicKey, clusterID, namespaceID, announcerPeerID string) error {

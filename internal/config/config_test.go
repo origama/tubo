@@ -250,6 +250,10 @@ func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T)
 	if runtime.ClusterID != "cluster-123" || runtime.NamespaceID != "tenant-a" {
 		t.Fatalf("runtime = %#v", runtime)
 	}
+	issuer, ok := cfg.ScopeIssuer("home", "tenant-a")
+	if !ok || issuer.AuthorityPublicKey != "ssh-ed25519 AAAA" || issuer.ClusterName != "home" || issuer.NamespaceName != "tenant-a" {
+		t.Fatalf("issuer = %#v ok=%t", issuer, ok)
+	}
 }
 
 func TestDiscoveryRuntimeWithoutClusterIdentityReturnsZeroValue(t *testing.T) {
@@ -262,6 +266,163 @@ func TestDiscoveryRuntimeWithoutClusterIdentityReturnsZeroValue(t *testing.T) {
 		t.Fatal("expected discovery runtime requirement error")
 	}
 }
+
+func TestResolveEffectiveScopePrefersExplicitOverridesAndCurrentContext(t *testing.T) {
+	cfg := Config{CurrentOverlay: "tubo-public", CurrentCluster: "home", CurrentNamespace: "default"}
+	scope, err := ResolveEffectiveScope(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scope.Overlay != "tubo-public" || scope.Cluster != "home" || scope.Namespace != "default" || scope.AllNamespaces {
+		t.Fatalf("scope = %#v", scope)
+	}
+	override, err := ResolveEffectiveScope(cfg, "ops", "metrics", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if override.Overlay != "tubo-public" || override.Cluster != "ops" || override.Namespace != "metrics" {
+		t.Fatalf("override = %#v", override)
+	}
+	all, err := ResolveEffectiveScope(cfg, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !all.AllNamespaces || all.Namespace != "" {
+		t.Fatalf("all namespaces scope = %#v", all)
+	}
+	if _, err := ResolveEffectiveScope(Config{}, "", "metrics", false); err == nil {
+		t.Fatal("expected missing cluster error")
+	}
+}
+
+func TestIsPublicDefaultScopeUsesOverlayMetadataNotJustHomeDefaultNames(t *testing.T) {
+	cfg := Config{
+		CurrentOverlay:   "tubo-public",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays: map[string]Overlay{
+			"tubo-public": {
+				Kind:                   OverlayKindPublicBundle,
+				PublicDefaultCluster:   "home",
+				PublicDefaultNamespace: "default",
+			},
+			"manual": {
+				PublicDefaultCluster:   "home",
+				PublicDefaultNamespace: "default",
+			},
+		},
+		Clusters: map[string]Cluster{
+			"home": {Namespaces: map[string]Namespace{"default": {}}},
+		},
+	}
+	publicScope, err := ResolveEffectiveScope(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsPublicDefaultScope(cfg, publicScope) {
+		t.Fatalf("expected public default scope, got %#v", publicScope)
+	}
+	policy := EffectiveScopePolicy(cfg, publicScope)
+	if !policy.PublicDefault || policy.Discovery != NamespaceDiscoveryDisabled || policy.ConnectPolicy != ConnectPolicyInviteOnly {
+		t.Fatalf("expected invite-only public default policy, got %#v", policy)
+	}
+	customScope := Scope{Overlay: "tubo-public", Cluster: "team-origama", Namespace: "lab"}
+	if IsPublicDefaultScope(cfg, customScope) {
+		t.Fatalf("custom public-overlay scope must not be treated as public default: %#v", customScope)
+	}
+	privateScope := Scope{Overlay: "manual", Cluster: "home", Namespace: "default"}
+	if IsPublicDefaultScope(cfg, privateScope) {
+		t.Fatalf("private/manual home/default must not be treated as public default: %#v", privateScope)
+	}
+	if IsPublicDefaultScope(cfg, Scope{Overlay: "tubo-public", Cluster: "home", Namespace: "", AllNamespaces: true}) {
+		t.Fatal("all-namespaces scope must not be treated as public default")
+	}
+	legacy := Config{CurrentOverlay: "tubo-public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]Overlay{"tubo-public": {}}, Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}}}
+	legacyScope, err := ResolveEffectiveScope(legacy, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if IsPublicDefaultScope(legacy, legacyScope) {
+		t.Fatalf("overlay without explicit public metadata must not be treated as public default: %#v", legacyScope)
+	}
+}
+
+func TestEffectiveScopePolicyUsesNamespaceDefaultsOutsidePublicDefault(t *testing.T) {
+	cfg := Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays:         map[string]Overlay{"manual": {}},
+		Clusters: map[string]Cluster{
+			"home": {Namespaces: map[string]Namespace{
+				"default": {},
+				"lab":     {Discovery: NamespaceDiscoveryDisabled, ConnectPolicy: ConnectPolicyPublic},
+			}},
+		},
+	}
+	defaultScope, err := ResolveEffectiveScope(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := EffectiveScopePolicy(cfg, defaultScope)
+	if policy.PublicDefault || policy.Discovery != NamespaceDiscoveryEnabled || policy.ConnectPolicy != ConnectPolicyNamespaceMember {
+		t.Fatalf("unexpected default custom policy: %#v", policy)
+	}
+	labScope, err := ResolveEffectiveScope(cfg, "home", "lab", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy = EffectiveScopePolicy(cfg, labScope)
+	if policy.PublicDefault || policy.Discovery != NamespaceDiscoveryDisabled || policy.ConnectPolicy != ConnectPolicyPublic {
+		t.Fatalf("unexpected explicit namespace policy: %#v", policy)
+	}
+}
+
+func TestValidateRejectsUnknownNamespacePolicies(t *testing.T) {
+	cfg := Defaults("service")
+	cfg.Clusters = map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {Discovery: "bogus"}}}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "clusters.home.namespaces.default.discovery") {
+		t.Fatalf("expected discovery validation error, got %v", err)
+	}
+	cfg.Clusters["home"] = Cluster{Namespaces: map[string]Namespace{"default": {ConnectPolicy: "bogus"}}}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "clusters.home.namespaces.default.connect_policy") {
+		t.Fatalf("expected connect_policy validation error, got %v", err)
+	}
+}
+
+func TestRequireAmbientDiscoveryScopeRejectsPublicDefault(t *testing.T) {
+	cfg := Config{
+		CurrentOverlay:   "tubo-public",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays:         map[string]Overlay{"tubo-public": {Kind: OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}},
+		Clusters:         map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}},
+	}
+	scope, err := ResolveEffectiveScope(cfg, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = RequireAmbientDiscoveryScope(cfg, scope)
+	if err == nil || !IsAmbientDiscoveryDisabled(err) || !strings.Contains(err.Error(), "tubo connect --token <invite>") {
+		t.Fatalf("expected public-default ambient discovery error, got %v", err)
+	}
+	allScope, err := ResolveEffectiveScope(cfg, "", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = RequireAmbientDiscoveryScope(cfg, allScope)
+	if err == nil || !IsAmbientDiscoveryDisabled(err) || !strings.Contains(err.Error(), "tubo connect --token <invite>") {
+		t.Fatalf("expected public-default all-namespaces ambient discovery error, got %v", err)
+	}
+	customScope, err := ResolveEffectiveScope(Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]Overlay{"manual": {}}, Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}}}, "", "", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireAmbientDiscoveryScope(Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]Overlay{"manual": {}}, Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {}}}}}, customScope); err != nil {
+		t.Fatalf("unexpected ambient discovery error outside public default: %v", err)
+	}
+}
+
 func TestValidateRequired(t *testing.T) {
 	c := Defaults("bridge")
 	if err := Validate(c); err == nil || !strings.Contains(err.Error(), "service_addr") {

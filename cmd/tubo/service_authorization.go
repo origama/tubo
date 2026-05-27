@@ -10,6 +10,8 @@ import (
 	"time"
 
 	capability "github.com/origama/tubo/internal/capability"
+	catalog "github.com/origama/tubo/internal/catalog"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 )
@@ -19,6 +21,9 @@ const broadNamespaceWildcard = "*"
 func resolveAuthorizedServiceScopes(cfg cfgpkg.Config, clusterFlag, namespaceFlag string, allNamespaces bool) ([]serviceScope, error) {
 	base, err := resolveServiceScope(cfg, clusterFlag, namespaceFlag, allNamespaces)
 	if err != nil {
+		return nil, err
+	}
+	if err := cfgpkg.RequireAmbientDiscoveryScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: base.Cluster, Namespace: base.Namespace, AllNamespaces: allNamespaces}); err != nil {
 		return nil, err
 	}
 	runtime, err := cfg.RequireDiscoveryRuntime()
@@ -98,7 +103,7 @@ func authorizeServiceNamespace(cfg cfgpkg.Config, clusterName, namespace string)
 	if cap.NamespaceID != namespace && cap.NamespaceID != broadNamespaceWildcard {
 		return fmt.Errorf("membership capability for %s/%s does not authorize namespace %q", clusterName, namespace, namespace)
 	}
-	if !containsAllStrings(cap.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}) {
+	if !containsAllStrings(cap.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList}) {
 		return fmt.Errorf("membership capability for %s/%s is missing discovery permissions", clusterName, namespace)
 	}
 	return nil
@@ -109,19 +114,15 @@ func clusterMembershipGrantAuthorizesNamespace(cluster cfgpkg.Cluster, clusterNa
 	if grant == nil {
 		return false
 	}
-	if grant.ClusterName != clusterName || grant.ClusterID != cluster.ClusterID || grant.Namespace != namespace {
+	return clusterinvite.AllowsPermissions(*grant, clusterName, cluster.ClusterID, namespace, capability.PermissionSubscribe, capability.PermissionList)
+}
+
+func clusterMembershipGrantAuthorizesConnect(cluster cfgpkg.Cluster, clusterName, namespace string) bool {
+	grant := cluster.MembershipGrant
+	if grant == nil {
 		return false
 	}
-	if grant.Role != clusterInviteDefaultRole {
-		return false
-	}
-	if !containsAllStrings(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}) {
-		return false
-	}
-	if grant.ExpiresAt.IsZero() || time.Now().UTC().After(grant.ExpiresAt.UTC()) {
-		return false
-	}
-	return true
+	return clusterinvite.AllowsPermissions(*grant, clusterName, cluster.ClusterID, namespace, capability.PermissionConnect)
 }
 
 func namespaceMembershipCapabilityFile(cluster cfgpkg.Cluster, namespace string) (string, error) {
@@ -172,7 +173,8 @@ func discoverServicesAcrossScopes(cfg cfgpkg.Config, timeout time.Duration, scop
 		scopedCfg := cfg
 		scopedCfg.CurrentCluster = scope.Cluster
 		scopedCfg.CurrentNamespace = scope.Namespace
-		result, err := discoverServicesWithConfig(scopedCfg, timeout, false, true, scope)
+		catalogResult, err := catalog.DiscoverServicesWithConfig(scopedCfg, timeout, false, true, toCatalogScope(scope))
+		result := fromCatalogLookupResult(catalogResult)
 		if err != nil {
 			return discoveryLookupResult{}, fmt.Errorf("namespace %s/%s: %w", scope.Cluster, scope.Namespace, err)
 		}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/protocol"
 	"github.com/origama/tubo/internal/routing"
@@ -464,6 +465,7 @@ func copyServiceEntry(entry *discovery.ServiceEntry) *discovery.ServiceEntry {
 	}
 	copied := *entry
 	copied.Addresses = append([]string(nil), entry.Addresses...)
+	copied.GrantService = grantspkg.CloneGrantServiceEndpoint(entry.GrantService)
 	return &copied
 }
 
@@ -1099,16 +1101,20 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 }
 
 type serviceAdminView struct {
-	Kind             string   `json:"kind"`
-	Name             string   `json:"name"`
-	PeerID           string   `json:"peer_id"`
-	Addresses        []string `json:"addresses"`
-	Status           string   `json:"status"`
-	Path             string   `json:"path"`
-	TTLSeconds       int64    `json:"ttl_seconds"`
-	ExpiresInSeconds int64    `json:"expires_in_seconds"`
-	Capabilities     []string `json:"capabilities"`
-	RegisteredAt     string   `json:"registered_at"`
+	Kind             string                          `json:"kind"`
+	Name             string                          `json:"name"`
+	ServiceID        string                          `json:"service_id,omitempty"`
+	ServicePublicKey string                          `json:"service_public_key,omitempty"`
+	ConnectPolicy    string                          `json:"connect_policy,omitempty"`
+	GrantService     *grantspkg.GrantServiceEndpoint `json:"grant_service,omitempty"`
+	PeerID           string                          `json:"peer_id"`
+	Addresses        []string                        `json:"addresses"`
+	Status           string                          `json:"status"`
+	Path             string                          `json:"path"`
+	TTLSeconds       int64                           `json:"ttl_seconds"`
+	ExpiresInSeconds int64                           `json:"expires_in_seconds"`
+	Capabilities     []string                        `json:"capabilities"`
+	RegisteredAt     string                          `json:"registered_at"`
 }
 
 func serviceAdminViewFromEntry(entry *discovery.ServiceEntry) serviceAdminView {
@@ -1126,6 +1132,10 @@ func serviceAdminViewFromEntry(entry *discovery.ServiceEntry) serviceAdminView {
 	return serviceAdminView{
 		Kind:             "service",
 		Name:             entry.ServiceName,
+		ServiceID:        entry.ServiceID,
+		ServicePublicKey: entry.ServicePublicKey,
+		ConnectPolicy:    entry.ConnectPolicy,
+		GrantService:     grantspkg.CloneGrantServiceEndpoint(entry.GrantService),
 		PeerID:           entry.PeerID.String(),
 		Addresses:        append([]string(nil), entry.Addresses...),
 		Status:           "online",

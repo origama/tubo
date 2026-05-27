@@ -51,7 +51,10 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 	namespaceName := "default"
 	cluster := cfgpkg.Cluster{
 		Namespaces: map[string]cfgpkg.Namespace{
-			namespaceName: {},
+			namespaceName: {
+				Discovery:     cfgpkg.NamespaceDiscoveryEnabled,
+				ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember,
+			},
 		},
 	}
 	if payload.PublicCluster != nil {
@@ -61,7 +64,10 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 			ClusterID:          payload.PublicCluster.ClusterID,
 			AuthorityPublicKey: payload.PublicCluster.AuthorityPublicKey,
 			Namespaces: map[string]cfgpkg.Namespace{
-				namespaceName: {},
+				namespaceName: {
+					Discovery:     cfgpkg.NamespaceDiscoveryDisabled,
+					ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly,
+				},
 			},
 			MembershipGrant: &cfgpkg.ClusterMembershipGrant{
 				ClusterName:        payload.PublicCluster.Name,
@@ -87,9 +93,12 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 		CurrentNamespace: namespaceName,
 		Overlays: map[string]cfgpkg.Overlay{
 			payload.Name: {
-				Relays:         append([]string(nil), payload.Relays...),
-				BootstrapPeers: append([]string(nil), payload.Relays...),
-				SwarmKeyFile:   swarmKeyPath,
+				Kind:                   cfgpkg.OverlayKindPublicBundle,
+				PublicDefaultCluster:   clusterName,
+				PublicDefaultNamespace: namespaceName,
+				Relays:                 append([]string(nil), payload.Relays...),
+				BootstrapPeers:         append([]string(nil), payload.Relays...),
+				SwarmKeyFile:           swarmKeyPath,
 			},
 		},
 		Clusters: map[string]cfgpkg.Cluster{

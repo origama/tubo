@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -80,9 +81,12 @@ type Bridge struct {
 }
 
 type Overlay struct {
-	Relays         []string `yaml:"relays,omitempty" json:"relays,omitempty"`
-	BootstrapPeers []string `yaml:"bootstrap_peers,omitempty" json:"bootstrap_peers,omitempty"`
-	SwarmKeyFile   string   `yaml:"swarm_key_file,omitempty" json:"swarm_key_file,omitempty"`
+	Kind                   string   `yaml:"kind,omitempty" json:"kind,omitempty"`
+	PublicDefaultCluster   string   `yaml:"public_default_cluster,omitempty" json:"public_default_cluster,omitempty"`
+	PublicDefaultNamespace string   `yaml:"public_default_namespace,omitempty" json:"public_default_namespace,omitempty"`
+	Relays                 []string `yaml:"relays,omitempty" json:"relays,omitempty"`
+	BootstrapPeers         []string `yaml:"bootstrap_peers,omitempty" json:"bootstrap_peers,omitempty"`
+	SwarmKeyFile           string   `yaml:"swarm_key_file,omitempty" json:"swarm_key_file,omitempty"`
 }
 
 type Cluster struct {
@@ -111,17 +115,34 @@ type ClusterMembershipGrant struct {
 	ExpiresAt            time.Time `yaml:"expires_at,omitempty" json:"expires_at,omitempty"`
 }
 
+type NamespaceDiscovery string
+
+type ConnectPolicy string
+
+const (
+	NamespaceDiscoveryEnabled  NamespaceDiscovery = "enabled"
+	NamespaceDiscoveryDisabled NamespaceDiscovery = "disabled"
+
+	ConnectPolicyInviteOnly      ConnectPolicy = "invite_only"
+	ConnectPolicyNamespaceMember ConnectPolicy = "namespace_members"
+	ConnectPolicyPublic          ConnectPolicy = "public"
+)
+
 type Namespace struct {
 	MembershipCapabilityFile string                      `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
+	Discovery                NamespaceDiscovery          `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	ConnectPolicy            ConnectPolicy               `yaml:"connect_policy,omitempty" json:"connect_policy,omitempty"`
 	Services                 map[string]NamespaceService `yaml:"services,omitempty" json:"services,omitempty"`
 }
 
 type NamespaceService struct {
-	ServiceID        string `yaml:"service_id,omitempty" json:"service_id,omitempty"`
-	ServiceSeed      string `yaml:"service_seed,omitempty" json:"service_seed,omitempty"`
-	ServiceClaimFile string `yaml:"service_claim_file,omitempty" json:"service_claim_file,omitempty"`
-	GrantRequestID   string `yaml:"grant_request_id,omitempty" json:"grant_request_id,omitempty"`
-	GrantServicePeer string `yaml:"grant_service_peer,omitempty" json:"grant_service_peer,omitempty"`
+	ServiceID               string `yaml:"service_id,omitempty" json:"service_id,omitempty"`
+	ServiceSeed             string `yaml:"service_seed,omitempty" json:"service_seed,omitempty"`
+	ServiceOwnerKeyFile     string `yaml:"service_owner_key_file,omitempty" json:"service_owner_key_file,omitempty"`
+	ServiceClaimFile        string `yaml:"service_claim_file,omitempty" json:"service_claim_file,omitempty"`
+	ServicePublishLeaseFile string `yaml:"service_publish_lease_file,omitempty" json:"service_publish_lease_file,omitempty"`
+	GrantRequestID          string `yaml:"grant_request_id,omitempty" json:"grant_request_id,omitempty"`
+	GrantServicePeer        string `yaml:"grant_service_peer,omitempty" json:"grant_service_peer,omitempty"`
 }
 
 type DiscoveryMode string
@@ -161,6 +182,148 @@ func (d *Duration) UnmarshalYAML(v *yaml.Node) error {
 	}
 	*d = Duration(x)
 	return nil
+}
+
+const OverlayKindPublicBundle = "public-bundle"
+
+type Scope struct {
+	Overlay       string
+	Cluster       string
+	Namespace     string
+	AllNamespaces bool
+}
+
+var ErrAmbientDiscoveryDisabled = errors.New("ambient discovery is disabled in public/home/default")
+
+type ScopePolicy struct {
+	PublicDefault bool
+	Discovery     NamespaceDiscovery
+	ConnectPolicy ConnectPolicy
+}
+
+type ScopeIssuer struct {
+	ClusterName        string
+	NamespaceName      string
+	AuthorityPublicKey string
+}
+
+func ResolveEffectiveScope(cfg Config, clusterFlag, namespaceFlag string, allNamespaces bool) (Scope, error) {
+	overlay := strings.TrimSpace(cfg.CurrentOverlay)
+	cluster := strings.TrimSpace(clusterFlag)
+	if cluster == "" {
+		cluster = strings.TrimSpace(cfg.CurrentCluster)
+	}
+	namespace := strings.TrimSpace(namespaceFlag)
+	if allNamespaces {
+		if namespace != "" {
+			return Scope{}, fmt.Errorf("--all-namespaces cannot be combined with --namespace")
+		}
+		namespace = ""
+	} else if namespace == "" {
+		namespace = strings.TrimSpace(cfg.CurrentNamespace)
+	}
+	if namespace != "" && cluster == "" {
+		return Scope{}, fmt.Errorf("namespace requires a cluster context; pass --cluster or set a current cluster")
+	}
+	return Scope{Overlay: overlay, Cluster: cluster, Namespace: namespace, AllNamespaces: allNamespaces}, nil
+}
+
+func publicDefaultClusterScope(cfg Config, scope Scope) (Overlay, bool) {
+	overlayName := strings.TrimSpace(scope.Overlay)
+	if overlayName == "" {
+		overlayName = strings.TrimSpace(cfg.CurrentOverlay)
+	}
+	clusterName := strings.TrimSpace(scope.Cluster)
+	if clusterName == "" {
+		clusterName = strings.TrimSpace(cfg.CurrentCluster)
+	}
+	if overlayName == "" || clusterName == "" {
+		return Overlay{}, false
+	}
+	overlay, ok := cfg.Overlays[overlayName]
+	if !ok || overlay.Kind != OverlayKindPublicBundle {
+		return Overlay{}, false
+	}
+	if overlay.PublicDefaultCluster == "" || overlay.PublicDefaultNamespace == "" || clusterName != overlay.PublicDefaultCluster {
+		return Overlay{}, false
+	}
+	return overlay, true
+}
+
+func IsPublicDefaultScope(cfg Config, scope Scope) bool {
+	overlay, ok := publicDefaultClusterScope(cfg, scope)
+	if !ok || scope.AllNamespaces {
+		return false
+	}
+	namespaceName := strings.TrimSpace(scope.Namespace)
+	if namespaceName == "" {
+		namespaceName = strings.TrimSpace(cfg.CurrentNamespace)
+	}
+	return namespaceName != "" && namespaceName == overlay.PublicDefaultNamespace
+}
+
+func EffectiveScopePolicy(cfg Config, scope Scope) ScopePolicy {
+	policy := ScopePolicy{PublicDefault: IsPublicDefaultScope(cfg, scope)}
+	if policy.PublicDefault {
+		policy.Discovery = NamespaceDiscoveryDisabled
+		policy.ConnectPolicy = ConnectPolicyInviteOnly
+		return policy
+	}
+	if scope.AllNamespaces {
+		return policy
+	}
+	clusterName := strings.TrimSpace(scope.Cluster)
+	if clusterName == "" {
+		clusterName = strings.TrimSpace(cfg.CurrentCluster)
+	}
+	namespaceName := strings.TrimSpace(scope.Namespace)
+	if namespaceName == "" {
+		namespaceName = strings.TrimSpace(cfg.CurrentNamespace)
+	}
+	if cluster, ok := cfg.Clusters[clusterName]; ok {
+		if namespace, ok := cluster.Namespaces[namespaceName]; ok {
+			policy.Discovery = namespace.Discovery
+			policy.ConnectPolicy = namespace.ConnectPolicy
+		}
+	}
+	if policy.Discovery == "" {
+		policy.Discovery = NamespaceDiscoveryEnabled
+	}
+	if policy.ConnectPolicy == "" {
+		policy.ConnectPolicy = ConnectPolicyNamespaceMember
+	}
+	return policy
+}
+
+func RequireAmbientDiscoveryScope(cfg Config, scope Scope) error {
+	policy := EffectiveScopePolicy(cfg, scope)
+	if policy.Discovery != NamespaceDiscoveryDisabled {
+		if !(scope.AllNamespaces && func() bool {
+			_, ok := publicDefaultClusterScope(cfg, scope)
+			return ok
+		}()) {
+			return nil
+		}
+	}
+	if policy.PublicDefault || (scope.AllNamespaces && func() bool {
+		_, ok := publicDefaultClusterScope(cfg, scope)
+		return ok
+	}()) {
+		return fmt.Errorf("%w; use `tubo connect --token <invite>` or switch to a private cluster/namespace", ErrAmbientDiscoveryDisabled)
+	}
+	return fmt.Errorf("ambient discovery is disabled for scope %s/%s", strings.TrimSpace(scope.Cluster), strings.TrimSpace(scope.Namespace))
+}
+
+func IsAmbientDiscoveryDisabled(err error) bool {
+	return errors.Is(err, ErrAmbientDiscoveryDisabled)
+}
+
+func (c Config) ScopeIssuer(clusterName, namespaceName string) (ScopeIssuer, bool) {
+	cluster, ok := c.Clusters[clusterName]
+	if !ok || cluster.AuthorityPublicKey == "" {
+		return ScopeIssuer{}, false
+	}
+	return ScopeIssuer{ClusterName: clusterName, NamespaceName: namespaceName, AuthorityPublicKey: cluster.AuthorityPublicKey}, true
 }
 
 func (c Config) DiscoveryRuntime() DiscoveryRuntime {
@@ -263,9 +426,12 @@ func cloneStrings(in []string) []string {
 
 func cloneOverlay(in Overlay) Overlay {
 	return Overlay{
-		Relays:         cloneStrings(in.Relays),
-		BootstrapPeers: cloneStrings(in.BootstrapPeers),
-		SwarmKeyFile:   in.SwarmKeyFile,
+		Kind:                   in.Kind,
+		PublicDefaultCluster:   in.PublicDefaultCluster,
+		PublicDefaultNamespace: in.PublicDefaultNamespace,
+		Relays:                 cloneStrings(in.Relays),
+		BootstrapPeers:         cloneStrings(in.BootstrapPeers),
+		SwarmKeyFile:           in.SwarmKeyFile,
 	}
 }
 
@@ -304,7 +470,7 @@ func cloneCluster(in Cluster) Cluster {
 }
 
 func cloneNamespace(in Namespace) Namespace {
-	out := Namespace{MembershipCapabilityFile: in.MembershipCapabilityFile}
+	out := Namespace{MembershipCapabilityFile: in.MembershipCapabilityFile, Discovery: in.Discovery, ConnectPolicy: in.ConnectPolicy}
 	if len(in.Services) > 0 {
 		out.Services = make(map[string]NamespaceService, len(in.Services))
 		for k, v := range in.Services {
@@ -584,6 +750,21 @@ func Validate(c Config) error {
 	if c.Node.P2PListen != "" {
 		if _, err := multiaddr.NewMultiaddr(c.Node.P2PListen); err != nil {
 			return fmt.Errorf("node.p2p_listen: %w", err)
+		}
+	}
+	for overlayName, overlay := range c.Overlays {
+		if overlay.Kind != "" && overlay.Kind != OverlayKindPublicBundle {
+			return fmt.Errorf("overlays.%s.kind: unsupported value %q", overlayName, overlay.Kind)
+		}
+	}
+	for clusterName, cluster := range c.Clusters {
+		for namespaceName, namespace := range cluster.Namespaces {
+			if namespace.Discovery != "" && namespace.Discovery != NamespaceDiscoveryEnabled && namespace.Discovery != NamespaceDiscoveryDisabled {
+				return fmt.Errorf("clusters.%s.namespaces.%s.discovery: unsupported value %q", clusterName, namespaceName, namespace.Discovery)
+			}
+			if namespace.ConnectPolicy != "" && namespace.ConnectPolicy != ConnectPolicyInviteOnly && namespace.ConnectPolicy != ConnectPolicyNamespaceMember && namespace.ConnectPolicy != ConnectPolicyPublic {
+				return fmt.Errorf("clusters.%s.namespaces.%s.connect_policy: unsupported value %q", clusterName, namespaceName, namespace.ConnectPolicy)
+			}
 		}
 	}
 	for _, a := range append(c.Network.BootstrapPeers, c.Network.RelayPeers...) {

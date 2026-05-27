@@ -87,7 +87,7 @@ curl -fsSL https://www.tubo.click/install.sh | sh
 tubo attach lmstudio --port 1234 -d
 ```
 
-The service remains published while the detached `attach` process is running.
+In the public default (`tubo-public` / `home/default`), `attach` is invite-only and unlisted: copy the printed `tubo connect --token ...` command or mint one explicitly with `tubo share service/lmstudio`.
 
 ### 3. Connect from a client
 
@@ -96,10 +96,7 @@ On the client machine:
 ```bash
 curl -fsSL https://www.tubo.click/install.sh | sh
 
-tubo get services --timeout 10s
-tubo describe service/lmstudio
-
-tubo connect lmstudio --local 127.0.0.1:51234
+tubo connect --token <share-invite> --local 127.0.0.1:51234
 ```
 
 Now the remote service is available locally:
@@ -122,25 +119,30 @@ tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 # Or join the default public Tubo network from a signed bundle
 tubo join
 
-# Publish a local HTTP endpoint into the swarm
+# Public default: attach a local HTTP endpoint and share by invite
+# attach prints a `tubo connect --token ...` command
 tubo attach lmstudio --port 1234 -d
+tubo share service/lmstudio --expires 1h
 
-# List and inspect services in the swarm
+# Client side: connect with the invite token
+tubo connect --token <share-invite> --local 127.0.0.1:51234
+
+# Collaboration namespace flow: create a discovery-enabled scope and connect by name
+tubo create cluster/home
+tubo create namespace/team
 tubo get services
 tubo describe service/lmstudio
 tubo inspect service/lmstudio --json
-
-# Open a local listener to a remote service
 tubo connect lmstudio --local 127.0.0.1:51234
 
 # Manage detached local Tubo processes
 tubo ps
-tubo logs process/attach-lmstudio
-tubo stop process/attach-lmstudio
+tubo logs process/connect-lmstudio-51234
+tubo stop process/connect-lmstudio-51234
 tubo rm --stale
 ```
 
-`attach`, `connect`, `gateway`, `relay`, and discovery commands (`get`, `describe`, `inspect`, `watch`) will also auto-join the default public Tubo network on first run when no local config exists, unless `--no-init` or `CI=true` disables that behavior.
+`attach`, `connect`, `gateway`, `relay`, and discovery commands (`get`, `describe`, `inspect`, `watch`) will also auto-join the default public Tubo network on first run when no local config exists, unless `--no-init` or `CI=true` disables that behavior. The shared public overlay is convenience transport, not anonymity or transport isolation by itself; use a private overlay when you need stronger network isolation.
 
 During prerelease/dev testing, before the GitHub Pages site is updated, you can point both `tubo join` and the implicit public join flow at a temporary bundle URL with:
 
@@ -162,11 +164,12 @@ Use `tubo ps`, `tubo logs`, `tubo stop`, and `tubo rm --stale` to inspect and ma
 
 ## Documentation
 
+- [Docs index](./docs/README.md)
 - [CLI guide](./docs/cli.md)
 - [Operational runbook](./docs/OPERABILITY.md)
 - [Security notes](./docs/SECURITY.md)
+- [Security model 0.7](./docs/security-model-0.7.md)
 - [Protocol notes](./docs/PROTOCOL.md)
-- [Architecture](./docs/ARCHITECTURE.md)
 - [Release process](./docs/RELEASING.md)
 
 ## For coding agents

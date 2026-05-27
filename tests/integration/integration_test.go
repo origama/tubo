@@ -23,7 +23,9 @@ import (
 
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -621,7 +623,6 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 	namespace := "tenant-a"
 	serviceName := "myapi"
 	serviceSeed := integrationServiceSeed(clusterID, namespace, serviceName)
-	serviceID := integrationServiceID(clusterID, namespace, serviceName)
 	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
 	if err != nil {
 		return err
@@ -680,19 +681,38 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 		return err
 	}
 
-	serviceClaim, err := capability.SignServiceClaim(capability.ServiceClaim{
-		ClusterID:     clusterID,
-		NamespaceID:   namespace,
-		ServiceID:     serviceID,
-		SubjectPeerID: servicePeerID.String(),
-		Permissions:   []string{capability.PermissionAttach, capability.PermissionAnnounce},
-		ExpiresAt:     time.Now().Add(time.Hour),
-	}, authorityPriv)
+	serviceOwnerPub, serviceOwnerPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return err
 	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(serviceOwnerPub)
+	serviceOwnerKeyPath := filepath.Join(cfgDir, "clusters", "home", "namespaces", namespace, "services", serviceName+".owner.key")
+	if err := writePKCS8PrivateKey(serviceOwnerKeyPath, serviceOwnerPriv); err != nil {
+		return err
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{
+		ClusterID:             clusterID,
+		NamespaceID:           namespace,
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(serviceOwnerPub),
+		PublisherPeerID:       servicePeerID.String(),
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		Nonce:                 "integration-publish-lease",
+	}, serviceOwnerPriv)
+	if err != nil {
+		return err
+	}
+	leaseArtifacts, err := grantspkg.BuildPublishLeaseArtifacts(authorityPriv, leaseReq, serviceName, time.Hour, time.Hour)
+	if err != nil {
+		return err
+	}
+	serviceClaim := leaseArtifacts.ServiceClaim
 	serviceClaimPath := filepath.Join(cfgDir, "clusters", "home", "namespaces", namespace, "services", serviceName+".claim.json")
 	if err := writeJSONFile(serviceClaimPath, serviceClaim); err != nil {
+		return err
+	}
+	servicePublishLeasePath := filepath.Join(cfgDir, "clusters", "home", "namespaces", namespace, "services", serviceName+".publish-lease.json")
+	if err := writeJSONFile(servicePublishLeasePath, leaseArtifacts.Lease); err != nil {
 		return err
 	}
 	serviceMembershipCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
@@ -723,7 +743,9 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 	authorityKeyContainerPath := filepath.Join(containerRoot, "clusters", "home", "authority.key")
 	clusterMembershipCapContainerPath := filepath.Join(containerRoot, "clusters", "home", "membership.cap.json")
 	namespaceMembershipCapContainerPath := filepath.Join(containerRoot, "clusters", "home", "namespaces", namespace, "membership.cap.json")
+	serviceOwnerKeyContainerPath := filepath.Join(containerRoot, "clusters", "home", "namespaces", namespace, "services", serviceName+".owner.key")
 	serviceClaimContainerPath := filepath.Join(containerRoot, "clusters", "home", "namespaces", namespace, "services", serviceName+".claim.json")
+	servicePublishLeaseContainerPath := filepath.Join(containerRoot, "clusters", "home", "namespaces", namespace, "services", serviceName+".publish-lease.json")
 	swarmKeyContainerPath := filepath.Join(containerRoot, "swarm.key")
 
 	relayPeerID, err := p2p.PeerIDFromSeed("relay-demo-seed")
@@ -768,9 +790,11 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 					MembershipCapabilityFile: namespaceMembershipCapContainerPath,
 					Services: map[string]cfgpkg.NamespaceService{
 						serviceName: {
-							ServiceID:        serviceID,
-							ServiceSeed:      serviceSeed,
-							ServiceClaimFile: serviceClaimContainerPath,
+							ServiceID:               serviceID,
+							ServiceSeed:             serviceSeed,
+							ServiceOwnerKeyFile:     serviceOwnerKeyContainerPath,
+							ServiceClaimFile:        serviceClaimContainerPath,
+							ServicePublishLeaseFile: servicePublishLeaseContainerPath,
 						},
 					},
 				},
@@ -803,9 +827,11 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 					MembershipCapabilityFile: namespaceMembershipCapContainerPath,
 					Services: map[string]cfgpkg.NamespaceService{
 						serviceName: {
-							ServiceID:        serviceID,
-							ServiceSeed:      serviceSeed,
-							ServiceClaimFile: serviceClaimContainerPath,
+							ServiceID:               serviceID,
+							ServiceSeed:             serviceSeed,
+							ServiceOwnerKeyFile:     serviceOwnerKeyContainerPath,
+							ServiceClaimFile:        serviceClaimContainerPath,
+							ServicePublishLeaseFile: servicePublishLeaseContainerPath,
 						},
 					},
 				},
@@ -825,17 +851,12 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 	if err := cfgpkg.WriteFile(filepath.Join(cfgDir, "config.yaml"), serviceCfg, true); err != nil {
 		return err
 	}
-	for _, path := range []string{filepath.Join(cfgDir, "relay.yaml"), filepath.Join(cfgDir, "edge.yaml"), filepath.Join(cfgDir, "service.yaml"), filepath.Join(cfgDir, "config.yaml"), clusterMembershipCapPath, namespaceMembershipCapPath, serviceMembershipCapPath, serviceClaimPath, swarmKeyPath, authorityKeyPath} {
+	for _, path := range []string{filepath.Join(cfgDir, "relay.yaml"), filepath.Join(cfgDir, "edge.yaml"), filepath.Join(cfgDir, "service.yaml"), filepath.Join(cfgDir, "config.yaml"), clusterMembershipCapPath, namespaceMembershipCapPath, serviceMembershipCapPath, serviceOwnerKeyPath, serviceClaimPath, servicePublishLeasePath, swarmKeyPath, authorityKeyPath} {
 		if err := os.Chmod(path, 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func integrationServiceID(clusterID, namespace, name string) string {
-	sum := sha256.Sum256([]byte(clusterID + "\x00" + namespace + "\x00" + name))
-	return "service-" + hex.EncodeToString(sum[:8])
 }
 
 func integrationServiceSeed(clusterID, namespace, name string) string {

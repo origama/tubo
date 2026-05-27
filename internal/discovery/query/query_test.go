@@ -10,6 +10,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 
 	"github.com/origama/tubo/internal/discovery"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 )
 
@@ -55,7 +56,7 @@ func TestResponseForRequestAnnounce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer h.Close()
-	service := Service{Name: "myapi", PeerID: h.ID().String(), Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, TTLSeconds: 30}
+	service := Service{Name: "myapi", PeerID: h.ID().String(), ConnectPolicy: "namespace_members", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant"}}, Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, TTLSeconds: 30}
 	resp := responseForRequest(h, "relay", cache, Request{Type: RequestTypeAnnounce, Service: &service})
 	if resp.Error != "" {
 		t.Fatalf("unexpected announce error: %#v", resp)
@@ -66,6 +67,12 @@ func TestResponseForRequestAnnounce(t *testing.T) {
 	entry, ok := cache.Resolve("myapi")
 	if !ok || entry.PeerID != h.ID() {
 		t.Fatalf("cache peer id = %s, want %s", entry.PeerID, h.ID())
+	}
+	if entry.ConnectPolicy != "namespace_members" {
+		t.Fatalf("connect policy = %q", entry.ConnectPolicy)
+	}
+	if entry.GrantService == nil || len(entry.GrantService.Peers) != 1 || entry.GrantService.Peers[0] != "/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant" {
+		t.Fatalf("grant service = %#v", entry.GrantService)
 	}
 }
 

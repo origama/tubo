@@ -87,12 +87,15 @@ type Error struct {
 
 // ConnectProof carries a signed connect authorization proof from the client peer.
 type ConnectProof struct {
-	ClusterID     string    `json:"cluster_id"`
-	NamespaceID   string    `json:"namespace_id"`
-	ServiceID     string    `json:"service_id"`
-	SubjectPeerID string    `json:"subject_peer_id"`
-	ExpiresAt     time.Time `json:"expires_at"`
-	Nonce         []byte    `json:"nonce"`
-	Capability    []byte    `json:"capability"`
-	Signature     []byte    `json:"signature,omitempty"`
+	ClusterID       string    `json:"cluster_id"`
+	NamespaceID     string    `json:"namespace_id"`
+	ServiceID       string    `json:"service_id"`
+	SubjectPeerID   string    `json:"subject_peer_id"`
+	IssuedAt        time.Time `json:"issued_at,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at"`
+	Nonce           []byte    `json:"nonce"`
+	JTI             string    `json:"jti,omitempty"`
+	Capability      []byte    `json:"capability"`
+	AccessLeaseHash []byte    `json:"access_lease_hash,omitempty"`
+	Signature       []byte    `json:"signature,omitempty"`
 }

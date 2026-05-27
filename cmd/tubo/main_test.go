@@ -23,21 +23,35 @@ import (
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 	iversion "github.com/origama/tubo/internal/version"
 	"golang.org/x/crypto/ssh"
 )
 
-func capture(f func() error) (string, error) {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+func captureOutputs(f func() error) (string, string, error) {
+	oldOut := os.Stdout
+	oldErr := os.Stderr
+	outR, outW, _ := os.Pipe()
+	errR, errW, _ := os.Pipe()
+	os.Stdout = outW
+	os.Stderr = errW
 	err := f()
-	_ = w.Close()
-	os.Stdout = old
-	var b bytes.Buffer
-	_, _ = io.Copy(&b, r)
-	return b.String(), err
+	_ = outW.Close()
+	_ = errW.Close()
+	os.Stdout = oldOut
+	os.Stderr = oldErr
+	var outBuf bytes.Buffer
+	var errBuf bytes.Buffer
+	_, _ = io.Copy(&outBuf, outR)
+	_, _ = io.Copy(&errBuf, errR)
+	return outBuf.String(), errBuf.String(), err
+}
+
+func capture(f func() error) (string, error) {
+	out, _, err := captureOutputs(f)
+	return out, err
 }
 func TestIDFromSeed(t *testing.T) {
 	out, err := capture(func() error { return run([]string{"id", "from-seed", "abc"}) })
@@ -223,14 +237,15 @@ func TestEnsureJoinedPublicNetworkInstallsSignedBundle(t *testing.T) {
 	for _, command := range []string{"connect", "relay"} {
 		t.Run(command, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
-			out, err := capture(func() error { return ensureJoinedPublicNetwork(command, false) })
+			stdout, stderr, err := captureOutputs(func() error { return ensureJoinedPublicNetwork(command, false) })
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"No Tubo network configured.", "Fetching default network bundle: tubo-public", "Signature verified: tubo-root-2026", "Joined network: tubo-public"} {
-				if !strings.Contains(out, want) {
-					t.Fatalf("output missing %q for %s: %s", want, command, out)
-				}
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("expected clean stdout for implicit join, got: %q", stdout)
+			}
+			if strings.TrimSpace(stderr) != "" {
+				t.Fatalf("expected quiet default stderr for implicit join, got: %q", stderr)
 			}
 			if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")); err != nil {
 				t.Fatalf("config not written: %v", err)
@@ -247,6 +262,147 @@ func TestEnsureJoinedPublicNetworkDisabled(t *testing.T) {
 	t.Setenv("CI", "true")
 	if err := ensureJoinedPublicNetwork("connect", false); err == nil {
 		t.Fatal("expected CI to disable implicit public join")
+	}
+}
+
+func TestParseGlobalCLIOptionsAfterSubcommand(t *testing.T) {
+	cases := []struct {
+		args          []string
+		wantVerbosity int
+		wantRest      string
+	}{
+		{args: []string{"-vv", "share", "service/myapi"}, wantVerbosity: 2, wantRest: "share service/myapi"},
+		{args: []string{"share", "-v", "service/myapi"}, wantVerbosity: 1, wantRest: "share service/myapi"},
+		{args: []string{"share", "service/myapi", "-v"}, wantVerbosity: 1, wantRest: "share service/myapi"},
+		{args: []string{"share", "service/myapi", "--log-level", "debug"}, wantVerbosity: 0, wantRest: "share service/myapi"},
+	}
+	for _, tt := range cases {
+		opts, rest, err := parseGlobalCLIOptions(tt.args)
+		if err != nil {
+			t.Fatalf("parseGlobalCLIOptions(%v): %v", tt.args, err)
+		}
+		if opts.Verbosity != tt.wantVerbosity || strings.Join(rest, " ") != tt.wantRest {
+			t.Fatalf("parseGlobalCLIOptions(%v) => opts=%+v rest=%v, want verbosity=%d rest=%q", tt.args, opts, rest, tt.wantVerbosity, tt.wantRest)
+		}
+	}
+}
+
+func TestPrintForegroundRuntimeNoticeUsesStderr(t *testing.T) {
+	stdout, stderr, err := captureOutputs(func() error {
+		if err := logging.Configure(logging.Config{}); err != nil {
+			return err
+		}
+		printForegroundRuntimeNotice("edge", cfgpkg.Config{})
+		printForegroundRuntimeNotice("relay", cfgpkg.Config{})
+		printForegroundRuntimeNotice("service", cfgpkg.Config{Service: cfgpkg.Service{Name: "myapi"}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("expected empty stdout, got: %q", stdout)
+	}
+	for _, want := range []string{"gateway running in foreground", "relay running in foreground", "service \"myapi\" running in foreground"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr missing %q: %q", want, stderr)
+		}
+	}
+}
+
+func TestRuntimeLoggingConfigEnablesDetachedLogsByDefault(t *testing.T) {
+	t.Setenv("TUBO_DETACHED_CHILD", "1")
+	cfg := runtimeLoggingConfig(globalCLIOptions{})
+	if !cfg.Runtime || cfg.Verbosity != 1 {
+		t.Fatalf("unexpected detached runtime logging config: %+v", cfg)
+	}
+	if err := logging.Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if logging.Current().Verbosity != 1 {
+		t.Fatalf("logging state = %+v, want verbosity 1", logging.Current())
+	}
+}
+
+func TestPrintMessagesUsesStderr(t *testing.T) {
+	stdout, stderr, err := captureOutputs(func() error {
+		printMessages([]string{"using remote query", "fallback observer"})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("expected empty stdout, got: %q", stdout)
+	}
+	if !strings.Contains(stderr, "using remote query") || !strings.Contains(stderr, "fallback observer") {
+		t.Fatalf("expected messages on stderr, got: %q", stderr)
+	}
+}
+
+func TestGetClustersJSONAutoJoinKeepsStdoutParseable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	stdout, stderr, err := captureOutputs(func() error { return run([]string{"get", "clusters", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected clean default stderr for json command, got: %q", stderr)
+	}
+	var payload struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not valid json: %v\n%s", err, stdout)
+	}
+	if len(payload.Items) == 0 || payload.Items[0].Name == "" {
+		t.Fatalf("unexpected json payload: %#v", payload)
+	}
+}
+
+func TestGetClustersJSONAutoJoinVerboseProgressUsesStderr(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	stdout, stderr, err := captureOutputs(func() error { return run([]string{"-v", "get", "clusters", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr, "Fetching default network bundle: tubo-public") {
+		t.Fatalf("expected progress on stderr with -v, got: %q", stderr)
+	}
+	var payload struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not valid json: %v\n%s", err, stdout)
+	}
+}
+
+func TestGetClustersJSONAutoJoinQuietSuppressesProgress(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	stdout, stderr, err := captureOutputs(func() error { return run([]string{"--quiet", "-v", "get", "clusters", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected quiet stderr, got: %q", stderr)
+	}
+	var payload struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not valid json: %v\n%s", err, stdout)
 	}
 }
 
@@ -290,6 +446,50 @@ func TestBuildDetachedSpec(t *testing.T) {
 	}
 	if spec.HealthURL != "http://127.0.0.1:8091/healthz" {
 		t.Fatalf("health url = %q", spec.HealthURL)
+	}
+}
+
+func TestBuildDetachedConnectSpec(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "team",
+		Overlays:         map[string]cfgpkg.Overlay{"manual": {}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {Namespaces: map[string]cfgpkg.Namespace{"team": {}}},
+		},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"service/myapi", "--config", configPath, "--timeout", "3s"}
+	req, err := parseConnectCLIArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := buildDetachedConnectSpec(req, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.State.Command != "connect" || spec.State.Service != "myapi" {
+		t.Fatalf("unexpected connect state: %#v", spec.State)
+	}
+	if spec.State.Cluster != "home" || spec.State.Namespace != "team" {
+		t.Fatalf("unexpected connect scope: %#v", spec.State)
+	}
+	if spec.State.Local == "" || spec.HealthURL != "http://"+spec.State.Local+"/healthz" {
+		t.Fatalf("unexpected local/health: local=%q health=%q", spec.State.Local, spec.HealthURL)
+	}
+	if spec.State.Target != "myapi" {
+		t.Fatalf("target = %q", spec.State.Target)
+	}
+	if got := strings.Join(spec.ChildArgs, " "); !strings.Contains(got, "connect") || !strings.Contains(got, "--local "+spec.State.Local) {
+		t.Fatalf("child args missing injected local: %v", spec.ChildArgs)
+	}
+	if !strings.HasPrefix(spec.State.ID, "process/connect-myapi-") {
+		t.Fatalf("unexpected process id: %q", spec.State.ID)
 	}
 }
 
@@ -580,6 +780,9 @@ func TestJoinDefaultPublicNetworkFromSignedBundle(t *testing.T) {
 	if !strings.Contains(out, "joined public overlay") || !strings.Contains(out, "network: tubo-public") {
 		t.Fatalf("unexpected output: %s", out)
 	}
+	if !strings.Contains(out, "tubo connect --token <share-invite>") || strings.Contains(out, "tubo get services") || strings.Contains(out, "tubo connect lmstudio") {
+		t.Fatalf("unexpected public join next steps: %s", out)
+	}
 	configPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")
 	if _, err := os.Stat(configPath); err != nil {
 		t.Fatalf("config not written: %v", err)
@@ -671,6 +874,36 @@ func TestJoinDefaultPublicNetworkUsesEnvOverrideBundleURL(t *testing.T) {
 	}
 	if !strings.Contains(out, "joined public overlay") {
 		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing.T) {
+	out, err := capture(func() error { return run([]string{"help"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Public default happy path (invite-only)") || !strings.Contains(out, "tubo connect --token <share-invite>") {
+		t.Fatalf("top-level help missing invite-only flow: %s", out)
+	}
+	if !strings.Contains(out, "Collaboration namespace flow") || !strings.Contains(out, "tubo connect myapp") {
+		t.Fatalf("top-level help missing collaboration flow: %s", out)
+	}
+	if !strings.Contains(out, "--quiet") || !strings.Contains(out, "-v | -vv | -vvv") || !strings.Contains(out, "--log-level error|warn|info|debug|trace") {
+		t.Fatalf("top-level help missing global logging flags: %s", out)
+	}
+	attachHelp, err := capture(func() error { return run([]string{"help", "attach"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(attachHelp, "public default") || !strings.Contains(attachHelp, "discovery-enabled custom/private namespace") {
+		t.Fatalf("attach help missing scope behavior: %s", attachHelp)
+	}
+	connectHelp, err := capture(func() error { return run([]string{"help", "connect"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(connectHelp, "connect --token") || !strings.Contains(connectHelp, "collaboration path") || !strings.Contains(connectHelp, "--detach") || !strings.Contains(connectHelp, "tubo ps") {
+		t.Fatalf("connect help missing detached/mode guidance: %s", connectHelp)
 	}
 }
 
@@ -797,7 +1030,7 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public"} {
+	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public", "Discovery: enabled", "Connect policy: namespace_members"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe namespace output missing %q: %s", want, out)
 		}
@@ -819,6 +1052,22 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	}
 	if cfg.Network.PrivateKeyFile != "/etc/p2p/swarm.key" {
 		t.Fatalf("network private_key_file changed unexpectedly: %q", cfg.Network.PrivateKeyFile)
+	}
+
+	policyCfg := cfgpkg.Config{Role: "service", CurrentOverlay: "public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}}}}, Service: cfgpkg.Service{Name: "api", Target: "http://127.0.0.1:9000"}}
+	policyPath := filepath.Join(t.TempDir(), "policy-config.yaml")
+	if err := cfgpkg.WriteFile(policyPath, policyCfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"config", "validate", "--config", policyPath}) }); err != nil {
+		t.Fatalf("config validate should accept valid namespace policy: %v", err)
+	}
+	policyCfg.Clusters["home"] = cfgpkg.Cluster{Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: "bogus"}}}
+	if err := cfgpkg.WriteFile(policyPath, policyCfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"config", "validate", "--config", policyPath}) }); err == nil || !strings.Contains(err.Error(), "clusters.home.namespaces.default.discovery") {
+		t.Fatalf("config validate should reject invalid namespace policy, got %v", err)
 	}
 
 	if _, err := capture(func() error { return run([]string{"use", "overlay/remote"}) }); err != nil {
@@ -883,6 +1132,68 @@ service:
 	}
 }
 
+func TestPublicDefaultDisablesAmbientDiscoveryCommandsButNotConnectToken(t *testing.T) {
+	configHome := filepath.Join(t.TempDir(), "xdg")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	configPath := filepath.Join(configHome, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH)))
+	cfg := cfgpkg.Config{
+		Role:             "service",
+		CurrentOverlay:   joinDefaultNetworkName,
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Overlays: map[string]cfgpkg.Overlay{
+			joinDefaultNetworkName: {
+				Kind:                   cfgpkg.OverlayKindPublicBundle,
+				PublicDefaultCluster:   "home",
+				PublicDefaultNamespace: "default",
+			},
+		},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				ClusterID:          "cluster-public-2026",
+				AuthorityPublicKey: authorityKey,
+				MembershipGrant:    &cfgpkg.ClusterMembershipGrant{ClusterName: "home", ClusterID: "cluster-public-2026", Namespace: "default", Role: "member", ExpiresAt: time.Now().Add(time.Hour)},
+				Namespaces:         map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}},
+			},
+		},
+		Network: cfgpkg.Network{PrivateKeyFile: "/tmp/swarm.key", RelayPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWPublicRelay"}, BootstrapPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWPublicRelay"}},
+		Service: cfgpkg.Service{Name: "api", Target: "http://127.0.0.1:9000"},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"get", "services"}, {"get", "service/api"}, {"describe", "service/api"}, {"inspect", "service/api"}, {"watch", "services", "--timeout", "1s"}, {"connect", "myapi"}} {
+		_, err := capture(func() error { return run(args) })
+		if err == nil || !strings.Contains(err.Error(), "tubo connect --token <invite>") {
+			t.Fatalf("expected discovery-disabled guidance for %v, got %v", args, err)
+		}
+	}
+	_, err = capture(func() error { return run([]string{"connect", "--token", "not-a-token"}) })
+	if err == nil || strings.Contains(err.Error(), "tubo connect --token <invite>") {
+		t.Fatalf("connect --token should not be blocked by public-default discovery policy, got %v", err)
+	}
+	legacyInvite, err := grantspkg.BuildServiceShareArtifacts(authorityPriv, "home", "cluster-public-2026", "default", "myapi", "service-legacy", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(func() error { return run([]string{"connect", "--token", legacyInvite.Token}) })
+	if err == nil || !strings.Contains(err.Error(), "missing a self-contained service endpoint") {
+		t.Fatalf("expected legacy public-default token compatibility error, got %v", err)
+	}
+}
+
 func extractClusterInviteToken(t *testing.T, out string) string {
 	t.Helper()
 	idx := strings.Index(out, clusterInviteTokenPrefix)
@@ -906,6 +1217,26 @@ func extractClusterInviteToken(t *testing.T, out string) string {
 func extractServiceShareToken(t *testing.T, out string) string {
 	t.Helper()
 	idx := strings.Index(out, serviceShareTokenPrefix)
+	if idx < 0 {
+		t.Fatalf("service share token not found in output: %s", out)
+	}
+	end := idx
+	for end < len(out) {
+		if strings.ContainsRune(" \t\r\n", rune(out[end])) {
+			break
+		}
+		end++
+	}
+	token := out[idx:end]
+	if !strings.HasPrefix(token, serviceShareTokenPrefix) {
+		t.Fatalf("invalid service share token extraction: %q", token)
+	}
+	return token
+}
+
+func extractLastServiceShareToken(t *testing.T, out string) string {
+	t.Helper()
+	idx := strings.LastIndex(out, serviceShareTokenPrefix)
 	if idx < 0 {
 		t.Fatalf("service share token not found in output: %s", out)
 	}
@@ -986,6 +1317,9 @@ func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNa
 	if grant.InviteToken != wantToken || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
 		t.Fatalf("unexpected membership grant: %#v", grant)
 	}
+	if !stringSliceEqualSet(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
+		t.Fatalf("unexpected membership grant permissions: %#v", grant.Permissions)
+	}
 }
 
 func TestClusterInvitationShareAndJoin(t *testing.T) {
@@ -1028,6 +1362,88 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), token, "observability")
+}
+
+func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := captureOutputs(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "2h", "--json", "-v"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected clean stderr for cluster share json, got: %q", stderr)
+	}
+	var shareResult struct {
+		ClusterName string `json:"cluster_name"`
+		Namespace   string `json:"namespace"`
+		Permission  string `json:"permission"`
+		Token       string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &shareResult); err != nil {
+		t.Fatalf("cluster share stdout is not valid json: %v\n%s", err, stdout)
+	}
+	if shareResult.ClusterName != "home" || shareResult.Token == "" {
+		t.Fatalf("unexpected cluster share json: %#v", shareResult)
+	}
+
+	joinDir := filepath.Join(t.TempDir(), "join-json")
+	stdout, stderr, err = captureOutputs(func() error {
+		return run([]string{"join", "cluster/home", "--token", shareResult.Token, "--config-dir", joinDir, "--json", "-v"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected clean stderr for cluster join json, got: %q", stderr)
+	}
+	var joinResult struct {
+		ConfigPath  string `json:"config_path"`
+		ClusterName string `json:"cluster_name"`
+		Namespace   string `json:"namespace"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &joinResult); err != nil {
+		t.Fatalf("cluster join stdout is not valid json: %v\n%s", err, stdout)
+	}
+	if joinResult.ClusterName != "home" || joinResult.ConfigPath == "" {
+		t.Fatalf("unexpected cluster join json: %#v", joinResult)
+	}
+}
+
+func TestViewerClusterInvitationShareJoinAllowsListButNotConnect(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--role", clusterInviteViewerRole, "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractClusterInviteToken(t, out)
+	joinHome := filepath.Join(t.TempDir(), "join-viewer")
+	if _, err := capture(func() error { return run([]string{"join", "cluster/home", "--token", token, "--config-dir", joinHome}) }); err != nil {
+		t.Fatal(err)
+	}
+	joined, err := cfgpkg.LoadFile(filepath.Join(joinHome, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant := joined.Clusters["home"].MembershipGrant
+	if grant == nil || grant.Role != clusterInviteViewerRole {
+		t.Fatalf("unexpected viewer grant: %#v", grant)
+	}
+	if !clusterMembershipGrantAuthorizesNamespace(joined.Clusters["home"], "home", "default") {
+		t.Fatal("viewer grant should authorize namespace listing")
+	}
+	if clusterMembershipGrantAuthorizesConnect(joined.Clusters["home"], "home", "default") {
+		t.Fatal("viewer grant must not authorize connect")
+	}
 }
 
 func TestGrantRequesterClusterInvitationShareJoinAndRequest(t *testing.T) {
@@ -1172,8 +1588,8 @@ func TestClusterInviteGrantAuthorizesNamespaceQueries(t *testing.T) {
 					ClusterID:          "cluster-123",
 					AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))),
 					Namespace:          "pinamespace",
-					Role:               clusterInviteDefaultRole,
-					Permissions:        []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish},
+					Role:               clusterInviteViewerRole,
+					Permissions:        []string{capability.PermissionSubscribe, capability.PermissionList},
 					IssuedAt:           time.Now().Add(-time.Minute),
 					ExpiresAt:          time.Now().Add(time.Hour),
 				},
@@ -1211,13 +1627,32 @@ func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	expiredOut, err := capture(func() error {
-		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "-1h"})
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	priv, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := invitationGrantForPermission(clusterInviteDefaultRole)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredPayload := clusterInvitePayload{Version: clusterInviteVersion, Kind: clusterInviteKind, JTI: "expired-jti", ClusterName: "home", ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, Namespace: "default", Grant: grant, IssuedAt: time.Now().Add(-2 * time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Hour).UTC()}
+	expiredPayloadBytes, err := json.Marshal(expiredPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredToken := clusterInviteTokenPrefix + base64.RawURLEncoding.EncodeToString(expiredPayloadBytes) + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(priv, expiredPayloadBytes))
+	shareOut, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "2h"})
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiredToken := extractClusterInviteToken(t, expiredOut)
+	validToken := extractClusterInviteToken(t, shareOut)
 	tamperedToken := func(token string) string {
 		parts := strings.Split(strings.TrimPrefix(token, clusterInviteTokenPrefix), ".")
 		if len(parts) != 2 {
@@ -1229,7 +1664,7 @@ func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 		}
 		payloadBytes = bytes.Replace(payloadBytes, []byte(`"cluster_name":"home"`), []byte(`"cluster_name":"evil"`), 1)
 		return clusterInviteTokenPrefix + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + parts[1]
-	}(expiredToken)
+	}(validToken)
 
 	if _, err := capture(func() error { return run([]string{"join", expiredToken}) }); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired invite error, got %v", err)
@@ -1276,27 +1711,39 @@ func TestServiceShareTokenAndConnectSetup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" {
+	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" || payload.DisplayNameHint != "myapi" || payload.TargetServiceID != payload.ServiceID || payload.JTI == "" {
 		t.Fatalf("unexpected service share scope: %#v", payload)
 	}
-	if payload.Grant.ClusterID != payload.ClusterID || payload.Grant.NamespaceID != payload.NamespaceID || payload.Grant.ServiceID != payload.ServiceID {
-		t.Fatalf("grant scope mismatch: %#v", payload.Grant)
+	if payload.Grant.ClusterID != "" || payload.Grant.NamespaceID != "" || payload.Grant.ServiceID != "" || len(payload.Grant.Permissions) != 0 {
+		t.Fatalf("expected no embedded legacy grant in service share token, got %#v", payload.Grant)
 	}
-	if len(payload.Grant.Permissions) != 1 || payload.Grant.Permissions[0] != capability.PermissionConnect {
-		t.Fatalf("service share is not connect-only: %#v", payload.Grant.Permissions)
-	}
-	if connectName, scope, err := connectServiceShareSetup("", token, "", ""); err != nil {
+	_, roguePriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
 		t.Fatal(err)
-	} else if connectName != "myapi" || scope.Cluster != "home" || scope.Namespace != "default" {
-		t.Fatalf("unexpected connect setup: name=%q scope=%#v", connectName, scope)
 	}
-	if _, _, err := connectServiceShareSetup("other", token, "", ""); err == nil || !strings.Contains(err.Error(), "service share is for") {
+	rogue, err := grantspkg.BuildServiceShareArtifacts(roguePriv, "home", payload.ClusterID, payload.Namespace, payload.ServiceName, payload.TargetServiceID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := importServiceShareDiscoveryContext(cfg, rogue.Payload); err == nil || !strings.Contains(err.Error(), "issuer mismatch") {
+		t.Fatalf("expected issuer mismatch, got %v", err)
+	}
+	if connectName, serviceID, scope, err := connectServiceShareSetup("", token, "", ""); err != nil {
+		t.Fatal(err)
+	} else if connectName != "myapi" || serviceID != payload.TargetServiceID || scope.Cluster != "home" || scope.Namespace != "default" {
+		t.Fatalf("unexpected connect setup: name=%q id=%q scope=%#v", connectName, serviceID, scope)
+	}
+	if _, _, _, err := connectServiceShareSetup("other", token, "", ""); err == nil || !strings.Contains(err.Error(), "service share is for") {
 		t.Fatalf("expected service mismatch error, got %v", err)
 	}
-	if _, _, err := connectServiceShareSetup("", token, "other", ""); err == nil || !strings.Contains(err.Error(), "cluster") {
+	if _, _, _, err := connectServiceShareSetup("", token, "other", ""); err == nil || !strings.Contains(err.Error(), "cluster") {
 		t.Fatalf("expected cluster mismatch error, got %v", err)
 	}
-	if _, _, err := connectServiceShareSetup("", token, "", "other"); err == nil || !strings.Contains(err.Error(), "namespace") {
+	if _, _, _, err := connectServiceShareSetup("", token, "", "other"); err == nil || !strings.Contains(err.Error(), "namespace") {
 		t.Fatalf("expected namespace mismatch error, got %v", err)
 	}
 
@@ -1314,6 +1761,109 @@ func TestServiceShareTokenAndConnectSetup(t *testing.T) {
 	tamperedToken := tamperTokenPayload(t, token, serviceShareTokenPrefix, []byte(`"service_name":"myapi"`), []byte(`"service_name":"evil"`))
 	if _, err := parseAndVerifyServiceShareToken(tamperedToken); err == nil || !strings.Contains(err.Error(), "invalid service share signature") {
 		t.Fatalf("expected tampered service share error, got %v", err)
+	}
+	if _, err := capture(func() error { return run([]string{"share", "revoke", token, "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureShareInviteAvailable(filepath.Dir(configPath), payload); err == nil || !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("expected revoked invite rejection, got %v", err)
+	}
+}
+
+func configurePublicDefaultScopeForTests(t *testing.T, configPath string, relayPeers []string) cfgpkg.Config {
+	t.Helper()
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentOverlay = joinDefaultNetworkName
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	if cfg.Overlays == nil {
+		cfg.Overlays = map[string]cfgpkg.Overlay{}
+	}
+	cfg.Overlays[joinDefaultNetworkName] = cfgpkg.Overlay{Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}
+	cfg.Network.RelayPeers = append([]string(nil), relayPeers...)
+	cfg.Network.BootstrapPeers = append([]string(nil), relayPeers...)
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	ns.Discovery = cfgpkg.NamespaceDiscoveryDisabled
+	ns.ConnectPolicy = cfgpkg.ConnectPolicyInviteOnly
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	return cfg
+}
+
+func TestLocalShareServicePublicDefaultIncludesServiceEndpoint(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	relayPeerID, err := p2p.PeerIDFromSeed("relay-public-default-share")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayPeer := "/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeerID.String()
+	cfg := configurePublicDefaultScopeForTests(t, configPath, []string{relayPeer})
+	serviceSeed := cfg.Clusters["home"].Namespaces["default"].Services["myapi"].ServiceSeed
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := parseAndVerifyServiceShareToken(extractServiceShareToken(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAddr := relayPeer + "/p2p-circuit/p2p/" + servicePeerID.String()
+	if payload.ServiceEndpoint.PeerID != servicePeerID.String() || len(payload.ServiceEndpoint.Addresses) != 1 || payload.ServiceEndpoint.Addresses[0] != wantAddr {
+		t.Fatalf("unexpected service endpoint payload: %#v", payload.ServiceEndpoint)
+	}
+}
+
+func TestLocalShareServicePublicDefaultRejectsMissingServiceEndpoint(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	configurePublicDefaultScopeForTests(t, configPath, nil)
+	_, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "2h"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "remote-dialable service endpoint") {
+		t.Fatalf("expected missing endpoint error, got %v", err)
+	}
+}
+
+func TestBuildAttachServiceShareTokenPublicDefaultRejectsMissingServiceEndpoint(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg := configurePublicDefaultScopeForTests(t, configPath, nil)
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if _, err := buildAttachServiceShareToken(cfg, cluster, "home", "default", "myapi", svc); err == nil || !strings.Contains(err.Error(), "remote-dialable service endpoint") {
+		t.Fatalf("expected missing endpoint error, got %v", err)
 	}
 }
 
@@ -1356,8 +1906,13 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	}
 	cfg = authz.Config
 	svc := authz.Service
-	if svc.ServiceID == "" || svc.ServiceSeed == "" || svc.ServiceClaimFile == "" {
+	if svc.ServiceID == "" || svc.ServiceSeed == "" || svc.ServiceClaimFile == "" || svc.ServicePublishLeaseFile == "" || svc.ServiceOwnerKeyFile == "" {
 		t.Fatalf("service identity incomplete: %#v", svc)
+	}
+	for _, path := range []string{svc.ServiceOwnerKeyFile, svc.ServiceClaimFile, svc.ServicePublishLeaseFile} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("service artifact missing %s: %v", path, err)
+		}
 	}
 	_, deterministicSeed := serviceIdentityFor(cfg.Clusters["home"].ClusterID, "default", "myapi")
 	if svc.ServiceSeed == "service-demo-seed" || svc.ServiceSeed == deterministicSeed {
@@ -1418,6 +1973,52 @@ func TestEnsureAttachServiceIdentityCreatesReusesAndSeparates(t *testing.T) {
 	}
 }
 
+func TestDeletingLocalConfigCreatesNewServiceIdentity(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg.Node.Seed = "service-demo-seed"
+	firstAuthz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID := firstAuthz.Service.ServiceID
+	configRoot := filepath.Dir(filepath.Dir(configPath))
+	if err := os.RemoveAll(configRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(configPath, cfgpkg.Config{Role: "service", CurrentOverlay: "public", Overlays: map[string]cfgpkg.Overlay{"public": {}}}, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg.Node.Seed = "service-demo-seed"
+	secondAuthz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondAuthz.Service.ServiceID == firstID {
+		t.Fatalf("expected new service id after deleting config, got %q", secondAuthz.Service.ServiceID)
+	}
+}
+
 func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -1467,7 +2068,7 @@ func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Approve(svc.GrantRequestID, claim, nil, ""); err != nil {
+	if _, err := store.Approve(svc.GrantRequestID, claim, nil, nil, ""); err != nil {
 		t.Fatal(err)
 	}
 	out, err = capture(func() error {
@@ -1493,6 +2094,111 @@ func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
 	}
 }
 
+func TestGrantsRequestIgnoresExpiredApprovedGrantCollision(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = authz.Config
+	svc := authz.Service
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	store := grantspkg.NewStore(storePath)
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	seedExpiresAt := time.Now().UTC().Add(time.Hour)
+	if err := seedApprovedClaimGrant(t, store, "home", cfg.Clusters["home"], cfg.CurrentNamespace, cfg.Service.Name, svc, authorityPriv, "12D3-stale-peer", seedExpiresAt); err != nil {
+		t.Fatal(err)
+	}
+	expireApprovedGrantRecord(t, storePath, "12D3-stale-peer", time.Now().UTC().Add(-time.Hour))
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-request-expired-approved")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cfg.Clusters["home"].ClusterID, NamespaceID: cfg.CurrentNamespace, Store: store, AutoApprove: true, AuthorityPrivateKey: authorityPriv, ClaimTTL: time.Hour, ServiceShareTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+
+	out, err := capture(func() error {
+		return run([]string{"grants", "request", "service/myapi", "--config", configPath, "--peer", grantPeer, "--ttl", "168h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Grant request approved.") {
+		t.Fatalf("unexpected request output: %s", out)
+	}
+	freshPeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := store.ListAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawExpiredOld, sawApprovedFresh bool
+	for _, req := range all {
+		if req.ServicePeerID == "12D3-stale-peer" && req.Status == grantspkg.StatusExpired {
+			sawExpiredOld = true
+		}
+		if req.ServicePeerID == freshPeerID.String() && req.Status == grantspkg.StatusApproved {
+			sawApprovedFresh = true
+		}
+	}
+	if !sawExpiredOld || !sawApprovedFresh {
+		t.Fatalf("expected expired old grant and approved fresh grant, got %#v", all)
+	}
+}
+
+func makePendingGrantRequest(t *testing.T, clusterName, clusterID, namespaceID, requesterPeerID, serviceName, servicePeerID string, requestedAt, expiresAt time.Time) grantspkg.Request {
+	t.Helper()
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{
+		ClusterID:             clusterID,
+		NamespaceID:           namespaceID,
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
+		PublisherPeerID:       servicePeerID,
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		Nonce:                 serviceName + "-nonce",
+	}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return grantspkg.Request{
+		ClusterName:           clusterName,
+		ClusterID:             clusterID,
+		NamespaceID:           namespaceID,
+		RequesterPeerID:       requesterPeerID,
+		ServiceName:           serviceName,
+		ServiceID:             serviceID,
+		ServicePublicKey:      leaseReq.ServicePublicKey,
+		ServiceOwnerSignature: leaseReq.ServiceOwnerSignature,
+		RequestNonce:          leaseReq.Nonce,
+		ServicePeerID:         servicePeerID,
+		RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		RequestedTTLSeconds:   int64((7 * 24 * time.Hour).Seconds()),
+		RequestedAt:           requestedAt,
+		ExpiresAt:             expiresAt,
+	}
+}
+
 func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -1506,11 +2212,11 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "requests.json")
 	store := grantspkg.NewStore(storePath)
 	now := time.Now().UTC()
-	first, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-myapi", ServicePeerID: "12D3-service", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	first, err := store.CreatePending(makePendingGrantRequest(t, "home", cluster.ClusterID, "default", "12D3-requester", "myapi", "12D3-service", now, now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester-2", ServiceName: "other", ServiceID: "service-other", ServicePeerID: "12D3-other", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	second, err := store.CreatePending(makePendingGrantRequest(t, "home", cluster.ClusterID, "default", "12D3-requester-2", "other", "12D3-other", now, now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1539,7 +2245,7 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 		t.Fatalf("approval not persisted ok=%t err=%v req=%#v", ok, err, approved)
 	}
 	edPub := mustClusterAuthorityKey(t, configPath).Public().(ed25519.PublicKey)
-	if err := capability.VerifyServiceClaim(*approved.ServiceClaim, edPub, cluster.ClusterID, "default", "service-myapi", "12D3-service"); err != nil {
+	if err := capability.VerifyServiceClaim(*approved.ServiceClaim, edPub, cluster.ClusterID, "default", approved.ServiceID, approved.ServicePeerID); err != nil {
 		t.Fatalf("approved claim invalid: %v", err)
 	}
 	if _, err := capture(func() error {
@@ -1573,7 +2279,7 @@ func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 	storePath := filepath.Join(t.TempDir(), "requests.json")
 	store := grantspkg.NewStore(storePath)
 	now := time.Now().UTC()
-	expired, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "expired", ServiceID: "service-expired", ServicePeerID: "12D3-expired", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(-time.Hour)})
+	expired, err := store.CreatePending(makePendingGrantRequest(t, "home", cluster.ClusterID, "default", "12D3-requester", "expired", "12D3-expired", now.Add(-2*time.Hour), now.Add(-time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1582,7 +2288,7 @@ func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 	}); err == nil || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expected expired approval error, got %v", err)
 	}
-	pending, err := store.CreatePending(grantspkg.Request{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-myapi", ServicePeerID: "12D3-service", RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds()), RequestedAt: now, ExpiresAt: now.Add(time.Hour)})
+	pending, err := store.CreatePending(makePendingGrantRequest(t, "home", cluster.ClusterID, "default", "12D3-requester", "myapi", "12D3-service", now, now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1598,9 +2304,422 @@ func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 	}
 }
 
-func TestResolveAttachAuthorizationAcceptsExistingClaimWithoutAuthority(t *testing.T) {
+func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{joinDefaultNetworkName: {Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}}}}, Service: cfgpkg.Service{Name: "myapi"}}
+	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, ServiceShareToken: "tubo-service-share-v1.test-token"}
+	out, err := capture(func() error {
+		printAttachShareHint(cfg, authz)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "visibility: unlisted") || !strings.Contains(out, "access: invite token required") || !strings.Contains(out, "tubo connect --token tubo-service-share-v1.test-token") {
+		t.Fatalf("unexpected attach token output: %s", out)
+	}
+}
+
+func TestServiceShareUsesDelegatedGrantServiceWhenAuthorityKeyMissing(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	svc := cluster.Namespaces["default"].Services["myapi"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "delegated-share-mint-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           cluster.ClusterID,
+		NamespaceID:         "default",
+		Store:               grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")),
+		AuthorityPrivateKey: authorityPriv,
+		ServiceShareTTL:     time.Hour,
+		GrantServicePeersProvider: func() []string {
+			return []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWQZ6qwLp7C7mdkAXMJsa2zXKoGNSXYpQNsPxpQQz4g2v3"}
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	cluster.Namespaces["default"].Services["myapi"] = svc
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out1, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token1 := extractServiceShareToken(t, out1)
+	payload1, err := parseAndVerifyServiceShareToken(token1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload1.TargetServiceID != svc.ServiceID || payload1.ServiceEndpoint.PeerID == "" || len(payload1.GrantService.Peers) == 0 {
+		t.Fatalf("unexpected delegated share payload: %#v", payload1)
+	}
+	out2, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token2 := extractServiceShareToken(t, out2)
+	payload2, err := parseAndVerifyServiceShareToken(token2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload1.JTI == payload2.JTI {
+		t.Fatalf("expected fresh JTI across delegated mint invocations, got %q", payload1.JTI)
+	}
+}
+
+func TestServiceShareUsesAuthorityLocalMintWhenAuthorityKeyExists(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	svc := cluster.Namespaces["default"].Services["myapi"]
+	svc.GrantServicePeer = "not-a-multiaddr"
+	svc.ServiceOwnerKeyFile = ""
+	cluster.Namespaces["default"].Services["myapi"] = svc
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := parseAndVerifyServiceShareToken(extractServiceShareToken(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.TargetServiceID != svc.ServiceID {
+		t.Fatalf("unexpected authority-local share payload: %#v", payload)
+	}
+}
+
+func TestServiceShareRenewsExpiredPublishLeaseForExistingServiceID(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	originalServiceID := svc.ServiceID
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "share-expired-lease-renew")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: true, AuthorityPrivateKey: authorityPriv, ServiceShareTTL: time.Hour, GrantServicePeersProvider: func() []string { return []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWQZ6qwLp7C7mdkAXMJsa2zXKoGNSXYpQNsPxpQQz4g2v3"}
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := captureOutputs(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "Grant request approved.") || strings.Contains(out, "Grant request sent.") {
+		t.Fatalf("expected clean final stdout only, got: %s", out)
+	}
+	if strings.Contains(stderr, "grants-client p2p connected") || strings.Contains(stderr, "publish authorization refreshed") {
+		t.Fatalf("expected no default diagnostics/progress on stderr, got: %s", stderr)
+	}
+	payload, err := parseAndVerifyServiceShareToken(extractLastServiceShareToken(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.TargetServiceID != originalServiceID {
+		t.Fatalf("expected renewed share token to keep same service id %q, got %#v", originalServiceID, payload)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewedSvc := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if renewedSvc.ServiceID != originalServiceID {
+		t.Fatalf("expected renewal to keep service id %q, got %#v", originalServiceID, renewedSvc)
+	}
+	lease, err := readPublishLeaseFile(renewedSvc.ServicePublishLeaseFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lease.ServiceID != originalServiceID {
+		t.Fatalf("expected renewed lease for same service id %q, got %#v", originalServiceID, lease)
+	}
+	if !lease.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("expected renewed lease expiry in the future, got %#v", lease)
+	}
+}
+
+func TestServiceShareJSONWithExpiredPublishLeaseKeepsStdoutParseable(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "share-expired-lease-json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: true, AuthorityPrivateKey: authorityPriv, ServiceShareTTL: time.Hour, GrantServicePeersProvider: func() []string { return []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWQZ6qwLp7C7mdkAXMJsa2zXKoGNSXYpQNsPxpQQz4g2v3"}
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := captureOutputs(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m", "--json"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected clean default stderr for share json, got: %q", stderr)
+	}
+	var result struct {
+		ClusterName string `json:"cluster_name"`
+		Namespace   string `json:"namespace"`
+		ServiceName string `json:"service_name"`
+		ServiceID   string `json:"service_id"`
+		Token       string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not valid json: %v\n%s", err, stdout)
+	}
+	if result.ServiceName != "myapi" || result.ServiceID == "" || !strings.HasPrefix(result.Token, serviceShareTokenPrefix) {
+		t.Fatalf("unexpected json result: %#v", result)
+	}
+}
+
+func TestServiceShareDebugVerbosityShowsDiagnosticsOnStderr(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "share-expired-lease-debug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: true, AuthorityPrivateKey: authorityPriv, ServiceShareTTL: time.Hour, GrantServicePeersProvider: func() []string { return []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWQZ6qwLp7C7mdkAXMJsa2zXKoGNSXYpQNsPxpQQz4g2v3"}
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := captureOutputs(func() error {
+		return run([]string{"share", "-vv", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "shared service \"myapi\"") {
+		t.Fatalf("unexpected stdout: %s", out)
+	}
+	if !strings.Contains(stderr, "grants-client p2p connected") {
+		t.Fatalf("expected diagnostics on stderr with -vv, got: %s", stderr)
+	}
+}
+
+func TestServiceShareMissingPublishLeaseRequestsGrantAndSurfacesPending(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalServiceID := svc.ServiceID
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	cluster := cfg.Clusters["home"]
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "share-missing-lease-pending")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: false, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(svc.ServicePublishLeaseFile)
+	_, err = capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "is pending; publication requires an approved publish lease") {
+		t.Fatalf("expected pending renewal guidance, got %v", err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingSvc := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if pendingSvc.ServiceID != originalServiceID {
+		t.Fatalf("expected pending request to keep service id %q, got %#v", originalServiceID, pendingSvc)
+	}
+	if strings.TrimSpace(pendingSvc.GrantRequestID) == "" {
+		t.Fatalf("expected pending grant request to be saved: %#v", pendingSvc)
+	}
+}
+
+func TestServiceShareDelegatedMintErrorsAreActionable(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := cfgpkg.LoadFile(configPath)
@@ -1613,28 +2732,127 @@ func TestResolveAttachAuthorizationAcceptsExistingClaimWithoutAuthority(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	cluster := cfg.Clusters["home"]
-	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(time.Hour), ""); err != nil {
-		t.Fatal(err)
-	}
+	serviceWithPaths := svc
+	clusterWithAuthority := cfg.Clusters["home"]
+	cluster := clusterWithAuthority
+	svc.ServicePublishLeaseFile = ""
+	svc.GrantServicePeer = ""
 	cluster.AuthorityPrivateKeyFile = ""
+	cluster.MembershipGrant = nil
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
 	cfg.Clusters["home"] = cluster
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
 	}
+	_, err = capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "service publish lease renewal requires a grant service peer or local authority key") {
+		t.Fatalf("expected missing renewal path guidance, got %v", err)
+	}
 
-	authz, err := resolveAttachAuthorization(configPath, cfg)
+	cluster = clusterWithAuthority
+	svc = serviceWithPaths
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if authz.MintedServiceClaim {
-		t.Fatal("non-authority resolver unexpectedly minted a claim")
+	cluster = cfg.Clusters["home"]
+	svc = cluster.Namespaces["default"].Services["myapi"]
+	svc.ServicePublishLeaseFile = serviceWithPaths.ServicePublishLeaseFile
+	svc.ServiceClaimFile = serviceWithPaths.ServiceClaimFile
+	cluster.AuthorityPrivateKeyFile = ""
+	cluster.MembershipGrant = nil
+	svc.GrantServicePeer = ""
+	ns = cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
 	}
-	if authz.ServicePeerID == "" || authz.ServiceClaimFile != svc.ServiceClaimFile || authz.MembershipCapabilityFile == "" {
-		t.Fatalf("unexpected authz: %#v", authz)
+	_, err = capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing grant service peer; attach or request a publish grant from an authority node first") {
+		t.Fatalf("expected missing grant peer guidance, got %v", err)
 	}
-	if authz.ServiceShareToken != "" {
-		t.Fatalf("expected no share token without authority key, got %q", authz.ServiceShareToken)
+}
+
+func TestServiceShareByExactServiceIDUsesRequestedScopedService(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultSvc := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if _, err := capture(func() error { return run([]string{"create", "namespace/observability", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherSvc := cfg.Clusters["home"].Namespaces["observability"].Services["myapi"]
+	if defaultSvc.ServiceID == otherSvc.ServiceID {
+		t.Fatalf("expected namespace-scoped duplicate service names to keep distinct ids: %#v %#v", defaultSvc, otherSvc)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/" + defaultSvc.ServiceID, "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := parseAndVerifyServiceShareToken(extractServiceShareToken(t, out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.TargetServiceID != defaultSvc.ServiceID || payload.TargetServiceID == otherSvc.ServiceID {
+		t.Fatalf("share by exact service id minted wrong target: %#v default=%#v other=%#v", payload, defaultSvc, otherSvc)
+	}
+}
+
+func TestRequireShareTokenEndpointForPublicDefaultRejectsMissingEndpoint(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildServiceShareArtifacts(priv, "home", "cluster-public-2026", "default", "myapi", "service-123", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{joinDefaultNetworkName: {Kind: cfgpkg.OverlayKindPublicBundle, PublicDefaultCluster: "home", PublicDefaultNamespace: "default"}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}}}}}
+	if err := requireShareTokenEndpointForPublicDefault(cfg, artifacts.Token); err == nil || !strings.Contains(err.Error(), "remote-dialable service endpoint") {
+		t.Fatalf("expected missing endpoint error, got %v", err)
+	}
+}
+
+func TestPrintAttachShareHintShowsRecoveryHint(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentOverlay: joinDefaultNetworkName, CurrentCluster: "home", CurrentNamespace: "default", Service: cfgpkg.Service{Name: "myapi"}}
+	authz := attachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "service-123"}, PublishLeaseReused: true, ShareRecoveryHint: "run `tubo share service/myapi --cluster home --namespace default` to mint a fresh invite token"}
+	out, err := capture(func() error {
+		printAttachShareHint(cfg, authz)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "publish lease: reused") || !strings.Contains(out, "tubo share service/myapi --cluster home --namespace default") {
+		t.Fatalf("unexpected attach output: %s", out)
 	}
 }
 
@@ -1730,11 +2948,19 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: cluster.ClusterID, NamespaceID: "default", ServiceID: svc.ServiceID, SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	owner, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Approve(svc.GrantRequestID, claim, nil, ""); err != nil {
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: cluster.ClusterID, NamespaceID: "default", ServiceID: svc.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey), PublisherPeerID: servicePeerID.String(), RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: "grant-route-approved"}, owner.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildApprovalArtifacts(authorityPriv, "home", cluster.ClusterID, "default", "myapi", svc.ServiceID, servicePeerID.String(), time.Hour, time.Hour, leaseReq.RequestedCapabilities, leaseReq.ServicePublicKey, leaseReq.Nonce, leaseReq.ServiceOwnerSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Approve(svc.GrantRequestID, artifacts.ServiceClaim, &artifacts.PublishLease, &artifacts.MembershipCapability, artifacts.ServiceShareToken); err != nil {
 		t.Fatal(err)
 	}
 	authz, err := resolveAttachAuthorization(configPath, reloaded)
@@ -1743,6 +2969,233 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	}
 	if authz.ServiceClaimFile == "" || authz.ServicePeerID != servicePeerID.String() {
 		t.Fatalf("unexpected approved authz: %#v", authz)
+	}
+}
+
+func expirePublishLeaseFile(t *testing.T, path string, expiresAt time.Time) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var lease grantspkg.PublishLease
+	if err := json.Unmarshal(b, &lease); err != nil {
+		t.Fatal(err)
+	}
+	lease.ExpiresAt = expiresAt
+	lease.ServiceClaim.ExpiresAt = expiresAt
+	out, err := json.MarshalIndent(lease, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestResolveAttachAuthorizationIgnoresExpiredServiceClaimWithValidPublishLease(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	cluster.AuthorityPrivateKeyFile = ""
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Service.Name = "myapi"
+	reloaded.Service.Target = "http://127.0.0.1:8080"
+	authz, err := resolveAttachAuthorization(configPath, reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authz.PublishLeaseReused {
+		t.Fatalf("expected valid publish lease reuse despite expired claim: %#v", authz)
+	}
+}
+
+func TestResolveAttachAuthorizationTreatsExpiredServiceClaimAsMissingWithAuthority(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authz.MintedServiceClaim {
+		t.Fatalf("expected local renewal despite expired claim: %#v", authz)
+	}
+}
+
+func TestResolveAttachAuthorizationTreatsExpiredServiceClaimAsMissingWithGrantPeer(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "expired-claim-renewal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store, AutoApprove: true, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	svc.GrantServicePeer = p2p.PeerAddrs(serverHost)[0]
+	cluster.AuthorityPrivateKeyFile = ""
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Service.Name = "myapi"
+	reloaded.Service.Target = "http://127.0.0.1:8080"
+	cluster = reloaded.Clusters["home"]
+	cluster.AuthorityPrivateKeyFile = ""
+	ns = cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	reloaded.Clusters["home"] = cluster
+	authz, err := resolveAttachAuthorization(configPath, reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.PublishLeaseReused {
+		t.Fatalf("expected grant renewal, not reused lease: %#v", authz)
+	}
+	if authz.ServicePublishLeaseFile == "" {
+		t.Fatalf("expected renewed publish authorization: %#v", authz)
+	}
+}
+
+func TestResolveAttachAuthorizationTreatsExpiredPublishLeaseAsMissing(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "expired-lease-renewal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store, AutoApprove: true, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	svc.GrantServicePeer = p2p.PeerAddrs(serverHost)[0]
+	cluster.AuthorityPrivateKeyFile = ""
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Service.Name = "myapi"
+	reloaded.Service.Target = "http://127.0.0.1:8080"
+	cluster = reloaded.Clusters["home"]
+	cluster.AuthorityPrivateKeyFile = ""
+	ns = cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	reloaded.Clusters["home"] = cluster
+	authz, err := resolveAttachAuthorization(configPath, reloaded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.PublishLeaseReused {
+		t.Fatalf("expected expired lease to be renewed, not reused: %#v", authz)
+	}
+	if authz.ServiceShareToken == "" {
+		t.Fatal("expected renewed publish to return a share token")
+	}
+	if err := verifyPublishLeaseFile(authz.ServicePublishLeaseFile, authorityPriv.Public().(ed25519.PublicKey), cluster.ClusterID, "default", authz.Service.ServiceID, authz.ServicePeerID); err != nil {
+		t.Fatalf("renewed lease invalid: %v", err)
 	}
 }
 
@@ -1762,6 +3215,11 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 		t.Fatal(err)
 	}
 	cluster := cfg.Clusters["home"]
+	relayPeerID, err := p2p.PeerIDFromSeed("relay-endpoint-seed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeerID.String()}
 	authorityPriv := mustClusterAuthorityKey(t, configPath)
 	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-route-auto-server")
 	if err != nil {
@@ -1797,99 +3255,114 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 	if payload.ClusterName != "home" || payload.Namespace != "default" || payload.ServiceName != "myapi" {
 		t.Fatalf("unexpected token payload: %#v", payload)
 	}
-	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" {
-		t.Fatalf("expected approved authz to save claim and membership: %#v", authz)
+	if payload.ServiceEndpoint.PeerID != authz.ServicePeerID || len(payload.ServiceEndpoint.Addresses) != 1 || !strings.Contains(payload.ServiceEndpoint.Addresses[0], "/p2p-circuit/") || !strings.Contains(payload.ServiceEndpoint.Addresses[0], relayPeerID.String()) {
+		t.Fatalf("expected relay-aware service endpoint in token, got %#v", payload.ServiceEndpoint)
+	}
+	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" || authz.ServicePublishLeaseFile == "" {
+		t.Fatalf("expected approved authz to save claim, publish lease, and membership: %#v", authz)
 	}
 }
 
-func TestResolveAttachAuthorizationHandlesDeniedAndExpiredGrantRoute(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		finish  func(*testing.T, *grantspkg.Store, string)
-		wantErr string
-	}{
-		{name: "denied", finish: func(t *testing.T, store *grantspkg.Store, id string) {
-			_, err := store.Deny(id, "no")
-			if err != nil {
-				t.Fatal(err)
-			}
-		}, wantErr: "denied"},
-		{name: "expired", finish: func(t *testing.T, store *grantspkg.Store, id string) {
-			b, err := os.ReadFile(store.Path())
-			if err != nil {
-				t.Fatal(err)
-			}
-			var state struct {
-				Requests []grantspkg.Request `json:"requests"`
-			}
-			if err := json.Unmarshal(b, &state); err != nil {
-				t.Fatal(err)
-			}
-			for i := range state.Requests {
-				if state.Requests[i].ID == id {
-					state.Requests[i].Status = grantspkg.StatusExpired
-				}
-			}
-			b, err = json.MarshalIndent(state, "", "  ")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(store.Path(), append(b, '\n'), 0600); err != nil {
-				t.Fatal(err)
-			}
-		}, wantErr: "expired"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			configPath := writeCreateClusterConfig(t)
-			if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
-				t.Fatal(err)
-			}
-			cfg, err := cfgpkg.LoadFile(configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cfg.Service.Name = "myapi"
-			cfg.Service.Target = "http://127.0.0.1:8080"
-			cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cluster := cfg.Clusters["home"]
-			serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-route-"+tc.name)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer serverHost.Close()
-			store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
-			server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store})
-			if err != nil {
-				t.Fatal(err)
-			}
-			server.Register(serverHost)
-			svc.GrantServicePeer = p2p.PeerAddrs(serverHost)[0]
-			ns := cluster.Namespaces["default"]
-			ns.Services["myapi"] = svc
-			cluster.Namespaces["default"] = ns
-			cluster.AuthorityPrivateKeyFile = ""
-			cfg.Clusters["home"] = cluster
-			if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
-				t.Fatal(err)
-			}
-			_, err = resolveAttachAuthorization(configPath, cfg)
-			if err == nil || !strings.Contains(err.Error(), "pending") {
-				t.Fatalf("expected pending, got %v", err)
-			}
-			reloaded, err := cfgpkg.LoadFile(configPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			reqID := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"].GrantRequestID
-			tc.finish(t, store, reqID)
-			_, err = resolveAttachAuthorization(configPath, reloaded)
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected %q, got %v", tc.wantErr, err)
-			}
-		})
+func TestResolveAttachAuthorizationPublicBundleGrantFallbackProducesRuntimeMembershipFile(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "public-bundle-grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store, AutoApprove: true, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cluster.AuthorityPrivateKeyFile = ""
+	cluster.MembershipCapabilityFile = ""
+	cluster.MembershipGrant = &cfgpkg.ClusterMembershipGrant{
+		ClusterName:          "home",
+		ClusterID:            cluster.ClusterID,
+		AuthorityPublicKey:   cluster.AuthorityPublicKey,
+		Namespace:            "default",
+		Role:                 "member",
+		Permissions:          []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish},
+		GrantServiceProtocol: grantspkg.ProtocolID,
+		GrantServicePeers:    []string{grantPeer},
+		IssuedAt:             time.Now().UTC(),
+		ExpiresAt:            time.Now().UTC().Add(time.Hour),
+	}
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	authz, err := resolveAttachAuthorization(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authz.MembershipCapabilityFile == "" {
+		t.Fatalf("expected runtime membership capability file, got %#v", authz)
+	}
+	if _, err := os.Stat(authz.MembershipCapabilityFile); err != nil {
+		t.Fatalf("membership capability file stat: %v", err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"].GrantServicePeer; got != grantPeer {
+		t.Fatalf("GrantServicePeer=%q want %q", got, grantPeer)
+	}
+}
+
+func TestImportServiceShareDiscoveryContextIgnoresAuthorizedKeyCommentDifferences(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--cluster", "home", "--namespace", "default", "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractServiceShareToken(t, out)
+	payload, err := parseAndVerifyServiceShareToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withComment := payload
+	withComment.AuthorityPublicKey = payload.AuthorityPublicKey + " bettersafethansorry@tubo.click"
+	imported, err := importServiceShareDiscoveryContext(cfg, withComment)
+	if err != nil {
+		t.Fatalf("expected issuer comment variation to be accepted, got %v", err)
+	}
+	if imported.Clusters["home"].AuthorityPublicKey == "" {
+		t.Fatalf("expected imported cluster authority key, got %#v", imported.Clusters["home"])
 	}
 }
 
@@ -1913,13 +3386,43 @@ func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *t
 			wantErr: "subject peer id mismatch",
 		},
 		{
+			name: "wrong namespace claim",
+			mutate: func(t *testing.T, cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService) {
+				priv, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				peerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: cluster.ClusterID, NamespaceID: "observability", ServiceID: svc.ServiceID, SubjectPeerID: peerID.String(), Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: time.Now().Add(time.Hour)}, priv)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := writeServiceClaimFile(svc.ServiceClaimFile, claim); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "namespace id mismatch",
+		},
+		{
+			name: "malformed claim",
+			mutate: func(t *testing.T, _ cfgpkg.Cluster, svc cfgpkg.NamespaceService) {
+				if err := os.WriteFile(svc.ServiceClaimFile, []byte("{not-json\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "invalid character",
+		},
+		{
 			name: "expired claim",
 			mutate: func(t *testing.T, cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService) {
 				if err := writeTestServiceClaim(t, cluster, "default", svc, time.Now().Add(-time.Hour), ""); err != nil {
 					t.Fatal(err)
 				}
 			},
-			wantErr: "expired",
+			wantErr: "no service publish grant",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1954,6 +3457,62 @@ func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *t
 				t.Fatalf("ambiguous old error leaked: %v", err)
 			}
 		})
+	}
+}
+
+func seedApprovedClaimGrant(t *testing.T, store *grantspkg.Store, clusterName string, cluster cfgpkg.Cluster, namespace, serviceName string, svc cfgpkg.NamespaceService, authorityPriv ed25519.PrivateKey, requesterPeerID string, expiresAt time.Time) error {
+	t.Helper()
+	owner, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
+	if err != nil {
+		return err
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: cluster.ClusterID, NamespaceID: namespace, ServiceID: svc.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey), PublisherPeerID: requesterPeerID, RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: serviceName + "-nonce"}, owner.PrivateKey)
+	if err != nil {
+		return err
+	}
+	created, err := store.CreatePending(grantspkg.Request{ClusterName: clusterName, ClusterID: cluster.ClusterID, NamespaceID: namespace, RequesterPeerID: requesterPeerID, ServiceName: serviceName, ServiceID: svc.ServiceID, ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, RequestNonce: leaseReq.Nonce, ServicePeerID: requesterPeerID, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedAt: expiresAt.Add(-24 * time.Hour), ExpiresAt: expiresAt})
+	if err != nil {
+		return err
+	}
+	claim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: cluster.ClusterID, NamespaceID: namespace, ServiceID: svc.ServiceID, SubjectPeerID: requesterPeerID, Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: expiresAt}, authorityPriv)
+	if err != nil {
+		return err
+	}
+	_, err = store.Approve(created.ID, claim, nil, nil, "")
+	return err
+}
+
+func expireApprovedGrantRecord(t *testing.T, storePath, servicePeerID string, expiresAt time.Time) {
+	t.Helper()
+	b, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state struct {
+		Requests []grantspkg.Request `json:"requests"`
+	}
+	if err := json.Unmarshal(b, &state); err != nil {
+		t.Fatal(err)
+	}
+	for i := range state.Requests {
+		if state.Requests[i].ServicePeerID != servicePeerID || state.Requests[i].Status != grantspkg.StatusApproved {
+			continue
+		}
+		state.Requests[i].ExpiresAt = expiresAt
+		if state.Requests[i].ServiceClaim != nil {
+			state.Requests[i].ServiceClaim.ExpiresAt = expiresAt
+		}
+		if state.Requests[i].PublishLease != nil {
+			state.Requests[i].PublishLease.ExpiresAt = expiresAt
+			state.Requests[i].PublishLease.ServiceClaim.ExpiresAt = expiresAt
+		}
+	}
+	out, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(storePath, append(out, '\n'), 0600); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -2003,11 +3562,11 @@ func TestEnsureAttachServiceIdentityRejectsInvalidConfig(t *testing.T) {
 	cfg.Service.Target = "http://127.0.0.1:8080"
 	cluster := cfg.Clusters["home"]
 	namespace := cluster.Namespaces[cfg.CurrentNamespace]
-	namespace.Services = map[string]cfgpkg.NamespaceService{"myapi": {ServiceID: "service-wrong", ServiceSeed: "existing-seed"}}
+	namespace.Services = map[string]cfgpkg.NamespaceService{"myapi": {ServiceID: "service-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", ServiceSeed: "existing-seed"}}
 	cluster.Namespaces[cfg.CurrentNamespace] = namespace
 	cfg.Clusters["home"] = cluster
-	if _, err := resolveAttachAuthorization(configPath, cfg); err == nil || !strings.Contains(err.Error(), "identity mismatch") {
-		t.Fatalf("expected identity mismatch error, got %v", err)
+	if _, err := resolveAttachAuthorization(configPath, cfg); err == nil || !strings.Contains(err.Error(), "service_owner_key_file") {
+		t.Fatalf("expected service owner key error, got %v", err)
 	}
 }
 
@@ -2436,6 +3995,235 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	}
 }
 
+func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceScope, string, string) {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "duplicate-service-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	t.Cleanup(cache.Stop)
+	t.Cleanup(func() { _ = server.Close() })
+	addr := p2p.PeerAddrs(server)[0]
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceIDA := serviceidentity.ServiceIDFromPublicKey(pubA)
+	serviceIDB := serviceidentity.ServiceIDFromPublicKey(pubB)
+	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", serviceidentity.EncodePublicKey(pubA), "", nil, []string{addr}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", serviceidentity.EncodePublicKey(pubB), "", nil, []string{addr}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "observability",
+		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath},
+		},
+	}
+	return cfg, serviceScope{Cluster: "home", Namespace: "observability"}, serviceIDA, serviceIDB
+}
+
+func TestDiscoverServiceRejectsDuplicateDisplayNames(t *testing.T) {
+	cfg, scope, serviceIDA, serviceIDB := newDuplicateServiceDiscoveryFixture(t)
+	_, _, err := discoverServiceWithConfig(cfg, 5*time.Second, false, false, scope, "myapi")
+	if err == nil {
+		t.Fatal("expected duplicate display name error")
+	}
+	if !isAmbiguousServiceError(err) {
+		t.Fatalf("expected ambiguous service error, got %v", err)
+	}
+	for _, want := range []string{"tubo connect service/" + serviceIDA, "tubo connect service/" + serviceIDB} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ambiguous error missing %q: %v", want, err)
+		}
+	}
+}
+
+func TestDiscoverServiceExactByServiceIDReturnsMatchingDuplicate(t *testing.T) {
+	cfg, scope, _, serviceIDB := newDuplicateServiceDiscoveryFixture(t)
+	result, service, err := discoverServiceExactWithConfig(cfg, 5*time.Second, false, false, scope, "", serviceIDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Mode != "remote-query" {
+		t.Fatalf("mode = %q, want remote-query", result.Mode)
+	}
+	if service.ServiceID != serviceIDB || service.Name != "myapi" {
+		t.Fatalf("unexpected exact service: %#v", service)
+	}
+	joined := strings.Join(result.Messages, "\n")
+	if !strings.Contains(joined, "received service myapi") {
+		t.Fatalf("exact lookup missing service hint: %s", joined)
+	}
+}
+
+func TestDiscoverServiceExactFallsBackToDisplayNameWhenServiceIDMissing(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "fallback-service-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	t.Cleanup(cache.Stop)
+	t.Cleanup(func() { _ = server.Close() })
+	addr := p2p.PeerAddrs(server)[0]
+	if err := cache.Add(server.ID(), "myapi", []string{addr}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "observability",
+		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath},
+		},
+	}
+	result, service, err := discoverServiceExactWithConfig(cfg, 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"}, "myapi", "service-fallback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.Name != "myapi" || service.ServiceID != "" {
+		t.Fatalf("unexpected fallback service: %#v", service)
+	}
+	if result.Mode != "remote-query" && result.Mode != "cache" && result.Mode != "live" {
+		t.Fatalf("unexpected fallback mode: %q", result.Mode)
+	}
+}
+
+func TestResolveLocalServiceForShareMatchesServiceID(t *testing.T) {
+	pubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceIDA := serviceidentity.ServiceIDFromPublicKey(pubA)
+	serviceIDB := serviceidentity.ServiceIDFromPublicKey(pubB)
+	svc, name, ok := resolveLocalServiceForShare(map[string]cfgpkg.NamespaceService{
+		"lmstudio": {ServiceID: serviceIDA},
+		"ollama":   {ServiceID: serviceIDB},
+	}, serviceIDB)
+	if !ok || name != "ollama" || svc.ServiceID != serviceIDB {
+		t.Fatalf("unexpected share resolution: ok=%t name=%q svc=%#v", ok, name, svc)
+	}
+}
+
+func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
+	out, err := capture(func() error {
+		printServicesTable([]serviceResource{{Name: "lmstudio", ServiceID: "service-a", Cluster: "home", Namespace: "default", Status: "online", Path: "direct", PeerID: "12D3-peer", Capabilities: []string{"connect"}}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SERVICE ID", "SCOPE", "ACCESS", "service-a", "home/default", "unknown"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("services table missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestPrintProcessesTableIncludesServiceMetadata(t *testing.T) {
+	out, err := capture(func() error {
+		printProcessesTable([]processView{{Name: "attach-lmstudio", Command: "attach", ServiceID: "service-a", Cluster: "home", Namespace: "default", Status: "running", PID: 1234, Local: "127.0.0.1:51234", Target: "http://127.0.0.1:1234"}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"SERVICE ID", "SCOPE", "service-a", "home/default"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("process table missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestGrantsHistoryIncludesServiceMetadataAndSource(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	store := grantspkg.NewStore(storePath)
+	now := time.Now().UTC()
+	reqB := grantspkg.Request{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-b", ServicePublicKey: "pk-b", ServiceOwnerSignature: []byte("sig-b"), RequestNonce: "nonce-b", ServicePeerID: "12D3-service-b", RequestedPermissions: []string{capability.PermissionAttach}, RequestedAt: now.Add(2 * time.Minute), ExpiresAt: now.Add(time.Hour)}
+	reqA := grantspkg.Request{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", RequesterPeerID: "12D3-requester", ServiceName: "myapi", ServiceID: "service-a", ServicePublicKey: "pk-a", ServiceOwnerSignature: []byte("sig-a"), RequestNonce: "nonce-a", ServicePeerID: "12D3-service-a", RequestedPermissions: []string{capability.PermissionAttach}, RequestedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if _, err := store.CreatePending(reqB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePending(reqA); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"history source: authority/local store", "SERVICE_ID", "SCOPE", "service-a", "service-b"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("grants history missing %q: %s", want, out)
+		}
+	}
+	if strings.Index(out, "service-a") > strings.Index(out, "service-b") {
+		t.Fatalf("expected service-a before service-b: %s", out)
+	}
+}
+
 func TestChooseConnectLocal(t *testing.T) {
 	listen, url, err := chooseConnectLocal("127.0.0.1:51234")
 	if err != nil {
@@ -2626,6 +4414,37 @@ func TestConnectCandidatesPreferDirectThenRelay(t *testing.T) {
 	}
 }
 
+func TestDoctorWarnsWhenCurrentNamespaceLacksConnectPermission(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	cap, err := loadMembershipCapability(cluster.MembershipCapabilityFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cap.Permissions = []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}
+	b, err := json.MarshalIndent(cap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cluster.MembershipCapabilityFile, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return run([]string{"doctor", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "lacks connect permission") {
+		t.Fatalf("expected doctor warning, got: %s", out)
+	}
+}
+
 func TestConnectStatusMessages(t *testing.T) {
 	service := normalizeServiceResource(serviceResource{Name: "myapi", Addresses: []string{
 		"/ip4/5.6.7.8/tcp/4001/p2p/target",
@@ -2648,7 +4467,7 @@ func TestConnectStatusMessages(t *testing.T) {
 
 func TestPrintServiceDescriptionShowsAddressClasses(t *testing.T) {
 	out, err := capture(func() error {
-		printServiceDescription(serviceResource{Name: "myapi", Kind: "service", Status: "online", PeerID: "12D3KooWTestPeer", Addresses: []string{
+		printServiceDescription(serviceResource{Name: "myapi", Kind: "service", Status: "online", ConnectPolicy: "namespace_members", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWGrant"}}, PeerID: "12D3KooWTestPeer", Addresses: []string{
 			"/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWTestPeer",
 			"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/12D3KooWTestPeer",
 		}}, []string{"starting temporary observer for 5s..."})
@@ -2657,7 +4476,7 @@ func TestPrintServiceDescriptionShowsAddressClasses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Path: direct", "Dial policy:", "preferred: direct", "fallback: relay", "Addresses:", "  Direct:", "  Relayed:"} {
+	for _, want := range []string{"Connect policy: namespace_members", "Grant service:", "Protocol: /tubo/grants/1.0", "Path: direct", "Dial policy:", "preferred: direct", "fallback: relay", "Addresses:", "  Direct:", "  Relayed:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("description missing %q: %s", want, out)
 		}
@@ -2706,78 +4525,5 @@ func TestVersionCommand(t *testing.T) {
 	}
 	if strings.TrimSpace(shortOut) != "v9.9.9" {
 		t.Fatalf("short version=%q", shortOut)
-	}
-}
-
-func TestTopologyRenderMinimal(t *testing.T) {
-	d := t.TempDir()
-	topo := filepath.Join(d, "topology.yaml")
-	if err := os.WriteFile(topo, []byte(topoExample()), 0600); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(d, "gen")
-	if err := run([]string{"topology", "render", "--config", topo, "--out", out}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(out, "relay.yaml")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(out, "lmstudio.yaml")); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestTopologyRenderResolvesRelayPeers(t *testing.T) {
-	d := t.TempDir()
-	topo := filepath.Join(d, "topology.yaml")
-	if err := os.WriteFile(topo, []byte(`swarm:
-  key_file: /tmp/swarm.key
-nodes:
-  relay:
-    role: relay
-    seed: public-relay-seed
-    p2p_listen: /ip4/0.0.0.0/tcp/4001
-    public_addr: /ip4/172.232.189.160/tcp/4001
-  edge:
-    role: edge
-    seed: edge-seed
-    p2p_listen: /ip4/0.0.0.0/tcp/4001
-    listen: :8443
-    admin_listen: 127.0.0.1:8444
-    relay: relay
-  lmstudio:
-    role: service
-    seed: service-lmstudio-seed
-    p2p_listen: /ip4/0.0.0.0/tcp/40123
-    service_name: lmstudio
-    target: http://127.0.0.1:1234
-    relay: relay
-`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(d, "gen")
-	if err := run([]string{"topology", "render", "--config", topo, "--out", out}); err != nil {
-		t.Fatal(err)
-	}
-	relayID, err := p2p.PeerIDFromSeed("public-relay-seed")
-	if err != nil {
-		t.Fatal(err)
-	}
-	expectedRelay := "/ip4/172.232.189.160/tcp/4001/p2p/" + relayID.String()
-	for _, name := range []string{"edge.yaml", "lmstudio.yaml"} {
-		b, err := os.ReadFile(filepath.Join(out, name))
-		if err != nil {
-			t.Fatal(err)
-		}
-		got := string(b)
-		if !strings.Contains(got, "bootstrap_peers:") {
-			t.Fatalf("%s missing bootstrap_peers: %s", name, got)
-		}
-		if !strings.Contains(got, "relay_peers:") {
-			t.Fatalf("%s missing relay_peers: %s", name, got)
-		}
-		if !strings.Contains(got, expectedRelay) {
-			t.Fatalf("%s missing resolved relay addr %q: %s", name, expectedRelay, got)
-		}
 	}
 }
