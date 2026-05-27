@@ -18,6 +18,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
 )
@@ -112,11 +113,11 @@ func localShareServiceCmd(args []string) error {
 	if *jsonOut {
 		return printJSON(result)
 	}
-	fmt.Printf("shared service %q in cluster %q namespace %q\n", name, scope.Cluster, scope.Namespace)
-	fmt.Printf("service id: %s\n", serviceID)
-	fmt.Printf("permission: connect\n")
-	fmt.Printf("expires: %s\n", artifacts.Payload.ExpiresAt.Format(time.RFC3339))
-	fmt.Printf("connect: %s\n", result.ConnectCmd)
+	logging.Resultf("shared service %q in cluster %q namespace %q\n", name, scope.Cluster, scope.Namespace)
+	logging.Resultf("service id: %s\n", serviceID)
+	logging.Resultf("permission: connect\n")
+	logging.Resultf("expires: %s\n", artifacts.Payload.ExpiresAt.Format(time.RFC3339))
+	logging.Resultf("connect: %s\n", result.ConnectCmd)
 	return nil
 }
 
@@ -332,7 +333,7 @@ func localRevokeServiceShareCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("revoked share invite %s\n", payload.JTI)
+	logging.Resultf("revoked share invite %s\n", payload.JTI)
 	return nil
 }
 

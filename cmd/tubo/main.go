@@ -16,6 +16,7 @@ import (
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	launcher "github.com/origama/tubo/internal/launcher"
+	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/networkbundle"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
@@ -41,7 +42,26 @@ func main() {
 		os.Exit(1)
 	}
 }
+
+type globalCLIOptions struct {
+	Quiet     bool
+	Verbosity int
+	LogLevel  string
+}
+
 func run(args []string) error {
+	global, args, err := parseGlobalCLIOptions(args)
+	if err != nil {
+		return err
+	}
+	if len(args) > 1 {
+		subGlobal, subArgs, err := parseGlobalCLIOptions(args[1:])
+		if err != nil {
+			return err
+		}
+		global = mergeGlobalCLIOptions(global, subGlobal)
+		args = append([]string{args[0]}, subArgs...)
+	}
 	if len(args) == 0 {
 		printTopLevelHelp()
 		return nil
@@ -59,6 +79,9 @@ func run(args []string) error {
 	if role, roleArgs, ok, err := resolveRuntimeRole(args); err != nil {
 		return err
 	} else if ok {
+		if err := logging.Configure(runtimeLoggingConfig(global)); err != nil {
+			return err
+		}
 		if shouldHandleDetach(args[0]) {
 			cleanArgs, detach := stripDetachArgs(roleArgs)
 			roleArgs = cleanArgs
@@ -82,6 +105,9 @@ func run(args []string) error {
 			roleArgs = cleanArgs
 		}
 		return runRole(role, roleArgs)
+	}
+	if err := logging.Configure(logging.Config{Quiet: global.Quiet, Verbosity: global.Verbosity, LogLevel: global.LogLevel, Runtime: false}); err != nil {
+		return err
 	}
 	switch args[0] {
 	case "join":
@@ -153,6 +179,61 @@ func run(args []string) error {
 	default:
 		return usage()
 	}
+}
+
+func runtimeLoggingConfig(global globalCLIOptions) logging.Config {
+	runtimeVerbosity := global.Verbosity
+	if os.Getenv("TUBO_DETACHED_CHILD") == "1" && runtimeVerbosity < 1 && strings.TrimSpace(global.LogLevel) == "" {
+		runtimeVerbosity = 1
+	}
+	return logging.Config{Quiet: global.Quiet, Verbosity: runtimeVerbosity, LogLevel: global.LogLevel, Runtime: true}
+}
+
+func mergeGlobalCLIOptions(base, extra globalCLIOptions) globalCLIOptions {
+	base.Quiet = base.Quiet || extra.Quiet
+	base.Verbosity += extra.Verbosity
+	if strings.TrimSpace(extra.LogLevel) != "" {
+		base.LogLevel = extra.LogLevel
+	}
+	return base
+}
+
+func parseGlobalCLIOptions(args []string) (globalCLIOptions, []string, error) {
+	var opts globalCLIOptions
+	remaining := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			remaining = append(remaining, args[i:]...)
+			break
+		}
+		switch {
+		case arg == "--quiet":
+			opts.Quiet = true
+			continue
+		case arg == "-v":
+			opts.Verbosity++
+			continue
+		case arg == "-vv":
+			opts.Verbosity += 2
+			continue
+		case arg == "-vvv":
+			opts.Verbosity += 3
+			continue
+		case strings.HasPrefix(arg, "--log-level="):
+			opts.LogLevel = strings.TrimSpace(strings.TrimPrefix(arg, "--log-level="))
+			continue
+		case arg == "--log-level":
+			if i+1 >= len(args) {
+				return opts, nil, errors.New("--log-level requires a value")
+			}
+			i++
+			opts.LogLevel = strings.TrimSpace(args[i])
+			continue
+		}
+		remaining = append(remaining, arg)
+	}
+	return opts, remaining, nil
 }
 
 func resolveRuntimeRole(args []string) (string, []string, bool, error) {
@@ -365,6 +446,11 @@ Notes:
   - First run auto-joins the signed public network bundle.
   - Use --no-init to disable implicit join.
   - HTTP and WebSocket upgrade traffic are both tunneled.
+
+Global flags:
+  --quiet
+  -v | -vv | -vvv
+  --log-level error|warn|info|debug|trace
 
 Help:
   tubo help <command>
@@ -579,9 +665,25 @@ func runRole(role string, args []string) error {
 	if err != nil {
 		return err
 	}
+	printForegroundRuntimeNotice(role, c)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return launcher.Run(ctx, newRuntimeLauncher(), role, configPath, c)
+}
+
+func printForegroundRuntimeNotice(role string, cfg cfgpkg.Config) {
+	switch role {
+	case "edge":
+		logging.Warnf("gateway running in foreground; press Ctrl+C to stop\n")
+	case "relay":
+		logging.Warnf("relay running in foreground; press Ctrl+C to stop\n")
+	case "service":
+		if strings.TrimSpace(cfg.Service.Name) != "" {
+			logging.Warnf("service %q running in foreground; press Ctrl+C to stop\n", cfg.Service.Name)
+		} else {
+			logging.Warnf("service running in foreground; press Ctrl+C to stop\n")
+		}
+	}
 }
 
 func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) {
@@ -889,44 +991,44 @@ func joinTitleFor(bundle bool, overlayName string) string {
 }
 
 func printJoinResult(title string, result joinResult) {
-	fmt.Println(title)
+	logging.Resultf("%s\n", title)
 	if result.NetworkName != "" {
-		fmt.Printf("network: %s\n", result.NetworkName)
+		logging.Resultf("network: %s\n", result.NetworkName)
 	}
 	if result.NetworkID != "" {
-		fmt.Printf("network id: %s\n", result.NetworkID)
+		logging.Resultf("network id: %s\n", result.NetworkID)
 	}
 	if result.KeyID != "" {
-		fmt.Printf("signature key: %s\n", result.KeyID)
+		logging.Resultf("signature key: %s\n", result.KeyID)
 	}
-	fmt.Printf("config: %s\n", result.ConfigPath)
+	logging.Resultf("config: %s\n", result.ConfigPath)
 	for i, relayPeer := range result.RelayPeers {
 		if i == 0 {
-			fmt.Printf("relay: %s\n", relayPeer)
+			logging.Resultf("relay: %s\n", relayPeer)
 		} else {
-			fmt.Printf("relay[%d]: %s\n", i+1, relayPeer)
+			logging.Resultf("relay[%d]: %s\n", i+1, relayPeer)
 		}
 	}
-	fmt.Printf("swarm key installed: %s\n", result.SwarmKeyPath)
+	logging.Resultf("swarm key installed: %s\n", result.SwarmKeyPath)
 	if result.Checked {
-		fmt.Println("relay check: ok")
+		logging.Resultf("relay check: ok\n")
 	}
-	fmt.Println()
-	fmt.Println("next:")
+	logging.Resultf("\n")
+	logging.Resultf("next:\n")
 	if result.NetworkName == joinDefaultNetworkName {
-		fmt.Println("  tubo attach http://127.0.0.1:1234 --name my-service")
-		fmt.Println("  # on another machine, use the printed share invite")
-		fmt.Println("  tubo connect --token <share-invite>")
-		fmt.Println("  # optional: create a collaboration namespace for connect-by-name")
-		fmt.Println("  tubo create cluster/home")
-		fmt.Println("  tubo create namespace/team")
+		logging.Resultf("  tubo attach http://127.0.0.1:1234 --name my-service\n")
+		logging.Resultf("  # on another machine, use the printed share invite\n")
+		logging.Resultf("  tubo connect --token <share-invite>\n")
+		logging.Resultf("  # optional: create a collaboration namespace for connect-by-name\n")
+		logging.Resultf("  tubo create cluster/home\n")
+		logging.Resultf("  tubo create namespace/team\n")
 		return
 	}
-	fmt.Println("  tubo create cluster/home")
-	fmt.Println("  tubo create namespace/team")
-	fmt.Println("  tubo attach http://127.0.0.1:1234 --name my-service")
-	fmt.Println("  tubo get services")
-	fmt.Println("  tubo connect my-service")
+	logging.Resultf("  tubo create cluster/home\n")
+	logging.Resultf("  tubo create namespace/team\n")
+	logging.Resultf("  tubo attach http://127.0.0.1:1234 --name my-service\n")
+	logging.Resultf("  tubo get services\n")
+	logging.Resultf("  tubo connect my-service\n")
 }
 
 func loadJoinSwarmKey(path, b64 string) ([]byte, error) {
@@ -1078,15 +1180,14 @@ func ensureJoinedPublicNetwork(command string, noInit bool) error {
 	if strings.EqualFold(os.Getenv("CI"), "true") {
 		return fmt.Errorf("config not found at %s; implicit public join disabled in CI (use `tubo join`, `tubo init`, or pass --config)", configPath)
 	}
-	fmt.Println("No Tubo network configured.")
-	fmt.Printf("Fetching default network bundle: %s\n", joinDefaultNetworkName)
+	logging.Progressf("No Tubo network configured.\n")
+	logging.Progressf("Fetching default network bundle: %s\n", joinDefaultNetworkName)
 	result, err := joinBundleMode(effectiveDefaultPublicBundleURL(), defaultTuboConfigDir(), false)
 	if err != nil {
 		return fmt.Errorf("implicit public join for %s failed: %w", command, err)
 	}
-	fmt.Printf("Signature verified: %s\n", result.KeyID)
-	fmt.Printf("Joined network: %s\n", result.NetworkName)
-	fmt.Println()
+	logging.Progressf("Signature verified: %s\n", result.KeyID)
+	logging.Progressf("Joined network: %s\n\n", result.NetworkName)
 	return nil
 }
 
@@ -1136,12 +1237,12 @@ func maybeImplicitInit(role string, args []string, noInit bool) error {
 			return err
 		}
 	} else {
-		fmt.Println("no tubo config found")
-		fmt.Printf("created local config: %s\n", configPath)
+		logging.Progressf("no tubo config found\n")
+		logging.Progressf("created local config: %s\n", configPath)
 		if createdKey {
-			fmt.Printf("created private swarm key: %s\n", keyPath)
+			logging.Progressf("created private swarm key: %s\n", keyPath)
 		}
-		fmt.Println()
+		logging.Progressf("\n")
 	}
 	return nil
 }
@@ -1149,28 +1250,28 @@ func maybeImplicitInit(role string, args []string, noInit bool) error {
 func printDetachedSummary(commandName string, state detachedProcessState) {
 	switch commandName {
 	case "attach":
-		fmt.Printf("attached service %q\n", state.Service)
+		logging.Resultf("attached service %q\n", state.Service)
 		if state.ServiceID != "" {
-			fmt.Printf("service id: %s\n", state.ServiceID)
+			logging.Resultf("service id: %s\n", state.ServiceID)
 		}
 	case "connect":
-		fmt.Printf("connect tunnel for service %q\n", state.Service)
+		logging.Resultf("connect tunnel for service %q\n", state.Service)
 		if state.ServiceID != "" {
-			fmt.Printf("service id: %s\n", state.ServiceID)
+			logging.Resultf("service id: %s\n", state.ServiceID)
 		}
 	case "gateway":
-		fmt.Println("gateway running")
+		logging.Resultf("gateway running\n")
 	case "relay":
-		fmt.Println("relay running")
+		logging.Resultf("relay running\n")
 	default:
-		fmt.Printf("started %s\n", commandName)
+		logging.Resultf("started %s\n", commandName)
 	}
-	fmt.Printf("id: %s\n", state.ID)
+	logging.Resultf("id: %s\n", state.ID)
 	if state.Local != "" {
-		fmt.Printf("local: %s\n", state.Local)
+		logging.Resultf("local: %s\n", state.Local)
 	}
-	fmt.Printf("pid: %d\n", state.PID)
-	fmt.Printf("logs: %s\n", state.LogFile)
+	logging.Resultf("pid: %d\n", state.PID)
+	logging.Resultf("logs: %s\n", state.LogFile)
 }
 
 func printProcessesTable(items []processView) {
@@ -1356,7 +1457,7 @@ func connectCmd(args []string) error {
 		if result.Relay != "" {
 			fmt.Printf("relay: %s\n", result.Relay)
 		}
-		fmt.Println("press Ctrl+C to stop")
+		logging.Progressf("press Ctrl+C to stop\n")
 	}
 	return result.App.Start(ctx)
 }
@@ -1699,21 +1800,21 @@ func watchCmd(args []string) error {
 	scopedCfg := cfg
 	scopedCfg.CurrentCluster = scope.Cluster
 	scopedCfg.CurrentNamespace = scope.Namespace
-	fmt.Printf("watching services for %s...\n", timeout.String())
+	logging.Progressf("watching services for %s...\n", timeout.String())
 	if !*live {
 		if services, adminAddr, err := catalog.FetchLocalServiceCache(scopedCfg); err == nil {
-			fmt.Printf("using local cache from edge admin at %s\n", adminAddr)
+			logging.Progressf("using local cache from edge admin at %s\n", adminAddr)
 			for _, service := range fromCatalogServices(services) {
 				fmt.Printf("CURRENT\tservice/%s\tpeer=%s\tpath=%s\n", service.Name, service.PeerID, service.Path)
 			}
 			if *cachedOnly {
 				return nil
 			}
-			fmt.Printf("also observing swarm live for %s...\n", timeout.String())
+			logging.Progressf("also observing swarm live for %s...\n", timeout.String())
 		} else if *cachedOnly {
 			return errors.New("no local cache found")
 		} else {
-			fmt.Println("no local cache found")
+			logging.Progressf("no local cache found\n")
 		}
 	}
 	_, err = catalog.ObserveServices(scopedCfg, *timeout, func(event catalog.WatchEvent) {
@@ -1839,10 +1940,10 @@ func printServiceDescription(service serviceResource, messages []string) {
 
 func printMessages(messages []string) {
 	for _, message := range messages {
-		fmt.Println(message)
+		logging.Warnf("%s\n", message)
 	}
 	if len(messages) > 0 {
-		fmt.Println()
+		logging.Warnf("\n")
 	}
 }
 

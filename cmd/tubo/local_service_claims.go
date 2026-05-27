@@ -256,7 +256,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 	if err != nil {
 		return cfg, svc, "", err
 	}
-	shareToken, err := handleGrantClientResponse(configPath, cfg, svc, grantPeer, resp, servicePeerID)
+	shareToken, err := handleGrantClientResponse(configPath, cfg, svc, grantPeer, resp, servicePeerID, grantClientResponseInternal)
 	if err != nil {
 		return cfg, svc, "", err
 	}

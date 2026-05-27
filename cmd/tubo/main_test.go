@@ -23,22 +23,35 @@ import (
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
 	iversion "github.com/origama/tubo/internal/version"
 	"golang.org/x/crypto/ssh"
 )
 
-func capture(f func() error) (string, error) {
-	old := os.Stdout
-	r, w, _ := os.Pipe()
-	os.Stdout = w
+func captureOutputs(f func() error) (string, string, error) {
+	oldOut := os.Stdout
+	oldErr := os.Stderr
+	outR, outW, _ := os.Pipe()
+	errR, errW, _ := os.Pipe()
+	os.Stdout = outW
+	os.Stderr = errW
 	err := f()
-	_ = w.Close()
-	os.Stdout = old
-	var b bytes.Buffer
-	_, _ = io.Copy(&b, r)
-	return b.String(), err
+	_ = outW.Close()
+	_ = errW.Close()
+	os.Stdout = oldOut
+	os.Stderr = oldErr
+	var outBuf bytes.Buffer
+	var errBuf bytes.Buffer
+	_, _ = io.Copy(&outBuf, outR)
+	_, _ = io.Copy(&errBuf, errR)
+	return outBuf.String(), errBuf.String(), err
+}
+
+func capture(f func() error) (string, error) {
+	out, _, err := captureOutputs(f)
+	return out, err
 }
 func TestIDFromSeed(t *testing.T) {
 	out, err := capture(func() error { return run([]string{"id", "from-seed", "abc"}) })
@@ -224,14 +237,15 @@ func TestEnsureJoinedPublicNetworkInstallsSignedBundle(t *testing.T) {
 	for _, command := range []string{"connect", "relay"} {
 		t.Run(command, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
-			out, err := capture(func() error { return ensureJoinedPublicNetwork(command, false) })
+			stdout, stderr, err := captureOutputs(func() error { return ensureJoinedPublicNetwork(command, false) })
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, want := range []string{"No Tubo network configured.", "Fetching default network bundle: tubo-public", "Signature verified: tubo-root-2026", "Joined network: tubo-public"} {
-				if !strings.Contains(out, want) {
-					t.Fatalf("output missing %q for %s: %s", want, command, out)
-				}
+			if strings.TrimSpace(stdout) != "" {
+				t.Fatalf("expected clean stdout for implicit join, got: %q", stdout)
+			}
+			if strings.TrimSpace(stderr) != "" {
+				t.Fatalf("expected quiet default stderr for implicit join, got: %q", stderr)
 			}
 			if _, err := os.Stat(filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "tubo", "config.yaml")); err != nil {
 				t.Fatalf("config not written: %v", err)
@@ -248,6 +262,147 @@ func TestEnsureJoinedPublicNetworkDisabled(t *testing.T) {
 	t.Setenv("CI", "true")
 	if err := ensureJoinedPublicNetwork("connect", false); err == nil {
 		t.Fatal("expected CI to disable implicit public join")
+	}
+}
+
+func TestParseGlobalCLIOptionsAfterSubcommand(t *testing.T) {
+	cases := []struct {
+		args          []string
+		wantVerbosity int
+		wantRest      string
+	}{
+		{args: []string{"-vv", "share", "service/myapi"}, wantVerbosity: 2, wantRest: "share service/myapi"},
+		{args: []string{"share", "-v", "service/myapi"}, wantVerbosity: 1, wantRest: "share service/myapi"},
+		{args: []string{"share", "service/myapi", "-v"}, wantVerbosity: 1, wantRest: "share service/myapi"},
+		{args: []string{"share", "service/myapi", "--log-level", "debug"}, wantVerbosity: 0, wantRest: "share service/myapi"},
+	}
+	for _, tt := range cases {
+		opts, rest, err := parseGlobalCLIOptions(tt.args)
+		if err != nil {
+			t.Fatalf("parseGlobalCLIOptions(%v): %v", tt.args, err)
+		}
+		if opts.Verbosity != tt.wantVerbosity || strings.Join(rest, " ") != tt.wantRest {
+			t.Fatalf("parseGlobalCLIOptions(%v) => opts=%+v rest=%v, want verbosity=%d rest=%q", tt.args, opts, rest, tt.wantVerbosity, tt.wantRest)
+		}
+	}
+}
+
+func TestPrintForegroundRuntimeNoticeUsesStderr(t *testing.T) {
+	stdout, stderr, err := captureOutputs(func() error {
+		if err := logging.Configure(logging.Config{}); err != nil {
+			return err
+		}
+		printForegroundRuntimeNotice("edge", cfgpkg.Config{})
+		printForegroundRuntimeNotice("relay", cfgpkg.Config{})
+		printForegroundRuntimeNotice("service", cfgpkg.Config{Service: cfgpkg.Service{Name: "myapi"}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("expected empty stdout, got: %q", stdout)
+	}
+	for _, want := range []string{"gateway running in foreground", "relay running in foreground", "service \"myapi\" running in foreground"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr missing %q: %q", want, stderr)
+		}
+	}
+}
+
+func TestRuntimeLoggingConfigEnablesDetachedLogsByDefault(t *testing.T) {
+	t.Setenv("TUBO_DETACHED_CHILD", "1")
+	cfg := runtimeLoggingConfig(globalCLIOptions{})
+	if !cfg.Runtime || cfg.Verbosity != 1 {
+		t.Fatalf("unexpected detached runtime logging config: %+v", cfg)
+	}
+	if err := logging.Configure(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if logging.Current().Verbosity != 1 {
+		t.Fatalf("logging state = %+v, want verbosity 1", logging.Current())
+	}
+}
+
+func TestPrintMessagesUsesStderr(t *testing.T) {
+	stdout, stderr, err := captureOutputs(func() error {
+		printMessages([]string{"using remote query", "fallback observer"})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stdout) != "" {
+		t.Fatalf("expected empty stdout, got: %q", stdout)
+	}
+	if !strings.Contains(stderr, "using remote query") || !strings.Contains(stderr, "fallback observer") {
+		t.Fatalf("expected messages on stderr, got: %q", stderr)
+	}
+}
+
+func TestGetClustersJSONAutoJoinKeepsStdoutParseable(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	stdout, stderr, err := captureOutputs(func() error { return run([]string{"get", "clusters", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected clean default stderr for json command, got: %q", stderr)
+	}
+	var payload struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not valid json: %v\n%s", err, stdout)
+	}
+	if len(payload.Items) == 0 || payload.Items[0].Name == "" {
+		t.Fatalf("unexpected json payload: %#v", payload)
+	}
+}
+
+func TestGetClustersJSONAutoJoinVerboseProgressUsesStderr(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	stdout, stderr, err := captureOutputs(func() error { return run([]string{"-v", "get", "clusters", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr, "Fetching default network bundle: tubo-public") {
+		t.Fatalf("expected progress on stderr with -v, got: %q", stderr)
+	}
+	var payload struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not valid json: %v\n%s", err, stdout)
+	}
+}
+
+func TestGetClustersJSONAutoJoinQuietSuppressesProgress(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "cfg"))
+	t.Setenv("CI", "")
+	useTestBundleDefaults(t, true)
+	stdout, stderr, err := captureOutputs(func() error { return run([]string{"--quiet", "-v", "get", "clusters", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected quiet stderr, got: %q", stderr)
+	}
+	var payload struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("stdout is not valid json: %v\n%s", err, stdout)
 	}
 }
 
@@ -733,6 +888,9 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if !strings.Contains(out, "Collaboration namespace flow") || !strings.Contains(out, "tubo connect myapp") {
 		t.Fatalf("top-level help missing collaboration flow: %s", out)
 	}
+	if !strings.Contains(out, "--quiet") || !strings.Contains(out, "-v | -vv | -vvv") || !strings.Contains(out, "--log-level error|warn|info|debug|trace") {
+		t.Fatalf("top-level help missing global logging flags: %s", out)
+	}
 	attachHelp, err := capture(func() error { return run([]string{"help", "attach"}) })
 	if err != nil {
 		t.Fatal(err)
@@ -1204,6 +1362,56 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), token, "observability")
+}
+
+func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := captureOutputs(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "2h", "--json", "-v"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected clean stderr for cluster share json, got: %q", stderr)
+	}
+	var shareResult struct {
+		ClusterName string `json:"cluster_name"`
+		Namespace   string `json:"namespace"`
+		Permission  string `json:"permission"`
+		Token       string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &shareResult); err != nil {
+		t.Fatalf("cluster share stdout is not valid json: %v\n%s", err, stdout)
+	}
+	if shareResult.ClusterName != "home" || shareResult.Token == "" {
+		t.Fatalf("unexpected cluster share json: %#v", shareResult)
+	}
+
+	joinDir := filepath.Join(t.TempDir(), "join-json")
+	stdout, stderr, err = captureOutputs(func() error {
+		return run([]string{"join", "cluster/home", "--token", shareResult.Token, "--config-dir", joinDir, "--json", "-v"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected clean stderr for cluster join json, got: %q", stderr)
+	}
+	var joinResult struct {
+		ConfigPath  string `json:"config_path"`
+		ClusterName string `json:"cluster_name"`
+		Namespace   string `json:"namespace"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &joinResult); err != nil {
+		t.Fatalf("cluster join stdout is not valid json: %v\n%s", err, stdout)
+	}
+	if joinResult.ClusterName != "home" || joinResult.ConfigPath == "" {
+		t.Fatalf("unexpected cluster join json: %#v", joinResult)
+	}
 }
 
 func TestViewerClusterInvitationShareJoinAllowsListButNotConnect(t *testing.T) {
@@ -2272,11 +2480,17 @@ func TestServiceShareRenewsExpiredPublishLeaseForExistingServiceID(t *testing.T)
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
 	}
-	out, err := capture(func() error {
+	out, stderr, err := captureOutputs(func() error {
 		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(out, "Grant request approved.") || strings.Contains(out, "Grant request sent.") {
+		t.Fatalf("expected clean final stdout only, got: %s", out)
+	}
+	if strings.Contains(stderr, "grants-client p2p connected") || strings.Contains(stderr, "publish authorization refreshed") {
+		t.Fatalf("expected no default diagnostics/progress on stderr, got: %s", stderr)
 	}
 	payload, err := parseAndVerifyServiceShareToken(extractLastServiceShareToken(t, out))
 	if err != nil {
@@ -2302,6 +2516,138 @@ func TestServiceShareRenewsExpiredPublishLeaseForExistingServiceID(t *testing.T)
 	}
 	if !lease.ExpiresAt.After(time.Now().UTC()) {
 		t.Fatalf("expected renewed lease expiry in the future, got %#v", lease)
+	}
+}
+
+func TestServiceShareJSONWithExpiredPublishLeaseKeepsStdoutParseable(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "share-expired-lease-json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: true, AuthorityPrivateKey: authorityPriv, ServiceShareTTL: time.Hour, GrantServicePeersProvider: func() []string { return []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWQZ6qwLp7C7mdkAXMJsa2zXKoGNSXYpQNsPxpQQz4g2v3"}
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr, err := captureOutputs(func() error {
+		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m", "--json"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("expected clean default stderr for share json, got: %q", stderr)
+	}
+	var result struct {
+		ClusterName string `json:"cluster_name"`
+		Namespace   string `json:"namespace"`
+		ServiceName string `json:"service_name"`
+		ServiceID   string `json:"service_id"`
+		Token       string `json:"token"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("stdout is not valid json: %v\n%s", err, stdout)
+	}
+	if result.ServiceName != "myapi" || result.ServiceID == "" || !strings.HasPrefix(result.Token, serviceShareTokenPrefix) {
+		t.Fatalf("unexpected json result: %#v", result)
+	}
+}
+
+func TestServiceShareDebugVerbosityShowsDiagnosticsOnStderr(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "default"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if err := mintLocalServicePublishLease(cluster, "home", "default", "myapi", svc); err != nil {
+		t.Fatal(err)
+	}
+	expirePublishLeaseFile(t, svc.ServicePublishLeaseFile, time.Now().UTC().Add(-time.Hour))
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "share-expired-lease-debug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: true, AuthorityPrivateKey: authorityPriv, ServiceShareTTL: time.Hour, GrantServicePeersProvider: func() []string { return []string{"/dns4/grants.tubo.test/tcp/4001/p2p/12D3KooWGrantService"} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	cfg.Network.RelayPeers = []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWQZ6qwLp7C7mdkAXMJsa2zXKoGNSXYpQNsPxpQQz4g2v3"}
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = grantPeer
+	ns := cluster.Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, stderr, err := captureOutputs(func() error {
+		return run([]string{"share", "-vv", "service/myapi", "--config", configPath, "--expires", "45m"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "shared service \"myapi\"") {
+		t.Fatalf("unexpected stdout: %s", out)
+	}
+	if !strings.Contains(stderr, "grants-client p2p connected") {
+		t.Fatalf("expected diagnostics on stderr with -vv, got: %s", stderr)
 	}
 }
 

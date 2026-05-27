@@ -17,6 +17,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
 )
 
@@ -142,11 +143,18 @@ func grantsRequestCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	_, err = handleGrantClientResponse(*configPath, cfg, svc, *grantPeer, resp, servicePeerID.String())
+	_, err = handleGrantClientResponse(*configPath, cfg, svc, *grantPeer, resp, servicePeerID.String(), grantClientResponsePrimary)
 	return err
 }
 
-func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, grantPeer string, resp grantspkg.Message, servicePeerID string) (string, error) {
+type grantClientResponseMode int
+
+const (
+	grantClientResponsePrimary grantClientResponseMode = iota
+	grantClientResponseInternal
+)
+
+func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, grantPeer string, resp grantspkg.Message, servicePeerID string, mode grantClientResponseMode) (string, error) {
 	cluster := cfg.Clusters[cfg.CurrentCluster]
 	namespace := cluster.Namespaces[cfg.CurrentNamespace]
 	switch resp.Type {
@@ -159,7 +167,11 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 		if err := saveLocalConfig(configPath, cfg); err != nil {
 			return "", err
 		}
-		fmt.Printf("Grant request sent.\nRequest ID: %s\nStatus: pending\n", resp.RequestID)
+		if mode == grantClientResponsePrimary {
+			logging.Resultf("Grant request sent.\nRequest ID: %s\nStatus: pending\n", resp.RequestID)
+		} else {
+			logging.Progressf("publish authorization request pending: %s\n", resp.RequestID)
+		}
 		return "", nil
 	case grantspkg.TypeApproved:
 		if resp.ServiceClaim == nil && resp.PublishLease == nil {
@@ -205,9 +217,17 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			if err := requireShareTokenEndpointForPublicDefault(cfg, resp.ServiceShareToken); err != nil {
 				return "", err
 			}
-			fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\nShare invite token: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile, resp.ServiceShareToken)
+			if mode == grantClientResponsePrimary {
+				logging.Resultf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\nShare invite token: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile, resp.ServiceShareToken)
+			} else {
+				logging.Progressf("publish authorization refreshed for service %q\n", cfg.Service.Name)
+			}
 		} else {
-			fmt.Printf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile)
+			if mode == grantClientResponsePrimary {
+				logging.Resultf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile)
+			} else {
+				logging.Progressf("publish authorization refreshed for service %q\n", cfg.Service.Name)
+			}
 		}
 		return resp.ServiceShareToken, nil
 	case grantspkg.TypeDenied:

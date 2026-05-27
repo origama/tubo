@@ -19,6 +19,7 @@ import (
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	logging "github.com/origama/tubo/internal/logging"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -163,11 +164,11 @@ func localShareCmd(args []string) error {
 	if *jsonOut {
 		return printJSON(result)
 	}
-	fmt.Printf("shared cluster %q\n", name)
-	fmt.Printf("namespace: %s\n", selectedNamespace)
-	fmt.Printf("permission: %s\n", grant.Role)
-	fmt.Printf("expires: %s\n", payload.ExpiresAt.Format(time.RFC3339))
-	fmt.Printf("join: %s\n", result.JoinCommand)
+	logging.Resultf("shared cluster %q\n", name)
+	logging.Resultf("namespace: %s\n", selectedNamespace)
+	logging.Resultf("permission: %s\n", grant.Role)
+	logging.Resultf("expires: %s\n", payload.ExpiresAt.Format(time.RFC3339))
+	logging.Resultf("join: %s\n", result.JoinCommand)
 	return nil
 }
 
@@ -281,10 +282,10 @@ func localJoinClusterInviteCmd(args []string) error {
 	if *jsonOut {
 		return printJSON(result)
 	}
-	fmt.Printf("joined cluster %q\n", payload.ClusterName)
-	fmt.Printf("namespace: %s\n", payload.Namespace)
-	fmt.Printf("grant: %s\n", payload.Grant.Role)
-	fmt.Printf("config: %s\n", result.ConfigPath)
+	logging.Resultf("joined cluster %q\n", payload.ClusterName)
+	logging.Resultf("namespace: %s\n", payload.Namespace)
+	logging.Resultf("grant: %s\n", payload.Grant.Role)
+	logging.Resultf("config: %s\n", result.ConfigPath)
 	return nil
 }
 

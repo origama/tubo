@@ -12,6 +12,36 @@ flag CLI > env var > config file > default > prompt interattivo
 
 Il prompt interattivo e' riservato ai casi TTY, senza `--non-interactive`, e con `CI` diverso da `true`. In modalita' non interattiva i campi required mancanti producono un errore operativo esplicito.
 
+## Output e logging CLI
+
+Contratto corrente:
+
+```text
+stdout = risultato primario del comando
+stderr = progress/warning/hint umani
+log tecnici = nascosti di default, visibili con verbosity/log-level
+```
+
+Controlli globali supportati:
+
+```bash
+tubo --quiet ...
+tubo -v ...
+tubo -vv ...
+tubo -vvv ...
+tubo --log-level error|warn|info|debug|trace ...
+```
+
+Le forme sopra sono accettate sia prima del comando sia dopo il top-level subcommand, per esempio `tubo -vv share service/myapi` e `tubo share -vv service/myapi`.
+
+Default attuale:
+
+- one-shot commands: output pulito, senza diagnostica tecnica;
+- runtime foreground (`attach`, `connect`, `gateway`, `relay`): output pulito di default; i log tecnici compaiono solo con `-v`/`-vv`/`--log-level ...`;
+- processi detached: i log restano disponibili via `tubo logs ...`.
+
+Per i comandi `--json`, Tubo deve mantenere stdout parseable JSON anche quando il comando fa sub-flow interni come implicit join o refresh grant.
+
 ## Comandi principali
 
 La UX primaria di `tubo` e' intent-based:
