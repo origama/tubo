@@ -19,10 +19,10 @@ Example:
 
 All roles in the binary share the same product version:
 
-- `tubo edge run`
-- `tubo relay run`
-- `tubo service run`
-- `tubo bridge run`
+- `tubo relay`
+- `tubo gateway`
+- `tubo attach`
+- `tubo connect`
 
 We do **not** version roles independently.
 

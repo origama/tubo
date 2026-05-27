@@ -8,7 +8,7 @@ For the target 0.7.0.b0 security contract and trust model, see:
 
 That file is the normative design reference for the upcoming ID-first model under issues `#112` and `#113`.
 
-## 1. Current security posture (as of v0.6.x)
+## 1. Current security posture (as of v0.7.0)
 
 Tubo currently relies on a layered but still evolving security model.
 
@@ -91,15 +91,16 @@ Issuer-side revocation supports invite JTIs, connect session IDs, service-access
 
 Share-invite tokens are connect-scoped and time-bounded bootstrap material and must be handled like credentials. When a token is redeemed through a grant service, the running bridge uses client-key-bound connect leases; after successful redemption it no longer depends on the ShareInvite remaining valid.
 
-## 4. 0.7.0.b0 direction
+## 4. v0.7.0 security model
 
-The next security model iteration moves toward:
+The current security model (implemented in v0.7.0) is based on:
 
-- `service_id` as the secure identity;
-- `display_name` as a non-unique human label;
-- scoped issuer-signed publish and connect leases;
-- bounded renewal loops for attach/connect;
-- explicit guarantees and non-goals for public/private trust levels.
+- `service_id` as the secure identity (non-unique `display_name` is only a human label);
+- scoped issuer-signed `PublishLease` for service publication;
+- `ConnectAccessLease` / `ConnectRefreshLease` for client connect authorization;
+- one-time `ShareInvite` tokens redeemable at a grant endpoint;
+- bounded renewal loops for attach/connect with revocation support;
+- explicit guarantees and non-goals documented in the canonical security model.
 
 Canonical reference:
 

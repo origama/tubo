@@ -1,5 +1,7 @@
 # Discovery and Multi-Host Runbook
 
+> **Nota:** Le sezioni 9 e 12 di questo documento contengono comandi nella forma `go run ./cmd/tubo <role> run` che sono stati rimossi in v0.7.0. I comandi corretti sono `tubo relay`, `tubo gateway`, `tubo attach`, `tubo connect`. Per il runbook operativo aggiornato vedere **`docs/OPERABILITY.md`**.
+
 Questo runbook copre due piani distinti:
 
 1. **stato attuale (as-is)** del progetto, che ora richiede discovery cluster/namespace V2;

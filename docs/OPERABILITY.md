@@ -101,16 +101,22 @@ Se valorizzate, host libp2p viene creato con private network PSK.
 ### 5.1 Avvia relay (host pubblico stabile)
 
 ```bash
+tubo relay \
+  --listen     /ip4/0.0.0.0/tcp/4001 \
+  --public-addr /ip4/<RELAY_PUBLIC_IP>/tcp/4001 \
+  --swarm-key  /etc/p2p/swarm.key \
+  -d
+```
+
+In alternativa tramite variabili d'ambiente (utile in Docker/systemd):
+
+```bash
 NODE_SEED=public-relay-seed \
 P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
 RELAY_HEALTH_LISTEN=127.0.0.1:8092 \
-ENABLE_RELAY_SERVICE=true \
-ENABLE_AUTONAT_SERVICE=true \
-ENABLE_DISCOVERY_PUBSUB=true \
 FORCE_REACHABILITY_PUBLIC=true \
-PRINT_RUN_COMMANDS=true \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-go run ./cmd/tubo relay
+tubo relay
 ```
 
 Il relay stampa nei log:
@@ -133,19 +139,28 @@ Porte firewall minime sul relay:
 2. `tcp/8092` (opzionale, health check)
 3. `tcp/22` (SSH gestione)
 
-### 5.2 Avvia edge
+### 5.2 Avvia gateway/edge
 
 Nel caso NAT/NAT, l'edge deve poter usare il relay pubblico come unico peer statico. Non e' necessario esporre l'edge come bootstrap peer per i service.
 
 ```bash
+tubo gateway \
+  --listen      :8443 \
+  --swarm-key   /etc/p2p/swarm.key \
+  --bootstrap   /ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+  --relay       /ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+  -d
+```
+
+In alternativa tramite variabili d'ambiente:
+
+```bash
 EDGE_LISTEN=:8443 \
 EDGE_ADMIN_LISTEN=127.0.0.1:8444 \
-EDGE_P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
-EDGE_SEED=edge-seed \
 BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
-go run ./cmd/tubo gateway
+tubo gateway
 ```
 
 Recuperare `peer_id` edge dai log (`edge gateway peer_id=...`).
@@ -155,10 +170,18 @@ Recuperare `peer_id` edge dai log (`edge gateway peer_id=...`).
 Nel caso NAT/NAT, il service deve usare il relay pubblico come `BOOTSTRAP_PEERS` e `RELAY_PEERS`. Non usare l'edge come bootstrap peer se l'edge e' dietro NAT.
 
 ```bash
+tubo attach lmstudio --port 1234 \
+  --swarm-key  /etc/p2p/swarm.key \
+  --bootstrap  /ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+  --relay      /ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+  -d
+```
+
+In alternativa tramite variabili d'ambiente:
+
+```bash
 SERVICE_NAME=lmstudio \
 SERVICE_TARGET=http://192.168.1.28:1234 \
-SERVICE_P2P_LISTEN=/ip4/0.0.0.0/tcp/40123 \
-NODE_SEED=service-lmstudio-seed \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
 BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
@@ -166,7 +189,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/tubo attach
+tubo attach
 ```
 
 ### 5.4 Verifica discovery e route sul nodo edge
@@ -250,22 +273,27 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/tubo attach
+tubo attach
 ```
 
-## 7) Stato sicurezza: cosa e' implementato vs target
+## 7) Stato sicurezza: implementato in v0.7.0
 
-Implementato oggi:
+Implementato:
 
-- discovery announcement firmati;
-- private swarm PSK (env key path o b64);
-- binary `relay` con relay service + AutoNAT service + router GossipSub discovery;
-- parser allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater su relay, edge, service e bridge.
+- discovery announcement V2 firmati con Ed25519, validati su topic cluster/namespace opaco;
+- `PublishLease` obbligatoria per pubblicazione; `ServiceClaim` legacy solo per compatibilità;
+- `ConnectAccessLease` / `ConnectRefreshLease` per autorizzazione connect, con proof-of-possession su ogni stream;
+- `ShareInvite` one-time firmato con grant endpoint embedded;
+- revoca lato issuer: invite JTI, session ID, service-access epoch, publish revocation;
+- private swarm PSK (env key path o b64) su tutti i ruoli;
+- `relay` con relay service v2 + AutoNAT service + router GossipSub discovery;
+- allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater su relay, edge, service e bridge.
 
-Target ancora da implementare:
+Limitazioni note:
 
-- binding `ServiceName -> PeerID` enforcement applicativo oltre al controllo di connessione;
-- diagnostica reachability/AutoNAT completa.
+- Discovery V2 payload cifrato con chiave derivata da `cluster_id`+`namespace_id`: separazione per scope, non strong metadata confidentiality boundary;
+- diagnostica reachability/AutoNAT non ancora completa;
+- multi-grant-service per stesso scope non supportato (split-brain risk).
 
 ## 8) Troubleshooting rapido
 

@@ -31,6 +31,7 @@ The wire protocol uses binary framing with varint length prefixes for efficient 
 | 0x02 | ResponseHeader | HTTP response metadata |
 | 0x03 | BodyChunk | Request/response body data (streaming) |
 | 0x04 | Error | Error notification |
+| 0x05 | ConnectProof | Proof-of-possession for connect authorization (v1.1+) |
 
 ## Hello Payload (protocol 1.1+)
 
@@ -112,13 +113,14 @@ Rules:
 ## Streaming Protocol Flow
 
 ```
-Client                          Server
+Client                          Service
   |                               |
   |--- Hello (1.1+) ──────────>  |  (major.minor, role, capabilities)
   |<-- Hello (1.1+) ───────────  |  (major.minor, role, capabilities)
+  |--- ConnectProof (1.1+) ───>  |  (scope, lease hash, nonce, signature)
   |--- RequestHeader ─────────>  |  (method, path, headers)
   |--- BodyChunk(isFinal=0) ──>  |  (streaming body part 1)
-  |--- BodyChunk(isFinal=1) ──>  |  (streaming body part N)
+  |--- BodyChunk(isFinal=1) ──>  |  (streaming body part N, empty for GET)
   |                               |
   |<-- ResponseHeader ───────────|  (status, headers)
   |<-- BodyChunk(isFinal=0) ─────|  (streaming response part 1)
