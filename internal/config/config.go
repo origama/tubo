@@ -47,9 +47,17 @@ type Network struct {
 	HolePunching      bool     `yaml:"hole_punching" json:"hole_punching"`
 	ForceReachability string   `yaml:"force_reachability" json:"force_reachability"`
 }
+type ServiceKind string
+
+const (
+	ServiceKindHTTP ServiceKind = "http"
+	ServiceKindTCP  ServiceKind = "tcp"
+)
+
 type Service struct {
-	Name   string `yaml:"name" json:"name"`
-	Target string `yaml:"target" json:"target"`
+	Name   string      `yaml:"name" json:"name"`
+	Kind   ServiceKind `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Target string      `yaml:"target" json:"target"`
 }
 type Edge struct {
 	Listen              string   `yaml:"listen" json:"listen"`
@@ -136,13 +144,14 @@ type Namespace struct {
 }
 
 type NamespaceService struct {
-	ServiceID               string `yaml:"service_id,omitempty" json:"service_id,omitempty"`
-	ServiceSeed             string `yaml:"service_seed,omitempty" json:"service_seed,omitempty"`
-	ServiceOwnerKeyFile     string `yaml:"service_owner_key_file,omitempty" json:"service_owner_key_file,omitempty"`
-	ServiceClaimFile        string `yaml:"service_claim_file,omitempty" json:"service_claim_file,omitempty"`
-	ServicePublishLeaseFile string `yaml:"service_publish_lease_file,omitempty" json:"service_publish_lease_file,omitempty"`
-	GrantRequestID          string `yaml:"grant_request_id,omitempty" json:"grant_request_id,omitempty"`
-	GrantServicePeer        string `yaml:"grant_service_peer,omitempty" json:"grant_service_peer,omitempty"`
+	ServiceID               string      `yaml:"service_id,omitempty" json:"service_id,omitempty"`
+	Kind                    ServiceKind `yaml:"kind,omitempty" json:"kind,omitempty"`
+	ServiceSeed             string      `yaml:"service_seed,omitempty" json:"service_seed,omitempty"`
+	ServiceOwnerKeyFile     string      `yaml:"service_owner_key_file,omitempty" json:"service_owner_key_file,omitempty"`
+	ServiceClaimFile        string      `yaml:"service_claim_file,omitempty" json:"service_claim_file,omitempty"`
+	ServicePublishLeaseFile string      `yaml:"service_publish_lease_file,omitempty" json:"service_publish_lease_file,omitempty"`
+	GrantRequestID          string      `yaml:"grant_request_id,omitempty" json:"grant_request_id,omitempty"`
+	GrantServicePeer        string      `yaml:"grant_service_peer,omitempty" json:"grant_service_peer,omitempty"`
 }
 
 type DiscoveryMode string
@@ -185,6 +194,46 @@ func (d *Duration) UnmarshalYAML(v *yaml.Node) error {
 }
 
 const OverlayKindPublicBundle = "public-bundle"
+
+func NormalizeServiceKind(kind ServiceKind, target string) ServiceKind {
+	switch strings.TrimSpace(string(kind)) {
+	case string(ServiceKindTCP):
+		return ServiceKindTCP
+	case string(ServiceKindHTTP):
+		return ServiceKindHTTP
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(target)), "tcp://") {
+		return ServiceKindTCP
+	}
+	return ServiceKindHTTP
+}
+
+func validateServiceTarget(kind ServiceKind, target string) error {
+	parsed, err := url.ParseRequestURI(target)
+	if err != nil {
+		return err
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	switch kind {
+	case ServiceKindHTTP:
+		if scheme != "http" && scheme != "https" {
+			return fmt.Errorf("http services require http:// or https:// targets")
+		}
+	case ServiceKindTCP:
+		if scheme != "tcp" {
+			return fmt.Errorf("tcp services require tcp:// targets")
+		}
+		if strings.TrimSpace(parsed.Host) == "" {
+			return fmt.Errorf("tcp targets require host:port")
+		}
+		if _, _, err := net.SplitHostPort(parsed.Host); err != nil {
+			return fmt.Errorf("tcp target host:port: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported service kind %q", kind)
+	}
+	return nil
+}
 
 type Scope struct {
 	Overlay       string
@@ -516,6 +565,19 @@ func normalizeConfig(c *Config) {
 	if c == nil {
 		return
 	}
+	c.Service.Kind = NormalizeServiceKind(c.Service.Kind, c.Service.Target)
+	for clusterName, cluster := range c.Clusters {
+		for namespaceName, namespace := range cluster.Namespaces {
+			for serviceName, svc := range namespace.Services {
+				if svc.Kind == "" {
+					svc.Kind = ServiceKindHTTP
+					namespace.Services[serviceName] = svc
+				}
+			}
+			cluster.Namespaces[namespaceName] = namespace
+		}
+		c.Clusters[clusterName] = cluster
+	}
 	if c.CurrentOverlay == "" || len(c.Overlays) == 0 {
 		return
 	}
@@ -596,6 +658,9 @@ func Merge(base, over Config) Config {
 	}
 	if over.Service.Name != "" {
 		b.Service.Name = over.Service.Name
+	}
+	if over.Service.Kind != "" {
+		b.Service.Kind = over.Service.Kind
 	}
 	if over.Service.Target != "" {
 		b.Service.Target = over.Service.Target
@@ -702,6 +767,7 @@ func Env(getenv func(string) string, role string) Config {
 		c.Relay.ForceReachabilityPublic = true
 	}
 	c.Service.Name = getenv("SERVICE_NAME")
+	c.Service.Kind = ServiceKind(getenv("SERVICE_KIND"))
 	c.Service.Target = getenv("SERVICE_TARGET")
 	c.HealthListen = getenv("SERVICE_HEALTH_LISTEN")
 	if d := dur(getenv("HEARTBEAT_INTERVAL")); d != 0 {
@@ -780,7 +846,8 @@ func Validate(c Config) error {
 		if c.Service.Target == "" {
 			return fmt.Errorf("service.target is required (set --target or SERVICE_TARGET)")
 		}
-		if _, err := url.ParseRequestURI(c.Service.Target); err != nil {
+		kind := NormalizeServiceKind(c.Service.Kind, c.Service.Target)
+		if err := validateServiceTarget(kind, c.Service.Target); err != nil {
 			return fmt.Errorf("service.target: %w", err)
 		}
 	case "edge":

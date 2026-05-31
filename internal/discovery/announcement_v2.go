@@ -28,6 +28,7 @@ type AnnouncementV2 struct {
 
 type AnnouncementV2Payload struct {
 	ServiceName          string                          `json:"service_name"` // display name only; not an authorization key
+	ServiceKind          string                          `json:"service_kind,omitempty"`
 	ServiceID            string                          `json:"service_id,omitempty"`
 	ServicePublicKey     string                          `json:"service_public_key,omitempty"`
 	ConnectPolicy        string                          `json:"connect_policy,omitempty"`

@@ -306,7 +306,7 @@ func (s *PubSubSubscriber) handleMessageV2(msg *pubsub.Message) {
 	if s.replay != nil && s.replay.Seen(replayKey, expiresAt) {
 		return
 	}
-	if err := s.cache.AddV2(ann.PeerID, payload.ServiceID, payload.ServiceName, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), payload.Addresses, cacheTTL); err != nil {
+	if err := s.cache.AddV2(ann.PeerID, payload.ServiceID, payload.ServiceName, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), payload.Addresses, cacheTTL); err != nil {
 		return
 	}
 	log.Printf("discovery v2 announcement accepted service=%q peer=%s namespace=%s/%s addrs=%d ttl=%s", payload.ServiceName, ann.PeerID, s.clusterID, s.namespaceID, len(payload.Addresses), ann.TTL)

@@ -299,7 +299,7 @@ func rewriteAttachArgs(args []string) ([]string, error) {
 	if strings.HasPrefix(first, "service/") {
 		first = strings.TrimPrefix(first, "service/")
 	}
-	if isHTTPURL(first) {
+	if isServiceTargetURL(first) {
 		if hasPort {
 			return nil, errors.New("attach cannot combine a positional URL target with --port")
 		}
@@ -345,8 +345,9 @@ func consumeLongFlag(args []string, name string) ([]string, string, bool, error)
 	return out, "", false, nil
 }
 
-func isHTTPURL(value string) bool {
-	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+func isServiceTargetURL(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") || strings.HasPrefix(value, "tcp://")
 }
 
 func shouldHandleImplicitBootstrap(command string) bool {
@@ -1428,6 +1429,7 @@ func rmCmd(args []string) error {
 
 type serviceResource struct {
 	Kind             string                          `json:"kind"`
+	ServiceKind      string                          `json:"service_kind,omitempty"`
 	Cluster          string                          `json:"cluster,omitempty"`
 	Namespace        string                          `json:"namespace,omitempty"`
 	Name             string                          `json:"name"`
@@ -1908,13 +1910,13 @@ func isServiceID(ref string) bool {
 
 func printServicesTable(services []serviceResource) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSTATUS\tACCESS\tPATH\tPEER\tCAPABILITIES")
+	fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSERVICE KIND\tSTATUS\tACCESS\tPATH\tPEER\tCAPABILITIES")
 	for _, service := range services {
 		caps := "-"
 		if len(service.Capabilities) > 0 {
 			caps = strings.Join(service.Capabilities, ",")
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayServiceID(service.ServiceID), displayServiceScope(service), service.Status, displayServiceConnectPolicy(service), service.Path, service.PeerID, caps)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayServiceID(service.ServiceID), displayServiceScope(service), displayServiceKind(service), service.Status, displayServiceConnectPolicy(service), service.Path, service.PeerID, caps)
 	}
 	_ = w.Flush()
 }
@@ -1939,6 +1941,13 @@ func displayServiceScope(service serviceResource) string {
 	return service.Cluster + "/" + service.Namespace
 }
 
+func displayServiceKind(service serviceResource) string {
+	if strings.TrimSpace(service.ServiceKind) == "" {
+		return string(cfgpkg.ServiceKindHTTP)
+	}
+	return service.ServiceKind
+}
+
 func displayServiceConnectPolicy(service serviceResource) string {
 	if strings.TrimSpace(service.ConnectPolicy) == "" {
 		return "unknown"
@@ -1953,6 +1962,7 @@ func printServiceDescription(service serviceResource, messages []string) {
 		fmt.Printf("Service ID: %s\n", service.ServiceID)
 	}
 	fmt.Printf("Kind: %s\n", service.Kind)
+	fmt.Printf("Service kind: %s\n", displayServiceKind(service))
 	if service.Cluster != "" || service.Namespace != "" {
 		fmt.Printf("Scope: %s/%s\n", service.Cluster, service.Namespace)
 	}

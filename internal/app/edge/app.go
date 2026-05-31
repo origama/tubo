@@ -1102,6 +1102,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 type serviceAdminView struct {
 	Kind             string                          `json:"kind"`
+	ServiceKind      string                          `json:"service_kind,omitempty"`
 	Name             string                          `json:"name"`
 	ServiceID        string                          `json:"service_id,omitempty"`
 	ServicePublicKey string                          `json:"service_public_key,omitempty"`
@@ -1131,6 +1132,7 @@ func serviceAdminViewFromEntry(entry *discovery.ServiceEntry) serviceAdminView {
 	}
 	return serviceAdminView{
 		Kind:             "service",
+		ServiceKind:      entry.ServiceKind,
 		Name:             entry.ServiceName,
 		ServiceID:        entry.ServiceID,
 		ServicePublicKey: entry.ServicePublicKey,

@@ -7,6 +7,7 @@ import (
 
 type Service struct {
 	Kind             string                          `json:"kind"`
+	ServiceKind      string                          `json:"service_kind,omitempty"`
 	Cluster          string                          `json:"cluster,omitempty"`
 	Namespace        string                          `json:"namespace,omitempty"`
 	Name             string                          `json:"name"`

@@ -118,6 +118,7 @@ func fromCatalogScope(scope *catalog.Scope) *serviceScope {
 func toCatalogService(service serviceResource) catalog.Service {
 	return catalog.Service{
 		Kind:             service.Kind,
+		ServiceKind:      service.ServiceKind,
 		Cluster:          service.Cluster,
 		Namespace:        service.Namespace,
 		Name:             service.Name,
@@ -141,6 +142,7 @@ func toCatalogService(service serviceResource) catalog.Service {
 func fromCatalogService(service catalog.Service) serviceResource {
 	return serviceResource{
 		Kind:             service.Kind,
+		ServiceKind:      service.ServiceKind,
 		Cluster:          service.Cluster,
 		Namespace:        service.Namespace,
 		Name:             service.Name,

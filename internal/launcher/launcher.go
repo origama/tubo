@@ -90,6 +90,7 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 			Listen:                  cfg.Node.P2PListen,
 			Seed:                    authz.Service.ServiceSeed,
 			ServiceName:             cfg.Service.Name,
+			ServiceKind:             string(cfg.Service.Kind),
 			ServiceID:               authz.Service.ServiceID,
 			ServiceOwnerKeyFile:     authz.Service.ServiceOwnerKeyFile,
 			Target:                  cfg.Service.Target,
