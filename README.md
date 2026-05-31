@@ -50,3 +50,4 @@ tubo connect myapp --local 127.0.0.1:9000
 - [AGENTS.md](./AGENTS.md)
 - the assigned GitHub Issue and linked subissues
 - use the canonical docs above instead of repeating setup/details here
+- run `make verify-repo-hygiene` (or `./tests/verify-repo-hygiene.sh`) before opening hygiene/docs PRs

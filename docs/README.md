@@ -47,3 +47,4 @@ Project work, planning, implementation scope, and acceptance criteria are tracke
 
 - Keep new links pointed at the canonical paths above.
 - Historical tracker items were migrated into GitHub issues; do not reintroduce a local tracker.
+- Lightweight repo hygiene check: `make verify-repo-hygiene` (or `./tests/verify-repo-hygiene.sh`).
