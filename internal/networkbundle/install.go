@@ -87,6 +87,55 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 			},
 		}
 	}
+	// Bug fix: Merge would replace the whole cluster entry (including all
+	// namespaces and their services) with the new struct from the bundle.
+	// Instead we merge at cluster/namespace granularity:
+	//  - For namespaces that exist in both: keep the bundle's discovery/policy
+	//    settings (authoritative) but preserve the existing services and
+	//    capability file references.
+	//  - For namespaces that only exist locally (e.g. private namespaces created
+	//    by the user): carry them forward unchanged.
+	//  - For clusters that are not touched by the bundle (e.g. oricluster):
+	//    Merge already handles them by not overwriting keys absent from the
+	//    override config; they are preserved via the base.
+	if existing.Clusters != nil {
+		if existingCluster, ok := existing.Clusters[clusterName]; ok {
+			if cluster.Namespaces == nil {
+				cluster.Namespaces = make(map[string]cfgpkg.Namespace)
+			}
+			for nsName, existingNs := range existingCluster.Namespaces {
+				if bundleNs, inBundle := cluster.Namespaces[nsName]; inBundle {
+					// Namespace exists in both: merge services and capability
+					// files from existing into the bundle namespace entry,
+					// keeping bundle's policy settings authoritative.
+					if len(existingNs.Services) > 0 {
+						if bundleNs.Services == nil {
+							bundleNs.Services = make(map[string]cfgpkg.NamespaceService, len(existingNs.Services))
+						}
+						for svcName, svc := range existingNs.Services {
+							if _, alreadySet := bundleNs.Services[svcName]; !alreadySet {
+								bundleNs.Services[svcName] = svc
+							}
+						}
+					}
+					if bundleNs.MembershipCapabilityFile == "" {
+						bundleNs.MembershipCapabilityFile = existingNs.MembershipCapabilityFile
+					}
+					cluster.Namespaces[nsName] = bundleNs
+				} else {
+					// Namespace only exists locally: carry it forward.
+					cluster.Namespaces[nsName] = existingNs
+				}
+			}
+			// Preserve authority key files if we are the authority.
+			if cluster.AuthorityPrivateKeyFile == "" {
+				cluster.AuthorityPrivateKeyFile = existingCluster.AuthorityPrivateKeyFile
+			}
+			if cluster.MembershipCapabilityFile == "" {
+				cluster.MembershipCapabilityFile = existingCluster.MembershipCapabilityFile
+			}
+		}
+	}
 	joined := cfgpkg.Merge(existing, cfgpkg.Config{
 		CurrentOverlay:   payload.Name,
 		CurrentCluster:   clusterName,

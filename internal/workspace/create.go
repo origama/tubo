@@ -81,6 +81,14 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 	if err := w.SaveConfig(configPath, cfg); err != nil {
 		return ClusterView{}, err
 	}
+	// Defensive check: verify cluster was actually persisted to disk
+	reloaded, err := w.LoadConfigOrError(configPath)
+	if err != nil {
+		return ClusterView{}, fmt.Errorf("cluster created but config reload failed: %w", err)
+	}
+	if _, exists := reloaded.Clusters[name]; !exists {
+		return ClusterView{}, fmt.Errorf("cluster %q created but not found in reloaded config (possible save failure)", name)
+	}
 	return ClusterView{Name: name, Current: true, ClusterID: clusterID, AuthorityPublicKey: pubAuthorized, Namespaces: []string{"default"}}, nil
 }
 
@@ -137,6 +145,18 @@ func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, err
 	cfg.CurrentNamespace = name
 	if err := w.SaveConfig(configPath, cfg); err != nil {
 		return NamespaceView{}, err
+	}
+	// Defensive check: verify namespace was actually persisted to disk
+	reloaded, err := w.LoadConfigOrError(configPath)
+	if err != nil {
+		return NamespaceView{}, fmt.Errorf("namespace created but config reload failed: %w", err)
+	}
+	reloadedCluster, exists := reloaded.Clusters[cfg.CurrentCluster]
+	if !exists {
+		return NamespaceView{}, fmt.Errorf("cluster %q disappeared after namespace creation", cfg.CurrentCluster)
+	}
+	if _, exists := reloadedCluster.Namespaces[name]; !exists {
+		return NamespaceView{}, fmt.Errorf("namespace %q created but not found in reloaded config (possible save failure)", name)
 	}
 	return NamespaceView{Name: name, Current: true, Cluster: cfg.CurrentCluster}, nil
 }

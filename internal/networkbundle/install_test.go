@@ -9,6 +9,93 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 )
 
+// TestInstallBundlePreservesExistingNamespaceServices verifica il Bug 3:
+// networkbundle.Install con Force=true NON deve cancellare i namespace e
+// i servizi già configurati nel cluster che viene aggiornato dal bundle.
+func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
+	now := time.Now().UTC()
+	payload := samplePayload(now.Add(-time.Hour), now.Add(time.Hour))
+	dir := t.TempDir()
+
+	// Prima installazione: config pulito
+	if _, err := Install(&payload, InstallOptions{ConfigDir: dir, Force: false}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simula servizi già configurati sul namespace "default" del cluster "home"
+	configPath := filepath.Join(dir, "config.yaml")
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	homecluster := cfg.Clusters["home"]
+	if homecluster.Namespaces == nil {
+		homecluster.Namespaces = make(map[string]cfgpkg.Namespace)
+	}
+	homecluster.Namespaces["default"] = cfgpkg.Namespace{
+		Discovery:     cfgpkg.NamespaceDiscoveryDisabled,
+		ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly,
+		Services: map[string]cfgpkg.NamespaceService{
+			"myapi": {ServiceID: "service-abc123", ServiceSeed: "seed-xyz"},
+		},
+	}
+	// Aggiungi anche un secondo namespace privato con servizi
+	homecluster.Namespaces["staging"] = cfgpkg.Namespace{
+		Discovery:     cfgpkg.NamespaceDiscoveryEnabled,
+		ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember,
+		Services: map[string]cfgpkg.NamespaceService{
+			"backendapi": {ServiceID: "service-staging-456"},
+		},
+	}
+	cfg.Clusters["home"] = homecluster
+	// Aggiungi anche un cluster privato separato che NON deve essere toccato
+	cfg.Clusters["oricluster"] = cfgpkg.Cluster{
+		ClusterID:         "cluster-ori-xyz",
+		AuthorityPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAorioriori",
+		Namespaces: map[string]cfgpkg.Namespace{
+			"orins": {Services: map[string]cfgpkg.NamespaceService{
+				"tuboweb": {ServiceID: "service-tuboweb-789"},
+			}},
+		},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-install bundle (es. aggiornamento relay) con Force=true
+	if _, err := Install(&payload, InstallOptions{ConfigDir: dir, Force: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgAfter, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Il cluster "oricluster" (privato, non toccato dal bundle) deve sopravvivere
+	if _, ok := cfgAfter.Clusters["oricluster"]; !ok {
+		t.Fatalf("oricluster was lost after bundle re-install: %v", cfgAfter.Clusters)
+	}
+	if cfgAfter.Clusters["oricluster"].Namespaces["orins"].Services["tuboweb"].ServiceID != "service-tuboweb-789" {
+		t.Fatalf("oricluster/orins/tuboweb service lost after bundle re-install")
+	}
+
+	// Il namespace "default" deve preservare il servizio myapi
+	defaultNs := cfgAfter.Clusters["home"].Namespaces["default"]
+	if svc, ok := defaultNs.Services["myapi"]; !ok || svc.ServiceID != "service-abc123" {
+		t.Fatalf("home/default/myapi service lost after bundle re-install: %#v", defaultNs.Services)
+	}
+
+	// Il namespace "staging" (privato, non nel bundle) deve sopravvivere
+	stagingNs, ok := cfgAfter.Clusters["home"].Namespaces["staging"]
+	if !ok {
+		t.Fatalf("home/staging namespace lost after bundle re-install: %v", cfgAfter.Clusters["home"].Namespaces)
+	}
+	if svc, ok := stagingNs.Services["backendapi"]; !ok || svc.ServiceID != "service-staging-456" {
+		t.Fatalf("home/staging/backendapi service lost after bundle re-install: %#v", stagingNs.Services)
+	}
+}
+
 func TestInstallPublicBundleWritesPublicClusterMetadata(t *testing.T) {
 	now := time.Now().UTC()
 	payload := samplePayload(now.Add(-time.Hour), now.Add(time.Hour))
