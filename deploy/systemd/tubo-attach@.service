@@ -1,0 +1,57 @@
+# Tubo Attach Service (Template Unit)
+#
+# Publishes a local HTTP service to the Tubo network.
+# This is a template unit - use with an instance name:
+#
+#   sudo systemctl enable --now tubo-attach@myapi
+#
+# This will look for config at: /etc/tubo/attach-myapi.yaml
+#
+# Install:
+#   sudo cp tubo-attach@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# Config example: /etc/tubo/attach-myapi.yaml
+#   role: service
+#   node:
+#     seed: attach-myapi-seed
+#     p2p_listen: /ip4/0.0.0.0/tcp/0
+#   network:
+#     private_key_file: /etc/tubo/swarm.key
+#     relay_peers:
+#       - /dns4/relay.example.com/tcp/4001/p2p/12D3KooW...
+#     autorelay: true
+#     hole_punching: true
+#     force_reachability: private
+#   service:
+#     name: myapi
+#     target: http://127.0.0.1:8080
+#   current_cluster: mycluster
+#   current_namespace: default
+#   health_listen: 127.0.0.1:8091
+
+[Unit]
+Description=Tubo Attach Service (%i)
+Documentation=https://github.com/origama/tubo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="HOME=/root"
+ExecStart=/usr/local/bin/tubo attach --config /etc/tubo/attach-%i.yaml
+Restart=always
+RestartSec=5
+
+# Resource limits
+LimitNOFILE=65536
+
+# Security hardening
+# User=tubo
+# Group=tubo
+# ProtectSystem=strict
+# PrivateTmp=true
+# NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,60 @@
+# Example attach configuration
+# Copy to: /etc/tubo/attach-myapi.yaml
+
+role: service
+
+node:
+  # Unique seed - will be overridden by service_seed from cluster config
+  seed: attach-myapi-seed
+  
+  # Listen on any available port (recommended for attach)
+  p2p_listen: /ip4/0.0.0.0/tcp/0
+
+network:
+  # Private swarm key
+  private_key_file: /etc/tubo/swarm.key
+  
+  # Relay peers for NAT traversal
+  relay_peers:
+    - /dns4/relay.example.com/tcp/4001/p2p/12D3KooWYourRelayPeerID
+  
+  # Enable autorelay and hole punching
+  autorelay: true
+  hole_punching: true
+  
+  # Force private reachability if behind strict NAT
+  force_reachability: private
+
+service:
+  # Service name (must match cluster configuration)
+  name: myapi
+  
+  # Local HTTP target to forward requests to
+  target: http://127.0.0.1:8080
+
+# Health endpoint
+health_listen: 127.0.0.1:8091
+
+# Heartbeat interval for discovery announcements
+heartbeat_interval: 15s
+
+# Cluster context
+current_cluster: mycluster
+current_namespace: default
+
+# Cluster configuration (usually populated by `tubo join`)
+clusters:
+  mycluster:
+    cluster_id: cluster-your-cluster-id
+    authority_public_key: ssh-ed25519 AAAA...your-authority-key
+    namespaces:
+      default:
+        discovery: enabled
+        connect_policy: namespace_members
+        services:
+          myapi:
+            service_id: service-your-service-id
+            service_seed: service-your-service-seed
+            service_owner_key_file: /etc/tubo/services/myapi.owner.key
+            service_claim_file: /etc/tubo/services/myapi.claim.json
+            service_publish_lease_file: /etc/tubo/services/myapi.publish-lease.json

@@ -13,12 +13,24 @@ import (
 
 type stubSystem struct {
 	running   map[int]bool
+	cmdlines  map[int][]string
 	terminate func(int) error
 	kill      func(int) error
 }
 
 func (s *stubSystem) PIDRunning(pid int) bool {
 	return s.running[pid]
+}
+
+func (s *stubSystem) CommandLine(pid int) ([]string, bool) {
+	if s.cmdlines == nil {
+		return nil, false
+	}
+	cmdline, ok := s.cmdlines[pid]
+	if !ok {
+		return nil, false
+	}
+	return append([]string(nil), cmdline...), true
 }
 
 func (s *stubSystem) TerminatePID(pid int) error {
@@ -54,9 +66,83 @@ func TestBuildSpec(t *testing.T) {
 	}
 }
 
+func TestRegisterCurrentProcess(t *testing.T) {
+	root := t.TempDir()
+	state := State{
+		ID:          "process/relay-default",
+		Kind:        "process",
+		Command:     "relay",
+		Name:        "relay-default",
+		LogFile:     filepath.Join(root, "logs", "relay-default.log"),
+		StateFile:   filepath.Join(StateDir(root), "relay-default.json"),
+		PIDFile:     filepath.Join(RunDir(root), "relay-default.pid"),
+		CommandLine: []string{"/bin/tubo", "relay"},
+	}
+	system := &stubSystem{running: map[int]bool{os.Getpid(): true}, cmdlines: map[int][]string{os.Getpid(): []string{"/bin/tubo", "relay"}}}
+	registered, cleanup, err := RegisterCurrentProcess(root, state, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup == nil {
+		t.Fatal("expected cleanup")
+	}
+	defer func() { _ = cleanup() }()
+	if registered.PID != os.Getpid() {
+		t.Fatalf("registered pid = %d", registered.PID)
+	}
+	if registered.Source == "" {
+		t.Fatal("expected source")
+	}
+	if _, err := os.Stat(registered.StateFile); err != nil {
+		t.Fatalf("state file missing: %v", err)
+	}
+}
+
+func TestStatusDetailsUsesCommandLineValidation(t *testing.T) {
+	root := t.TempDir()
+	state := State{
+		ID:          "process/relay-default",
+		Kind:        "process",
+		Command:     "relay",
+		Name:        "relay-default",
+		PID:         os.Getpid(),
+		PIDFile:     filepath.Join(RunDir(root), "relay-default.pid"),
+		StateFile:   filepath.Join(StateDir(root), "relay-default.json"),
+		LogFile:     filepath.Join(LogDir(root), "relay-default.log"),
+		CommandLine: []string{"/bin/tubo", "relay"},
+	}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600)
+	_ = os.WriteFile(state.StateFile, mustJSON(t, state), 0o600)
+	okSystem := &stubSystem{running: map[int]bool{state.PID: true}, cmdlines: map[int][]string{state.PID: []string{"/bin/tubo", "relay"}}}
+	status, confidence := StatusDetails(state, okSystem)
+	if status != "running" || confidence != "pid+cmdline" {
+		t.Fatalf("expected running with cmdline confidence, got %s/%s", status, confidence)
+	}
+	badSystem := &stubSystem{running: map[int]bool{state.PID: true}, cmdlines: map[int][]string{state.PID: []string{"/bin/tubo", "attach"}}}
+	status, confidence = StatusDetails(state, badSystem)
+	if status != "stale" || confidence != "cmdline-mismatch" {
+		t.Fatalf("expected stale/cmdline-mismatch, got %s/%s", status, confidence)
+	}
+}
+
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestListViewsAndLoadState(t *testing.T) {
 	root := t.TempDir()
-	system := &stubSystem{running: map[int]bool{1234: true}}
+	system := &stubSystem{running: map[int]bool{1234: true}, cmdlines: map[int][]string{1234: []string{"/bin/tubo", "relay"}}}
 	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +179,7 @@ func TestListViewsAndLoadState(t *testing.T) {
 
 func TestReadLogTailAndRemoveStale(t *testing.T) {
 	root := t.TempDir()
-	system := &stubSystem{running: map[int]bool{}}
+	system := &stubSystem{running: map[int]bool{}, cmdlines: map[int][]string{}}
 	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +214,7 @@ func TestReadLogTailAndRemoveStale(t *testing.T) {
 
 func TestStop(t *testing.T) {
 	root := t.TempDir()
-	system := &stubSystem{running: map[int]bool{4321: true}}
+	system := &stubSystem{running: map[int]bool{4321: true}, cmdlines: map[int][]string{4321: {"/bin/tubo", "relay"}}}
 	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
 		t.Fatal(err)
 	}

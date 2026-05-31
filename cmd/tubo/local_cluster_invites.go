@@ -317,11 +317,10 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if !force {
-		if _, err := os.Stat(configPath); err == nil {
-			return fmt.Errorf("%s exists (use --force)", configPath)
-		}
-	}
+	// Bug fix: the --force guard used to block join whenever config.yaml already
+	// existed, forcing users to always pass --force to add a second cluster.
+	// Cluster-invite join is always additive (merge), so the guard is wrong here.
+	// We only reject if there is a real conflict (different cluster_id or authority key).
 	if existing.Clusters != nil {
 		if current, ok := existing.Clusters[payload.ClusterName]; ok {
 			if current.ClusterID != "" && current.ClusterID != payload.ClusterID {
@@ -342,7 +341,12 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	}
 	cluster.ClusterID = payload.ClusterID
 	cluster.AuthorityPublicKey = payload.AuthorityPublicKey
-	cluster.Namespaces[payload.Namespace] = cfgpkg.Namespace{}
+	// Bug fix: preserve the existing namespace entry (discovery policy, connect
+	// policy, services, capability files) instead of overwriting with an empty
+	// struct. We only add the namespace if it does not exist yet.
+	if _, nsExists := cluster.Namespaces[payload.Namespace]; !nsExists {
+		cluster.Namespaces[payload.Namespace] = cfgpkg.Namespace{}
+	}
 	cluster.MembershipGrant = &cfgpkg.ClusterMembershipGrant{
 		InviteToken:          token,
 		InviteVersion:        payload.Version,
@@ -359,8 +363,13 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 		ExpiresAt:            payload.ExpiresAt,
 	}
 	joined.Clusters[payload.ClusterName] = cluster
-	joined.CurrentCluster = payload.ClusterName
-	joined.CurrentNamespace = payload.Namespace
+	// Bug fix: do not unconditionally overwrite the current cluster/namespace.
+	// Only switch context if there is no cluster selected yet, so that existing
+	// work on another cluster is not silently disrupted.
+	if joined.CurrentCluster == "" {
+		joined.CurrentCluster = payload.ClusterName
+		joined.CurrentNamespace = payload.Namespace
+	}
 	if err := cfgpkg.WriteFile(configPath, joined, true); err != nil {
 		return err
 	}

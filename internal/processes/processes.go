@@ -18,22 +18,25 @@ import (
 )
 
 type State struct {
-	ID        string `json:"id"`
-	Kind      string `json:"kind"`
-	Command   string `json:"command"`
-	Name      string `json:"name"`
-	Service   string `json:"service,omitempty"`
-	ServiceID string `json:"service_id,omitempty"`
-	Cluster   string `json:"cluster,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	Local     string `json:"local,omitempty"`
-	Target    string `json:"target,omitempty"`
-	PID       int    `json:"pid"`
-	StartedAt string `json:"started_at"`
-	LogFile   string `json:"log_file"`
-	StateFile string `json:"state_file"`
-	PIDFile   string `json:"pid_file"`
-	StatusURL string `json:"status_url,omitempty"`
+	ID               string   `json:"id"`
+	Kind             string   `json:"kind"`
+	Command          string   `json:"command"`
+	Name             string   `json:"name"`
+	Service          string   `json:"service,omitempty"`
+	ServiceID        string   `json:"service_id,omitempty"`
+	Cluster          string   `json:"cluster,omitempty"`
+	Namespace        string   `json:"namespace,omitempty"`
+	Local            string   `json:"local,omitempty"`
+	Target           string   `json:"target,omitempty"`
+	PID              int      `json:"pid"`
+	StartedAt        string   `json:"started_at"`
+	LogFile          string   `json:"log_file"`
+	StateFile        string   `json:"state_file"`
+	PIDFile          string   `json:"pid_file"`
+	StatusURL        string   `json:"status_url,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	CommandLine      []string `json:"command_line,omitempty"`
+	StatusConfidence string   `json:"status_confidence,omitempty"`
 }
 
 type DetachedSpec struct {
@@ -43,28 +46,32 @@ type DetachedSpec struct {
 }
 
 type View struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Command   string `json:"command"`
-	Status    string `json:"status"`
-	PID       int    `json:"pid"`
-	Service   string `json:"service,omitempty"`
-	ServiceID string `json:"service_id,omitempty"`
-	Cluster   string `json:"cluster,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	Local     string `json:"local,omitempty"`
-	Target    string `json:"target,omitempty"`
-	LogFile   string `json:"log_file"`
-	StateFile string `json:"state_file"`
-	PIDFile   string `json:"pid_file"`
-	StatusURL string `json:"status_url,omitempty"`
-	StartedAt string `json:"started_at,omitempty"`
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Command          string   `json:"command"`
+	Status           string   `json:"status"`
+	StatusConfidence string   `json:"status_confidence,omitempty"`
+	PID              int      `json:"pid"`
+	Service          string   `json:"service,omitempty"`
+	ServiceID        string   `json:"service_id,omitempty"`
+	Cluster          string   `json:"cluster,omitempty"`
+	Namespace        string   `json:"namespace,omitempty"`
+	Local            string   `json:"local,omitempty"`
+	Target           string   `json:"target,omitempty"`
+	LogFile          string   `json:"log_file"`
+	StateFile        string   `json:"state_file"`
+	PIDFile          string   `json:"pid_file"`
+	StatusURL        string   `json:"status_url,omitempty"`
+	StartedAt        string   `json:"started_at,omitempty"`
+	Source           string   `json:"source,omitempty"`
+	CommandLine      []string `json:"command_line,omitempty"`
 }
 
 type System interface {
 	PIDRunning(pid int) bool
 	TerminatePID(pid int) error
 	KillPID(pid int) error
+	CommandLine(pid int) ([]string, bool)
 }
 
 type CommandConfigurer func(*exec.Cmd)
@@ -158,6 +165,9 @@ func StartDetached(spec DetachedSpec, executable string, env []string, configure
 		return State{}, err
 	}
 	state := spec.State
+	state.Source = firstNonEmpty(state.Source, "tubo-detached")
+	state.CommandLine = append([]string{executable}, spec.ChildArgs...)
+	state.StatusConfidence = confidenceLabel(state, true)
 	state.PID = cmd.Process.Pid
 	state.StartedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600); err != nil {
@@ -178,6 +188,39 @@ func StartDetached(spec DetachedSpec, executable string, env []string, configure
 	return state, nil
 }
 
+func RegisterCurrentProcess(dataRoot string, state State, system System) (State, func() error, error) {
+	if state.ID == "" || state.Name == "" || state.Command == "" {
+		return State{}, nil, fmt.Errorf("incomplete runtime process state")
+	}
+	state.PID = os.Getpid()
+	if state.StartedAt == "" {
+		state.StartedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	state.Source = firstNonEmpty(state.Source, runtimeSourceFromEnv())
+	state.StatusConfidence = confidenceLabel(state, system != nil && len(state.CommandLine) > 0)
+	if err := ensureProcessDirs(state); err != nil {
+		return State{}, nil, err
+	}
+	if existing, err := readStateIfExists(state.StateFile); err == nil && existing.PID != 0 && existing.PID != state.PID {
+		if Status(existing, system) == "running" {
+			return State{}, nil, fmt.Errorf("process state already exists for %s", state.ID)
+		}
+	}
+	if err := writeProcessRegistration(state); err != nil {
+		return State{}, nil, err
+	}
+	cleanup := func() error {
+		if state.PIDFile == "" {
+			return nil
+		}
+		if err := os.Remove(state.PIDFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return state, cleanup, nil
+}
+
 func ListViews(dataRoot string, includeAll bool, system System) ([]View, error) {
 	states, err := listStates(dataRoot)
 	if err != nil {
@@ -185,11 +228,11 @@ func ListViews(dataRoot string, includeAll bool, system System) ([]View, error) 
 	}
 	items := make([]View, 0, len(states))
 	for _, state := range states {
-		status := Status(state, system)
+		status, confidence := StatusDetails(state, system)
 		if !includeAll && status != "running" {
 			continue
 		}
-		items = append(items, viewFromState(state, status))
+		items = append(items, viewFromState(state, status, confidence))
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
 	return items, nil
@@ -203,23 +246,44 @@ func LoadState(dataRoot, ref string, system System) (State, string, error) {
 	}
 	for _, state := range states {
 		if state.ID == ref {
-			return state, Status(state, system), nil
+			status, confidence := StatusDetails(state, system)
+			state.StatusConfidence = confidence
+			return state, status, nil
 		}
 	}
 	return State{}, "", fmt.Errorf("unknown process %q", ref)
 }
 
-func Status(state State, system System) string {
+func StatusDetails(state State, system System) (string, string) {
 	if state.PID <= 0 {
-		return "stale"
+		return "stale", "none"
 	}
 	if _, err := os.Stat(state.PIDFile); err != nil {
-		return "stale"
+		return "stale", "pid-file-missing"
 	}
-	if system != nil && system.PIDRunning(state.PID) {
-		return "running"
+	if system != nil && !system.PIDRunning(state.PID) {
+		return "stale", "pid-not-running"
 	}
-	return "stale"
+	if system != nil && len(state.CommandLine) > 0 {
+		if actual, ok := system.CommandLine(state.PID); ok {
+			if !commandLinesMatch(state.CommandLine, actual) {
+				return "stale", "cmdline-mismatch"
+			}
+			return "running", "pid+cmdline"
+		}
+	}
+	if system != nil {
+		return "running", "pid"
+	}
+	if len(state.CommandLine) > 0 {
+		return "running", "cmdline-unverified"
+	}
+	return "running", "pid"
+}
+
+func Status(state State, system System) string {
+	status, _ := StatusDetails(state, system)
+	return status
 }
 
 func ReadLogTail(path string, lines int) ([]string, error) {
@@ -408,24 +472,105 @@ func normalizeRef(ref string) string {
 	return "process/" + ref
 }
 
-func viewFromState(state State, status string) View {
+func ensureProcessDirs(state State) error {
+	for _, path := range []string{state.StateFile, state.PIDFile, state.LogFile} {
+		if path == "" {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeProcessRegistration(state State) error {
+	if state.PIDFile != "" {
+		if err := os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600); err != nil {
+			return err
+		}
+	}
+	stateBytes, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(state.StateFile, stateBytes, 0o600)
+}
+
+func readStateIfExists(path string) (State, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return State{}, err
+	}
+	var state State
+	if err := json.Unmarshal(b, &state); err != nil {
+		return State{}, err
+	}
+	return state, nil
+}
+
+func runtimeSourceFromEnv() string {
+	for _, key := range []string{"INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET"} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return "systemd"
+		}
+	}
+	return "foreground"
+}
+
+func commandLinesMatch(expected, actual []string) bool {
+	if len(expected) != len(actual) {
+		return false
+	}
+	for i := range expected {
+		if expected[i] != actual[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func confidenceLabel(state State, cmdlineAvailable bool) string {
+	switch {
+	case len(state.CommandLine) > 0 && cmdlineAvailable:
+		return "pid+cmdline"
+	case len(state.CommandLine) > 0:
+		return "cmdline-unverified"
+	default:
+		return "pid"
+	}
+}
+
+func viewFromState(state State, status, confidence string) View {
 	return View{
-		ID:        state.ID,
-		Name:      state.Name,
-		Command:   state.Command,
-		Status:    status,
-		PID:       state.PID,
-		Service:   state.Service,
-		ServiceID: state.ServiceID,
-		Cluster:   state.Cluster,
-		Namespace: state.Namespace,
-		Local:     state.Local,
-		Target:    state.Target,
-		LogFile:   state.LogFile,
-		StateFile: state.StateFile,
-		PIDFile:   state.PIDFile,
-		StatusURL: state.StatusURL,
-		StartedAt: state.StartedAt,
+		ID:               state.ID,
+		Name:             state.Name,
+		Command:          state.Command,
+		Status:           status,
+		StatusConfidence: confidence,
+		PID:              state.PID,
+		Service:          state.Service,
+		ServiceID:        state.ServiceID,
+		Cluster:          state.Cluster,
+		Namespace:        state.Namespace,
+		Local:            state.Local,
+		Target:           state.Target,
+		LogFile:          state.LogFile,
+		StateFile:        state.StateFile,
+		PIDFile:          state.PIDFile,
+		StatusURL:        state.StatusURL,
+		StartedAt:        state.StartedAt,
+		Source:           state.Source,
+		CommandLine:      append([]string(nil), state.CommandLine...),
 	}
 }
 

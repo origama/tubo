@@ -76,7 +76,7 @@ func run(args []string) error {
 	if len(args) > 1 && (args[1] == "--help" || args[1] == "-h") {
 		return printCommandHelp(args[0])
 	}
-	if role, roleArgs, ok, err := resolveRuntimeRole(args); err != nil {
+	if commandName, role, roleArgs, ok, err := resolveRuntimeRole(args); err != nil {
 		return err
 	} else if ok {
 		if err := logging.Configure(runtimeLoggingConfig(global)); err != nil {
@@ -93,9 +93,9 @@ func run(args []string) error {
 				roleArgs = cleanArgs
 			}
 			if detach {
-				return detachRoleCommand(args[0], role, roleArgs)
+				return detachRoleCommand(commandName, role, roleArgs)
 			}
-			return runRole(role, roleArgs)
+			return runRole(commandName, role, roleArgs)
 		}
 		if shouldHandleImplicitBootstrap(args[0]) {
 			cleanArgs, err := maybeImplicitJoinOrInit(args[0], role, roleArgs)
@@ -104,7 +104,7 @@ func run(args []string) error {
 			}
 			roleArgs = cleanArgs
 		}
-		return runRole(role, roleArgs)
+		return runRole(commandName, role, roleArgs)
 	}
 	if err := logging.Configure(logging.Config{Quiet: global.Quiet, Verbosity: global.Verbosity, LogLevel: global.LogLevel, Runtime: false}); err != nil {
 		return err
@@ -236,32 +236,32 @@ func parseGlobalCLIOptions(args []string) (globalCLIOptions, []string, error) {
 	return opts, remaining, nil
 }
 
-func resolveRuntimeRole(args []string) (string, []string, bool, error) {
+func resolveRuntimeRole(args []string) (string, string, []string, bool, error) {
 	if len(args) == 0 {
-		return "", nil, false, nil
+		return "", "", nil, false, nil
 	}
 	switch args[0] {
 	case "relay":
 		if len(args) >= 2 && args[1] == "run" {
-			return "", nil, false, errors.New("legacy command `tubo relay run` removed; use `tubo relay`")
+			return "", "", nil, false, errors.New("legacy command `tubo relay run` removed; use `tubo relay`")
 		}
-		return "relay", args[1:], true, nil
+		return "relay", "relay", args[1:], true, nil
 	case "edge", "service", "bridge":
-		return "", nil, false, fmt.Errorf("legacy command `tubo %s run` removed; use intent-based commands (`attach`, `connect`, `gateway`, `relay`, `join`)", args[0])
+		return "", "", nil, false, fmt.Errorf("legacy command `tubo %s run` removed; use intent-based commands (`attach`, `connect`, `gateway`, `relay`, `join`)", args[0])
 	case "gateway":
-		return "edge", args[1:], true, nil
+		return "gateway", "edge", args[1:], true, nil
 	case "attach":
 		attachArgs, err := rewriteAttachArgs(args[1:])
 		if err != nil {
-			return "", nil, false, err
+			return "", "", nil, false, err
 		}
 		attachArgs, err = ensureAttachRuntimeDefaults(attachArgs)
 		if err != nil {
-			return "", nil, false, err
+			return "", "", nil, false, err
 		}
-		return "service", attachArgs, true, nil
+		return "attach", "service", attachArgs, true, nil
 	default:
-		return "", nil, false, nil
+		return "", "", nil, false, nil
 	}
 }
 
@@ -505,7 +505,7 @@ Flags:
   --live                    skip remote cache and observe pubsub live
   --cached-only             only use local edge cache
   --json                    print JSON result
-  -d, --detach              run in background and show up in tubo ps
+  -d, --detach              run in background and register in tubo ps
   --no-init                 fail instead of auto-joining the public bundle
 
 Path selection:
@@ -660,18 +660,35 @@ func resolveRoleConfig(role string, args []string) (cfgpkg.Config, string, error
 	return c, effectivePath, nil
 }
 
-func runRole(role string, args []string) error {
+func runRole(commandName, role string, args []string) error {
 	c, configPath, err := resolveRoleConfig(role, args)
 	if err != nil {
 		return err
 	}
-	printForegroundRuntimeNotice(role, c)
+	printForegroundRuntimeNotice(commandName, role, c)
+	spec, err := buildDetachedSpec(commandName, c, args)
+	if err != nil {
+		return err
+	}
+	spec.State.LogFile = ""
+	state, cleanup, err := registerCurrentProcess(spec.State)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cleanup != nil {
+			if err := cleanup(); err != nil {
+				logging.Warnf("foreground process cleanup failed: %v\n", err)
+			}
+		}
+	}()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	_ = state
 	return launcher.Run(ctx, newRuntimeLauncher(), role, configPath, c)
 }
 
-func printForegroundRuntimeNotice(role string, cfg cfgpkg.Config) {
+func printForegroundRuntimeNotice(commandName, role string, cfg cfgpkg.Config) {
 	switch role {
 	case "edge":
 		logging.Warnf("gateway running in foreground; press Ctrl+C to stop\n")
@@ -1300,7 +1317,13 @@ func printProcessDescription(state detachedProcessState, status string) {
 	fmt.Printf("Kind: %s\n", state.Kind)
 	fmt.Printf("Command: %s\n", state.Command)
 	fmt.Printf("Status: %s\n", status)
+	if state.StatusConfidence != "" {
+		fmt.Printf("Status confidence: %s\n", state.StatusConfidence)
+	}
 	fmt.Printf("PID: %d\n", state.PID)
+	if state.Source != "" {
+		fmt.Printf("Source: %s\n", state.Source)
+	}
 	if state.Service != "" {
 		fmt.Printf("Service: %s\n", state.Service)
 	}
@@ -1315,6 +1338,9 @@ func printProcessDescription(state detachedProcessState, status string) {
 	}
 	if state.Target != "" {
 		fmt.Printf("Target: %s\n", state.Target)
+	}
+	if len(state.CommandLine) > 0 {
+		fmt.Printf("Command line: %s\n", strings.Join(state.CommandLine, " "))
 	}
 	fmt.Printf("Log file: %s\n", state.LogFile)
 	fmt.Printf("State file: %s\n", state.StateFile)
@@ -1339,6 +1365,12 @@ func logsCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(state.LogFile) == "" {
+		if state.Source == "systemd" {
+			return fmt.Errorf("no Tubo-owned log file recorded for %s; try `journalctl --user-unit ...` or `tubo describe %s`", state.ID, state.ID)
+		}
+		return fmt.Errorf("no Tubo-owned log file recorded for %s; try `tubo describe %s` or check your external supervisor logs", state.ID, state.ID)
+	}
 	if err := printLogTail(state.LogFile, *tail); err != nil {
 		return err
 	}
@@ -1358,6 +1390,16 @@ func stopCmd(args []string) error {
 	}
 	if fs.NArg() != 1 {
 		return errors.New("usage: tubo stop [--force] <process/name>")
+	}
+	preview, status, err := loadProcessState(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	if status != "running" {
+		return fmt.Errorf("process %s is not running", preview.ID)
+	}
+	if preview.Source != "" && preview.Source != "tubo-detached" {
+		logging.Warnf("stopping externally managed Tubo runtime %s via SIGTERM; use your supervisor to restart it\n", preview.ID)
 	}
 	state, err := stopProcess(fs.Arg(0), *force)
 	if err != nil {
@@ -1438,6 +1480,42 @@ func connectCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	localAddr := strings.TrimPrefix(strings.TrimPrefix(result.LocalURL, "http://"), "https://")
+	scopeCluster := ""
+	scopeNamespace := ""
+	if result.Scope != nil {
+		scopeCluster = result.Scope.Cluster
+		scopeNamespace = result.Scope.Namespace
+	}
+	name := detachedConnectProcessName(result.ServiceName, localAddr)
+	state := detachedProcessState{
+		ID:        "process/" + name,
+		Kind:      "process",
+		Command:   "connect",
+		Name:      name,
+		Service:   result.ServiceName,
+		ServiceID: result.ServiceID,
+		Cluster:   scopeCluster,
+		Namespace: scopeNamespace,
+		Local:     localAddr,
+		Target:    connectDetachedTarget(req, result.ServiceName, result.ServiceID),
+		LogFile:   "",
+		StateFile: filepath.Join(processStateDir(), name+".json"),
+		PIDFile:   filepath.Join(processRunDir(), name+".pid"),
+		StatusURL: "http://" + connectStatusHostPort(localAddr) + "/healthz",
+	}
+	state, cleanup, err := registerCurrentProcess(state)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cleanup != nil {
+			if err := cleanup(); err != nil {
+				logging.Warnf("foreground process cleanup failed: %v\n", err)
+			}
+		}
+	}()
+	_ = state
 	output := fromConnectWorkflowResult(result)
 	if req.JSONOut {
 		if err := printJSON(output); err != nil {

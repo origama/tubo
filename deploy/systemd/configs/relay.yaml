@@ -1,0 +1,32 @@
+# Example relay configuration
+# Copy to: /etc/tubo/relay.yaml
+
+role: relay
+
+node:
+  # Unique seed for deterministic peer ID
+  # Use a strong random value in production
+  seed: my-relay-seed-change-me
+  
+  # Public listen address
+  p2p_listen: /ip4/0.0.0.0/tcp/4001
+
+network:
+  # Private swarm key (optional, for private networks)
+  # Generate with: tubo id generate-swarm-key > /etc/tubo/swarm.key
+  private_key_file: /etc/tubo/swarm.key
+
+relay:
+  # Enable relay v2 service
+  enable_relay_service: true
+  
+  # Health endpoint for monitoring
+  health_listen: 127.0.0.1:8092
+  
+  # Optional: public address if behind NAT/LB
+  # public_addr: /dns4/relay.example.com/tcp/4001
+  
+  # Resource limits
+  # max_reservations: 128
+  # max_reservations_per_ip: 4
+  # max_circuits_per_peer: 16

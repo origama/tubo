@@ -13,6 +13,7 @@ type Store interface {
 	WriteFile(path string, data []byte, mode os.FileMode) error
 	MkdirAll(path string, mode os.FileMode) error
 	Stat(path string) (os.FileInfo, error)
+	Remove(path string) error
 }
 
 type FSStore struct{}
@@ -39,4 +40,8 @@ func (FSStore) MkdirAll(path string, mode os.FileMode) error {
 
 func (FSStore) Stat(path string) (os.FileInfo, error) {
 	return os.Stat(path)
+}
+
+func (FSStore) Remove(path string) error {
+	return os.Remove(path)
 }
