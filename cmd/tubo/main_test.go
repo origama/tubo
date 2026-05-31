@@ -93,12 +93,15 @@ func TestResolveRuntimeRoleAliases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			gotRole, gotArgs, ok, err := resolveRuntimeRole(tc.in)
+			gotCommand, gotRole, gotArgs, ok, err := resolveRuntimeRole(tc.in)
 			if err != nil {
 				t.Fatalf("resolveRuntimeRole(%v) err = %v", tc.in, err)
 			}
 			if !ok {
 				t.Fatalf("resolveRuntimeRole(%v) did not resolve a runtime role", tc.in)
+			}
+			if gotCommand != tc.in[0] {
+				t.Fatalf("command = %q, want %q", gotCommand, tc.in[0])
 			}
 			if gotRole != tc.wantRole {
 				t.Fatalf("role = %q, want %q", gotRole, tc.wantRole)
@@ -143,14 +146,14 @@ func TestResolveRuntimeRoleRejectsLegacyRoleCommands(t *testing.T) {
 		{"service", "run", "--config", "service.yaml"},
 		{"bridge", "run", "--config", "bridge.yaml"},
 	} {
-		if _, _, _, err := resolveRuntimeRole(args); err == nil {
+		if _, _, _, _, err := resolveRuntimeRole(args); err == nil {
 			t.Fatalf("expected legacy command rejection for %v", args)
 		}
 	}
 }
 
 func TestResolveRuntimeRoleRejectsDuplicateAttachTarget(t *testing.T) {
-	if _, _, _, err := resolveRuntimeRole([]string{"attach", "http://127.0.0.1:1234", "--target", "http://127.0.0.1:11434", "--name", "lmstudio"}); err == nil {
+	if _, _, _, _, err := resolveRuntimeRole([]string{"attach", "http://127.0.0.1:1234", "--target", "http://127.0.0.1:11434", "--name", "lmstudio"}); err == nil {
 		t.Fatal("expected duplicate attach target error")
 	}
 }
@@ -162,7 +165,7 @@ func TestResolveRuntimeRoleRejectsInvalidAttachShorthand(t *testing.T) {
 		{"attach", "http://127.0.0.1:1234", "--port", "8080"},
 		{"attach", "--port", "8080"},
 	} {
-		if _, _, _, err := resolveRuntimeRole(args); err == nil {
+		if _, _, _, _, err := resolveRuntimeRole(args); err == nil {
 			t.Fatalf("expected shorthand rejection for %v", args)
 		}
 	}
@@ -292,9 +295,9 @@ func TestPrintForegroundRuntimeNoticeUsesStderr(t *testing.T) {
 		if err := logging.Configure(logging.Config{}); err != nil {
 			return err
 		}
-		printForegroundRuntimeNotice("edge", cfgpkg.Config{})
-		printForegroundRuntimeNotice("relay", cfgpkg.Config{})
-		printForegroundRuntimeNotice("service", cfgpkg.Config{Service: cfgpkg.Service{Name: "myapi"}})
+		printForegroundRuntimeNotice("gateway", "edge", cfgpkg.Config{})
+		printForegroundRuntimeNotice("relay", "relay", cfgpkg.Config{})
+		printForegroundRuntimeNotice("attach", "service", cfgpkg.Config{Service: cfgpkg.Service{Name: "myapi"}})
 		return nil
 	})
 	if err != nil {

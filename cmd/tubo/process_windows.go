@@ -23,3 +23,7 @@ func killPID(pid int) error {
 	}
 	return p.Kill()
 }
+
+func processCommandLine(pid int) ([]string, bool) {
+	return nil, false
+}

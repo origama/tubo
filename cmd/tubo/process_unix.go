@@ -33,3 +33,28 @@ func terminatePID(pid int) error {
 func killPID(pid int) error {
 	return syscall.Kill(pid, syscall.SIGKILL)
 }
+
+func processCommandLine(pid int) ([]string, bool) {
+	if pid <= 0 {
+		return nil, false
+	}
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(b) == 0 {
+		return nil, false
+	}
+	parts := strings.Split(strings.TrimRight(string(b), "\x00"), "\x00")
+	if len(parts) == 0 || (len(parts) == 1 && parts[0] == "") {
+		return nil, false
+	}
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		out = append(out, part)
+	}
+	if len(out) == 0 {
+		return nil, false
+	}
+	return out, true
+}

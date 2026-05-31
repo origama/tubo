@@ -19,9 +19,10 @@ type processView = processes.View
 
 type processSystemAdapter struct{}
 
-func (processSystemAdapter) PIDRunning(pid int) bool    { return pidRunning(pid) }
-func (processSystemAdapter) TerminatePID(pid int) error { return terminatePID(pid) }
-func (processSystemAdapter) KillPID(pid int) error      { return killPID(pid) }
+func (processSystemAdapter) PIDRunning(pid int) bool              { return pidRunning(pid) }
+func (processSystemAdapter) TerminatePID(pid int) error           { return terminatePID(pid) }
+func (processSystemAdapter) KillPID(pid int) error                { return killPID(pid) }
+func (processSystemAdapter) CommandLine(pid int) ([]string, bool) { return processCommandLine(pid) }
 
 func buildDetachedSpec(commandName string, cfg cfgpkg.Config, args []string) (detachedSpec, error) {
 	return processes.BuildSpec(commandName, cfg, args, defaultTuboDataDir())
@@ -37,6 +38,22 @@ func startDetachedProcessWithTimeout(spec detachedSpec, timeout time.Duration) (
 		return detachedProcessState{}, err
 	}
 	return processes.StartDetached(spec, exe, append(os.Environ(), "TUBO_DETACHED_CHILD=1"), configureDetachedCommand, timeout)
+}
+
+func registerCurrentProcess(state detachedProcessState) (detachedProcessState, func() error, error) {
+	state.CommandLine = append([]string(nil), os.Args...)
+	state.Source = runtimeProcessSource()
+	registered, cleanup, err := processes.RegisterCurrentProcess(defaultTuboDataDir(), state, processSystemAdapter{})
+	return registered, cleanup, err
+}
+
+func runtimeProcessSource() string {
+	for _, key := range []string{"INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET"} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return "systemd"
+		}
+	}
+	return "foreground"
 }
 
 func processStateDir() string { return processes.StateDir(defaultTuboDataDir()) }

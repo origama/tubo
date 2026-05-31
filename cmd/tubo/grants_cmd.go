@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -494,6 +495,18 @@ func grantsServeCmd(args []string) error {
 		return err
 	}
 	server.Register(host)
+	state, cleanup, err := registerCurrentProcess(grantsServeProcessState(*clusterName, *namespaceName, *listen))
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cleanup != nil {
+			if err := cleanup(); err != nil {
+				logging.Warnf("foreground process cleanup failed: %v\n", err)
+			}
+		}
+	}()
+	_ = state
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	overlay.StartBootstrapRetry(ctx, 5*time.Second)
@@ -509,4 +522,20 @@ func grantsServeCmd(args []string) error {
 	<-ctx.Done()
 	time.Sleep(50 * time.Millisecond)
 	return nil
+}
+
+func grantsServeProcessState(clusterName, namespaceName, listen string) detachedProcessState {
+	name := "grants-serve-" + sanitizeProcessName(clusterName+"-"+namespaceName)
+	return detachedProcessState{
+		ID:        "process/" + name,
+		Kind:      "process",
+		Command:   "grants serve",
+		Name:      name,
+		Cluster:   clusterName,
+		Namespace: namespaceName,
+		Local:     listen,
+		LogFile:   "",
+		StateFile: filepath.Join(processStateDir(), name+".json"),
+		PIDFile:   filepath.Join(processRunDir(), name+".pid"),
+	}
 }

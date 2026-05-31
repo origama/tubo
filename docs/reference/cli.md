@@ -37,8 +37,8 @@ Le forme sopra sono accettate sia prima del comando sia dopo il top-level subcom
 Default attuale:
 
 - one-shot commands: output pulito, senza diagnostica tecnica;
-- runtime foreground (`attach`, `connect`, `gateway`, `relay`): output pulito di default; i log tecnici compaiono solo con `-v`/`-vv`/`--log-level ...`;
-- processi detached: i log restano disponibili via `tubo logs ...`.
+- runtime foreground (`attach`, `connect`, `gateway`, `relay`, `grants serve`): output pulito di default; i log tecnici compaiono solo con `-v`/`-vv`/`--log-level ...`;
+- processi registrati da Tubo: i log restano disponibili via `tubo logs ...` quando Tubo conosce un log file.
 
 Per i comandi `--json`, Tubo deve mantenere stdout parseable JSON anche quando il comando fa sub-flow interni come implicit join o refresh grant.
 
@@ -61,9 +61,9 @@ describe  = mostra dettagli leggibili
 inspect   = mostra dettagli tecnici/raw
 watch     = osserva servizi nello swarm
 
-ps        = mostra processi detached locali
-logs      = segue o taila i log locali
-stop      = ferma un processo detached locale
+ps        = mostra processi locali registrati
+logs      = segue o taila i log locali quando Tubo conosce il file
+stop      = ferma un processo locale registrato
 rm --stale = pulisce state/log di processi terminati
 ```
 
@@ -232,7 +232,7 @@ Anche `get services`, `describe`, `inspect` e `watch` usano lo stesso bootstrap 
 tubo connect lmstudio --local 127.0.0.1:51234
 ```
 
-Con `-d` / `--detach`, il tunnel client resta in background come `process/connect-...` ed e' visibile in `tubo ps` / `tubo get processes`.
+Con `-d` / `--detach`, il tunnel client resta in background come `process/connect-...` ed e' visibile in `tubo ps` / `tubo get processes`. Anche la forma foreground resta registrata e quindi visibile in `tubo ps`.
 
 Se `--local` non e' specificato, sceglie automaticamente una porta libera su `127.0.0.1`.
 
@@ -269,7 +269,7 @@ tubo ps
 tubo get processes
 ```
 
-mostrano processi locali detached di questa macchina.
+mostrano processi locali registrati su questa macchina.
 
 ```bash
 tubo get services
@@ -283,7 +283,7 @@ Esempio: `process/connect-lmstudio-51234` e' il processo locale che mantiene il 
 
 ## Process management locale
 
-I processi detached locali possono essere ispezionati e gestiti con:
+I processi locali registrati possono essere ispezionati e gestiti con:
 
 ```bash
 tubo ps
@@ -295,7 +295,7 @@ tubo stop process/connect-lmstudio-51234
 tubo rm --stale
 ```
 
-`ps` / `get processes` riguardano i processi locali di questa macchina. La tabella mostra anche `SERVICE ID` e `SCOPE` quando il processo detached pubblica un servizio.
+`ps` / `get processes` riguardano i processi locali registrati su questa macchina. La tabella mostra anche `SERVICE ID` e `SCOPE` quando il processo pubblica un servizio.
 `get services` riguarda invece le risorse discovery pubblicizzate nello swarm. La tabella e il JSON riportano `SERVICE ID`, `SCOPE` e ora anche `ACCESS`/`connect_policy` quando il servizio pubblica metadata di connessione; il campo `grant_service` viene propagato nel JSON quando presente, cosi' i display name duplicati restano separati e i futuri flussi collaborativi possono vedere anche l'endpoint grant associato. `get service/<service_id>`, `describe service/<service_id>` e `inspect service/<service_id>` fanno lookup esatto. Quando la config locale contiene `current_cluster` / `current_namespace`, questi valori vengono riportati nella scope risolta del comando; puoi sovrascriverli con `--cluster`, `-n/--namespace` e, per le sole liste, `-A/--all-namespaces`. In cluster-mode, la query e la lista sono consentite solo se la capability di membership del namespace lo permette; `-A` richiede capability per ogni namespace o una capability broad con namespace `*`.
 
 ## Resource discovery

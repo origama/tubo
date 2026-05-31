@@ -103,20 +103,13 @@ Questo permette di trattare `process/...` come ID stabile anche quando il lifecy
 
 ## Interazione con `tubo ps/get processes/logs/stop/describe/inspect`
 
-### Decisione per la prima implementazione
+Dopo l'inventory e il refactor del process registry, questi comandi descrivono i runtime Tubo registrati localmente (foreground o detached) quando Tubo conosce state/pid metadata.
 
-I comandi attuali **continuano a descrivere solo i processi detached locali gestiti da `tubo` via state file**.
+Resta vero che:
 
-Quindi, nella prima fase:
-
-- `tubo ps`
-- `tubo get processes`
-- `tubo logs`
-- `tubo stop`
-- `tubo describe process/...`
-- `tubo inspect process/...`
-
-**non diventano wrapper impliciti di `systemctl --user` o `launchctl`.**
+- non diventano wrapper impliciti di `systemctl --user` o `launchctl`;
+- i processi gestiti esternamente possono apparire solo se usano lo stesso data/config context e registrano metadata compatibili;
+- i log sono tailabili solo quando Tubo conosce un file log owned.
 
 ### Motivazione
 
@@ -125,25 +118,23 @@ Quindi, nella prima fase:
 - evita dipendenze forti da comandi esterni e da permessi utente;
 - consente di introdurre systemd in modo incrementale.
 
-### Come si lavora in pratica in fase 1
+### Come si lavora in pratica in questa fase
 
-Per processi installati via unit file:
+Per processi installati via unit file o altri supervisor esterni:
 
-- gestione lifecycle: `systemctl --user start|stop|restart ...`
-- logs: `journalctl --user-unit ...`
-- inspect: `systemctl --user status ...`
+- gestione lifecycle: `systemctl --user start|stop|restart ...` (o equivalente);
+- logs: `journalctl --user-unit ...` quando non esiste un log file Tubo-owned;
+- inspect: `systemctl --user status ...`.
 
 `process/...` resta comunque l'ID canonico per naming, generazione e documentazione.
 
 ### Evoluzione futura possibile
 
-In una fase successiva si puo' aggiungere una vista unificata, ad esempio:
+Se in futuro servira' una vista unificata dei supervisor esterni, si puo' ancora aggiungere una modalita' esplicita, ad esempio:
 
 - `tubo get processes --supervised`
 - `tubo describe process/attach-lmstudio` che mostri anche `supervisor=systemd`
 - `tubo logs process/attach-lmstudio --systemd`
-
-Ma non e' raccomandato farlo nel primo passo.
 
 ## File e metadata raccomandati
 
@@ -292,7 +283,7 @@ systemctl --user enable --now tubo-relay-default.service
 4. macOS: **launchd documentato ma rimandato** come implementazione.
 5. `--install` / `--enable` non sono il primo passo raccomandato.
 6. `process/...` resta l'ID canonico anche per servizi installati.
-7. I comandi locali `ps/logs/stop/inspect` restano inizialmente limitati ai processi detached locali; per i servizi supervisionati si usano gli strumenti nativi del sistema operativo.
+7. I comandi locali `ps/logs/stop/inspect` leggono i runtime Tubo registrati localmente; per i servizi supervisionati senza log file Tubo-owned si usano gli strumenti nativi del sistema operativo.
 
 ## Possibile roadmap successiva
 
