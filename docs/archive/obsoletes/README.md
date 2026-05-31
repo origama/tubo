@@ -2,7 +2,7 @@
 
 Questa directory contiene note storiche e proposte di architettura non più canoniche.
 
-Sono tenute solo per contesto.
+Sono tenute solo per contesto. Se contengono termini come `topology`, sono riferimenti storici e non canonici.
 
 ## Riferimenti canonici attuali
 
