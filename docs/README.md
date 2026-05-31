@@ -8,7 +8,7 @@ Il sito pubblico con documentazione navigabile è su **[www.tubo.click/docs/](ht
 
 Project work, planning, implementation scope, and acceptance criteria are tracked in **GitHub Issues**.
 
-`TASKS.md` is not a canonical tracker. Historical items that still needed migration were captured in issue #180 before removing the file.
+Historical tracker items that still needed migration were captured in issue #180 before removing the old local tracker.
 
 ## Documentazione disponibile
 
