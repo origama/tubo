@@ -1,0 +1,63 @@
+# Tubo Grant Service
+#
+# The grant service handles publish authorization requests for a cluster.
+# Only run this on a trusted authority node that has access to the cluster's
+# private key.
+#
+# Install:
+#   sudo cp tubo-grants.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tubo-grants
+#
+# Config example: /etc/tubo/grants.yaml
+#   role: service
+#   node:
+#     seed: grants-server-seed
+#   network:
+#     private_key_file: /etc/tubo/swarm.key
+#     relay_peers:
+#       - /dns4/relay.example.com/tcp/4001/p2p/12D3KooW...
+#     autorelay: true
+#   current_cluster: mycluster
+#   current_namespace: default
+#   clusters:
+#     mycluster:
+#       cluster_id: cluster-abc123
+#       authority_public_key: ssh-ed25519 AAAA...
+#       authority_private_key_file: /etc/tubo/authority.key
+
+[Unit]
+Description=Tubo Grant Service
+Documentation=https://github.com/origama/tubo
+After=network-online.target tubo-relay.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="HOME=/root"
+
+# Basic grant service
+# ExecStart=/usr/local/bin/tubo grants serve --config /etc/tubo/grants.yaml
+
+# Public auto-approve mode (for public clusters)
+ExecStart=/usr/local/bin/tubo grants serve \
+    --config /etc/tubo/grants.yaml \
+    --cluster home \
+    --namespace default \
+    --public-auto-approve
+
+Restart=always
+RestartSec=5
+
+# Resource limits
+LimitNOFILE=65536
+
+# Security hardening
+# User=tubo
+# Group=tubo
+# ProtectSystem=strict
+# PrivateTmp=true
+# NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

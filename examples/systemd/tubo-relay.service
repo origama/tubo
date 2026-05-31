@@ -1,0 +1,49 @@
+# Tubo Public Relay Service
+#
+# A relay node provides:
+# - Bootstrap peer for network discovery
+# - Relay service for NAT traversal
+# - Optional discovery pubsub cache
+#
+# Install:
+#   sudo cp tubo-relay.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tubo-relay
+#
+# Config example: /etc/tubo/relay.yaml
+#   role: relay
+#   node:
+#     seed: my-relay-seed
+#     p2p_listen: /ip4/0.0.0.0/tcp/4001
+#   network:
+#     private_key_file: /etc/tubo/swarm.key
+#   relay:
+#     enable_relay_service: true
+#     health_listen: 127.0.0.1:8092
+
+[Unit]
+Description=Tubo Public Relay
+Documentation=https://github.com/origama/tubo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="HOME=/root"
+ExecStart=/usr/local/bin/tubo relay --config /etc/tubo/relay.yaml
+Restart=always
+RestartSec=5
+
+# Resource limits
+LimitNOFILE=1048576
+
+# Security hardening (optional, uncomment if not using /root paths)
+# User=tubo
+# Group=tubo
+# ProtectSystem=strict
+# ProtectHome=true
+# PrivateTmp=true
+# NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

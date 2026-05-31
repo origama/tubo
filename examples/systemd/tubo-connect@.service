@@ -1,0 +1,57 @@
+# Tubo Connect Service (Template Unit)
+#
+# Connects to a remote service and exposes it on a local port.
+# This is a template unit - use with an instance name:
+#
+#   sudo systemctl enable --now tubo-connect@myapi
+#
+# This will look for config at: /etc/tubo/connect-myapi.yaml
+#
+# Install:
+#   sudo cp tubo-connect@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# Config example: /etc/tubo/connect-myapi.yaml
+#   role: bridge
+#   node:
+#     seed: connect-myapi-seed
+#   network:
+#     private_key_file: /etc/tubo/swarm.key
+#     relay_peers:
+#       - /dns4/relay.example.com/tcp/4001/p2p/12D3KooW...
+#     autorelay: true
+#     hole_punching: true
+#   bridge:
+#     listen: 127.0.0.1:9080
+#     service_addr: /p2p/12D3KooW.../p2p-circuit/p2p/12D3KooW...
+#   current_cluster: mycluster
+#   current_namespace: default
+#
+# Or use a share token:
+#   ExecStart=/usr/local/bin/tubo connect --token <share-token> --local 127.0.0.1:9080
+
+[Unit]
+Description=Tubo Connect Service (%i)
+Documentation=https://github.com/origama/tubo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="HOME=/root"
+ExecStart=/usr/local/bin/tubo connect %i --config /etc/tubo/connect-%i.yaml
+Restart=always
+RestartSec=5
+
+# Resource limits
+LimitNOFILE=65536
+
+# Security hardening
+# User=tubo
+# Group=tubo
+# ProtectSystem=strict
+# PrivateTmp=true
+# NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

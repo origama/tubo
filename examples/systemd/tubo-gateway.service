@@ -1,0 +1,52 @@
+# Tubo Gateway Service
+#
+# The gateway (edge) node provides HTTP ingress to services in the Tubo network.
+# It discovers services via pubsub and routes HTTP requests based on Host header.
+#
+# Install:
+#   sudo cp tubo-gateway.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now tubo-gateway
+#
+# Config example: /etc/tubo/gateway.yaml
+#   role: edge
+#   node:
+#     seed: gateway-seed
+#     p2p_listen: /ip4/0.0.0.0/tcp/4001
+#   network:
+#     private_key_file: /etc/tubo/swarm.key
+#     relay_peers:
+#       - /dns4/relay.example.com/tcp/4001/p2p/12D3KooW...
+#     autorelay: true
+#   edge:
+#     listen: 0.0.0.0:8080
+#     admin_listen: 127.0.0.1:8081
+#   current_cluster: mycluster
+#   current_namespace: default
+
+[Unit]
+Description=Tubo Gateway
+Documentation=https://github.com/origama/tubo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment="HOME=/root"
+ExecStart=/usr/local/bin/tubo gateway --config /etc/tubo/gateway.yaml
+Restart=always
+RestartSec=5
+
+# Resource limits
+LimitNOFILE=1048576
+
+# Security hardening
+# User=tubo
+# Group=tubo
+# ProtectSystem=strict
+# PrivateTmp=true
+# NoNewPrivileges=true
+# AmbientCapabilities=CAP_NET_BIND_SERVICE  # If binding to port < 1024
+
+[Install]
+WantedBy=multi-user.target
