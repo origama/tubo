@@ -9,7 +9,7 @@ Parent issues:
 
 This document turns the security assumptions from those issues into explicit guarantees, non-goals, and implementation rules for coding agents.
 
-It supersedes older design notes that described alternative architecture directions. Historical proposal documents moved under `docs/obsoletes/` remain useful for context, but this file is the canonical reference for the 0.7.0.b0 security model.
+It supersedes older design notes that described alternative architecture directions. Historical proposal documents moved under `docs/archive/obsoletes/` remain useful for context, but this file is the canonical reference for the 0.7.0.b0 security model.
 
 ## 1. Core invariants
 

@@ -50,7 +50,7 @@ Historical tracker items that still needed migration were captured in issue #180
 
 ## Compatibility notes
 
-The legacy top-level markdown paths are kept as thin compatibility stubs for external links; new work should link the canonical paths above.
+The legacy top-level markdown paths were removed; new work should link the canonical paths above.
 
 ## Planned documents
 

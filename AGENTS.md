@@ -69,7 +69,7 @@ Regole:
 1. La documentazione tecnica vive in `docs/`.
 2. `docs/README.md` e' l'indice canonico della documentazione.
 3. Qualsiasi cambio implementativo deve riflettersi nella doc rilevante nello stesso PR/commit.
-4. I documenti storici/superati stanno in `docs/archive/obsoletes/`; i vecchi stub compatibili sotto `docs/obsoletes/` non sono canonici e non devono guidare implementazioni nuove.
+4. I documenti storici/superati stanno in `docs/archive/obsoletes/` e non devono guidare implementazioni nuove.
 
 ## 6) Runbook operativo canonico
 
