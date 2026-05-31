@@ -595,6 +595,117 @@ func TestStopCmd(t *testing.T) {
 	}
 }
 
+func TestStopCmdWarnsForExternallyManagedProcess(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	state := detachedProcessState{ID: "process/relay-default", Kind: "process", Command: "relay", Name: "relay-default", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "relay-default.pid"), StateFile: filepath.Join(processStateDir(), "relay-default.json"), Source: "systemd"}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	stdout, stderr, err := captureOutputs(func() error { return stopCmd([]string{state.ID}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "stopped "+state.ID) {
+		t.Fatalf("unexpected stop stdout: %s", stdout)
+	}
+	if !strings.Contains(stderr, "externally managed Tubo runtime") {
+		t.Fatalf("expected external supervisor warning, got stderr=%s", stderr)
+	}
+}
+
+func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmdline, ok := processCommandLine(os.Getpid())
+	if !ok || len(cmdline) == 0 {
+		t.Fatal("expected current process cmdline")
+	}
+	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", Command: "attach", Name: "attach-myapi", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), Source: "foreground", CommandLine: cmdline}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return describeCmd([]string{state.ID}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Source: foreground", "Status confidence: pid+cmdline", "Command line:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe output missing %q: %s", want, out)
+		}
+	}
+	inspectOut, err := capture(func() error { return inspectCmd([]string{state.ID, "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Status string               `json:"status"`
+		State  detachedProcessState `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(inspectOut), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" {
+		t.Fatalf("unexpected inspect payload: %+v", payload)
+	}
+}
+
+func TestLogsCmdShowsSystemdHintWhenNoLogFile(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmdline, ok := processCommandLine(os.Getpid())
+	if !ok || len(cmdline) == 0 {
+		t.Fatal("expected current process cmdline")
+	}
+	state := detachedProcessState{ID: "process/grants-serve-lab-default", Kind: "process", Command: "grants serve", Name: "grants-serve-lab-default", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "grants-serve-lab-default.pid"), StateFile: filepath.Join(processStateDir(), "grants-serve-lab-default.json"), Source: "systemd", CommandLine: cmdline}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	err := logsCmd([]string{state.ID})
+	if err == nil || !strings.Contains(err.Error(), "journalctl --user-unit") {
+		t.Fatalf("expected journalctl hint, got err=%v", err)
+	}
+}
+
+func TestRegisterCurrentProcessSkipsDetachedChild(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	t.Setenv("TUBO_DETACHED_CHILD", "1")
+	state := detachedProcessState{ID: "process/relay-default", Kind: "process", Command: "relay", Name: "relay-default", StateFile: filepath.Join(processStateDir(), "relay-default.json"), PIDFile: filepath.Join(processRunDir(), "relay-default.pid")}
+	registered, cleanup, err := registerCurrentProcess(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanup != nil {
+		t.Fatal("expected nil cleanup for detached child")
+	}
+	if registered.ID != state.ID {
+		t.Fatalf("unexpected registered state: %#v", registered)
+	}
+	if _, err := os.Stat(state.StateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected no state file written, stat err=%v", err)
+	}
+}
+
 func TestUsageMentionsIntentCommands(t *testing.T) {
 	err := usage()
 	if err == nil {
