@@ -556,7 +556,8 @@ func newIntegrationStackWithFiles(t *testing.T, composeFiles ...string) *integra
 	repoRoot := filepath.Clean(filepath.Join(wd, "../.."))
 	stack := &integrationStack{repoRoot: repoRoot, composeFiles: composeFiles}
 	if stack.usesComposeFile("tests/e2e/compose/relay-nat/compose.yml") {
-		t.Skip("tests/e2e/compose/relay-nat/compose.yml integration is skipped while isolated-network discovery is unsupported without legacy swarm discovery")
+		// Placeholder until #176 decides whether the relay-first NAT scenario becomes current coverage.
+		t.Skip("relay-first NAT integration pending #176; not gated in the current integration suite")
 	}
 
 	if err := prepareIntegrationComposeConfig(repoRoot); err != nil {
