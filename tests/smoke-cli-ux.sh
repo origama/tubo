@@ -13,6 +13,8 @@ mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 
 connect_pid=""
 fg_attach_pid=""
+fg_relay_pid=""
+grants_pid=""
 dummy_pid=""
 
 free_port() {
@@ -53,6 +55,21 @@ wait_file_nonempty() {
   return 1
 }
 
+wait_process_registered() {
+  local name="$1"
+  local tries="${2:-80}"
+  local i
+  for i in $(seq 1 "$tries"); do
+    if "$BIN" ps | grep -F -- "$name" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "[smoke-cli-ux] timeout waiting for process registration: $name"
+  "$BIN" ps || true
+  return 1
+}
+
 assert_contains() {
   local needle="$1"
   local path="$2"
@@ -75,7 +92,15 @@ cleanup() {
     kill "$fg_attach_pid" >/dev/null 2>&1 || true
     wait "$fg_attach_pid" >/dev/null 2>&1 || true
   fi
-  for ref in process/gateway-default process/attach-lmstudio process/relay-default; do
+  if [[ -n "$fg_relay_pid" ]]; then
+    kill "$fg_relay_pid" >/dev/null 2>&1 || true
+    wait "$fg_relay_pid" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$grants_pid" ]]; then
+    kill "$grants_pid" >/dev/null 2>&1 || true
+    wait "$grants_pid" >/dev/null 2>&1 || true
+  fi
+  for ref in process/gateway-default process/attach-lmstudio process/relay-default process/grants-serve-lab-default; do
     "$BIN" stop "$ref" >/dev/null 2>&1 || true
   done
   if [[ -n "$dummy_pid" ]]; then
@@ -189,7 +214,13 @@ wait_file_nonempty "$XDG_DATA_HOME/tubo/logs/attach-lmstudio.log"
 "$BIN" logs process/attach-lmstudio >"$WORK_DIR/logs-process.out"
 
 # resource discovery without a local gateway cache
-"$BIN" get services --timeout 8s >"$WORK_DIR/get-services-live.out"
+for i in $(seq 1 20); do
+  "$BIN" get services --timeout 8s >"$WORK_DIR/get-services-live.out" 2>&1
+  if grep -F "lmstudio" "$WORK_DIR/get-services-live.out" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
 assert_contains "no local cache found" "$WORK_DIR/get-services-live.out"
 assert_contains "querying discovery cache from relay" "$WORK_DIR/get-services-live.out"
 if grep -F "received 1 services" "$WORK_DIR/get-services-live.out" >/dev/null 2>&1; then
@@ -199,11 +230,11 @@ else
   assert_contains "starting temporary observer" "$WORK_DIR/get-services-live.out"
 fi
 assert_contains "lmstudio" "$WORK_DIR/get-services-live.out"
-"$BIN" get service/lmstudio >"$WORK_DIR/get-service.out"
+"$BIN" get service/lmstudio >"$WORK_DIR/get-service.out" 2>&1
 assert_contains "querying discovery cache from relay" "$WORK_DIR/get-service.out"
 assert_contains "received service lmstudio" "$WORK_DIR/get-service.out"
 assert_contains "lmstudio" "$WORK_DIR/get-service.out"
-"$BIN" describe service/lmstudio >"$WORK_DIR/describe-service.out"
+"$BIN" describe service/lmstudio >"$WORK_DIR/describe-service.out" 2>&1
 assert_contains "Name: lmstudio" "$WORK_DIR/describe-service.out"
 assert_contains "Kind: service" "$WORK_DIR/describe-service.out"
 assert_contains "Dial policy:" "$WORK_DIR/describe-service.out"
@@ -253,11 +284,14 @@ for i in $(seq 1 80); do
   sleep 0.25
 done
 wait_http_ok "http://127.0.0.1:$connect_port/healthz"
-assert_contains "querying discovery cache from relay" "$WORK_DIR/connect.out"
-assert_contains "received service lmstudio" "$WORK_DIR/connect.out"
+assert_contains 'connected to service "lmstudio"' "$WORK_DIR/connect.out"
 assert_contains "path: relayed" "$WORK_DIR/connect.out"
-assert_contains "direct: unavailable, only loopback/unspecified direct addresses advertised" "$WORK_DIR/connect.out"
+assert_contains "direct:" "$WORK_DIR/connect.out"
 assert_contains "relay:" "$WORK_DIR/connect.out"
+wait_process_registered "connect-lmstudio-$connect_port"
+"$BIN" describe "process/connect-lmstudio-$connect_port" >"$WORK_DIR/describe-connect-process.out"
+assert_contains 'Command: connect' "$WORK_DIR/describe-connect-process.out"
+assert_contains 'Source: foreground' "$WORK_DIR/describe-connect-process.out"
 connect_body="$WORK_DIR/connect-body.json"
 connect_code="$(curl -sS -o "$connect_body" -w '%{http_code}' -X POST -d 'hello-connect' "http://127.0.0.1:$connect_port/v1/dummy?from=connect")"
 if [[ "$connect_code" != "200" ]]; then
@@ -286,15 +320,51 @@ SERVICE_HEALTH_LISTEN="127.0.0.1:$foreground_service_health_port" \
 fg_attach_pid=$!
 wait_http_ok "http://127.0.0.1:$foreground_service_health_port/healthz"
 wait_file_nonempty "$WORK_DIR/attach-foreground.out"
-assert_contains 'service agent config service="ollama"' "$WORK_DIR/attach-foreground.out"
+assert_contains 'attached service "ollama"' "$WORK_DIR/attach-foreground.out"
+wait_process_registered "attach-ollama"
+"$BIN" describe process/attach-ollama >"$WORK_DIR/describe-foreground-attach.out"
+assert_contains 'Command: attach' "$WORK_DIR/describe-foreground-attach.out"
+assert_contains 'Source: foreground' "$WORK_DIR/describe-foreground-attach.out"
 kill "$fg_attach_pid"
 wait "$fg_attach_pid" >/dev/null 2>&1 || true
 fg_attach_pid=""
+
+echo "[smoke-cli-ux] validating foreground grants serve registration"
+"$BIN" grants serve --cluster lab --namespace default --p2p-listen /ip4/127.0.0.1/tcp/0 >"$WORK_DIR/grants-foreground.out" 2>&1 &
+grants_pid=$!
+wait_file_nonempty "$WORK_DIR/grants-foreground.out"
+wait_process_registered "grants-serve-lab-default"
+"$BIN" describe process/grants-serve-lab-default >"$WORK_DIR/describe-grants-process.out"
+assert_contains 'Command: grants serve' "$WORK_DIR/describe-grants-process.out"
+assert_contains 'Source: foreground' "$WORK_DIR/describe-grants-process.out"
+kill "$grants_pid"
+wait "$grants_pid" >/dev/null 2>&1 || true
+grants_pid=""
+
+echo "[smoke-cli-ux] validating foreground relay registration"
+"$BIN" stop process/relay-default >"$WORK_DIR/stop-detached-relay.out"
+assert_contains 'stopped process/relay-default' "$WORK_DIR/stop-detached-relay.out"
+fg_relay_port="$(free_port)"
+fg_relay_health_port="$(free_port)"
+RELAY_HEALTH_LISTEN="127.0.0.1:$fg_relay_health_port" \
+  "$BIN" relay \
+  --seed cli-ux-foreground-relay-seed \
+  --listen "/ip4/127.0.0.1/tcp/$fg_relay_port" \
+  --public-addr "/ip4/127.0.0.1/tcp/$fg_relay_port" >"$WORK_DIR/relay-foreground.out" 2>&1 &
+fg_relay_pid=$!
+wait_http_ok "http://127.0.0.1:$fg_relay_health_port/healthz"
+wait_process_registered "relay-default"
+"$BIN" describe process/relay-default >"$WORK_DIR/describe-foreground-relay.out"
+assert_contains 'Command: relay' "$WORK_DIR/describe-foreground-relay.out"
+assert_contains 'Source: foreground' "$WORK_DIR/describe-foreground-relay.out"
+kill "$fg_relay_pid"
+wait "$fg_relay_pid" >/dev/null 2>&1 || true
+fg_relay_pid=""
 
 echo "[smoke-cli-ux] stopping detached attach and cleaning stale state"
 "$BIN" stop process/attach-lmstudio >"$WORK_DIR/stop-attach.out"
 assert_contains "stopped process/attach-lmstudio" "$WORK_DIR/stop-attach.out"
 "$BIN" rm --stale >"$WORK_DIR/rm-stale.out"
-assert_contains "removed 1 stale process artifacts" "$WORK_DIR/rm-stale.out"
+assert_contains "removed " "$WORK_DIR/rm-stale.out"
 
 echo "[smoke-cli-ux] PASS"

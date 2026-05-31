@@ -41,6 +41,9 @@ func startDetachedProcessWithTimeout(spec detachedSpec, timeout time.Duration) (
 }
 
 func registerCurrentProcess(state detachedProcessState) (detachedProcessState, func() error, error) {
+	if os.Getenv("TUBO_DETACHED_CHILD") == "1" {
+		return state, nil, nil
+	}
 	state.CommandLine = append([]string(nil), os.Args...)
 	state.Source = runtimeProcessSource()
 	registered, cleanup, err := processes.RegisterCurrentProcess(defaultTuboDataDir(), state, processSystemAdapter{})
