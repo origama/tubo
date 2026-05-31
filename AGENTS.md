@@ -26,8 +26,6 @@ Componenti funzionanti:
 
 Gap noti:
 
-- allowlist PeerID enforcement completo solo sul relay (non ancora esteso end-to-end a tutti i binari);
-- binding `ServiceName -> PeerID` non ancora enforced end-to-end;
 - AutoNAT/hole punching non completi;
 - diagnostica reachability avanzata non ancora completa.
 
@@ -36,21 +34,22 @@ Gap noti:
 ### 3.1 Prima di iniziare
 
 1. Leggere questo `AGENTS.md`.
-2. Leggere `TASKS.md`.
-3. Leggere la documentazione rilevante in `docs/`.
-4. Se il lavoro tocca release, compatibilita' o protocollo, leggere `docs/VERSIONING.md`.
-5. Aggiornare `TASKS.md` segnando il task come `⏳ In progress` (o aggiungendolo se manca).
+2. Leggere la GitHub issue assegnata e le issue collegate.
+3. Verificare lo stato reale del codice sul branch corrente.
+4. Leggere la documentazione rilevante in `docs/`.
+5. Se il lavoro tocca release, compatibilita' o protocollo, leggere `docs/VERSIONING.md`.
+6. Se trovi lavoro non tracciato, apri o aggiorna una GitHub issue invece di usare tracker locali.
 
 ### 3.2 Durante il lavoro
 
 1. Se cambia comportamento/config/interfaccia, aggiornare **subito** la documentazione in `docs/`.
 2. Mantenere coerenza tra codice, env vars e runbook operativi.
-3. Non lasciare TODO non tracciati fuori da `TASKS.md`.
+3. Non lasciare TODO operativi non tracciati: devono avere una GitHub issue o essere risolti nel PR.
 
 ### 3.3 Prima di chiudere
 
 1. Eseguire i gate di verifica correnti.
-2. Aggiornare `TASKS.md` (stato, note, timestamp).
+2. Aggiornare la GitHub issue con stato, evidenza, test eseguiti e follow-up.
 3. Aggiornare docs toccate dal cambiamento.
 
 ## 4) Gate di completion correnti (obbligatori)
@@ -69,8 +68,8 @@ Regole:
 
 1. La documentazione tecnica vive in `docs/`.
 2. `docs/README.md` e' l'indice canonico della documentazione.
-3. I file doc in root (`ARCHITECTURE.md`, `PROTOCOL.md`, `SECURITY.md`) devono essere solo redirect sintetici verso `docs/`.
-4. Qualsiasi cambio implementativo deve riflettersi nella doc rilevante nello stesso PR/commit.
+3. Qualsiasi cambio implementativo deve riflettersi nella doc rilevante nello stesso PR/commit.
+4. I documenti sotto `docs/obsoletes/` sono storico non canonico e non devono guidare implementazioni nuove.
 
 ## 6) Runbook operativo canonico
 
@@ -92,11 +91,16 @@ In particolare:
 
 ## 7) Task tracking
 
-`TASKS.md` e' la fonte unica dello stato progetto:
+GitHub Issues sono la fonte canonica per:
 
-- nessun task operativo fuori da `TASKS.md`;
-- aggiornamento obbligatorio ad ogni avanzamento rilevante;
-- se cambia priorita', aggiornare la sezione "Next Priority".
+- stato del lavoro;
+- scope implementativo;
+- acceptance criteria;
+- priorita';
+- evidenza di verifica;
+- follow-up.
+
+Non usare file locali come tracker paralleli. Lo storico migrato dal vecchio tracker e' conservato in #180 solo come snapshot di migrazione.
 
 ## 8) GitHub issue / PR labels
 
