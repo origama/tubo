@@ -12,7 +12,9 @@ export XDG_DATA_HOME="$WORK_DIR/data"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 
 connect_pid=""
+detached_connect_ref=""
 fg_attach_pid=""
+fg_gateway_pid=""
 fg_relay_pid=""
 grants_pid=""
 dummy_pid=""
@@ -92,6 +94,10 @@ cleanup() {
     kill "$fg_attach_pid" >/dev/null 2>&1 || true
     wait "$fg_attach_pid" >/dev/null 2>&1 || true
   fi
+  if [[ -n "$fg_gateway_pid" ]]; then
+    kill "$fg_gateway_pid" >/dev/null 2>&1 || true
+    wait "$fg_gateway_pid" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$fg_relay_pid" ]]; then
     kill "$fg_relay_pid" >/dev/null 2>&1 || true
     wait "$fg_relay_pid" >/dev/null 2>&1 || true
@@ -103,6 +109,9 @@ cleanup() {
   for ref in process/gateway-default process/attach-lmstudio process/relay-default process/grants-serve-lab-default; do
     "$BIN" stop "$ref" >/dev/null 2>&1 || true
   done
+  if [[ -n "$detached_connect_ref" ]]; then
+    "$BIN" stop "$detached_connect_ref" >/dev/null 2>&1 || true
+  fi
   if [[ -n "$dummy_pid" ]]; then
     kill "$dummy_pid" >/dev/null 2>&1 || true
     wait "$dummy_pid" >/dev/null 2>&1 || true
@@ -128,6 +137,7 @@ foreground_service_health_port="$(free_port)"
 gateway_port="$(free_port)"
 gateway_admin_port="$(free_port)"
 connect_port="$(free_port)"
+detached_connect_port="$(free_port)"
 relay_seed="cli-ux-relay-seed"
 relay_id="$("$BIN" id from-seed "$relay_seed" | tr -d '\n')"
 relay_addr="/ip4/127.0.0.1/tcp/$relay_port/p2p/$relay_id"
@@ -302,6 +312,31 @@ fi
 assert_contains '"instance":"lmstudio"' "$connect_body"
 assert_contains '"raw_query":"from=connect"' "$connect_body"
 
+echo "[smoke-cli-ux] minting detached-connect share invite"
+"$BIN" share service/lmstudio --json >"$WORK_DIR/share-service-detached.json"
+detached_share_token="$(python3 - "$WORK_DIR/share-service-detached.json" <<'PY'
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as f:
+    payload = json.load(f)
+print(payload['token'])
+PY
+)"
+
+echo "[smoke-cli-ux] starting detached connect command"
+"$BIN" connect --token "$detached_share_token" --local "127.0.0.1:$detached_connect_port" -d >"$WORK_DIR/connect-detached.out"
+detached_connect_ref="process/connect-lmstudio-$detached_connect_port"
+assert_contains "$detached_connect_ref" "$WORK_DIR/connect-detached.out"
+wait_http_ok "http://127.0.0.1:$detached_connect_port/healthz"
+wait_process_registered "connect-lmstudio-$detached_connect_port"
+detached_connect_body="$WORK_DIR/connect-detached-body.json"
+detached_connect_code="$(curl -sS -o "$detached_connect_body" -w '%{http_code}' -X POST -d 'hello-connect-detached' "http://127.0.0.1:$detached_connect_port/v1/dummy?from=connect-detached")"
+if [[ "$detached_connect_code" != "200" ]]; then
+  echo "[smoke-cli-ux] expected HTTP 200 via detached connect, got $detached_connect_code"
+  cat "$detached_connect_body" || true
+  exit 1
+fi
+assert_contains '"raw_query":"from=connect-detached"' "$detached_connect_body"
+
 echo "[smoke-cli-ux] starting detached gateway"
 "$BIN" gateway --listen "127.0.0.1:$gateway_port" --admin-listen "127.0.0.1:$gateway_admin_port" -d >"$WORK_DIR/gateway.out"
 assert_contains "gateway running" "$WORK_DIR/gateway.out"
@@ -341,11 +376,29 @@ kill "$grants_pid"
 wait "$grants_pid" >/dev/null 2>&1 || true
 grants_pid=""
 
+echo "[smoke-cli-ux] validating foreground gateway registration"
+"$BIN" stop process/gateway-default >"$WORK_DIR/stop-detached-gateway.out"
+assert_contains 'stopped process/gateway-default' "$WORK_DIR/stop-detached-gateway.out"
+FG_GATEWAY_PORT="$(free_port)"
+FG_GATEWAY_ADMIN_PORT="$(free_port)"
+"$BIN" gateway --listen "127.0.0.1:$FG_GATEWAY_PORT" --admin-listen "127.0.0.1:$FG_GATEWAY_ADMIN_PORT" >"$WORK_DIR/gateway-foreground.out" 2>&1 &
+fg_gateway_pid=$!
+wait_http_ok "http://127.0.0.1:$FG_GATEWAY_ADMIN_PORT/healthz"
+wait_http_ok "http://127.0.0.1:$FG_GATEWAY_PORT/healthz"
+wait_process_registered "gateway-default"
+"$BIN" describe process/gateway-default >"$WORK_DIR/describe-foreground-gateway.out"
+assert_contains 'Command: gateway' "$WORK_DIR/describe-foreground-gateway.out"
+assert_contains 'Source: foreground' "$WORK_DIR/describe-foreground-gateway.out"
+kill "$fg_gateway_pid"
+wait "$fg_gateway_pid" >/dev/null 2>&1 || true
+fg_gateway_pid=""
+
 echo "[smoke-cli-ux] validating foreground relay registration"
 "$BIN" stop process/relay-default >"$WORK_DIR/stop-detached-relay.out"
 assert_contains 'stopped process/relay-default' "$WORK_DIR/stop-detached-relay.out"
 fg_relay_port="$(free_port)"
 fg_relay_health_port="$(free_port)"
+INVOCATION_ID="cli-ux-systemd-relay" \
 RELAY_HEALTH_LISTEN="127.0.0.1:$fg_relay_health_port" \
   "$BIN" relay \
   --seed cli-ux-foreground-relay-seed \
@@ -356,7 +409,7 @@ wait_http_ok "http://127.0.0.1:$fg_relay_health_port/healthz"
 wait_process_registered "relay-default"
 "$BIN" describe process/relay-default >"$WORK_DIR/describe-foreground-relay.out"
 assert_contains 'Command: relay' "$WORK_DIR/describe-foreground-relay.out"
-assert_contains 'Source: foreground' "$WORK_DIR/describe-foreground-relay.out"
+assert_contains 'Source: systemd' "$WORK_DIR/describe-foreground-relay.out"
 kill "$fg_relay_pid"
 wait "$fg_relay_pid" >/dev/null 2>&1 || true
 fg_relay_pid=""
@@ -364,6 +417,11 @@ fg_relay_pid=""
 echo "[smoke-cli-ux] stopping detached attach and cleaning stale state"
 "$BIN" stop process/attach-lmstudio >"$WORK_DIR/stop-attach.out"
 assert_contains "stopped process/attach-lmstudio" "$WORK_DIR/stop-attach.out"
+if [[ -n "$detached_connect_ref" ]]; then
+  "$BIN" stop "$detached_connect_ref" >"$WORK_DIR/stop-connect-detached.out"
+  assert_contains "stopped $detached_connect_ref" "$WORK_DIR/stop-connect-detached.out"
+  detached_connect_ref=""
+fi
 "$BIN" rm --stale >"$WORK_DIR/rm-stale.out"
 assert_contains "removed " "$WORK_DIR/rm-stale.out"
 
