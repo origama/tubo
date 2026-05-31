@@ -68,7 +68,7 @@ Comando:
 ./tests/smoke-compose-tubo.sh
 ```
 
-Lo script genera `generated/tubo-smoke/*.yaml`, avvia `docker-compose.tubo.yml`, attende health/discovery/route e fa una richiesta end-to-end via edge.
+Lo script genera `generated/tubo-smoke/*.yaml`, avvia `tests/e2e/compose/tubo/compose.yml`, attende health/discovery/route e fa una richiesta end-to-end via edge.
 
 ## Smoke E2E Relay/NAT-like (Docker Compose con reti isolate)
 
@@ -208,7 +208,7 @@ Copre:
 - streaming request/response large body
 - lease expiry con rimozione route
 - stripping header hop-by-hop
-- relay fallback tra reti Docker isolate (`docker-compose.nat.yml`)
+- relay fallback tra reti Docker isolate (`tests/e2e/compose/relay-nat/compose.yml`)
 
 Esecuzione:
 

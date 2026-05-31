@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-COMPOSE_FILE = ROOT / "docker-compose.nat.yml"
+COMPOSE_FILE = ROOT / "tests/e2e/compose/relay-nat/compose.yml"
 OUT_FILE = ROOT / "tests" / "perf" / "nat-relay-performance-report.html"
 COMPOSE_ENV = {
     **os.environ,
@@ -672,7 +672,7 @@ function renderScenario(id) {{
 }}
 
 function init() {{
-  el('meta').textContent = `Generated: ${{REPORT.generated_at}} • Commit context: working tree • Compose file: docker-compose.nat.yml`;
+  el('meta').textContent = `Generated: ${{REPORT.generated_at}} • Commit context: working tree • Compose file: tests/e2e/compose/relay-nat/compose.yml`;
   const top = REPORT.overall;
   el('topCards').innerHTML = [
     card('Scenarios executed', String(REPORT.scenarios.length), 'ok'),

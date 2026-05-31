@@ -201,7 +201,7 @@ func TestHopByHopHeadersStrippedE2E(t *testing.T) {
 }
 
 func TestRelayFallbackAcrossIsolatedNetworks(t *testing.T) {
-	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack := newIntegrationStackWithFiles(t, "tests/e2e/compose/relay-nat/compose.yml")
 	stack.waitBaseReady(t)
 
 	status, body := edgeRequest(t, "GET", "/v1/dummy?from=relay-nat", "myapi", nil, nil, 45*time.Second)
@@ -264,7 +264,7 @@ func (s stressSummary) describeFailures() string {
 }
 
 func TestRelayNATMixedTrafficStress(t *testing.T) {
-	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack := newIntegrationStackWithFiles(t, "tests/e2e/compose/relay-nat/compose.yml")
 	stack.waitBaseReady(t)
 
 	largeBody := bytes.Repeat([]byte("L"), 512*1024)
@@ -363,7 +363,7 @@ func TestRelayNATMixedTrafficStress(t *testing.T) {
 }
 
 func TestRelayNATTrafficRecoversAfterRelayRestart(t *testing.T) {
-	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack := newIntegrationStackWithFiles(t, "tests/e2e/compose/relay-nat/compose.yml")
 	stack.waitBaseReady(t)
 
 	status, _ := edgeRequest(t, "GET", "/v1/dummy?from=pre-relay-restart", "myapi", nil, nil, 20*time.Second)
@@ -413,7 +413,7 @@ func TestRelayNATTrafficRecoversAfterRelayRestart(t *testing.T) {
 }
 
 func TestRelayNATTrafficRecoversAfterEdgeRestartFollowingRelayDisruption(t *testing.T) {
-	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack := newIntegrationStackWithFiles(t, "tests/e2e/compose/relay-nat/compose.yml")
 	stack.waitBaseReady(t)
 
 	status, _ := edgeRequest(t, "GET", "/v1/dummy?from=pre-edge-restart", "myapi", nil, nil, 20*time.Second)
@@ -471,7 +471,7 @@ func TestRelayNATTrafficRecoversAfterEdgeRestartFollowingRelayDisruption(t *test
 }
 
 func TestRelayNATTrafficDuringServiceRestart(t *testing.T) {
-	stack := newIntegrationStackWithFiles(t, "docker-compose.nat.yml")
+	stack := newIntegrationStackWithFiles(t, "tests/e2e/compose/relay-nat/compose.yml")
 	stack.waitBaseReady(t)
 
 	stopAt := time.Now().Add(25 * time.Second)
@@ -555,8 +555,8 @@ func newIntegrationStackWithFiles(t *testing.T, composeFiles ...string) *integra
 	}
 	repoRoot := filepath.Clean(filepath.Join(wd, "../.."))
 	stack := &integrationStack{repoRoot: repoRoot, composeFiles: composeFiles}
-	if stack.usesComposeFile("docker-compose.nat.yml") {
-		t.Skip("docker-compose.nat.yml integration is skipped while isolated-network discovery is unsupported without legacy swarm discovery")
+	if stack.usesComposeFile("tests/e2e/compose/relay-nat/compose.yml") {
+		t.Skip("tests/e2e/compose/relay-nat/compose.yml integration is skipped while isolated-network discovery is unsupported without legacy swarm discovery")
 	}
 
 	if err := prepareIntegrationComposeConfig(repoRoot); err != nil {
@@ -956,7 +956,7 @@ func (s *integrationStack) waitBaseReady(t *testing.T) {
 		return false
 	}, "discovery+route readiness")
 
-	if s.usesComposeFile("docker-compose.nat.yml") {
+	if s.usesComposeFile("tests/e2e/compose/relay-nat/compose.yml") {
 		waitUntil(t, 60*time.Second, func() bool {
 			debugPeer, err := s.serviceDebugPeer()
 			if err != nil {

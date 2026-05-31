@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-COMPOSE="${COMPOSE_CMD:-docker compose -f docker-compose.nat.yml}"
+COMPOSE="${COMPOSE_CMD:-docker compose -f tests/e2e/compose/relay-nat/compose.yml}"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 
