@@ -1,41 +1,57 @@
 # Docs
 
-Canonical policy: tutta la documentazione tecnica vive in `docs/`.
+Canonical policy: tutta la documentazione tecnica vive in `docs/`, separata per categoria.
 
 Il sito pubblico con documentazione navigabile è su **[www.tubo.click/docs/](https://www.tubo.click/docs/)**.
-
-## Project tracking
 
 Project work, planning, implementation scope, and acceptance criteria are tracked in **GitHub Issues**.
 
 Historical tracker items that still needed migration were captured in issue #180 before removing the old local tracker.
 
-## Documentazione disponibile
+## Layout canonico
 
-### Guide operative
+- `reference/` — riferimenti tecnici canonici
+- `runbooks/` — guide operative e runbook
+- `reports/` — report e campagne a tempo
+- `comparisons/` — note comparative
+- `archive/obsoletes/` — materiale storico o superato
+- `docs/` — HTML pubblicato/compatibilità URL
+- root assets: `index.html`, `CNAME`, `install.sh`, `.well-known/`, `.nojekyll`
 
-- [`cli.md`](./cli.md) — Riferimento completo CLI: tutti i comandi, flag, env vars, config YAML, flussi cluster/namespace
-- [`OPERABILITY.md`](./OPERABILITY.md) — Runbook operativo: avvio relay/attach/connect, private swarm PSK, setup multi-host
-- [`PROCESS_SUPERVISORS.md`](./PROCESS_SUPERVISORS.md) — Integrazione con systemd/launchd per processi long-running
-- [`discovery-multi-host.md`](./discovery-multi-host.md) — Discovery V2 as-is + runbook pratico multi-host
+## Documentazione canonica
 
-### Protocollo e sicurezza
+### Reference
 
-- [`PROTOCOL.md`](./PROTOCOL.md) — Wire protocol specification (binary framing, frame types, streaming, versioning)
-- [`SECURITY.md`](./SECURITY.md) — Security policy corrente, limiti operativi, regole di trust
-- [`security-model-0.7.md`](./security-model-0.7.md) — Security model v0.7: garanzie, non-goal, trust chain per ID-first discovery
+- [`reference/PROTOCOL.md`](./reference/PROTOCOL.md) — Wire protocol specification (binary framing, messages, streaming)
+- [`reference/SECURITY.md`](./reference/SECURITY.md) — Current security policy, current limits, and links to the next security model
+- [`reference/security-model-0.7.md`](./reference/security-model-0.7.md) — Canonical 0.7.0.b0 security/trust model, guarantees, and non-goals for ID-first discovery and scoped trust
+- [`reference/VERSIONING.md`](./reference/VERSIONING.md) — Policy di versioning prodotto/protocollo e compatibilita' tra ruoli
+- [`reference/cli.md`](./reference/cli.md) — CLI reference per `tubo`, YAML config e flussi locali/join
 
-### Versioning e release
+### Runbooks
 
-- [`VERSIONING.md`](./VERSIONING.md) — Policy di versioning prodotto/protocollo e compatibilità tra ruoli
-- [`RELEASING.md`](./RELEASING.md) — Checklist manuale per tag, changelog e GitHub Release
+- [`runbooks/OPERABILITY.md`](./runbooks/OPERABILITY.md) — Avvio componenti e runbook pratico per tunnel p2p (anche sicuro/private swarm) tra 2+ servizi
+- [`runbooks/PROCESS_SUPERVISORS.md`](./runbooks/PROCESS_SUPERVISORS.md) — Strategia consigliata per systemd/launchd senza introdurre un demone centrale
+- [`runbooks/discovery-multi-host.md`](./runbooks/discovery-multi-host.md) — Discovery as-is + practical multi-host runbook (LM Studio laptop <-> Hermes Linode)
+- [`runbooks/LINODE_TERRAFORM_TESTBENCH.md`](./runbooks/LINODE_TERRAFORM_TESTBENCH.md) — Terraform stack + smoke harness per bench distribuito Linode multi-region
+- [`runbooks/RELEASING.md`](./runbooks/RELEASING.md) — Checklist manuale per tag, changelog e GitHub Release
 
-### Testing e infrastruttura
+### Reports
 
-- [`LINODE_TERRAFORM_TESTBENCH.md`](./LINODE_TERRAFORM_TESTBENCH.md) — Terraform stack + smoke harness per bench distribuito Linode multi-region
-- [`FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md`](./FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md) — Report failure campaign sul bench distribuito a 2 macchine
-- [`COMPARISON-TUNNELING-PROJECTS.md`](./COMPARISON-TUNNELING-PROJECTS.md) — Confronto con ngrok, Tailscale, Cloudflare Tunnel, frp
+- [`reports/FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md`](./reports/FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md) — Report della failure campaign sul bench distribuito a 2 macchine
 
-### Storico
+### Comparisons
 
-- [`obsoletes/README.md`](./obsoletes/README.md) — Design notes superseded dai documenti canonici correnti
+- [`comparisons/COMPARISON-TUNNELING-PROJECTS.md`](./comparisons/COMPARISON-TUNNELING-PROJECTS.md)
+
+### Archive
+
+- [`archive/obsoletes/README.md`](./archive/obsoletes/README.md) — Historical design notes superseded by the current canonical documents
+
+## Compatibility notes
+
+The legacy top-level markdown paths are kept as thin compatibility stubs for external links; new work should link the canonical paths above.
+
+## Planned documents
+
+- `testing.md` — Test strategy and fixtures (*coming soon*)

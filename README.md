@@ -223,16 +223,15 @@ Key environment variables:
 
 ## Documentation
 
-Full documentation is at **[www.tubo.click/docs/](https://www.tubo.click/docs/)**.
-
-Key references in this repository:
-
-- [docs/cli.md](./docs/cli.md) — full CLI reference
-- [docs/OPERABILITY.md](./docs/OPERABILITY.md) — operational runbook (relay setup, multi-host, private swarm)
-- [docs/security-model-0.7.md](./docs/security-model-0.7.md) — security model and trust chain
-- [docs/VERSIONING.md](./docs/VERSIONING.md) — versioning and compatibility policy
-- [docs/RELEASING.md](./docs/RELEASING.md) — release process
-- [CHANGELOG.md](./CHANGELOG.md) — release history
+- [Docs index](./docs/README.md)
+- [Docs site](https://www.tubo.click/docs/)
+- [CLI guide](./docs/reference/cli.md)
+- [Operational runbook](./docs/runbooks/OPERABILITY.md)
+- [Security notes](./docs/reference/SECURITY.md)
+- [Security model 0.7](./docs/reference/security-model-0.7.md)
+- [Protocol notes](./docs/reference/PROTOCOL.md)
+- [Release process](./docs/runbooks/RELEASING.md)
+- [CHANGELOG.md](./CHANGELOG.md)
 
 ## For coding agents
 
@@ -240,4 +239,4 @@ Start here before making code changes:
 
 - [AGENTS.md](./AGENTS.md)
 - the assigned GitHub Issue and linked subissues
-- [docs/VERSIONING.md](./docs/VERSIONING.md) when touching protocol, release, or compatibility behavior
+- [docs/reference/VERSIONING.md](./docs/reference/VERSIONING.md) when touching release, protocol, or compatibility behavior

@@ -37,7 +37,7 @@ Gap noti:
 2. Leggere la GitHub issue assegnata e le issue collegate.
 3. Verificare lo stato reale del codice sul branch corrente.
 4. Leggere la documentazione rilevante in `docs/`.
-5. Se il lavoro tocca release, compatibilita' o protocollo, leggere `docs/VERSIONING.md`.
+5. Se il lavoro tocca release, compatibilita' o protocollo, leggere `docs/reference/VERSIONING.md`.
 6. Se trovi lavoro non tracciato, apri o aggiorna una GitHub issue invece di usare tracker locali.
 
 ### 3.2 Durante il lavoro
@@ -69,17 +69,17 @@ Regole:
 1. La documentazione tecnica vive in `docs/`.
 2. `docs/README.md` e' l'indice canonico della documentazione.
 3. Qualsiasi cambio implementativo deve riflettersi nella doc rilevante nello stesso PR/commit.
-4. I documenti sotto `docs/obsoletes/` sono storico non canonico e non devono guidare implementazioni nuove.
+4. I documenti storici/superati stanno in `docs/archive/obsoletes/`; i vecchi stub compatibili sotto `docs/obsoletes/` non sono canonici e non devono guidare implementazioni nuove.
 
 ## 6) Runbook operativo canonico
 
 Per avvio componenti e creazione tunnel p2p sicuro tra 2+ servizi, riferimento unico:
 
-- `docs/OPERABILITY.md`
+- `docs/runbooks/OPERABILITY.md`
 
 Per policy di versioning e compatibilita' tra ruoli/nodi:
 
-- `docs/VERSIONING.md`
+- `docs/reference/VERSIONING.md`
 
 In particolare:
 
@@ -89,7 +89,7 @@ In particolare:
 - verifica discovery/routes/proxy end-to-end;
 - limitazioni attuali e troubleshooting.
 
-## 7) Task tracking
+## 7) Workflow di progetto
 
 GitHub Issues sono la fonte canonica per:
 
