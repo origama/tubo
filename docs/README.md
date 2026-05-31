@@ -4,6 +4,12 @@ Canonical policy: tutta la documentazione tecnica vive in `docs/`.
 
 Il sito pubblico con documentazione navigabile è su **[www.tubo.click/docs/](https://www.tubo.click/docs/)**.
 
+## Project tracking
+
+Project work, planning, implementation scope, and acceptance criteria are tracked in **GitHub Issues**.
+
+`TASKS.md` is not a canonical tracker. Historical items that still needed migration were captured in issue #180 before removing the file.
+
 ## Documentazione disponibile
 
 ### Guide operative
