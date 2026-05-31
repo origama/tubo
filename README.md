@@ -239,5 +239,5 @@ Key references in this repository:
 Start here before making code changes:
 
 - [AGENTS.md](./AGENTS.md)
-- [TASKS.md](./TASKS.md)
-- [docs/VERSIONING.md](./docs/VERSIONING.md)
+- the assigned GitHub Issue and linked subissues
+- [docs/VERSIONING.md](./docs/VERSIONING.md) when touching protocol, release, or compatibility behavior
