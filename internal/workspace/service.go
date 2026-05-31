@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -222,8 +223,19 @@ func (w *Workspace) ensureServiceState(configPath string, cfg cfgpkg.Config, ser
 		svc.ServiceSeed = seed
 		changed = true
 	}
-	if _, err := p2p.PeerIDFromSeed(svc.ServiceSeed); err != nil {
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
 		return cfg, ServiceContext{}, false, false, fmt.Errorf("service %q has invalid service_seed: %w", serviceName, err)
+	}
+	// Check if existing lease file has a mismatched PeerID and remove stale artifacts
+	if svc.ServicePublishLeaseFile != "" {
+		if leasePeerID, _ := readLeasePublisherPeerID(w.store, svc.ServicePublishLeaseFile); leasePeerID != "" && leasePeerID != servicePeerID.String() {
+			_ = w.store.Remove(svc.ServicePublishLeaseFile)
+			if svc.ServiceClaimFile != "" {
+				_ = w.store.Remove(svc.ServiceClaimFile)
+			}
+			changed = true
+		}
 	}
 	if svc.ServiceClaimFile == "" {
 		svc.ServiceClaimFile = paths.ServiceClaim(cfg.CurrentCluster, cfg.CurrentNamespace, serviceName)
@@ -360,4 +372,20 @@ func serviceShareTTL() time.Duration {
 		}
 	}
 	return grantspkg.ServiceShareDefaultTTL
+}
+
+// readLeasePublisherPeerID extracts the publisher_peer_id from a lease file.
+// Returns empty string if the file doesn't exist or can't be parsed.
+func readLeasePublisherPeerID(store Store, path string) (string, error) {
+	data, err := store.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var lease struct {
+		PublisherPeerID string `json:"publisher_peer_id"`
+	}
+	if err := json.Unmarshal(data, &lease); err != nil {
+		return "", err
+	}
+	return lease.PublisherPeerID, nil
 }
