@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 COMPOSE="${COMPOSE_CMD:-docker compose -f tests/e2e/compose/private-overlay-multi-service/compose.yml}"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
+export TUBO_REPO_ROOT="$ROOT_DIR"
 
 PRIVATE_NETWORK_KEY_B64="MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
 

@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RESULTS_ROOT = ROOT / "tests" / "perf" / "results"
-COMPOSE_FILE = ROOT / "tests/e2e/compose/relay-nat/compose.yml"
+COMPOSE_FILE = ROOT / "tests/archive/compose/relay-nat/compose.yml"
 
 COMPOSE_ENV = {
     **os.environ,

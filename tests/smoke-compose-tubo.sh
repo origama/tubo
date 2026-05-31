@@ -7,6 +7,10 @@ cd "$ROOT_DIR"
 COMPOSE="${COMPOSE_CMD:-docker compose} -f tests/e2e/compose/tubo/compose.yml"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
+export TUBO_REPO_ROOT="$ROOT_DIR"
+
+GO_TEST="${GO_TEST_CMD:-go test}"
+$GO_TEST ./tests/integration -run '^TestPrepareIntegrationComposeConfig$' -count=1 >/dev/null
 
 cleanup() {
   $COMPOSE down --remove-orphans >/dev/null 2>&1 || true
@@ -25,61 +29,6 @@ wait_http_ok() {
   done
   return 1
 }
-
-mkdir -p generated/tubo-smoke
-
-relay_id="$(go run ./cmd/tubo id from-seed relay-demo-seed)"
-edge_id="$(go run ./cmd/tubo id from-seed edge-demo-seed)"
-relay_addr="/dns4/tubo-relay/tcp/4002/p2p/${relay_id}"
-edge_addr="/dns4/tubo-edge/tcp/4001/p2p/${edge_id}"
-
-cat > generated/tubo-smoke/relay.yaml <<YAML
-role: relay
-node:
-  seed: relay-demo-seed
-  p2p_listen: /ip4/0.0.0.0/tcp/4002
-relay:
-  health_listen: :8092
-  enable_relay_service: true
-  enable_autonat_service: true
-  enable_discovery_pubsub: true
-  force_reachability_public: true
-  print_run_commands: false
-YAML
-
-cat > generated/tubo-smoke/edge.yaml <<YAML
-role: edge
-node:
-  seed: edge-demo-seed
-  p2p_listen: /ip4/0.0.0.0/tcp/4001
-network:
-  relay_peers:
-    - ${relay_addr}
-edge:
-  listen: :8443
-  admin_listen: :8444
-  direct_stream_timeout: 750ms
-YAML
-
-cat > generated/tubo-smoke/service.yaml <<YAML
-role: service
-node:
-  seed: service-demo-seed
-  p2p_listen: /ip4/0.0.0.0/tcp/40123
-network:
-  bootstrap_peers:
-    - ${edge_addr}
-    - ${relay_addr}
-  relay_peers:
-    - ${relay_addr}
-  autorelay: true
-  hole_punching: true
-service:
-  name: myapi
-  target: http://tubo-dummy-api-server:8000
-health_listen: :8091
-heartbeat_interval: 5s
-YAML
 
 compose_build_serial() {
   if $COMPOSE build --help 2>/dev/null | grep -q -- "--no-parallel"; then

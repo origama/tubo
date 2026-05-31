@@ -7,6 +7,7 @@ cd "$ROOT_DIR"
 COMPOSE="${COMPOSE_CMD:-docker compose} -f tests/e2e/compose/tubo-workflow/compose.yml"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
+export TUBO_REPO_ROOT="$ROOT_DIR"
 
 BIN_DIR="$(mktemp -d "${ROOT_DIR}/.tmp-smoke-workflow-bin.XXXXXX")"
 TUBO_BIN="$BIN_DIR/tubo"

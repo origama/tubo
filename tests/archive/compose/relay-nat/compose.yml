@@ -2,11 +2,11 @@ services:
   relay:
     image: tubo:nat
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     command: ["relay", "--config", "/home/nonroot/.config/tubo/relay.yaml"]
     volumes:
-      - ./generated/integration/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/integration/tubo:/home/nonroot/.config/tubo:ro
     environment:
       ENABLE_RELAY_SERVICE: "true"
       ENABLE_AUTONAT_SERVICE: "true"
@@ -24,7 +24,7 @@ services:
   dummy-api-server:
     image: tubo-dummy-api-server:nat
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
@@ -41,13 +41,13 @@ services:
   edge:
     image: tubo:nat
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - relay
     command: ["gateway", "--config", "/home/nonroot/.config/tubo/edge.yaml"]
     volumes:
-      - ./generated/integration/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/integration/tubo:/home/nonroot/.config/tubo:ro
     ports:
       - "8443:8443"
       - "8444:8444"
@@ -57,7 +57,7 @@ services:
   service:
     image: tubo:nat
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - dummy-api-server
@@ -65,7 +65,7 @@ services:
       - relay
     command: ["attach", "--config", "/home/nonroot/.config/tubo/service.yaml"]
     volumes:
-      - ./generated/integration/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/integration/tubo:/home/nonroot/.config/tubo:ro
     environment:
       SERVICE_HEALTH_LISTEN: ":8091"
       ENABLE_AUTORELAY: "true"

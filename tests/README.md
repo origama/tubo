@@ -68,25 +68,15 @@ Comando:
 ./tests/smoke-compose-tubo.sh
 ```
 
-Lo script genera `generated/tubo-smoke/*.yaml`, avvia `tests/e2e/compose/tubo/compose.yml`, attende health/discovery/route e fa una richiesta end-to-end via edge.
+Lo script prepara `generated/integration/tubo/*.yaml`, avvia `tests/e2e/compose/tubo/compose.yml`, attende health/discovery/route e fa una richiesta end-to-end via edge.
 
-## Smoke E2E Relay/NAT-like (Docker Compose con reti isolate)
+## Archiviato: Relay/NAT-like (Docker Compose con reti isolate)
 
-Simula tre macchine logiche:
+Lo scenario relay-first su reti Docker isolate e' stato archiviato in:
 
-- `edge` su una rete privata dedicata
-- `service` + `dummy-api-server` su un'altra rete privata dedicata
-- `relay` collegato ad entrambe le reti
+- `tests/archive/compose/relay-nat/compose.yml`
 
-In questo scenario `edge` e `service` **non condividono una rete Docker**, quindi il direct dial non e' disponibile e il traffico deve passare via relay.
-
-Comando:
-
-```bash
-./tests/smoke-compose-relay-nat.sh
-```
-
-Il test verifica anche nei log dell'edge che il percorso usato sia `connection_path=relayed`.
+I benchmark/perf manuali che lo usano puntano a quell'archivio.
 
 ## Smoke E2E Private Overlay Multi-Service (Docker Compose con 3 service nodes)
 
@@ -208,7 +198,7 @@ Copre:
 - streaming request/response large body
 - lease expiry con rimozione route
 - stripping header hop-by-hop
-- relay fallback tra reti Docker isolate (`tests/e2e/compose/relay-nat/compose.yml`)
+- scenario relay-first archiviato (`tests/archive/compose/relay-nat/compose.yml`)
 
 Esecuzione:
 

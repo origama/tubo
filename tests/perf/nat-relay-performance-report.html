@@ -278,7 +278,7 @@ function renderScenario(id) {
 }
 
 function init() {
-  el('meta').textContent = `Generated: ${REPORT.generated_at} • Commit context: working tree • Compose file: tests/e2e/compose/relay-nat/compose.yml`;
+  el('meta').textContent = `Generated: ${REPORT.generated_at} • Commit context: working tree • Compose file: tests/archive/compose/relay-nat/compose.yml`;
   const top = REPORT.overall;
   el('topCards').innerHTML = [
     card('Scenarios executed', String(REPORT.scenarios.length), 'ok'),

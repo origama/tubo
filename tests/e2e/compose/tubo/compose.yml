@@ -1,51 +1,51 @@
 services:
-  tubo-relay:
+  relay:
     image: tubo:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
-    command: ["relay", "--config", "/etc/tubo/relay.yaml"]
+    command: ["relay", "--config", "/home/nonroot/.config/tubo/relay.yaml"]
     volumes:
-      - ./generated/tubo-smoke/relay.yaml:/etc/tubo/relay.yaml:ro
+      - ${TUBO_REPO_ROOT}/generated/integration/tubo:/home/nonroot/.config/tubo:ro
     ports:
       - "4002:4002"
       - "8092:8092"
 
-  tubo-dummy-api-server:
+  dummy-api-server:
     image: tubo-dummy-api-server:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
     ports:
       - "8000:8000"
 
-  tubo-edge:
+  edge:
     image: tubo:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
-    command: ["gateway", "--config", "/etc/tubo/edge.yaml"]
+    command: ["gateway", "--config", "/home/nonroot/.config/tubo/edge.yaml"]
     volumes:
-      - ./generated/tubo-smoke/edge.yaml:/etc/tubo/edge.yaml:ro
+      - ${TUBO_REPO_ROOT}/generated/integration/tubo:/home/nonroot/.config/tubo:ro
     ports:
       - "8443:8443"
       - "8444:8444"
       - "4001:4001"
 
-  tubo-service:
+  service:
     image: tubo:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
-      - tubo-dummy-api-server
-      - tubo-edge
-      - tubo-relay
-    command: ["attach", "--config", "/etc/tubo/service.yaml"]
+      - dummy-api-server
+      - edge
+      - relay
+    command: ["attach", "--config", "/home/nonroot/.config/tubo/service.yaml"]
     volumes:
-      - ./generated/tubo-smoke/service.yaml:/etc/tubo/service.yaml:ro
+      - ${TUBO_REPO_ROOT}/generated/integration/tubo:/home/nonroot/.config/tubo:ro
     ports:
       - "8091:8091"
       - "40123:40123"

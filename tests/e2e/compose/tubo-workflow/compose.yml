@@ -2,11 +2,11 @@ services:
   tubo-relay:
     image: tubo:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     command: ["relay", "--config", "/home/nonroot/.config/tubo/relay.yaml"]
     volumes:
-      - ./generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
     ports:
       - "4002:4002"
       - "8092:8092"
@@ -14,7 +14,7 @@ services:
   tubo-dummy-api-server:
     image: tubo-dummy-api-server:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
@@ -24,11 +24,11 @@ services:
   tubo-edge:
     image: tubo:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     command: ["gateway", "--config", "/home/nonroot/.config/tubo/edge.yaml"]
     volumes:
-      - ./generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
     ports:
       - "8443:8443"
       - "8444:8444"
@@ -37,7 +37,7 @@ services:
   tubo-service-a:
     image: tubo:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - tubo-dummy-api-server
@@ -45,7 +45,7 @@ services:
       - tubo-relay
     command: ["attach", "--config", "/home/nonroot/.config/tubo/service-tenant-a.yaml"]
     volumes:
-      - ./generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
     ports:
       - "8091:8091"
       - "40123:40123"
@@ -53,7 +53,7 @@ services:
   tubo-service-b:
     image: tubo:dev
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - tubo-dummy-api-server
@@ -61,7 +61,7 @@ services:
       - tubo-relay
     command: ["attach", "--config", "/home/nonroot/.config/tubo/service-tenant-b.yaml"]
     volumes:
-      - ./generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
     ports:
       - "8093:8093"
       - "40124:40124"

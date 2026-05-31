@@ -9,11 +9,11 @@ services:
   relay:
     image: tubo:private-multi
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     command: ["relay", "--listen", "/ip4/0.0.0.0/tcp/4002", "--seed", "relay-demo-seed"]
     volumes:
-      - ./generated/private-overlay-multi-service/relay.yaml:/home/nonroot/.config/tubo/config.yaml:ro
+      - ${TUBO_REPO_ROOT}/generated/private-overlay-multi-service/relay.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     environment:
       RELAY_HEALTH_LISTEN: ":8092"
       ENABLE_RELAY_SERVICE: "true"
@@ -33,7 +33,7 @@ services:
   edge:
     image: tubo:private-multi
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - relay
@@ -54,7 +54,7 @@ services:
     environment:
       LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
     volumes:
-      - ./generated/private-overlay-multi-service/edge.yaml:/home/nonroot/.config/tubo/config.yaml:ro
+      - ${TUBO_REPO_ROOT}/generated/private-overlay-multi-service/edge.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     ports:
       - "8443:8443"
       - "8444:8444"
@@ -72,7 +72,7 @@ services:
   dummy-api-server-one:
     image: tubo-dummy-api-server:private-multi
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
@@ -88,7 +88,7 @@ services:
   service-one:
     image: tubo:private-multi
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - dummy-api-server-one
@@ -117,14 +117,14 @@ services:
       FORCE_REACHABILITY_PRIVATE: "true"
       LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
     volumes:
-      - ./generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
+      - ${TUBO_REPO_ROOT}/generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     networks:
       - service-one-private
 
   dummy-api-server-two:
     image: tubo-dummy-api-server:private-multi
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
@@ -140,7 +140,7 @@ services:
   service-two:
     image: tubo:private-multi
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - dummy-api-server-two
@@ -169,14 +169,14 @@ services:
       FORCE_REACHABILITY_PRIVATE: "true"
       LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
     volumes:
-      - ./generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
+      - ${TUBO_REPO_ROOT}/generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     networks:
       - service-two-private
 
   dummy-api-server-three:
     image: tubo-dummy-api-server:private-multi
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.dummy-api-server
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
@@ -192,7 +192,7 @@ services:
   service-three:
     image: tubo:private-multi
     build:
-      context: .
+      context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
     depends_on:
       - dummy-api-server-three
@@ -221,7 +221,7 @@ services:
       FORCE_REACHABILITY_PRIVATE: "true"
       LIBP2P_PRIVATE_NETWORK_KEY_B64: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY="
     volumes:
-      - ./generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
+      - ${TUBO_REPO_ROOT}/generated/private-overlay-multi-service/service.yaml:/home/nonroot/.config/tubo/config.yaml:ro
     networks:
       - service-three-private
 
