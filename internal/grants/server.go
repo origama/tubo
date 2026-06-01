@@ -136,6 +136,7 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 		RequesterPeerID:       requester.String(),
 		ServiceName:           msg.ServiceName,
 		ServiceID:             msg.ServiceID,
+		ServiceKind:           NormalizeServiceShareKind(msg.ServiceKind),
 		ServicePublicKey:      msg.ServicePublicKey,
 		ServiceOwnerSignature: append([]byte(nil), msg.ServiceOwnerSignature...),
 		RequestNonce:          msg.RequestNonce,
@@ -173,7 +174,7 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 	if s.cfg.GrantServicePeersProvider != nil {
 		grantServicePeers = append([]string(nil), s.cfg.GrantServicePeersProvider()...)
 	}
-	artifacts, err := BuildApprovalArtifactsWithGrantService(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature, grantServicePeers, msg.ServiceAddresses)
+	artifacts, err := BuildApprovalArtifactsWithGrantService(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, s.cfg.ClusterID, s.cfg.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, req.ServiceKind, claimTTL, shareTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature, grantServicePeers, msg.ServiceAddresses)
 	if err == nil && s.cfg.Revocations != nil {
 		artifacts, err = s.applyRevocationEpochsToApproval(artifacts, req.ServiceID)
 	}
@@ -277,6 +278,7 @@ func (s *Server) handleShareMint(msg Message, requester peer.ID) Message {
 		ClusterID:             msg.ClusterID,
 		NamespaceID:           msg.NamespaceID,
 		ServiceID:             msg.ServiceID,
+		ServiceKind:           NormalizeServiceShareKind(msg.ServiceKind),
 		ServicePeerID:         msg.ServicePeerID,
 		ServiceAddresses:      append([]string(nil), msg.ServiceAddresses...),
 		RequestedTTLSeconds:   msg.RequestedTTLSeconds,
@@ -331,6 +333,9 @@ func (s *Server) handleShareMint(msg Message, requester peer.ID) Message {
 	}
 	artifacts, err := BuildShareInviteArtifactsFromLeaseWithEndpoints(s.cfg.AuthorityPrivateKey, s.cfg.ClusterName, request.PublishLease, firstNonEmpty(strings.TrimSpace(msg.ServiceName), request.ServiceID), shareTTL, grantServicePeers, request.ServicePeerID, serviceAddrs)
 	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
+	}
+	if artifacts.Token, err = ReissueServiceShareTokenWithKind(artifacts.Token, s.cfg.AuthorityPrivateKey, request.ServiceKind); err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
 	}
 	if artifacts.Token, err = s.applyRevocationEpochsToServiceShareToken(artifacts.Token, request.ServiceID); err != nil {
@@ -449,7 +454,7 @@ func Poll(ctx context.Context, h host.Host, info peer.AddrInfo, requestID string
 }
 
 func MintShareInvite(ctx context.Context, h host.Host, info peer.AddrInfo, req ShareMintRequest, displayNameHint string) (string, error) {
-	resp, err := Query(ctx, h, info, Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceName: displayNameHint, ServiceID: req.ServiceID, PublishLease: &req.PublishLease, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: req.ServicePeerID, ServiceAddresses: append([]string(nil), req.ServiceAddresses...), RequestedTTLSeconds: req.RequestedTTLSeconds, RequestNonce: req.RequestNonce, RequestIssuedAt: req.RequestIssuedAt})
+	resp, err := Query(ctx, h, info, Message{Type: TypeShareMintRequest, Version: VersionV1, ClusterID: req.ClusterID, NamespaceID: req.NamespaceID, ServiceName: displayNameHint, ServiceID: req.ServiceID, ServiceKind: NormalizeServiceShareKind(req.ServiceKind), PublishLease: &req.PublishLease, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: req.ServicePeerID, ServiceAddresses: append([]string(nil), req.ServiceAddresses...), RequestedTTLSeconds: req.RequestedTTLSeconds, RequestNonce: req.RequestNonce, RequestIssuedAt: req.RequestIssuedAt})
 	if err != nil {
 		return "", err
 	}

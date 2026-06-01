@@ -312,7 +312,7 @@ RELAY_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID> \
 ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
-go run ./cmd/tubo edge run
+go run ./cmd/tubo gateway
 ```
 
 ### 9.3 Service-agent laptop (LM Studio)
@@ -330,7 +330,7 @@ ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
-go run ./cmd/tubo service run
+go run ./cmd/tubo attach
 ```
 
 ## 10) Test di accettazione richiesti (target)
@@ -375,7 +375,7 @@ EDGE_LISTEN=:8443 \
 EDGE_ADMIN_LISTEN=127.0.0.1:8444 \
 EDGE_P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
 EDGE_SEED=edge-linode-seed \
-go run ./cmd/tubo edge run
+go run ./cmd/tubo gateway
 ```
 
 ### 12.2 Service-agent su laptop
@@ -387,7 +387,7 @@ NODE_SEED=laptop-lmstudio-seed \
 SERVICE_NAME=lmstudio \
 HEARTBEAT_INTERVAL=5s \
 BOOTSTRAP_PEERS=/ip4/<LINODE_PUBLIC_IP>/tcp/4001/p2p/<EDGE_PEER_ID> \
-go run ./cmd/tubo service run
+go run ./cmd/tubo attach
 ```
 
 ### 12.3 Query da Hermes

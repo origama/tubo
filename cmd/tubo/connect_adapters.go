@@ -16,15 +16,16 @@ type connectAttempt = connectflow.Attempt
 type connectCandidate = connectflow.Candidate
 
 type connectResult struct {
-	Service   string           `json:"service"`
-	ServiceID string           `json:"service_id,omitempty"`
-	Local     string           `json:"local"`
-	Path      string           `json:"path"`
-	Scope     *serviceScope    `json:"scope,omitempty"`
-	Selected  string           `json:"selected_addr,omitempty"`
-	Direct    string           `json:"direct,omitempty"`
-	Relay     string           `json:"relay,omitempty"`
-	Attempts  []connectAttempt `json:"attempts,omitempty"`
+	Service     string           `json:"service"`
+	ServiceKind string           `json:"service_kind,omitempty"`
+	ServiceID   string           `json:"service_id,omitempty"`
+	Local       string           `json:"local"`
+	Path        string           `json:"path"`
+	Scope       *serviceScope    `json:"scope,omitempty"`
+	Selected    string           `json:"selected_addr,omitempty"`
+	Direct      string           `json:"direct,omitempty"`
+	Relay       string           `json:"relay,omitempty"`
+	Attempts    []connectAttempt `json:"attempts,omitempty"`
 }
 
 type connectWorkflow struct{}
@@ -71,6 +72,7 @@ func (connectWorkflow) ParseShareToken(token string) (connectflow.ShareTokenInfo
 		NamespaceID:          payload.NamespaceID,
 		TargetServiceID:      payload.TargetServiceID,
 		DisplayNameHint:      payload.DisplayNameHint,
+		ServiceKind:          payload.ServiceKind,
 		ServiceEndpointPeer:  payload.ServiceEndpoint.PeerID,
 		ServiceEndpointAddrs: append([]string(nil), payload.ServiceEndpoint.Addresses...),
 		IssuedAt:             payload.IssuedAt,
@@ -158,14 +160,15 @@ func connectRelayMessage(service serviceResource, selectedAddr, selectedPath str
 
 func fromConnectWorkflowResult(result connectflow.Result) connectResult {
 	return connectResult{
-		Service:   result.ServiceName,
-		ServiceID: result.ServiceID,
-		Local:     result.LocalURL,
-		Path:      result.Path,
-		Scope:     fromCatalogScope(result.Scope),
-		Selected:  result.SelectedAddr,
-		Direct:    result.Direct,
-		Relay:     result.Relay,
-		Attempts:  append([]connectAttempt(nil), result.Attempts...),
+		Service:     result.ServiceName,
+		ServiceKind: result.ServiceKind,
+		ServiceID:   result.ServiceID,
+		Local:       result.LocalURL,
+		Path:        result.Path,
+		Scope:       fromCatalogScope(result.Scope),
+		Selected:    result.SelectedAddr,
+		Direct:      result.Direct,
+		Relay:       result.Relay,
+		Attempts:    append([]connectAttempt(nil), result.Attempts...),
 	}
 }

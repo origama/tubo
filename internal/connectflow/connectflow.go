@@ -39,6 +39,7 @@ type Attempt struct {
 type Result struct {
 	Messages     []string
 	ServiceName  string
+	ServiceKind  string
 	ServiceID    string
 	LocalURL     string
 	Path         string
@@ -59,6 +60,7 @@ type ShareTokenInfo struct {
 	NamespaceID          string
 	TargetServiceID      string
 	DisplayNameHint      string
+	ServiceKind          string
 	ServiceEndpointPeer  string
 	ServiceEndpointAddrs []string
 	IssuedAt             time.Time
@@ -148,7 +150,7 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 	var service catalog.Service
 	if shareToken != "" {
 		if len(shareInfo.ServiceEndpointAddrs) > 0 {
-			service = catalog.Service{Name: serviceRef, ServiceID: serviceID, PeerID: shareInfo.ServiceEndpointPeer}
+			service = catalog.Service{Name: serviceRef, ServiceID: serviceID, ServiceKind: shareInfo.ServiceKind, PeerID: shareInfo.ServiceEndpointPeer}
 			service.DirectAddresses, service.RelayedAddresses = splitServiceAddresses(shareInfo.ServiceEndpointAddrs)
 			if service.Name == "" {
 				service.Name = shareInfo.DisplayNameHint
@@ -181,12 +183,13 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 			service.ServiceID = serviceID
 		}
 	}
-	listenAddr, localURL, err := ChooseLocal(req.Local)
+	listenAddr, localURL, err := ChooseLocalForService(service.ServiceKind, req.Local)
 	if err != nil {
 		return Result{}, err
 	}
 	bridgeCfg := bridge.Config{
 		Listen:             listenAddr,
+		ServiceKind:        service.ServiceKind,
 		Seed:               cfg.Node.Seed,
 		P2PListen:          cfg.Node.P2PListen,
 		PrivateKeyFile:     cfg.Network.PrivateKeyFile,
@@ -219,6 +222,7 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 	return Result{
 		Messages:     append([]string(nil), lookup.Messages...),
 		ServiceName:  service.Name,
+		ServiceKind:  service.ServiceKind,
 		ServiceID:    service.ServiceID,
 		LocalURL:     localURL,
 		Path:         selectedPath,
@@ -232,11 +236,20 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 }
 
 func ChooseLocal(local string) (listenAddr string, localURL string, err error) {
+	return ChooseLocalForService(string(cfgpkg.ServiceKindHTTP), local)
+}
+
+func ChooseLocalForService(serviceKind, local string) (listenAddr string, localURL string, err error) {
+	kind := cfgpkg.NormalizeServiceKind(cfgpkg.ServiceKind(serviceKind), "")
+	prefix := "http://"
+	if kind == cfgpkg.ServiceKindTCP {
+		prefix = "tcp://"
+	}
 	if local != "" {
 		if _, _, splitErr := net.SplitHostPort(local); splitErr != nil {
 			return "", "", fmt.Errorf("invalid --local %q: %w", local, splitErr)
 		}
-		return local, "http://" + local, nil
+		return local, prefix + local, nil
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -244,7 +257,7 @@ func ChooseLocal(local string) (listenAddr string, localURL string, err error) {
 	}
 	addr := ln.Addr().String()
 	_ = ln.Close()
-	return addr, "http://" + addr, nil
+	return addr, prefix + addr, nil
 }
 
 func ConnectBridge(ctx context.Context, newBridge func(context.Context, bridge.Config) (*bridge.App, error), base bridge.Config, service catalog.Service) (string, string, []Attempt, *bridge.App, error) {

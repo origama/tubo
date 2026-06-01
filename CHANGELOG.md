@@ -21,6 +21,30 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.8.0] - 2026-06-01
+
+Raw TCP / TLS passthrough release with end-to-end `service_kind` propagation, invite-aware TCP connect flow, and discovery metadata fixes.
+
+### Added
+- Raw TCP tunnel transport over libp2p with explicit `TunnelRequest` / `TunnelReady` framing and `raw-tcp-v1` capability negotiation.
+- End-to-end `service_kind=http|tcp` propagation through config, discovery, catalog, `connect`, and share-invite flows.
+- Integration coverage for TCP echo, concurrent sessions, large payloads, and HTTPS passthrough over the new raw TCP tunnel.
+
+### Changed
+- `attach tcp://...` now publishes services as `service_kind=tcp`, and `connect` exposes TCP services as local `tcp://host:port` listeners instead of forcing the HTTP bridge path.
+- Service share invites, delegated share-mint requests, and authority-side grant approval now preserve `service_kind`, so `connect --token` can reconstruct the correct local listener mode even from self-contained invites.
+- Canonical docs, runbooks, and test docs now describe the mixed HTTP/TCP runtime model and the current release/versioning semantics.
+
+### Fixed
+- Fixed config merge precedence so a higher-precedence `tcp://...` target correctly re-infers `service.kind=tcp` instead of staying pinned to stale/default `http` metadata.
+- Fixed discovery publication/query/cache paths so relay-served service listings preserve `service_kind` and announced capabilities instead of degrading them to `http` and empty capability sets.
+
+### Compatibility
+- Product version: v0.8.0
+- Protocol version: 1.1
+- Protocol compatibility change: none; this release adds optional `raw-tcp-v1` behavior under protocol 1.1 and falls back to the existing HTTP path when the capability is absent
+- Operator action required: update relay/service/client binaries if you want raw TCP/TLS passthrough plus correct `service_kind` and capability propagation in discovery and invite flows
+
 ## [v0.7.0] - 2026-05-27
 
 Invite-only public-default, collaboration connect flow, one-time share hardening, delegated share minting, detached connect management, and CLI output/logging cleanup release.

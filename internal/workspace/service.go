@@ -186,6 +186,12 @@ func (w *Workspace) ensureServiceState(configPath string, cfg cfgpkg.Config, ser
 	svc, existed := namespace.Services[serviceName]
 	created := !existed
 	changed := false
+	kind := cfgpkg.NormalizeServiceKind(cfg.Service.Kind, cfg.Service.Target)
+	cfg.Service.Kind = kind
+	if svc.Kind != kind {
+		svc.Kind = kind
+		changed = true
+	}
 	if svc.ServiceID != "" && svc.ServiceOwnerKeyFile == "" {
 		return cfg, ServiceContext{}, false, false, fmt.Errorf("service %q is missing service_owner_key_file", serviceName)
 	}
@@ -324,7 +330,7 @@ func (w *Workspace) mintLocalPublishArtifacts(cluster cfgpkg.Cluster, clusterNam
 	if err != nil {
 		return err
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(priv, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), 365*24*time.Hour, serviceShareTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(priv, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), 365*24*time.Hour, serviceShareTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return err
 	}

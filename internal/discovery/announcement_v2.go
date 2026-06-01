@@ -28,6 +28,7 @@ type AnnouncementV2 struct {
 
 type AnnouncementV2Payload struct {
 	ServiceName          string                          `json:"service_name"` // display name only; not an authorization key
+	ServiceKind          string                          `json:"service_kind,omitempty"`
 	ServiceID            string                          `json:"service_id,omitempty"`
 	ServicePublicKey     string                          `json:"service_public_key,omitempty"`
 	ConnectPolicy        string                          `json:"connect_policy,omitempty"`
@@ -36,6 +37,7 @@ type AnnouncementV2Payload struct {
 	MembershipCapability []byte                          `json:"membership_capability,omitempty"`
 	ServiceClaim         []byte                          `json:"service_claim,omitempty"` // legacy compatibility when publish_lease is absent
 	PublishLease         []byte                          `json:"publish_lease,omitempty"`
+	Capabilities         []string                        `json:"capabilities,omitempty"`
 	RegisteredAt         time.Time                       `json:"registered_at,omitempty"`
 }
 

@@ -17,12 +17,13 @@ Example:
 
 - `tubo v0.3.2`
 
-All roles in the binary share the same product version:
+All runtime roles in the binary share the same product version:
 
-- `tubo edge run`
-- `tubo relay run`
-- `tubo service run`
-- `tubo bridge run`
+- `tubo relay`
+- `tubo gateway`
+- `tubo attach`
+- `tubo connect`
+- `tubo grants serve`
 
 We do **not** version roles independently.
 
@@ -34,7 +35,7 @@ The protocol is versioned separately as:
 
 Example:
 
-- `protocol 1.2`
+- `protocol 1.1`
 
 This protocol version defines compatibility between different `tubo` nodes.
 
@@ -43,6 +44,7 @@ This protocol version defines compatibility between different `tubo` nodes.
 - `protocol major` change = breaking wire/protocol change
 - `protocol minor` change = backward-compatible protocol extension
 - new protocol features must be optional or negotiated when possible
+- current `1.1` examples include hello/capability negotiation and optional `raw-tcp-v1`; nodes that do not share that capability must still interoperate on the common HTTP behavior
 
 ## 3. Compatibility guarantees
 

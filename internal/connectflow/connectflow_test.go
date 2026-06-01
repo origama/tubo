@@ -164,6 +164,50 @@ func TestResolveUsesSelfContainedTokenEndpointWithoutDiscovery(t *testing.T) {
 	}
 }
 
+func TestResolveUsesTCPServiceKindFromSelfContainedToken(t *testing.T) {
+	serviceAddr := "/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWService"
+	var selected bridge.Config
+	deps := stubDeps{
+		loadConfig: func(string) (cfgpkg.Config, error) { return cfgpkg.Config{}, nil },
+		setupShare: func(serviceRef, token, cluster, namespace string) (string, string, catalog.Scope, error) {
+			return serviceRef, "svc-1", catalog.Scope{Cluster: "home", Namespace: "default"}, nil
+		},
+		parseServiceRef: func(ref string) (string, error) { return ref, nil },
+		isServiceID:     func(string) bool { return false },
+		resolveScope: func(cfgpkg.Config, string, string) (catalog.Scope, error) {
+			return catalog.Scope{}, cfgpkg.ErrAmbientDiscoveryDisabled
+		},
+		parseShareToken: func(string) (ShareTokenInfo, error) {
+			return ShareTokenInfo{Cluster: "home", Namespace: "default", TargetServiceID: "svc-1", DisplayNameHint: "svc", ServiceKind: "tcp", ServiceEndpointPeer: "12D3KooWService", ServiceEndpointAddrs: []string{serviceAddr}}, nil
+		},
+		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
+		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { return cfg, nil },
+		markInvite:      func(string, ShareTokenInfo) error { return nil },
+		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) {
+			t.Fatal("discoverService should not be called for self-contained token")
+			return catalog.LookupResult{}, catalog.Service{}, nil
+		},
+		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) {
+			t.Fatal("discoverServiceExact should not be called for self-contained token")
+			return catalog.LookupResult{}, catalog.Service{}, nil
+		},
+		newBridge: func(_ context.Context, cfg bridge.Config) (*bridge.App, error) {
+			selected = cfg
+			return &bridge.App{}, nil
+		},
+	}
+	result, err := Resolve(context.Background(), deps, Request{ConfigPath: "/tmp/config.yaml", ServiceRef: "svc", Token: "token", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServiceKind != "tcp" || !strings.HasPrefix(result.LocalURL, "tcp://") {
+		t.Fatalf("unexpected tcp result: %#v", result)
+	}
+	if selected.ServiceKind != "tcp" {
+		t.Fatalf("bridge service kind = %q", selected.ServiceKind)
+	}
+}
+
 func TestResolveBypassesAmbientDiscoveryScopeForTokenFlow(t *testing.T) {
 	service := catalog.Service{
 		Name:            "svc",

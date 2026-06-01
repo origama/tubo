@@ -18,6 +18,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	capability "github.com/origama/tubo/internal/capability"
+	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/protocol"
@@ -41,6 +42,7 @@ type Config struct {
 	ConnectAccessLease                                                                                 *grantspkg.ConnectAccessLease
 	ConnectRefreshLease                                                                                *grantspkg.ConnectRefreshLease
 	ConnectLeaseRefresher                                                                              ConnectLeaseRefresher
+	ServiceKind                                                                                        string
 }
 type App struct {
 	cfg          Config
@@ -58,6 +60,7 @@ func LoadConfigFromEnv(g func(string) string) (Config, error) {
 	return Config{Listen: first(g("BRIDGE_LISTEN"), "127.0.0.1:18081"), Seed: first(g("BRIDGE_SEED"), "bridge-demo-seed"), P2PListen: first(g("BRIDGE_P2P_LISTEN"), "/ip4/127.0.0.1/tcp/0"), ServiceAddr: g("SERVICE_ADDR"), ServiceSeed: g("SERVICE_SEED"), ServiceP2PListen: first(g("SERVICE_P2P_LISTEN"), "/ip4/127.0.0.1/tcp/40123"), PrivateKeyFile: g("LIBP2P_PRIVATE_NETWORK_KEY"), PrivateKeyB64: g("LIBP2P_PRIVATE_NETWORK_KEY_B64")}, nil
 }
 func New(ctx context.Context, cfg Config) (*App, error) {
+	cfg.ServiceKind = string(cfgpkg.NormalizeServiceKind(cfgpkg.ServiceKind(cfg.ServiceKind), ""))
 	var si peer.AddrInfo
 	var err error
 	if cfg.ServiceAddr != "" {
@@ -144,16 +147,23 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
-	log.Printf("bridge peer_id=%s", a.host.ID())
+	log.Printf("bridge peer_id=%s service_kind=%s", a.host.ID(), a.cfg.ServiceKind)
 	ln, err := net.Listen("tcp", a.cfg.Listen)
 	if err != nil {
 		return fmt.Errorf("listen bridge: %w", err)
 	}
 	listenAddr := ln.Addr().String()
-	server := &http.Server{Addr: a.cfg.Listen, Handler: a.mux()}
 	a.stateMu.Lock()
 	a.listener = ln
 	a.listenAddr = listenAddr
+	a.stateMu.Unlock()
+	if a.cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
+		go a.serveTCP(ctx, ln)
+		<-ctx.Done()
+		return ln.Close()
+	}
+	server := &http.Server{Addr: a.cfg.Listen, Handler: a.mux()}
+	a.stateMu.Lock()
 	a.server = server
 	a.stateMu.Unlock()
 	go func() {
@@ -180,6 +190,45 @@ func (a *App) ListenAddr() string {
 	}
 	return a.cfg.Listen
 }
+
+func (a *App) serveTCP(ctx context.Context, ln net.Listener) {
+	log.Printf("client tcp bridge listening on %s", ln.Addr().String())
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("bridge tcp accept: %v", err)
+			continue
+		}
+		go a.handleTCPConn(conn)
+	}
+}
+
+func (a *App) handleTCPConn(conn net.Conn) {
+	defer conn.Close()
+	streamCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp tunnel stream")
+	s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.ProtocolID)
+	if err != nil {
+		log.Printf("bridge tcp open stream: %v", err)
+		return
+	}
+	defer s.Close()
+	proof, err := a.connectProof()
+	if err != nil {
+		log.Printf("bridge tcp connect proof: %v", err)
+		return
+	}
+	if err := p2p.StartClientTCPTunnel(s, "bridge", proof); err != nil {
+		log.Printf("bridge tcp start tunnel: %v", err)
+		return
+	}
+	if _, _, err := p2p.ProxyTCPStream(conn, s); err != nil {
+		log.Printf("bridge tcp proxy: %v", err)
+	}
+}
+
 func (a *App) mux() *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })

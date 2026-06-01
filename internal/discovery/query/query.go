@@ -31,7 +31,7 @@ type Cache interface {
 	Resolve(serviceName string) (*discovery.ServiceEntry, bool)
 	List() []*discovery.ServiceEntry
 	Add(peer.ID, string, []string, time.Duration) error
-	AddV2(peer.ID, string, string, string, string, *grantspkg.GrantServiceEndpoint, []string, time.Duration) error
+	AddV2(peer.ID, string, string, string, string, string, *grantspkg.GrantServiceEndpoint, []string, []string, time.Duration) error
 }
 
 type Request struct {
@@ -48,6 +48,7 @@ type Metadata struct {
 
 type Service struct {
 	Kind             string                          `json:"kind"`
+	ServiceKind      string                          `json:"service_kind,omitempty"`
 	Name             string                          `json:"name"`
 	ServiceID        string                          `json:"service_id,omitempty"`
 	ServicePublicKey string                          `json:"service_public_key,omitempty"`
@@ -136,7 +137,7 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 			resp.Error = fmt.Sprintf("invalid service peer id: %v", err)
 			return resp
 		}
-		if err := cache.AddV2(pID, req.Service.ServiceID, req.Service.Name, req.Service.ServicePublicKey, req.Service.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(req.Service.GrantService), append([]string(nil), req.Service.Addresses...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
+		if err := cache.AddV2(pID, req.Service.ServiceID, req.Service.Name, req.Service.ServiceKind, req.Service.ServicePublicKey, req.Service.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(req.Service.GrantService), append([]string(nil), req.Service.Addresses...), append([]string(nil), req.Service.Capabilities...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
 			resp.Error = fmt.Sprintf("cache announce: %v", err)
 			return resp
 		}
@@ -203,6 +204,7 @@ func serviceFromEntry(entry *discovery.ServiceEntry) Service {
 	direct, relayed := splitAddresses(entry.Addresses)
 	return Service{
 		Kind:             "service",
+		ServiceKind:      entry.ServiceKind,
 		Name:             entry.ServiceName,
 		ServiceID:        entry.ServiceID,
 		ServicePublicKey: entry.ServicePublicKey,
@@ -216,7 +218,7 @@ func serviceFromEntry(entry *discovery.ServiceEntry) Service {
 		Path:             pathFromAddresses(entry.Addresses),
 		TTLSeconds:       int64(entry.TTL.Seconds()),
 		ExpiresInSeconds: int64(expiresIn.Seconds()),
-		Capabilities:     []string{},
+		Capabilities:     append([]string(nil), entry.Capabilities...),
 		RegisteredAt:     entry.Registered.Format(time.RFC3339),
 	}
 }

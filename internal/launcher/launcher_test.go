@@ -88,6 +88,22 @@ func TestRunServiceUsesAttachAuthorizationAndStartsRunner(t *testing.T) {
 	}
 }
 
+func TestRunServicePrefersAuthorizedServiceKind(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "default"}
+	cfg.Clusters = map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-1", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, Namespaces: map[string]cfgpkg.Namespace{"default": {}}}}
+	cfg.Node.P2PListen = "/ip4/127.0.0.1/tcp/40123"
+	cfg.Service.Name = "svc"
+	cfg.Service.Kind = cfgpkg.ServiceKindHTTP
+	cfg.Service.Target = "tcp://127.0.0.1:9443"
+	deps := &stubDeps{authz: AttachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "svc-1", ServiceSeed: "seed-1", Kind: cfgpkg.ServiceKindTCP}, ServicePeerID: "12D3KooW..."}}
+	if err := Run(context.Background(), deps, "service", "/tmp/config.yaml", cfg); err != nil {
+		t.Fatal(err)
+	}
+	if deps.serviceCfg.ServiceKind != "tcp" {
+		t.Fatalf("service kind = %q", deps.serviceCfg.ServiceKind)
+	}
+}
+
 func TestRunServiceUsesUnlistedModeForPublicDefault(t *testing.T) {
 	cfg := cfgpkg.Config{CurrentOverlay: "tubo-public", CurrentCluster: "home", CurrentNamespace: "default"}
 	cfg.Clusters = map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-public-2026", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyInviteOnly}}}}

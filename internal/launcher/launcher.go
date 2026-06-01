@@ -86,10 +86,12 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		cluster = cfg.Clusters[cfg.CurrentCluster]
 		deps.PrintAttachShareHint(cfg, authz)
 		deps.StartAttachPublishLeaseRenewal(ctx, configPath, cfg, authz.Service, authz.ServicePeerID)
+		serviceKind := string(cfgpkg.NormalizeServiceKind(authz.Service.Kind, cfg.Service.Target))
 		runner, err := deps.NewService(ctx, service.Config{
 			Listen:                  cfg.Node.P2PListen,
 			Seed:                    authz.Service.ServiceSeed,
 			ServiceName:             cfg.Service.Name,
+			ServiceKind:             serviceKind,
 			ServiceID:               authz.Service.ServiceID,
 			ServiceOwnerKeyFile:     authz.Service.ServiceOwnerKeyFile,
 			Target:                  cfg.Service.Target,

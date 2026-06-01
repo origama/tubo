@@ -22,6 +22,7 @@ import (
 	circuitclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	"github.com/multiformats/go-multiaddr"
 
+	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
@@ -30,26 +31,26 @@ import (
 )
 
 type Config struct {
-	Listen, Seed, ServiceName, Target, HealthListen, PrivateKeyFile, PrivateKeyB64, ForceReachability string
-	BootstrapPeers, RelayPeers                                                                        []string
-	Autorelay, HolePunching                                                                           bool
-	HeartbeatInterval, BootstrapRetryInterval                                                         time.Duration
-	DiscoveryTopic                                                                                    string
-	DiscoveryMode                                                                                     string
-	DiscoveryClusterID                                                                                string
-	DiscoveryNamespaceID                                                                              string
-	AuthorityPublicKey                                                                                string
-	AuthorityPrivateKeyFile                                                                           string
-	ClusterName                                                                                       string
-	ServiceID                                                                                         string
-	ServiceOwnerKeyFile                                                                               string
-	ConnectPolicy                                                                                     string
-	GrantService                                                                                      *grantspkg.GrantServiceEndpoint
-	MembershipCapabilityFile                                                                          string
-	ServiceClaimFile                                                                                  string
-	ServicePublishLeaseFile                                                                           string
-	DiscoveryEnabled                                                                                  bool
-	Visibility                                                                                        string
+	Listen, Seed, ServiceName, ServiceKind, Target, HealthListen, PrivateKeyFile, PrivateKeyB64, ForceReachability string
+	BootstrapPeers, RelayPeers                                                                                     []string
+	Autorelay, HolePunching                                                                                        bool
+	HeartbeatInterval, BootstrapRetryInterval                                                                      time.Duration
+	DiscoveryTopic                                                                                                 string
+	DiscoveryMode                                                                                                  string
+	DiscoveryClusterID                                                                                             string
+	DiscoveryNamespaceID                                                                                           string
+	AuthorityPublicKey                                                                                             string
+	AuthorityPrivateKeyFile                                                                                        string
+	ClusterName                                                                                                    string
+	ServiceID                                                                                                      string
+	ServiceOwnerKeyFile                                                                                            string
+	ConnectPolicy                                                                                                  string
+	GrantService                                                                                                   *grantspkg.GrantServiceEndpoint
+	MembershipCapabilityFile                                                                                       string
+	ServiceClaimFile                                                                                               string
+	ServicePublishLeaseFile                                                                                        string
+	DiscoveryEnabled                                                                                               bool
+	Visibility                                                                                                     string
 }
 type App struct {
 	cfg                     Config
@@ -75,7 +76,7 @@ type App struct {
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
-	cfg := Config{Listen: first(getenv("SERVICE_P2P_LISTEN"), "/ip4/127.0.0.1/tcp/40123"), Seed: first(getenv("NODE_SEED"), "service-demo-seed"), ServiceName: first(getenv("SERVICE_NAME"), "demo-service"), Target: first(getenv("SERVICE_TARGET"), "http://127.0.0.1:8000"), HealthListen: first(getenv("SERVICE_HEALTH_LISTEN"), "127.0.0.1:8091"), PrivateKeyFile: getenv("LIBP2P_PRIVATE_NETWORK_KEY"), PrivateKeyB64: getenv("LIBP2P_PRIVATE_NETWORK_KEY_B64"), BootstrapPeers: csv(getenv("BOOTSTRAP_PEERS")), RelayPeers: csv(getenv("RELAY_PEERS")), Autorelay: parseBool(getenv("ENABLE_AUTORELAY"), true), HolePunching: parseBool(getenv("ENABLE_HOLE_PUNCHING"), true), BootstrapRetryInterval: 5 * time.Second}
+	cfg := Config{Listen: first(getenv("SERVICE_P2P_LISTEN"), "/ip4/127.0.0.1/tcp/40123"), Seed: first(getenv("NODE_SEED"), "service-demo-seed"), ServiceName: first(getenv("SERVICE_NAME"), "demo-service"), ServiceKind: first(getenv("SERVICE_KIND"), "http"), Target: first(getenv("SERVICE_TARGET"), "http://127.0.0.1:8000"), HealthListen: first(getenv("SERVICE_HEALTH_LISTEN"), "127.0.0.1:8091"), PrivateKeyFile: getenv("LIBP2P_PRIVATE_NETWORK_KEY"), PrivateKeyB64: getenv("LIBP2P_PRIVATE_NETWORK_KEY_B64"), BootstrapPeers: csv(getenv("BOOTSTRAP_PEERS")), RelayPeers: csv(getenv("RELAY_PEERS")), Autorelay: parseBool(getenv("ENABLE_AUTORELAY"), true), HolePunching: parseBool(getenv("ENABLE_HOLE_PUNCHING"), true), BootstrapRetryInterval: 5 * time.Second}
 	if parseBool(getenv("FORCE_REACHABILITY_PRIVATE"), false) {
 		cfg.ForceReachability = "private"
 	}
@@ -87,6 +88,7 @@ func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 func New(ctx context.Context, cfg Config) (*App, error) {
+	cfg.ServiceKind = string(cfgpkg.NormalizeServiceKind(cfgpkg.ServiceKind(cfg.ServiceKind), cfg.Target))
 	psk, using, err := p2p.LoadPrivateNetworkPSK(cfg.PrivateKeyFile, cfg.PrivateKeyB64)
 	if err != nil {
 		return nil, err
@@ -130,8 +132,12 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		}
 		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), ServicePeerID: h.ID().String(), Replay: p2p.NewConnectProofReplayCache(1024)}
 	}
-	h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
-	h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
+	if cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
+		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceTCPStream(cfg.Target, connectAuth))
+	} else {
+		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
+		h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
+	}
 	grantEndpointEnabled := false
 	if cfg.DiscoveryEnabled {
 		grantEndpoint, err := newServiceGrantEndpoint(cfg, resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), h.ID().String())
@@ -204,7 +210,7 @@ func (a *App) Host() host.Host { return a.host }
 
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
-	log.Printf("service agent config service=%q target=%s p2p_listen=%s health_listen=%s", a.cfg.ServiceName, a.cfg.Target, a.cfg.Listen, a.cfg.HealthListen)
+	log.Printf("service agent config service=%q kind=%s target=%s p2p_listen=%s health_listen=%s", a.cfg.ServiceName, a.cfg.ServiceKind, a.cfg.Target, a.cfg.Listen, a.cfg.HealthListen)
 	log.Printf("peer_id=%s", a.host.ID())
 	dialBootstrapPeers(a.host, a.cfg.BootstrapPeers)
 	if len(a.cfg.BootstrapPeers) > 0 && a.cfg.BootstrapRetryInterval > 0 {
@@ -356,7 +362,7 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.Annou
 	if a.grantEndpointEnabled {
 		grantService = advertisedGrantServiceEndpoint(addrs)
 	}
-	payload := discovery.AnnouncementV2Payload{ServiceName: a.cfg.ServiceName, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, RegisteredAt: time.Now().UTC()}
+	payload := discovery.AnnouncementV2Payload{ServiceName: a.cfg.ServiceName, ServiceKind: a.cfg.ServiceKind, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, Capabilities: protocol.SupportedCapabilities(), RegisteredAt: time.Now().UTC()}
 	if capBytes, err := a.loadMembershipCapabilityBytes(); err == nil && len(capBytes) > 0 {
 		payload.MembershipCapability = capBytes
 	}
@@ -425,7 +431,7 @@ func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.Ann
 	peers := append([]string(nil), a.cfg.BootstrapPeers...)
 	peers = append(peers, a.cfg.RelayPeers...)
 	seen := make(map[string]struct{}, len(peers))
-	service := discoveryquery.Service{Kind: "service", Name: payload.ServiceName, ServiceID: payload.ServiceID, ServicePublicKey: payload.ServicePublicKey, ConnectPolicy: payload.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(payload.GrantService), PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
+	service := discoveryquery.Service{Kind: "service", ServiceKind: payload.ServiceKind, Name: payload.ServiceName, ServiceID: payload.ServiceID, ServicePublicKey: payload.ServicePublicKey, ConnectPolicy: payload.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(payload.GrantService), PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), Capabilities: append([]string(nil), payload.Capabilities...), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
 	for _, raw := range peers {
 		if raw == "" {
 			continue

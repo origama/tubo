@@ -48,6 +48,12 @@ func EncodeFrame(w io.Writer, msg any) error {
 	case *ConnectProof:
 		ft = FrameTypeConnectProof
 		payload, err = encodeConnectProof(m)
+	case *TunnelRequest:
+		ft = FrameTypeTunnelRequest
+		payload, err = encodeTunnelRequest(m)
+	case *TunnelReady:
+		ft = FrameTypeTunnelReady
+		payload, err = encodeTunnelReady(m)
 	default:
 		return fmt.Errorf("unknown frame type: %T", msg)
 	}
@@ -193,6 +199,30 @@ func decodeHeaders(r io.Reader) (map[string][]string, error) {
 }
 
 // --- Frame type encoders ---
+
+func encodeTunnelRequest(m *TunnelRequest) ([]byte, error) {
+	return encodeString(m.Kind), nil
+}
+
+func decodeTunnelRequest(r io.Reader) (*TunnelRequest, error) {
+	kind, err := decodeString(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode tunnel kind: %w", err)
+	}
+	return &TunnelRequest{Kind: kind}, nil
+}
+
+func encodeTunnelReady(m *TunnelReady) ([]byte, error) {
+	return encodeString(m.Kind), nil
+}
+
+func decodeTunnelReady(r io.Reader) (*TunnelReady, error) {
+	kind, err := decodeString(r)
+	if err != nil {
+		return nil, fmt.Errorf("decode tunnel ready kind: %w", err)
+	}
+	return &TunnelReady{Kind: kind}, nil
+}
 
 func encodeHello(m *Hello) ([]byte, error) {
 	result := make([]byte, 0, 64)

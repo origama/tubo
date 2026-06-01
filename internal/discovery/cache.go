@@ -13,9 +13,11 @@ import (
 type ServiceEntry struct {
 	ServiceID        string
 	ServiceName      string
+	ServiceKind      string
 	ServicePublicKey string
 	ConnectPolicy    string
 	GrantService     *grantspkg.GrantServiceEndpoint
+	Capabilities     []string
 	PeerID           peer.ID
 	Addresses        []string
 	TTL              time.Duration
@@ -62,12 +64,12 @@ func (c *Cache) SetExpiredCallback(fn func(serviceName string, peerID peer.ID)) 
 
 // Add registers or updates a legacy name-keyed service entry.
 func (c *Cache) Add(pID peer.ID, serviceName string, addresses []string, ttl time.Duration) error {
-	return c.AddV2(pID, "", serviceName, "", "", nil, addresses, ttl)
+	return c.AddV2(pID, "", serviceName, "http", "", "", nil, addresses, nil, ttl)
 }
 
 // AddV2 registers or updates a service_id-keyed entry. Display name is metadata
 // and is not unique; multiple entries may share the same ServiceName.
-func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, servicePublicKey, connectPolicy string, grantService *grantspkg.GrantServiceEndpoint, addresses []string, ttl time.Duration) error {
+func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, serviceKind, servicePublicKey, connectPolicy string, grantService *grantspkg.GrantServiceEndpoint, addresses []string, capabilities []string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -82,9 +84,11 @@ func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, servicePublicKey, con
 	entry := &ServiceEntry{
 		ServiceID:        serviceID,
 		ServiceName:      serviceName,
+		ServiceKind:      serviceKind,
 		ServicePublicKey: servicePublicKey,
 		ConnectPolicy:    connectPolicy,
 		GrantService:     grantspkg.CloneGrantServiceEndpoint(grantService),
+		Capabilities:     append([]string(nil), capabilities...),
 		PeerID:           pID,
 		Addresses:        append([]string(nil), addresses...), // copy to prevent mutation
 		TTL:              ttl,

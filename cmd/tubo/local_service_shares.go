@@ -36,6 +36,7 @@ type serviceShareResult struct {
 	ClusterName string `json:"cluster_name"`
 	Namespace   string `json:"namespace"`
 	ServiceName string `json:"service_name"`
+	ServiceKind string `json:"service_kind,omitempty"`
 	ServiceID   string `json:"service_id"`
 	Permission  string `json:"permission"`
 	ExpiresAt   string `json:"expires_at"`
@@ -104,6 +105,7 @@ func localShareServiceCmd(args []string) error {
 		ClusterName: scope.Cluster,
 		Namespace:   scope.Namespace,
 		ServiceName: name,
+		ServiceKind: artifacts.Payload.ServiceKind,
 		ServiceID:   serviceID,
 		Permission:  "connect",
 		ExpiresAt:   artifacts.Payload.ExpiresAt.Format(time.RFC3339),
@@ -115,6 +117,7 @@ func localShareServiceCmd(args []string) error {
 	}
 	logging.Resultf("shared service %q in cluster %q namespace %q\n", name, scope.Cluster, scope.Namespace)
 	logging.Resultf("service id: %s\n", serviceID)
+	logging.Resultf("service kind: %s\n", artifacts.Payload.ServiceKind)
 	logging.Resultf("permission: connect\n")
 	logging.Resultf("expires: %s\n", artifacts.Payload.ExpiresAt.Format(time.RFC3339))
 	logging.Resultf("connect: %s\n", result.ConnectCmd)
@@ -143,6 +146,7 @@ func mintServiceShareArtifacts(configPath string, cfg cfgpkg.Config, cluster cfg
 }
 
 func mintAuthorityLocalServiceShareArtifacts(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, shareTTL time.Duration, servicePeerID string, serviceEndpointAddrs, grantPeers []string, useEndpointMetadata, requireEndpoint bool) (grantspkg.ServiceShareArtifacts, error) {
+	serviceKind := string(cfgpkg.NormalizeServiceKind(svc.Kind, ""))
 	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
 	if err != nil {
 		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("load cluster authority key: %w", err)
@@ -178,6 +182,10 @@ func mintAuthorityLocalServiceShareArtifacts(cfg cfgpkg.Config, cluster cfgpkg.C
 		return grantspkg.ServiceShareArtifacts{}, err
 	}
 	finalToken, err := finalizeAuthorityServiceShareToken(artifacts.Token, privKey, svc.ServiceID)
+	if err != nil {
+		return grantspkg.ServiceShareArtifacts{}, err
+	}
+	finalToken, err = grantspkg.ReissueServiceShareTokenWithKind(finalToken, privKey, serviceKind)
 	if err != nil {
 		return grantspkg.ServiceShareArtifacts{}, err
 	}
@@ -222,7 +230,7 @@ func mintDelegatedServiceShareArtifacts(configPath string, cfg cfgpkg.Config, cl
 	if err != nil {
 		return grantspkg.ServiceShareArtifacts{}, fmt.Errorf("load service owner key: %w", err)
 	}
-	mintReq, err := grantspkg.SignShareMintRequest(grantspkg.ShareMintRequest{ClusterID: cluster.ClusterID, NamespaceID: namespaceName, ServiceID: svc.ServiceID, PublishLease: lease, ServicePeerID: servicePeerID, ServiceAddresses: serviceEndpointAddrs, RequestedTTLSeconds: int64(shareTTL.Seconds()), RequestNonce: randomNonce(), RequestIssuedAt: time.Now().UTC()}, owner.PrivateKey)
+	mintReq, err := grantspkg.SignShareMintRequest(grantspkg.ShareMintRequest{ClusterID: cluster.ClusterID, NamespaceID: namespaceName, ServiceID: svc.ServiceID, ServiceKind: string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), PublishLease: lease, ServicePeerID: servicePeerID, ServiceAddresses: serviceEndpointAddrs, RequestedTTLSeconds: int64(shareTTL.Seconds()), RequestNonce: randomNonce(), RequestIssuedAt: time.Now().UTC()}, owner.PrivateKey)
 	if err != nil {
 		return grantspkg.ServiceShareArtifacts{}, err
 	}

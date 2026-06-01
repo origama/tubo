@@ -1,6 +1,6 @@
 # Tubo
 
-**Tubo creates private libp2p tunnels for HTTP APIs, services, and AI agents.**
+**Tubo creates private libp2p tunnels for HTTP APIs, raw TCP/TLS services, and AI agents.**
 
 ## Install
 
@@ -18,10 +18,20 @@ go build -o tubo ./cmd/tubo
 
 ## Quick start: public invite-only
 
+HTTP service:
+
 ```bash
 tubo attach myapp --port 8080 -d
 # prints a one-time `tubo connect --token ...` command
 tubo connect --token eyJ... --local 127.0.0.1:9000
+```
+
+Raw TCP / TLS passthrough:
+
+```bash
+tubo attach tcp://127.0.0.1:8443 --name tlsdemo -d
+tubo connect --token eyJ... --local 127.0.0.1:9443
+# local endpoint is tcp://127.0.0.1:9443
 ```
 
 ## Quick start: private swarm
@@ -32,6 +42,7 @@ tubo relay --swarm-key ./swarm.key -d
 tubo join overlay/manual --relay /ip4/<RELAY_IP>/tcp/4001/p2p/<RELAY_PEER> --swarm-key ./swarm.key
 tubo attach myapp --port 8080 -d
 tubo connect myapp --local 127.0.0.1:9000
+# same flow also works for `tcp://...` targets / TLS passthrough
 ```
 
 ## Documentation

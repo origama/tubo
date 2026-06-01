@@ -29,6 +29,7 @@ type Request struct {
 	RequesterPeerID       string                           `json:"requester_peer_id"`
 	ServiceName           string                           `json:"service_name"`
 	ServiceID             string                           `json:"service_id"`
+	ServiceKind           string                           `json:"service_kind,omitempty"`
 	ServicePublicKey      string                           `json:"service_public_key"`
 	ServiceOwnerSignature []byte                           `json:"service_owner_signature,omitempty"`
 	RequestNonce          string                           `json:"request_nonce"`

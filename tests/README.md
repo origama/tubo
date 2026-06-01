@@ -198,6 +198,8 @@ Copre:
 - streaming request/response large body
 - lease expiry con rimozione route
 - stripping header hop-by-hop
+- raw TCP echo con large payload e connessioni concorrenti
+- HTTPS passthrough sopra `service_kind=tcp`
 - scenario relay-first archiviato (`tests/archive/compose/relay-nat/compose.yml`)
 
 Esecuzione:
@@ -206,5 +208,5 @@ Esecuzione:
 RUN_INTEGRATION=1 go test -v ./tests/integration
 ```
 
-Nota: se il daemon Docker e' indisponibile/crasha, i test vengono marcati `SKIP` (errore infrastrutturale), non `FAIL` applicativo.
+Nota: parte della coverage integration ora e' pure-Go e non richiede Docker (per esempio TCP echo / HTTPS passthrough); se il daemon Docker e' indisponibile/crasha, i test Docker-dipendenti vengono marcati `SKIP` (errore infrastrutturale), non `FAIL` applicativo.
 I comandi `docker compose` interni ai test usano di default `DOCKER_BUILDKIT=0` e `COMPOSE_DOCKER_CLI_BUILD=0`.
