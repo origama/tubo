@@ -1,142 +1,142 @@
 # Tests
 
-## Smoke E2E CLI UX v2 (locale, senza Docker)
+## Smoke E2E CLI UX v2 (local, without Docker)
 
-Valida i principali happy path documentati per la nuova CLI user-facing usando solo processi locali, porte dinamiche, directory temporanee e mock HTTP server locale.
+Validates the main documented happy paths for the new user-facing CLI using only local processes, dynamic ports, temporary directories, and a local mock HTTP server.
 
-Copre:
+Covers:
 
 - `relay -d`
 - `join`
 - `attach -d`
 - `ps` / `get processes` / `describe process/...` / `inspect process/... --json` / `logs` / `stop` / `rm --stale`
-- `get services` senza gateway locale (observer effimero)
+- `get services` without a local gateway (ephemeral observer)
 - `get service/<name>` / `describe service/<name>` / `inspect service/<name> --json`
-- `connect <service-name>` + richiesta HTTP reale
-- `gateway -d` + richiesta HTTP reale con `Host:`
-- smoke di foreground-by-default per `attach` senza `-d`
+- `connect <service-name>` + real HTTP request
+- `gateway -d` + real HTTP request with `Host:`
+- foreground-by-default smoke for `attach` without `-d`
 
-Comando:
+Command:
 
 ```bash
 ./tests/smoke-cli-ux.sh
 ```
 
-Imposta `KEEP_WORK=1` per preservare la working directory temporanea in caso di debug.
+Set `KEEP_WORK=1` to preserve the temporary working directory for debugging.
 
 ## Smoke E2E (Docker Compose)
 
-Esegue il percorso minimo completo:
+Runs the minimum complete path:
 
 - `relay`
 - `dummy-api-server`
 - `edge`
 - `service`
-- request HTTP reale via edge
+- real HTTP request via edge
 
-Comando:
+Command:
 
 ```bash
 ./tests/smoke-compose.sh
 ```
 
-Di default lo script esegue build/compose con:
+By default the script runs build/compose with:
 
 - `DOCKER_BUILDKIT=0`
 - `COMPOSE_DOCKER_CLI_BUILD=0`
 
-per ridurre crash intermittenti del daemon Docker/BuildKit.
+to reduce intermittent Docker daemon/BuildKit crashes.
 
-Il test verifica:
+The test verifies:
 
 - health endpoints up
-- discovery cache popolata (`/services`)
-- auto-route presente (`/routes`)
-- chiamata end-to-end `Host: myapi` con risposta HTTP 200 e payload coerente
+- populated discovery cache (`/services`)
+- auto-route present (`/routes`)
+- end-to-end `Host: myapi` call with HTTP 200 response and consistent payload
 
 ## Smoke E2E tubo UX (Docker Compose)
 
-Verifica la nuova UX con immagine unica `tubo` e config YAML:
+Verifies the new UX with the single `tubo` image and YAML config:
 
 - `tubo relay --config /etc/tubo/relay.yaml`
 - `tubo gateway --config /etc/tubo/edge.yaml`
 - `tubo attach --config /etc/tubo/service.yaml`
 
-Comando:
+Command:
 
 ```bash
 ./tests/smoke-compose-tubo.sh
 ```
 
-Lo script prepara `generated/integration/tubo/*.yaml`, avvia `tests/e2e/compose/tubo/compose.yml`, attende health/discovery/route e fa una richiesta end-to-end via edge.
+The script prepares `generated/integration/tubo/*.yaml`, starts `tests/e2e/compose/tubo/compose.yml`, waits for health/discovery/routes, and performs an end-to-end request through edge.
 
-## Archiviato: Relay/NAT-like (Docker Compose con reti isolate)
+## Archived: Relay/NAT-like (Docker Compose with isolated networks)
 
-Lo scenario relay-first su reti Docker isolate e' stato archiviato in:
+The relay-first scenario on isolated Docker networks has been archived in:
 
 - `tests/archive/compose/relay-nat/compose.yml`
 
-I benchmark/perf manuali che lo usano puntano a quell'archivio.
+The manual benchmark/perf flows that use it point to that archive.
 
-## Smoke E2E Private Overlay Multi-Service (Docker Compose con 3 service nodes)
+## Smoke E2E Private Overlay Multi-Service (Docker Compose with 3 service nodes)
 
-Simula una overlay libp2p privata condivisa da:
+Simulates a private shared libp2p overlay with:
 
 - `relay`
 - `edge`
-- `curl-client` sulla stessa rete privata dell'edge
-- tre nodi service isolati, ciascuno con:
+- `curl-client` on the same private network as edge
+- three isolated service nodes, each with:
   - `service-*`
   - `dummy-api-server-*`
 
-Topologia Docker:
+Docker topology:
 
-- `edge` e `curl-client` su `edge-private`
-- ogni service node su una propria rete privata dedicata
-- `relay` collegato a tutte le reti private
-- tutti i peer libp2p usano la stessa private swarm PSK (`LIBP2P_PRIVATE_NETWORK_KEY_B64`)
+- `edge` and `curl-client` on `edge-private`
+- each service node on its own dedicated private network
+- `relay` connected to all private networks
+- all libp2p peers use the same private swarm PSK (`LIBP2P_PRIVATE_NETWORK_KEY_B64`)
 
-Il `curl-client` richiama sempre lo **stesso endpoint** dell'edge gateway (`http://edge:8443/v1/dummy`), cambiando solo l'header `Host` tra `svc-one`, `svc-two` e `svc-three`.
+The `curl-client` always calls the **same edge gateway endpoint** (`http://edge:8443/v1/dummy`), changing only the `Host` header between `svc-one`, `svc-two`, and `svc-three`.
 
-Comando:
+Command:
 
 ```bash
 ./tests/smoke-compose-private-overlay-multi-service.sh
 ```
 
-Il test verifica:
+The test verifies:
 
-- healthcheck di relay, edge e 3 service nodes
-- discovery cache con `count=3`
-- auto-route per `svc-one`, `svc-two`, `svc-three`
-- routing host-based verso i tre backend tramite un solo endpoint edge
-- risposta coerente dal backend atteso (`instance`)
+- health checks for relay, edge, and 3 service nodes
+- discovery cache with `count=3`
+- auto-routes for `svc-one`, `svc-two`, `svc-three`
+- host-based routing to the three backends through a single edge endpoint
+- consistent response from the expected backend (`instance`)
 
-## Smoke E2E Distributed 2-host (edge locale + relay remoto)
+## Smoke E2E Distributed 2-host (local edge + remote relay)
 
-Smoke reale su 2 macchine:
+Real smoke on 2 machines:
 
-- `edge` sulla macchina locale (`172.236.202.99` di default)
-- `relay` sulla macchina remota (`172.232.189.160`)
-- `service` + `dummy-api-server` co-hosted sulla macchina remota
+- `edge` on the local machine (`172.236.202.99` by default)
+- `relay` on the remote machine (`172.232.189.160`)
+- `service` + `dummy-api-server` co-hosted on the remote machine
 
-Comando:
+Command:
 
 ```bash
 ./tests/smoke-distributed-two-host.sh
 ```
 
-Il `service` remoto viene forzato a usare `p2p_listen=/ip4/127.0.0.1/tcp/40123` e `force_reachability: private`, cosi' l'edge non puo' fare direct dial pubblico e deve passare via relay.
+The remote `service` is forced to use `p2p_listen=/ip4/127.0.0.1/tcp/40123` and `force_reachability: private`, so edge cannot perform a public direct dial and must go through relay.
 
-Dettagli operativi: `tests/distributed-two-host.md`
+Operational details: `tests/distributed-two-host.md`
 
-## Smoke E2E Linode/Terraform (3 host multi-region)
+## Smoke E2E Linode/Terraform (3-host multi-region)
 
-Provisioning distribuito tramite Terraform:
+Distributed provisioning via Terraform:
 
-- `relay` pubblico su Linode
-- `edge` su Linode con ingress chiuso (SSH-only, NAT-like)
-- `service` su Linode con ingress chiuso (SSH-only, NAT-like)
+- public `relay` on Linode
+- `edge` on Linode with closed ingress (SSH-only, NAT-like)
+- `service` on Linode with closed ingress (SSH-only, NAT-like)
 
 Terraform stack:
 
@@ -148,41 +148,41 @@ Smoke harness:
 ./tests/smoke-terraform-linode.sh
 ```
 
-Lo smoke legge gli IP da `terraform output`, carica binari + config sui nodi e verifica il percorso relay-first controllando `connection_path=relayed` nei log edge.
+The smoke reads IPs from `terraform output`, uploads binaries + config to the nodes, and verifies the relay-first path by checking `connection_path=relayed` in edge logs.
 
-## Smoke mixed-version su Linode/Terraform
+## Smoke mixed-version on Linode/Terraform
 
-Valida compatibilita' tra binari `tubo` di versioni diverse sul bench multi-host reale.
+Validates compatibility between different `tubo` binary versions on the real multi-host bench.
 
-Comando:
+Command:
 
 ```bash
 ./tests/smoke-terraform-linode-mixed-version.sh
 ```
 
-Di default lo script costruisce:
+By default the script builds:
 
-- il binario corrente da `main`
-- un binario legacy dal ref `c9bbb1f` (pre-protocol 1.1 hello handshake)
+- the current binary from `main`
+- a legacy binary from ref `c9bbb1f` (pre-protocol 1.1 hello handshake)
 
-Scenari coperti:
+Covered scenarios:
 
-- edge corrente -> service legacy (fallback `/p2p-tunnel/1.0`)
-- edge legacy -> service corrente (service corrente accetta legacy)
-- edge corrente -> service corrente (negoziazione `/p2p-tunnel/1.1`)
+- current edge -> legacy service (fallback `/p2p-tunnel/1.0`)
+- legacy edge -> current service (current service accepts legacy)
+- current edge -> current service (negotiates `/p2p-tunnel/1.1`)
 
-Lo script usa anche gli endpoint di debug/admin del protocollo quando disponibili per salvare evidenza operativa della compatibilita'.
+The script also uses protocol debug/admin endpoints when available to save operational compatibility evidence.
 
-## Performance benchmark persistente su Linode/Terraform
+## Persistent performance benchmark on Linode/Terraform
 
-Usa il testbed multi-region creato da Terraform, lascia i processi remoti attivi per la durata del benchmark e salva risultati storici confrontabili in:
+Uses the multi-region testbed created by Terraform, keeps remote processes active for the duration of the benchmark, and saves comparable historical results in:
 
 - `tests/perf/results/linode-terraform/<timestamp>/report.json`
 - `tests/perf/results/linode-terraform/<timestamp>/summary.md`
 - `tests/perf/results/linode-terraform/latest.json`
 - `tests/perf/results/linode-terraform/latest.md`
 
-Comando:
+Command:
 
 ```bash
 python3 ./tests/perf/run_linode_terraform_perf.py
@@ -192,21 +192,21 @@ python3 ./tests/perf/run_linode_terraform_perf.py
 
 Package: `tests/integration`
 
-Copre:
+Covers:
 
-- auto-discovery + proxy end-to-end
+- auto-discovery + end-to-end proxy
 - streaming request/response large body
-- lease expiry con rimozione route
-- stripping header hop-by-hop
-- raw TCP echo con large payload e connessioni concorrenti
-- HTTPS passthrough sopra `service_kind=tcp`
-- scenario relay-first archiviato (`tests/archive/compose/relay-nat/compose.yml`)
+- lease expiry with route removal
+- hop-by-hop header stripping
+- raw TCP echo with large payload and concurrent connections
+- HTTPS passthrough over `service_kind=tcp`
+- archived relay-first scenario (`tests/archive/compose/relay-nat/compose.yml`)
 
-Esecuzione:
+Run:
 
 ```bash
 RUN_INTEGRATION=1 go test -v ./tests/integration
 ```
 
-Nota: parte della coverage integration ora e' pure-Go e non richiede Docker (per esempio TCP echo / HTTPS passthrough); se il daemon Docker e' indisponibile/crasha, i test Docker-dipendenti vengono marcati `SKIP` (errore infrastrutturale), non `FAIL` applicativo.
-I comandi `docker compose` interni ai test usano di default `DOCKER_BUILDKIT=0` e `COMPOSE_DOCKER_CLI_BUILD=0`.
+Note: part of the integration coverage is now pure Go and does not require Docker (for example TCP echo / HTTPS passthrough); if the Docker daemon is unavailable or crashes, Docker-dependent tests are marked `SKIP` (infrastructure error), not application `FAIL`.
+Internal `docker compose` commands used by the tests default to `DOCKER_BUILDKIT=0` and `COMPOSE_DOCKER_CLI_BUILD=0`.

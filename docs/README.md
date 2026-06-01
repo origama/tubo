@@ -1,6 +1,6 @@
 # Docs
 
-Canonical policy: tutta la documentazione tecnica vive in `docs/`, separata per categoria.
+Canonical policy: all technical documentation lives in `docs/`, separated by category.
 
 Project work, planning, implementation scope, and acceptance criteria are tracked in **GitHub Issues**.
 

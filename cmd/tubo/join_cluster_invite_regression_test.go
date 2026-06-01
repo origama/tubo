@@ -7,11 +7,11 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 )
 
-// TestJoinClusterInvitePreservesExistingClusters verifica il Bug 1:
-// il join tramite invite a un cluster (clusterB) NON deve rimuovere
-// cluster già presenti nel config (clusterA) né cambiare il contesto corrente.
+// TestJoinClusterInvitePreservesExistingClusters verifies Bug 1:
+// joining a cluster (clusterB) via invite must NOT remove
+// clusters already present in the config (clusterA), nor change the current context.
 func TestJoinClusterInvitePreservesExistingClusters(t *testing.T) {
-	// Setup: crea clusterA ed è il cluster corrente
+	// Setup: create clusterA and make it the current cluster
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error {
 		return run([]string{"create", "cluster/clusterA", "--config", configPath})
@@ -19,7 +19,7 @@ func TestJoinClusterInvitePreservesExistingClusters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Verifica stato iniziale
+	// Verify the initial state
 	cfgBefore, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +28,7 @@ func TestJoinClusterInvitePreservesExistingClusters(t *testing.T) {
 		t.Fatalf("expected current cluster clusterA, got %q", cfgBefore.CurrentCluster)
 	}
 
-	// Crea clusterB con un config separato (fa da authority di clusterB)
+	// Create clusterB in a separate config (it acts as clusterB's authority)
 	configPathB := writeCreateClusterConfig(t)
 	if _, err := capture(func() error {
 		return run([]string{"create", "cluster/clusterB", "--config", configPathB})
@@ -36,7 +36,7 @@ func TestJoinClusterInvitePreservesExistingClusters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Genera un invite token per clusterB
+	// Generate an invite token for clusterB
 	out, err := capture(func() error {
 		return run([]string{"share", "cluster/clusterB", "--config", configPathB, "--expires", "1h"})
 	})
@@ -45,7 +45,7 @@ func TestJoinClusterInvitePreservesExistingClusters(t *testing.T) {
 	}
 	token := extractClusterInviteToken(t, out)
 
-	// Join a clusterB usando il config che ha già clusterA
+	// Join clusterB using the config that already contains clusterA
 	if _, err := capture(func() error {
 		return run([]string{"join", "cluster/clusterB", "--token", token, "--config-dir", filepath.Dir(configPath)})
 	}); err != nil {
@@ -57,28 +57,28 @@ func TestJoinClusterInvitePreservesExistingClusters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Bug 1: clusterA deve ancora esistere
+	// Bug 1: clusterA must still exist
 	if _, ok := cfgAfter.Clusters["clusterA"]; !ok {
 		t.Fatalf("clusterA was lost after joining clusterB: clusters=%v", cfgAfter.Clusters)
 	}
 
-	// Bug 1: clusterB deve essere aggiunto
+	// Bug 1: clusterB must be added
 	if _, ok := cfgAfter.Clusters["clusterB"]; !ok {
 		t.Fatalf("clusterB not found after join: clusters=%v", cfgAfter.Clusters)
 	}
 
-	// Bug 3 (fix): il contesto corrente NON deve cambiare a clusterB
-	// perché clusterA era già selezionato
+	// Bug 3 (fix): the current context must NOT change to clusterB
+	// because clusterA was already selected
 	if cfgAfter.CurrentCluster != "clusterA" {
 		t.Fatalf("current cluster changed from clusterA to %q after join (should not change when already set)", cfgAfter.CurrentCluster)
 	}
 }
 
-// TestJoinClusterInvitePreservesExistingNamespaceServices verifica il Bug 2:
-// il join tramite invite NON deve azzerare le entry di servizio già presenti
-// nel namespace dello stesso cluster (es. dopo un re-join o un refresh del grant).
+// TestJoinClusterInvitePreservesExistingNamespaceServices verifies Bug 2:
+// joining via invite must NOT wipe existing service entries
+// in the namespace of the same cluster (for example after a re-join or grant refresh).
 func TestJoinClusterInvitePreservesExistingNamespaceServices(t *testing.T) {
-	// Setup: crea clusterA con namespace "staging"
+	// Setup: create clusterA with the "staging" namespace
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error {
 		return run([]string{"create", "cluster/clusterA", "--config", configPath})
@@ -90,7 +90,7 @@ func TestJoinClusterInvitePreservesExistingNamespaceServices(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Simula un servizio già presente nel namespace (crea la sua identità)
+	// Simulate a service that already exists in the namespace (create its identity)
 	if _, err := capture(func() error {
 		return run([]string{"create", "service/myapi", "--config", configPath})
 	}); err != nil {
@@ -110,7 +110,7 @@ func TestJoinClusterInvitePreservesExistingNamespaceServices(t *testing.T) {
 		t.Fatalf("service myapi missing or incomplete before join: %#v", stagingBefore.Services)
 	}
 
-	// Genera invite per clusterA/staging (simula re-join o nuovo membro)
+	// Generate an invite for clusterA/staging (simulates a re-join or a new member)
 	out, err := capture(func() error {
 		return run([]string{"share", "cluster/clusterA", "--config", configPath, "--namespace", "staging", "--expires", "1h"})
 	})
@@ -119,7 +119,7 @@ func TestJoinClusterInvitePreservesExistingNamespaceServices(t *testing.T) {
 	}
 	token := extractClusterInviteToken(t, out)
 
-	// Re-join clusterA/staging sullo stesso config (es. refresh del grant)
+	// Re-join clusterA/staging on the same config (for example after a grant refresh)
 	if _, err := capture(func() error {
 		return run([]string{"join", "cluster/clusterA", "--token", token, "--config-dir", filepath.Dir(configPath)})
 	}); err != nil {
@@ -131,7 +131,7 @@ func TestJoinClusterInvitePreservesExistingNamespaceServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Bug 2: il servizio myapi deve essere ancora presente
+	// Bug 2: the myapi service must still be present
 	stagingAfter, ok := cfgAfter.Clusters["clusterA"].Namespaces["staging"]
 	if !ok {
 		t.Fatalf("namespace staging disappeared after re-join: %#v", cfgAfter.Clusters["clusterA"].Namespaces)
@@ -145,10 +145,10 @@ func TestJoinClusterInvitePreservesExistingNamespaceServices(t *testing.T) {
 	}
 }
 
-// TestJoinClusterInviteSetsContextWhenEmpty verifica che il contesto venga
-// impostato al nuovo cluster SOLO quando non c'è ancora un contesto corrente.
+// TestJoinClusterInviteSetsContextWhenEmpty verifies that the context is
+// set to the new cluster ONLY when there is no current context yet.
 func TestJoinClusterInviteSetsContextWhenEmpty(t *testing.T) {
-	// Setup: crea authority di clusterB in un config separato
+	// Setup: create clusterB authority in a separate config
 	configPathAuth := writeCreateClusterConfig(t)
 	if _, err := capture(func() error {
 		return run([]string{"create", "cluster/clusterB", "--config", configPathAuth})
@@ -163,7 +163,7 @@ func TestJoinClusterInviteSetsContextWhenEmpty(t *testing.T) {
 	}
 	token := extractClusterInviteToken(t, out)
 
-	// Join su config VUOTO (no current cluster)
+	// Join on an EMPTY config (no current cluster)
 	joinDir := t.TempDir()
 	if _, err := capture(func() error {
 		return run([]string{"join", "cluster/clusterB", "--token", token, "--config-dir", joinDir})
@@ -175,7 +175,7 @@ func TestJoinClusterInviteSetsContextWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Su config vuoto, il contesto DEVE essere impostato al cluster joinato
+	// On an empty config, the context MUST be set to the joined cluster
 	if cfgAfter.CurrentCluster != "clusterB" {
 		t.Fatalf("expected CurrentCluster=clusterB on fresh config, got %q", cfgAfter.CurrentCluster)
 	}

@@ -9,20 +9,20 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 )
 
-// TestInstallBundlePreservesExistingNamespaceServices verifica il Bug 3:
-// networkbundle.Install con Force=true NON deve cancellare i namespace e
-// i servizi già configurati nel cluster che viene aggiornato dal bundle.
+// TestInstallBundlePreservesExistingNamespaceServices verifies Bug 3:
+// networkbundle.Install with Force=true must NOT delete namespaces or
+// services that are already configured in the cluster being updated by the bundle.
 func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
 	now := time.Now().UTC()
 	payload := samplePayload(now.Add(-time.Hour), now.Add(time.Hour))
 	dir := t.TempDir()
 
-	// Prima installazione: config pulito
+	// First install: clean config
 	if _, err := Install(&payload, InstallOptions{ConfigDir: dir, Force: false}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Simula servizi già configurati sul namespace "default" del cluster "home"
+	// Simulate services that are already configured in the "default" namespace of the "home" cluster
 	configPath := filepath.Join(dir, "config.yaml")
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
@@ -39,7 +39,7 @@ func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
 			"myapi": {ServiceID: "service-abc123", ServiceSeed: "seed-xyz"},
 		},
 	}
-	// Aggiungi anche un secondo namespace privato con servizi
+	// Also add a second private namespace with services
 	homecluster.Namespaces["staging"] = cfgpkg.Namespace{
 		Discovery:     cfgpkg.NamespaceDiscoveryEnabled,
 		ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember,
@@ -48,7 +48,7 @@ func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
 		},
 	}
 	cfg.Clusters["home"] = homecluster
-	// Aggiungi anche un cluster privato separato che NON deve essere toccato
+	// Also add a separate private cluster that must NOT be touched
 	cfg.Clusters["oricluster"] = cfgpkg.Cluster{
 		ClusterID:         "cluster-ori-xyz",
 		AuthorityPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAorioriori",
@@ -62,7 +62,7 @@ func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Re-install bundle (es. aggiornamento relay) con Force=true
+	// Re-install the bundle (for example during a relay update) with Force=true
 	if _, err := Install(&payload, InstallOptions{ConfigDir: dir, Force: true}); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Il cluster "oricluster" (privato, non toccato dal bundle) deve sopravvivere
+	// The "oricluster" cluster (private, not touched by the bundle) must survive
 	if _, ok := cfgAfter.Clusters["oricluster"]; !ok {
 		t.Fatalf("oricluster was lost after bundle re-install: %v", cfgAfter.Clusters)
 	}
@@ -80,13 +80,13 @@ func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
 		t.Fatalf("oricluster/orins/tuboweb service lost after bundle re-install")
 	}
 
-	// Il namespace "default" deve preservare il servizio myapi
+	// The "default" namespace must preserve the myapi service
 	defaultNs := cfgAfter.Clusters["home"].Namespaces["default"]
 	if svc, ok := defaultNs.Services["myapi"]; !ok || svc.ServiceID != "service-abc123" {
 		t.Fatalf("home/default/myapi service lost after bundle re-install: %#v", defaultNs.Services)
 	}
 
-	// Il namespace "staging" (privato, non nel bundle) deve sopravvivere
+	// The "staging" namespace (private, not in the bundle) must survive
 	stagingNs, ok := cfgAfter.Clusters["home"].Namespaces["staging"]
 	if !ok {
 		t.Fatalf("home/staging namespace lost after bundle re-install: %v", cfgAfter.Clusters["home"].Namespaces)

@@ -1,8 +1,8 @@
 # Tests / E2E deterministic runner
 
-Questo harness esegue scenari Docker-based, uno per volta, con container separati per attori e stato persistente per actor sotto `generated/e2e/<scenario>-<run-id>/`.
+This harness runs Docker-based scenarios, one at a time, with separate containers for actors and persistent per-actor state under `generated/e2e/<scenario>-<run-id>/`.
 
-Scenari disponibili:
+Available scenarios:
 
 - `001-default-cluster-default-namespace`
 - `collaboration_namespace_flows`
@@ -10,7 +10,7 @@ Scenari disponibili:
 - `public_one_time_share_invite`
 - `public_stolen_access_token_rejected`
 
-Uso:
+Usage:
 
 ```bash
 tests/e2e/run.sh 001-default-cluster-default-namespace
@@ -18,7 +18,7 @@ tests/e2e/run.sh all
 tests/e2e/run.sh clean
 ```
 
-Target Make disponibili:
+Available Make targets:
 
 ```bash
 make e2e-default
@@ -26,21 +26,21 @@ make e2e
 make e2e-clean
 ```
 
-Il runner:
+The runner:
 
-- compila `tubo` e `dummy-api-server` dal checkout corrente;
-- costruisce una piccola immagine Docker locale con i binari appena compilati;
-- crea una rete Docker isolata per scenario;
-- avvia gli attori in container distinti (`admin`, `alice`, `bob`);
-- conserva log e artefatti nel workdir dello scenario;
-- rimuove rete e container a fine esecuzione, salvo `KEEP_WORK=1`.
+- builds `tubo` and `dummy-api-server` from the current checkout;
+- builds a small local Docker image with the newly built binaries;
+- creates an isolated Docker network per scenario;
+- starts actors in separate containers (`admin`, `alice`, `bob`);
+- preserves logs and artifacts in the scenario workdir;
+- removes network and containers after execution, unless `KEEP_WORK=1`.
 
-Il primo scenario valida il happy path base:
+The first scenario validates the basic happy path:
 
 - relay container `admin`;
-- Alice pubblica un servizio `e2e-echo` e genera il token `tubo share service/...`;
-- Bob parte da config pulita, fa implicit public join e si collega direttamente con `tubo connect --token`, senza `tubo join cluster/home`.
+- Alice publishes an `e2e-echo` service and generates the `tubo share service/...` token;
+- Bob starts from a clean config, performs implicit public join, and connects directly with `tubo connect --token`, without `tubo join cluster/home`.
 
-Lo scenario `collaboration_namespace_flows` copre il ramo collaboration: invite `member` che puo' discover+connect by name, invite `viewer` che puo' listare ma non aprire lease di connect, e share invite che continua a funzionare cross-scope anche senza membership di namespace.
+The `collaboration_namespace_flows` scenario covers the collaboration branch: a `member` invite that can discover and connect by name, a `viewer` invite that can list but cannot open a connect lease, and a share invite that continues to work cross-scope even without namespace membership.
 
-Gli scenari `public_*` coprono i gate security/discovery di `0.7.0.b0`: duplicate display name accettate solo come record distinti per `service_id`, lease non valide respinte, connect proof rubati/scaduti/replay respinti, auto-renew dei `ConnectAccessLease`, invite one-time anche dopo attach restart e fresh-client retry, e revoche issuer-side per invite/session/service-access.
+The `public_*` scenarios cover the security/discovery gates from `0.7.0.b0`: duplicate display names accepted only as distinct records by `service_id`, invalid leases rejected, stolen/expired/replayed connect proofs rejected, `ConnectAccessLease` auto-renewal, one-time invites even after attach restart and fresh-client retry, and issuer-side revocations for invite/session/service-access.

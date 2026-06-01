@@ -1,42 +1,42 @@
 # Linode multi-region distributed testbench
 
-Questo stack Terraform crea 3 Linode in **region diverse**:
+This Terraform stack creates 3 Linodes in **different regions**:
 
-- `relay` pubblico
-- `edge` con ingress chiuso (SSH only, NAT-like)
-- `service` con ingress chiuso (SSH only, NAT-like)
+- public `relay`
+- `edge` with closed ingress (SSH only, NAT-like)
+- `service` with closed ingress (SSH only, NAT-like)
 
-## Importante: NAT reale vs NAT-like
+## Important: real NAT vs NAT-like
 
-Con soli 3 Linode in region diverse, fare un NAT "vero" per edge e service senza introdurre gateway aggiuntivi per regione e' scomodo e poco utile per questo progetto.
+With only 3 Linodes in different regions, building a "real" NAT setup for edge and service without adding extra regional gateways is awkward and not very useful for this project.
 
-Per questo bench usiamo un approccio **NAT-like**:
+For this bench we use a **NAT-like** approach:
 
-- `edge` e `service` hanno IP pubblici Linode per la gestione SSH;
-- ma il loro ingress applicativo/libp2p viene chiuso dal **Linode Cloud Firewall**;
-- `relay` resta l'unico nodo apertamente raggiungibile su `tcp/4001`.
+- `edge` and `service` have public Linode IPs for SSH management;
+- but their application/libp2p ingress is closed by the **Linode Cloud Firewall**;
+- `relay` remains the only node openly reachable on `tcp/4001`.
 
-Questo forza un comportamento molto vicino a un deployment dietro NAT per il nostro caso di test:
+This forces behavior very close to a behind-NAT deployment for our test case:
 
-- niente direct dial inbound affidabile verso `edge`/`service`;
-- discovery e data plane devono appoggiarsi al relay pubblico;
-- il bench verifica il percorso `connection_path=relayed`.
+- no reliable inbound direct dial to `edge`/`service`;
+- discovery and data plane must rely on the public relay;
+- the bench verifies the `connection_path=relayed` path.
 
-## Cosa crea Terraform
+## What Terraform creates
 
 Terraform:
 
-- crea 3 VM Linode;
-- crea 3 **Linode Cloud Firewall** dedicati e li associa alle VM;
-- usa regole cloud firewall allineate a `rwct-fw` per allowlist SSH/proxy/ICMP;
-- mantiene `relay` (`tcp/4001`) **solo sul nodo relay**;
-- non esegue piu' bootstrap via Terraform; il provisioning runtime e' demandato allo smoke script.
+- creates 3 Linode VMs;
+- creates 3 dedicated **Linode Cloud Firewalls** and attaches them to the VMs;
+- uses cloud firewall rules aligned with `rwct-fw` for SSH/proxy/ICMP allowlisting;
+- keeps `relay` (`tcp/4001`) exposed **only on the relay node**;
+- no longer performs bootstrap via Terraform; runtime provisioning is delegated to the smoke script.
 
-Il deploy di `tubo`, delle config YAML e dello smoke vero e proprio e' fatto da:
+Deployment of `tubo`, YAML configs, and the actual smoke run is handled by:
 
 - `tests/smoke-terraform-linode.sh`
 
-## File principali
+## Main files
 
 - `versions.tf`
 - `variables.tf`
@@ -45,44 +45,44 @@ Il deploy di `tubo`, delle config YAML e dello smoke vero e proprio e' fatto da:
 - `terraform.tfvars.example`
 - `../../../tests/smoke-terraform-linode.sh`
 
-## Uso
+## Usage
 
-1. Copia i vars:
+1. Copy the vars:
 
 ```bash
 cd infra/terraform/linode-distributed
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-2. Inserisci:
+2. Fill in:
 
 - `root_pass`
 - `ssh_public_key`
-- `ssh_private_key_path` (**path assoluto**, ad esempio `/root/.ssh/id_ed25519`)
-- region desiderate
-- opzionalmente gli override dei CIDR se vuoi divergere in futuro dalle regole attuali di `rwct-fw`
+- `ssh_private_key_path` (**absolute path**, for example `/root/.ssh/id_ed25519`)
+- desired regions
+- optionally CIDR overrides if you want to diverge in the future from the current `rwct-fw` rules
 
-3. Esporta il token senza salvarlo nel file:
+3. Export the token without saving it in the file:
 
 ```bash
 export TF_VAR_linode_token="$(< ~/.token)"
 ```
 
-4. Applica:
+4. Apply:
 
 ```bash
 terraform init
 terraform apply
 ```
 
-5. Lancia lo smoke:
+5. Run the smoke test:
 
 ```bash
 cd /root/tubo
 ./tests/smoke-terraform-linode.sh
 ```
 
-## Output utili
+## Useful outputs
 
 ```bash
 terraform output relay_public_ip
@@ -102,8 +102,8 @@ terraform output service_ssh
 terraform destroy
 ```
 
-## Limiti attuali
+## Current limits
 
-- non usa ancora NodeBalancers/VPC/gateway dedicati;
-- non crea systemd unit permanenti: lo smoke usa processi remoti `nohup`;
-- la validazione reale richiede un Linode PAT e una chiave SSH funzionante.
+- it does not yet use NodeBalancers/VPC/dedicated gateways;
+- it does not create permanent systemd units: the smoke uses remote `nohup` processes;
+- real validation requires a Linode PAT and a working SSH key.
