@@ -1,101 +1,88 @@
-# Confronto con progetti simili a tubo
+# Comparison with projects similar to tubo
 
-Questo documento riassume il confronto tra `tubo` e altri progetti di tunneling, reverse proxy, NAT traversal e localhost exposure.
+This document summarizes the comparison between `tubo` and other tunneling, reverse proxy, NAT traversal, and localhost exposure projects.
 
-## Posizionamento di tubo
+## tubo positioning
 
-`tubo` oggi è meglio descritto come:
+`tubo` is best described today as:
 
 ```text
-reverse proxy HTTP service-oriented su overlay libp2p self-hosted
+self-hosted libp2p overlay reverse proxy with service-oriented discovery
 ```
 
-Non è ancora un sostituto completo di ngrok/frp/chisel/rathole, perché oggi non offre TCP/UDP generico. Ha però una caratteristica distintiva: discovery p2p, relay libp2p, private swarm e routing per service name.
+It is not yet a full replacement for ngrok/frp/chisel/rathole, because it does not provide generic TCP/UDP support yet. It does have a distinctive trait: P2P discovery, libp2p relay, private swarm, and service-name routing.
 
-## Tabella comparativa
+## Comparison table
 
-| Progetto | Modello | Protocolli | Self-host | NAT traversal | P2P/relay | Sicurezza | Differenza rispetto a tubo |
-|---|---|---:|---:|---:|---:|---|---|
-| tubo | Overlay libp2p + discovery service-oriented | HTTP oggi; HTTPS upstream base | Sì | Sì, via libp2p relay/autorelay | Sì, libp2p | PSK/private swarm | Più p2p/service-discovery; meno general-purpose |
-| frp | Client/server reverse proxy | TCP, UDP, HTTP, HTTPS | Sì | Sì | P2P mode disponibile | Token/TLS | Molto più maturo su TCP/UDP |
-| ngrok | SaaS tunnel/gateway | HTTP/S, TCP, TLS | No, SaaS | Sì | No | Auth, policies, OAuth, TLS | Product molto completo, non self-host puro |
-| Cloudflare Tunnel | Cloud edge + daemon outbound | HTTP/S, TCP/private network in vari scenari | Parziale | Sì | No | Zero Trust | Forte ma vendor-dependent |
-| Tailscale Funnel/Serve | WireGuard mesh + public ingress | HTTP/S e TCP in vari casi | Parziale/SaaS control-plane | Sì | DERP relay | ACL tailnet/identity | Più VPN/mesh che reverse proxy custom |
-| inlets | Client/server tunnel cloud-native | HTTP, TCP | Sì/pro | Sì | No | TLS/token | Forte per Kubernetes/LB |
-| chisel | TCP/UDP tunnel su HTTP/WebSocket, secured via SSH | TCP, UDP, SOCKS | Sì | Sì | No | SSH-based | Ottimo per pivoting e port forwarding |
-| wstunnel | Tunnel su WebSocket/HTTP2 | TCP, UDP | Sì | Sì | No | TLS/opzioni varie | Forte per bypass proxy/firewall |
-| rathole | Reverse proxy NAT traversal in Rust | TCP, UDP | Sì | Sì | No | Token/TLS/noise a seconda config | Alternativa performante a frp/ngrok |
-| bore | TCP tunnel minimale in Rust | TCP | Sì | Sì | No | Basic/limitata | Semplicissimo, ma molto meno feature |
-| Holesail | P2P reverse proxy | HTTP/TCP-oriented | Sì/servizio | Sì | Sì | Chiavi P2P | Concettualmente vicino per P2P |
-| NRelay/fxTunnel/OutRay | Alternative ngrok self-hosted | HTTP/TCP/UDP variabile | Sì | Sì | Di solito relay server | Variabile | Più “ngrok clone”, maturità da verificare |
+| Project | Model | Protocols | Self-host | NAT traversal | P2P/relay | Security | Difference vs tubo |
+|---|---|---:|---|---|---|---|---|
+| tubo | libp2p overlay + service-oriented discovery | HTTP today; HTTPS upstream basics | Yes | Yes, via libp2p relay/autorelay | Yes, libp2p | PSK/private swarm | More P2P/service-discovery oriented; less general-purpose |
+| frp | Client/server reverse proxy | TCP, UDP, HTTP, HTTPS | Yes | Yes | P2P mode available | Token/TLS | Much more mature for TCP/UDP |
+| ngrok | SaaS tunnel/gateway | HTTP/S, TCP, TLS | No, SaaS | Yes | No | Auth, policies, OAuth, TLS | Very complete product, not pure self-host |
+| Cloudflare Tunnel | Cloud edge + outbound daemon | HTTP/S, TCP/private network in some scenarios | Partial | Yes | No | Zero Trust | Strong, but vendor-dependent |
+| Tailscale Funnel/Serve | WireGuard mesh + public ingress | HTTP/S and TCP in some cases | Partial/SaaS control-plane | Yes | DERP relay | Tailnet ACL/identity | More VPN/mesh than custom reverse proxy |
+| inlets | Client/server cloud-native tunnel | HTTP, TCP | Yes/pro | Yes | No | TLS/token | Strong for Kubernetes/LB |
+| chisel | TCP/UDP tunnel over HTTP/WebSocket, secured via SSH | TCP, UDP, SOCKS | Yes | Yes | No | SSH-based | Excellent for pivoting and port forwarding |
+| wstunnel | Tunnel over WebSocket/HTTP2 | TCP, UDP | Yes | Yes | No | TLS/various options | Strong for proxy/firewall bypass |
+| rathole | Reverse proxy NAT traversal in Rust | TCP, UDP | Yes | Yes | No | Token/TLS/noise depending on config | Faster alternative to frp/ngrok |
+| bore | Minimal TCP tunnel in Rust | TCP | Yes | Yes | No | Basic/limited | Very simple, but far fewer features |
+| Holesail | P2P reverse proxy | HTTP/TCP-oriented | Yes/service | Yes | Yes | P2P keys | Conceptually close to P2P |
+| NRelay/fxTunnel/OutRay | ngrok-like self-hosted alternatives | HTTP/TCP/UDP varies | Yes | Yes | Usually relay-server based | Varies | More “ngrok clone”; maturity to verify |
 
-## Fonti principali trovate
+## Where tubo is strong
 
-- frp: https://github.com/fatedier/frp
-- inlets: https://inlets.dev/
-- chisel: https://github.com/jpillora/chisel
-- wstunnel: https://github.com/erebe/wstunnel
-- rathole: https://github.com/rathole-org/rathole
-- bore: https://github.com/ekzhang/bore
-- Cloudflare Tunnel: https://developers.cloudflare.com/tunnel/
-- Tailscale Serve/Funnel: https://tailscale.com/docs/features/tailscale-serve e https://tailscale.com/docs/features/tailscale-funnel
-- ngrok: https://ngrok.com/docs/guides/share-localhost/tunnels
-- Holesail: https://holesail.io/
+`tubo` becomes interesting when the goal is not just exposing a port, but building a private application network.
 
-## Dove tubo è forte
+Strengths:
 
-`tubo` è interessante quando l'obiettivo non è solo esporre una porta, ma costruire una rete applicativa privata.
-
-Punti forti:
-
-- service discovery integrata;
-- annunci nello swarm;
-- routing per service name;
-- relay libp2p;
-- private swarm con PSK;
+- service discovery built in;
+- swarm announcements;
+- service-name routing;
+- libp2p relay;
+- private swarm with PSK;
 - local resource + join/share workflow;
-- runtime unico `tubo`;
-- deploy self-hosted;
-- modello adatto a edge pubblico + servizi privati.
+- single `tubo` runtime;
+- self-hosted deployment;
+- a model suited for public edge + private services.
 
-Questo lo rende più simile a un piccolo service mesh p2p che a un semplice tunnel TCP.
+This makes it more similar to a small P2P service mesh than a simple TCP tunnel.
 
-## Dove tubo è più debole
+## Where tubo is weaker
 
-Rispetto a strumenti maturi come frp, chisel, rathole, ngrok e Cloudflare Tunnel, oggi mancano:
+Compared with mature tools such as frp, chisel, rathole, ngrok, and Cloudflare Tunnel, the current gaps are:
 
-- TCP generico;
+- generic TCP;
 - UDP;
-- TLS diretto sull'edge;
-- HTTPS upstream con CA custom/mTLS configurabile;
+- direct TLS on the edge;
+- HTTPS upstream with custom CA/mTLS;
 - TLS passthrough;
 - SNI routing;
-- auth HTTP lato edge;
-- ACL mature;
+- HTTP auth on the edge;
+- mature ACLs;
 - dashboard/UI;
 - traffic policies;
 - rate limiting;
-- osservabilità completa;
-- gestione certificati automatica;
-- route/rewrite avanzati da reverse proxy.
+- full observability;
+- automatic certificate management;
+- advanced route/rewrite reverse-proxy features.
 
-## Differenza architetturale principale
+## Main architectural difference
 
-La differenza più importante è:
+The most important difference is:
 
 ```text
-frp/chisel/rathole/bore: porte e stream TCP/UDP
+frp/chisel/rathole/bore: TCP/UDP ports and streams
 
-tubo: HTTP request/response + service discovery libp2p
+tubo: HTTP request/response + libp2p service discovery
 ```
 
-Quindi `tubo` oggi è molto buono per:
+So `tubo` is already very good for:
 
 ```text
 HTTP client -> tubo edge -> libp2p -> tubo service -> HTTP target
 ```
 
-Ma non ancora per:
+But not yet for:
 
 ```text
 Postgres TCP
@@ -106,56 +93,56 @@ DNS UDP
 QUIC UDP
 ```
 
-## Confronto HTTPS
+## HTTPS comparison
 
-| Progetto | HTTPS pubblico | HTTPS upstream | TLS passthrough |
-|---|---:|---:|---:|
-| tubo | Via reverse proxy esterno; non ancora diretto | Probabilmente sì con cert validi | No |
-| frp | Sì | Sì | Sì/SNI patterns |
-| ngrok | Sì | Sì | Sì, endpoint TLS |
-| Cloudflare Tunnel | Sì | Sì | Limitato/secondo modalità |
-| inlets | Sì | Sì | Via TCP mode |
-| chisel/wstunnel | Trasporta TCP/TLS raw | Sì se TCP | Sì |
-| rathole | TCP/TLS raw | Sì | Sì |
-| bore | TCP raw | Sì | Sì |
-
-## Confronto TCP/UDP
-
-| Progetto | TCP | UDP | Note |
+| Project | Public HTTPS | Upstream HTTPS | TLS passthrough |
 |---|---:|---:|---|
-| tubo | No | No | Da implementare |
-| frp | Sì | Sì | Molto completo |
-| chisel | Sì | Sì | HTTP/WebSocket/SSH transport |
-| wstunnel | Sì | Sì | WebSocket/HTTP2 transport |
-| rathole | Sì | Sì | Performance-focused |
-| bore | Sì | No | Minimalista |
-| ngrok | Sì | No/limitato | Principalmente HTTP/S/TCP/TLS |
-| Cloudflare Tunnel | Sì in certi scenari | Limitato/non generico | Forte su HTTP/private network |
-| Tailscale Funnel/Serve | HTTP/S e TCP in vari casi | Non focus | Mesh/VPN style |
+| tubo | Via external reverse proxy; not direct yet | Probably yes with valid certs | No |
+| frp | Yes | Yes | Yes / SNI patterns |
+| ngrok | Yes | Yes | Yes, TLS endpoints |
+| Cloudflare Tunnel | Yes | Yes | Limited / mode-dependent |
+| inlets | Yes | Yes | Via TCP mode |
+| chisel/wstunnel | Raw TCP/TLS transport | Yes if TCP | Yes |
+| rathole | Raw TCP/TLS transport | Yes | Yes |
+| bore | Raw TCP | Yes | Yes |
 
-## Come rendere tubo più competitivo
+## TCP/UDP comparison
 
-Le feature con maggiore impatto sarebbero:
+| Project | TCP | UDP | Notes |
+|---|---:|---:|---|
+| tubo | No | No | To be implemented |
+| frp | Yes | Yes | Very complete |
+| chisel | Yes | Yes | HTTP/WebSocket/SSH transport |
+| wstunnel | Yes | Yes | WebSocket/HTTP2 transport |
+| rathole | Yes | Yes | Performance-focused |
+| bore | Yes | No | Minimalist |
+| ngrok | Yes | No/limited | Mainly HTTP/S/TCP/TLS |
+| Cloudflare Tunnel | Yes in some scenarios | Limited/not generic | Strong on HTTP/private network |
+| Tailscale Funnel/Serve | HTTP/S and TCP in some cases | Not the focus | Mesh/VPN style |
 
-1. HTTPS upstream robusto.
-2. HTTPS edge diretto.
-3. TCP tunnel generico.
-4. TLS passthrough/SNI routing.
-5. Edge reverse proxy con path routing e rewrite.
-6. Auth/ACL lato edge.
-7. UDP semplice/best-effort.
+## How to make tubo more competitive
 
-## Valutazione finale
+The highest-impact features would be:
 
-`tubo` non è ancora un sostituto completo di frp/chisel/rathole/ngrok.
+1. Robust upstream HTTPS.
+2. Direct HTTPS edge support.
+3. Generic TCP tunneling.
+4. TLS passthrough / SNI routing.
+5. Reverse proxy edge with path routing and rewrite.
+6. Edge auth/ACL.
+7. Simple/best-effort UDP.
 
-Però ha un'identità diversa e interessante:
+## Final assessment
+
+`tubo` is not yet a full replacement for frp/chisel/rathole/ngrok.
+
+But it has a different and interesting identity:
 
 ```text
-self-hosted p2p service tunnel
-con discovery, relay libp2p, private swarm e bootstrap/join locale
+self-hosted P2P service tunnel
+with discovery, libp2p relay, private swarm, and local bootstrap/join workflow
 ```
 
-La feature che lo renderebbe davvero comparabile ai migliori tunnel general-purpose è il TCP generico.
+The feature that would make it truly comparable to the best general-purpose tunnels is generic TCP.
 
-La feature che lo renderebbe più distintivo, invece, è l'edge come reverse proxy applicativo dinamico basato sui service annunciati nello swarm.
+The feature that would make it more distinctive, though, is the edge as a dynamic application reverse proxy based on the services advertised in the swarm.

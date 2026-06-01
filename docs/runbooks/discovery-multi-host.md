@@ -1,177 +1,177 @@
 # Discovery and Multi-Host Runbook
 
-Questo runbook copre due piani distinti:
+This runbook covers two distinct layers:
 
-1. **stato attuale (as-is)** del progetto, che ora richiede discovery cluster/namespace V2;
-2. **target operativo consigliato** per deployment privato NAT/NAT (LM Studio su laptop + Hermes/edge su host remoto).
+1. the current as-is state of the project, which now requires Discovery V2 at the cluster/namespace level;
+2. the recommended operational target for private NAT/NAT deployments (LM Studio on a laptop + Hermes/edge on a remote host).
 
-Per avvio componenti e tunnel p2p sicuro 2+ servizi in forma operativa, usare come riferimento primario:
+For operational startup and secure P2P tunneling across 2+ services, use this as the primary reference:
 
 - `docs/runbooks/OPERABILITY.md`
 
-## 1) Discovery: stato attuale (as-is)
+## 1) Discovery: current state (as-is)
 
-### 1.1 Pubblicazione (service)
+### 1.1 Publication (service)
 
-`tubo attach` oggi:
+`tubo attach` today:
 
-1. crea host libp2p (`p2p.NewHostWithSeedAndPSK`);
-2. pubblica `AnnouncementV2` firmato e cifrato sul topic V2 del namespace;
-3. include display name (`ServiceName`), `ServiceID`, service public key, `Addresses`, membership capability e `PublishLease` valida (con `ServiceClaim` legacy solo come compatibilità);
-4. avvia heartbeat (`HEARTBEAT_INTERVAL`, default `15s`) che ripubblica lo stesso annuncio;
-5. tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
-6. se configurato, abilita static AutoRelay verso `RELAY_PEERS` (`ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE`).
+1. creates a libp2p host (`p2p.NewHostWithSeedAndPSK`);
+2. publishes a signed and encrypted `AnnouncementV2` on the namespace V2 topic;
+3. includes display name (`ServiceName`), `ServiceID`, service public key, `Addresses`, membership capability, and a valid `PublishLease` (with legacy `ServiceClaim` kept only for compatibility);
+4. starts a heartbeat (`HEARTBEAT_INTERVAL`, default `15s`) that republishes the same announcement;
+5. connects to the bootstrap peers (`BOOTSTRAP_PEERS`) and retries (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`);
+6. if configured, enables static AutoRelay toward `RELAY_PEERS` (`ENABLE_AUTORELAY`, `ENABLE_HOLE_PUNCHING`, `FORCE_REACHABILITY_PRIVATE`).
 
-### 1.2 Sottoscrizione e validazione (edge)
+### 1.2 Subscription and validation (edge)
 
-`tubo gateway` oggi:
+`tubo gateway` today:
 
-1. crea host libp2p;
-2. entra nel topic discovery V2 del namespace;
-3. usa `PubSubSubscriber` per:
-   - deserializzare annuncio;
-   - verificare topic/cluster/namespace;
-   - verificare membership capability del namespace e replay nonce;
-   - verificare che `service_id` corrisponda alla service public key;
-   - richiedere e verificare una `PublishLease` valida per `service_id`, peer, namespace/scope e authority;
-   - aggiornare cache discovery keyed primariamente da `service_id`.
-4. se configurato, tenta connessione ai bootstrap peers (`BOOTSTRAP_PEERS`) e ritenta (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
+1. creates a libp2p host;
+2. joins the namespace Discovery V2 topic;
+3. uses `PubSubSubscriber` to:
+   - deserialize the announcement;
+   - verify topic/cluster/namespace;
+   - verify the namespace membership capability and replay nonce;
+   - verify that `service_id` matches the service public key;
+   - require and validate a `PublishLease` valid for `service_id`, peer, namespace/scope, and authority;
+   - update the discovery cache keyed primarily by `service_id`.
+4. if configured, connects to bootstrap peers (`BOOTSTRAP_PEERS`) and retries (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`).
 
-### 1.3 Cache e auto-routing
+### 1.3 Cache and auto-routing
 
-- Cache keyed primariamente per `service_id`; `serviceName`/display name resta un indice di compatibilità e non è unico (`internal/discovery/cache.go`).
-- Gli edge aggiornano la cache tramite Discovery V2 validata; non accettano `announce_service` sul protocollo query.
-- I relay possono mantenere una cache query/sync per supportare `get services` remoti.
-- Il TTL effettivo degli annunci V2 è limitato da announcement TTL e scadenza della `PublishLease`/claim incorporato.
-- Su evento `added`, il gateway crea route auto:
+- The cache is keyed primarily by `service_id`; `serviceName`/display name remains a compatibility index and is not unique (`internal/discovery/cache.go`).
+- Edges update the cache through validated Discovery V2; they do not accept `announce_service` on the query protocol.
+- Relays can keep a query/sync cache to support remote `get services`.
+- The effective TTL of V2 announcements is bounded by the announcement TTL and the expiry of the embedded `PublishLease`/claim.
+- On `added`, the gateway creates an auto-route:
   - `hostname = serviceName`
   - `pathPrefix = "/"`
-- Su `removed` (expiry), rimuove la route.
+- On `removed` (expiry), it removes the route.
 
-Quindi request HTTP con `Host: <serviceName>` viene inoltrata al peer scoperto.
+So an HTTP request with `Host: <serviceName>` is forwarded to the discovered peer.
 
-### 1.4 Limiti attuali importanti
+### 1.4 Important current limitations
 
-1. Display name duplicati sono accettati come record distinti quando il `service_id` differisce; le route HTTP legacy basate su hostname restano ambigue se due servizi nello stesso scope usano lo stesso display name.
-2. La cache query dei relay propaga `service_id` quando disponibile e non sostituisce la validazione Discovery V2 degli edge.
-3. Se gli indirizzi annunciati non sono raggiungibili, il dial diretto fallisce.
-4. La cifratura attuale del payload Discovery V2 deriva la chiave da `cluster_id` + `namespace_id`; questo separa il payload per scope ma **non** fornisce una strong private-namespace metadata boundary se gli ID sono pubblici o indovinabili. Per il target 0.7 vedere `docs/reference/security-model-0.7.md` e il futuro `namespace_discovery_key`.
-5. Hole punching/AutoNAT non sono ancora completi nel progetto.
-6. La private swarm PSK e supportata tramite env (`LIBP2P_PRIVATE_NETWORK_KEY` oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64`) su `edge`, `service`, `bridge` e `relay`.
-7. `LIBP2P_ALLOWED_PEERS` + connection gater sono implementati nel `relay`, ma non ancora enforced end-to-end su tutti i binari.
-8. Il vecchio swarm discovery `"/discovery/v1.0"` non e' piu' supportato.
+1. Duplicate display names are accepted as separate records when the `service_id` differs; legacy HTTP routes based on hostname remain ambiguous if two services in the same scope use the same display name.
+2. Relay query caches propagate `service_id` when available and do not replace Discovery V2 validation on edges.
+3. If the announced addresses are not reachable, direct dialing fails.
+4. The current encryption of the Discovery V2 payload derives the key from `cluster_id` + `namespace_id`; this separates the payload by scope but does **not** provide a strong private-namespace metadata boundary if the IDs are public or guessable. For the 0.7 target, see `docs/reference/security-model-0.7.md` and the future `namespace_discovery_key`.
+5. Hole punching/AutoNAT are still not complete in the project.
+6. Private swarm PSK is supported through env (`LIBP2P_PRIVATE_NETWORK_KEY` or `LIBP2P_PRIVATE_NETWORK_KEY_B64`) on `edge`, `service`, `bridge`, and `relay`.
+7. `LIBP2P_ALLOWED_PEERS` + connection gating are implemented in the `relay`, but not yet enforced end-to-end across all binaries.
+8. The old swarm discovery `"/discovery/v1.0"` is no longer supported.
 
-## 2) Obiettivo operativo per deployment NAT/NAT privato
+## 2) Operational target for private NAT/NAT deployment
 
-### 2.1 Nodo pubblico controllato obbligatorio
+### 2.1 Mandatory controlled public node
 
-Per deployment con nodi potenzialmente dietro NAT, deve esistere almeno un nodo pubblico stabile gestito da noi. Con Discovery V2 il nodo pubblico serve come bootstrap/relay transport, non come discovery swarm router.
+For deployments with nodes potentially behind NAT, there must be at least one stable public node managed by us. With Discovery V2 the public node serves as bootstrap/relay transport, not as a discovery swarm router.
 
-Requisiti minimi:
+Minimum requirements:
 
-- IP pubblico statico o DNS stabile;
-- PeerID stabile;
-- porta libp2p TCP aperta (es. `4001/tcp`);
-- bootstrap peer della rete;
+- static public IP or stable DNS;
+- stable PeerID;
+- open libp2p TCP port (for example `4001/tcp`);
+- bootstrap peer for the network;
 - relay circuit v2;
-- stessa private network config degli altri peer.
+- the same private network config as the other peers.
 
-Non usare bootstrap peer o relay pubblici di terzi per traffico privato.
+Do not use third-party bootstrap peers or public relays for private traffic.
 
-Ruolo tipico:
+Typical role:
 
 ```text
 public-node:
 - bootstrap peer
 - circuit relay v2
-- opzionale: AutoNAT service
-- opzionale: edge HTTP ingress
+- optional AutoNAT service
+- optional edge HTTP ingress
 ```
 
-### 2.2 Separazione bootstrap vs relay
+### 2.2 Bootstrap vs relay separation
 
-- `bootstrap`: entrare nella rete e trovare peer (control plane).
-- `relay`: trasportare traffico quando il direct dial non funziona (data plane).
-- `hole punching`: ottimizza verso percorso diretto quando possibile, ma relay resta fallback.
+- `bootstrap`: join the network and find peers (control plane).
+- `relay`: carry traffic when direct dialing does not work (data plane).
+- `hole punching`: optimizes toward a direct path when possible, but relay remains the fallback.
 
-Regola operativa:
+Operational rule:
 
-1. bootstrap pubblico nostro = necessario per control plane;
-2. relay pubblico nostro = necessario per data plane robusto NAT/NAT.
+1. our public bootstrap node = required for the control plane;
+2. our public relay node = required for robust NAT/NAT data plane.
 
-## 3) Private libp2p network (PSK) + autorizzazione peer
+## 3) Private libp2p network (PSK) + peer authorization
 
 ### 3.1 Private swarm PSK (target)
 
-Configurazione desiderata:
+Desired configuration:
 
 - `LIBP2P_PRIVATE_NETWORK_KEY=/etc/hermes-p2p/swarm.key`
-- oppure `LIBP2P_PRIVATE_NETWORK_KEY_B64=<secret>`
+- or `LIBP2P_PRIVATE_NETWORK_KEY_B64=<secret>`
 
-Quando presente, host libp2p deve essere creato con private network (`libp2p.PrivateNetwork(psk)`).
+When present, the libp2p host must be created with private network (`libp2p.PrivateNetwork(psk)`).
 
-Policy chiave:
+Key policy:
 
-- entropia forte;
-- distribuzione solo a nodi fidati;
-- montata come secret;
-- mai committata nel repository;
-- ruotabile in caso di compromissione.
+- strong entropy;
+- distribute only to trusted nodes;
+- mount as a secret;
+- never commit to the repository;
+- rotate on compromise.
 
-### 3.2 Allowlist PeerID (connection-level: implementata su relay/edge/service/bridge)
+### 3.2 Peer allowlist (connection-level: implemented on relay/edge/service/bridge)
 
-Configurazione desiderata:
+Desired configuration:
 
 - `LIBP2P_ALLOWED_PEERS=<EDGE_PEER_ID>,<SERVICE_AGENT_PEER_ID>,<RELAY_PEER_ID>,<HERMES_PEER_ID>`
 
-Comportamento richiesto:
+Required behavior:
 
-1. rifiutare inbound da PeerID non allowlisted;
-2. rifiutare outbound verso PeerID non allowlisted;
-3. rifiutare annunci discovery firmati da PeerID non allowlisted;
-4. rifiutare mapping `ServiceName -> PeerID` non previsto.
+1. reject inbound traffic from non-allowlisted PeerIDs;
+2. reject outbound connections to non-allowlisted PeerIDs;
+3. reject discovery announcements signed by non-allowlisted PeerIDs;
+4. reject `ServiceName -> PeerID` mappings that are not expected.
 
-Implementazione attuale:
+Current implementation:
 
-- `ConnectionGater` per livello connessione;
-- parser `LIBP2P_ALLOWED_PEERS` e enforcement connessioni su `relay`, `edge`, `service` e `bridge`.
+- `ConnectionGater` at the connection layer;
+- `LIBP2P_ALLOWED_PEERS` parser and connection enforcement on `relay`, `edge`, `service`, and `bridge`.
 
-Implementazione ancora necessaria:
+Still needed:
 
-- controlli applicativi in discovery handler e stream handler su gateway/agent;
-- binding `ServiceName -> PeerID` oltre il semplice gate di connessione.
+- application-level checks in discovery handlers and stream handlers on gateway/agent;
+- `ServiceName -> PeerID` binding beyond the simple connection gate.
 
-### 3.3 Binding ServiceName -> PeerID (target)
+### 3.3 ServiceName -> PeerID binding (target)
 
-Esempi config:
+Example config:
 
 - `SERVICE_AUTHZ_lmstudio=<SERVICE_AGENT_PEER_ID>`
 - `SERVICE_AUTHZ_hermes=<HERMES_PEER_ID>`
 
-Oppure formato unico:
+Or a unified format:
 
 - `DISCOVERY_SERVICE_ALLOWLIST=lmstudio:<SERVICE_AGENT_PEER_ID>,hermes:<HERMES_PEER_ID>`
 
-Annuncio accettato solo se:
+Accept the announcement only if:
 
 1. `Announcement.PeerID == sender peer`;
-2. firma valida;
-3. `PeerID` allowlisted;
-4. `ServiceName` autorizzato per quel `PeerID`.
+2. the signature is valid;
+3. the `PeerID` is allowlisted;
+4. the `ServiceName` is authorized for that `PeerID`.
 
-## 4) Discovery isolato (no public discovery)
+## 4) Isolated discovery (no public discovery)
 
-Per questo deployment privato:
+For this private deployment:
 
-1. non usare public DHT;
-2. non usare bootstrap peer casuali;
-3. non usare relay pubblici esterni;
-4. usare solo topic discovery V2 opachi derivati da cluster/namespace;
-5. discovery continua con announcement firmati e capability verificate.
+1. do not use the public DHT;
+2. do not use random bootstrap peers;
+3. do not use external public relays;
+4. use only opaque Discovery V2 topics derived from cluster/namespace;
+5. continue discovery with signed announcements and verified capabilities.
 
-## 5) Relay privato, AutoRelay e NAT reachability
+## 5) Private relay, AutoRelay, and NAT reachability
 
-### 5.1 Config runtime consigliata (target)
+### 5.1 Recommended runtime config (target)
 
 - `BOOTSTRAP_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID>`
 - `RELAY_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID>`
@@ -181,38 +181,38 @@ Per questo deployment privato:
 - `ENABLE_HOLE_PUNCHING=true`
 - `FORCE_REACHABILITY_PRIVATE=true`
 
-### 5.2 Ruoli per nodo
+### 5.2 Node roles
 
-Nodo pubblico:
+Public node:
 
 - `ENABLE_RELAY_SERVICE=true`
 - `ENABLE_AUTONAT_SERVICE=true`
 
-Nodi dietro NAT:
+NATed nodes:
 
 - `ENABLE_RELAY=true`
 - `ENABLE_AUTORELAY=true`
 - `ENABLE_HOLE_PUNCHING=true`
 - `FORCE_REACHABILITY_PRIVATE=true`
 
-### 5.3 Relay statici (target)
+### 5.3 Static relays (target)
 
-Per ambienti privati usare relay statici configurati, non discovery generico relay.
+For private environments use configured static relays, not generic relay discovery.
 
-Esempio:
+Example:
 
 - `RELAY_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID>`
 
-## 6) Diagnostica reachability (target)
+## 6) Reachability diagnostics (target)
 
-Endpoint suggeriti:
+Suggested endpoints:
 
 - `GET /p2p/status`
 - `GET /p2p/peers`
 - `GET /p2p/relays`
 - `GET /p2p/reachability`
 
-Output minimo utile:
+Minimum useful output:
 
 ```json
 {
@@ -227,9 +227,9 @@ Output minimo utile:
 }
 ```
 
-## 7) Error taxonomy per HTTP 502 (target)
+## 7) HTTP 502 error taxonomy (target)
 
-Quando il gateway non riesce a forwardare verso service scoperto, distinguere almeno:
+When the gateway cannot forward to a discovered service, distinguish at least:
 
 1. `discovery_missing`
 2. `peer_not_allowed`
@@ -240,166 +240,177 @@ Quando il gateway non riesce a forwardare verso service scoperto, distinguere al
 7. `service_expired`
 8. `target_unreachable_from_agent`
 
-In log 502 includere almeno:
+Include at least these fields in a 502 log entry:
 
 - `serviceName`
 - target `PeerID`
 - known addresses
 - relay addresses
-- tipo connessione (`direct|relayed|none`)
+- connection type (`direct|relayed|none`)
 - last announcement timestamp
 - last dial error
 
-## 8) Runbook NAT/NAT privato (LM Studio + Hermes)
+## 8) NAT/NAT private runbook (LM Studio + Hermes)
 
-Topologia di riferimento:
+Topology:
 
 ```text
                     Internet
                        |
               +----------------+
-              | public node    |
-              | bootstrap      |
-              | relay v2       |
-              | AutoNAT svc    |
+              | public relay   |
+              | stable IP      |
               +----------------+
-                ^            ^
-                | outbound   | outbound
-                |            |
-+-------------------+    +-------------------+
-| laptop LM Studio  |    | Hermes / gateway  |
-| service NAT |    | edge NAT          |
-+-------------------+    +-------------------+
+                /            \
+               /              \
+      +--------------+   +--------------+
+      | laptop       |   | remote host  |
+      | LM Studio    |   | Hermes/edge  |
+      | service      |   | gateway      |
+      +--------------+   +--------------+
 ```
 
-Flusso:
+Recommended flow:
 
-1. service connette outbound al public node;
-2. edge connette outbound al public node;
-3. service pubblica announcement firmato;
-4. edge riceve e valida;
-5. edge crea route `Host=lmstudio`;
-6. Hermes chiama edge;
-7. edge apre stream verso service;
-8. se direct dial fallisce, usa relay;
-9. se hole punching riesce, stream successivi possono andare diretti.
+1. generate a PSK;
+2. start the public relay node;
+3. start the edge/gateway on the remote host;
+4. start the service on the laptop;
+5. ensure service announcements advertise relay-aware addresses;
+6. verify discovery on the edge;
+7. verify the request path goes through the relay.
 
-## 9) Configurazione esempio completa (target)
+## 9) Complete example config (target)
 
-### 9.1 Public node
+### Relay
+
+```yaml
+network:
+  private_key_file: /etc/hermes-p2p/swarm.key
+
+p2p:
+  listen: /ip4/0.0.0.0/tcp/4001
+  relay_service: true
+  autonat_service: true
+  allowed_peers:
+    - <EDGE_PEER_ID>
+    - <SERVICE_AGENT_PEER_ID>
+```
+
+### Edge
+
+```yaml
+network:
+  private_key_file: /etc/hermes-p2p/swarm.key
+  bootstrap_peers:
+    - /ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID>
+  relay_peers:
+    - /ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID>
+  allowed_peers:
+    - <SERVICE_AGENT_PEER_ID>
+    - <PUBLIC_NODE_PEER_ID>
+
+edge:
+  listen: :8443
+  admin_listen: 127.0.0.1:8444
+  force_direct_paths: false
+  discovery_topic: opaque-cluster-namespace-topic
+```
+
+### Service
+
+```yaml
+network:
+  private_key_file: /etc/hermes-p2p/swarm.key
+  bootstrap_peers:
+    - /ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID>
+  relay_peers:
+    - /ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID>
+  allowed_peers:
+    - <PUBLIC_NODE_PEER_ID>
+    - <EDGE_PEER_ID>
+
+service:
+  name: lmstudio
+  target: http://127.0.0.1:1234
+  listen: /ip4/0.0.0.0/tcp/40123
+  force_reachability: private
+```
+
+## 10) Test checklist (target)
+
+1. service announcement appears in discovery;
+2. announcement is signed and verified;
+3. invalid signatures are rejected;
+4. invalid PeerIDs are rejected by the connection gate;
+5. relay path is used when direct dialing is unavailable;
+6. direct path is preferred when it is actually reachable;
+7. `Host=lmstudio` route is created after valid discovery;
+8. `Host=lmstudio` route is removed after expiry;
+9. no disallowed peer can publish/forward traffic;
+10. no node uses the public DHT or external relays.
+
+## 11) Security note
+
+A private swarm with PSK isolates the libp2p network from external peers that do not possess the key, but it does not replace application-layer authorization.
+
+For this reason the deployment should use multiple layers:
+
+- PSK for transport-level network isolation;
+- PeerID allowlist for connection-level control;
+- signed discovery announcements for discovery integrity;
+- application authorization for who may publish or connect.
+
+Important limit:
+
+- PSK is a shared secret, not an identity system;
+- if the PSK leaks, the overlay is exposed.
+
+## 12) LM Studio + Hermes scenario: minimal commands (as-is, today)
+
+This section remains useful until the target features above are all implemented.
+
+### Relay
 
 ```bash
 NODE_SEED=public-relay-seed \
-LIBP2P_PRIVATE_NETWORK_KEY=/etc/hermes-p2p/swarm.key \
-LIBP2P_ALLOWED_PEERS=<EDGE_PEER_ID>,<SERVICE_AGENT_PEER_ID>,<PUBLIC_NODE_PEER_ID> \
 P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
+RELAY_HEALTH_LISTEN=127.0.0.1:8092 \
 ENABLE_RELAY_SERVICE=true \
 ENABLE_AUTONAT_SERVICE=true \
-go run ./cmd/tubo relay run
+ENABLE_DISCOVERY_PUBSUB=true \
+FORCE_REACHABILITY_PUBLIC=true \
+PRINT_RUN_COMMANDS=true \
+LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
+go run ./cmd/tubo relay
 ```
 
-### 9.2 Edge gateway dietro NAT
+### Edge
 
 ```bash
 EDGE_LISTEN=:8443 \
 EDGE_ADMIN_LISTEN=127.0.0.1:8444 \
 EDGE_P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
 EDGE_SEED=edge-seed \
-LIBP2P_PRIVATE_NETWORK_KEY=/etc/hermes-p2p/swarm.key \
-LIBP2P_ALLOWED_PEERS=<PUBLIC_NODE_PEER_ID>,<SERVICE_AGENT_PEER_ID>,<EDGE_PEER_ID> \
-BOOTSTRAP_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID> \
-RELAY_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID> \
-ENABLE_AUTORELAY=true \
-ENABLE_HOLE_PUNCHING=true \
-FORCE_REACHABILITY_PRIVATE=true \
+BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
 go run ./cmd/tubo gateway
 ```
 
-### 9.3 Service-agent laptop (LM Studio)
+### Service
 
 ```bash
 SERVICE_NAME=lmstudio \
 SERVICE_TARGET=http://192.168.1.28:1234 \
 SERVICE_P2P_LISTEN=/ip4/0.0.0.0/tcp/40123 \
-NODE_SEED=laptop-lmstudio-seed \
-LIBP2P_PRIVATE_NETWORK_KEY=/etc/hermes-p2p/swarm.key \
-LIBP2P_ALLOWED_PEERS=<PUBLIC_NODE_PEER_ID>,<EDGE_PEER_ID>,<SERVICE_AGENT_PEER_ID> \
-BOOTSTRAP_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID> \
-RELAY_PEERS=/ip4/<PUBLIC_NODE_IP>/tcp/4001/p2p/<PUBLIC_NODE_PEER_ID> \
+NODE_SEED=service-lmstudio-seed \
+LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
+BOOTSTRAP_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
+RELAY_PEERS=/ip4/<RELAY_PUBLIC_IP>/tcp/4001/p2p/<RELAY_PEER_ID> \
 ENABLE_AUTORELAY=true \
 ENABLE_HOLE_PUNCHING=true \
 FORCE_REACHABILITY_PRIVATE=true \
 HEARTBEAT_INTERVAL=5s \
 go run ./cmd/tubo attach
-```
-
-## 10) Test di accettazione richiesti (target)
-
-1. peer senza PSK non si connette;
-2. peer con PSK ma PeerID non allowlisted e rifiutato;
-3. peer allowlisted ma `ServiceName` non autorizzato e rifiutato;
-4. announcement con firma non valida e rifiutato;
-5. service dietro NAT scoperto via relay;
-6. edge apre stream via relay;
-7. route `Host=lmstudio` creata dopo discovery valido;
-8. route `Host=lmstudio` rimossa dopo expiry;
-9. `502` include/logga motivo corretto quando relay non disponibile;
-10. nessun nodo usa public DHT o relay esterni.
-
-## 11) Livello di sicurezza ottenuto (target)
-
-La private swarm con PSK isola la rete libp2p da peer esterni che non possiedono la chiave, ma non sostituisce autorizzazione applicativa.
-
-Per questo il deployment deve usare livelli multipli:
-
-1. PSK private network;
-2. PeerID allowlist;
-3. discovery announcement firmati;
-4. binding `ServiceName -> PeerID` autorizzato;
-5. relay/bootstrap controllati da noi;
-6. no public DHT;
-7. no relay pubblici di terzi.
-
-Limite importante:
-
-Se la PSK viene compromessa, va ruotata su tutti i nodi. La PeerID allowlist riduce il rischio ma non elimina la necessita di rotazione PSK.
-
-## 12) Scenario LM Studio + Hermes: comandi minimi (as-is, oggi)
-
-Questa sezione resta utile finche le feature target sopra non sono tutte implementate.
-
-### 12.1 Edge su Linode
-
-```bash
-EDGE_LISTEN=:8443 \
-EDGE_ADMIN_LISTEN=127.0.0.1:8444 \
-EDGE_P2P_LISTEN=/ip4/0.0.0.0/tcp/4001 \
-EDGE_SEED=edge-linode-seed \
-go run ./cmd/tubo gateway
-```
-
-### 12.2 Service-agent su laptop
-
-```bash
-SERVICE_P2P_LISTEN=/ip4/0.0.0.0/tcp/40123 \
-SERVICE_TARGET=http://192.168.1.28:1234 \
-NODE_SEED=laptop-lmstudio-seed \
-SERVICE_NAME=lmstudio \
-HEARTBEAT_INTERVAL=5s \
-BOOTSTRAP_PEERS=/ip4/<LINODE_PUBLIC_IP>/tcp/4001/p2p/<EDGE_PEER_ID> \
-go run ./cmd/tubo attach
-```
-
-### 12.3 Query da Hermes
-
-```bash
-curl -sS -H 'Host: lmstudio' http://<EDGE_IP>:8443/v1/models
-```
-
-```bash
-curl -sS \
-  -H 'Host: lmstudio' \
-  -H 'Content-Type: application/json' \
-  -d '{"model":"local-model","messages":[{"role":"user","content":"ciao"}]}' \
-  http://<EDGE_IP>:8443/v1/chat/completions
 ```

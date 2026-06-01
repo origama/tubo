@@ -1,71 +1,71 @@
 # Process supervision for `tubo`
 
-Questo documento definisce la strategia consigliata per integrare `tubo` con supervisor di sistema, mantenendo il modello **daemonless-by-default**.
+This document defines the recommended strategy for integrating `tubo` with system supervisors while keeping the **daemonless-by-default** model.
 
-## Obiettivo
+## Goal
 
-Offrire un percorso opzionale per rendere persistenti dopo reboot i processi long-running di `tubo` (`attach`, `connect`, `gateway`, `relay`) senza introdurre un demone centrale `tubod`.
+Provide an optional path to make `tubo` long-running processes (`attach`, `connect`, `gateway`, `relay`) persistent across reboot without introducing a central `tubod` daemon.
 
-## Decisione raccomandata
+## Recommended decision
 
-### Modello base
+### Base model
 
-- Il modello primario resta:
+- The primary model remains:
   - foreground by default;
-  - `-d` / `--detach` per background locale leggero;
-  - nessun demone centrale obbligatorio.
-- La persistenza tramite supervisor di sistema e' **opzionale**.
-- `-d` non viene sostituito: resta il percorso piu' leggero per sviluppo, demo e ambienti non gestiti.
+  - `-d` / `--detach` for lightweight local background mode;
+  - no mandatory central daemon.
+- System-supervisor persistence is **optional**.
+- `-d` is not replaced: it remains the lightest path for development, demos, and unmanaged environments.
 
-### Prima implementazione raccomandata
+### First recommended implementation
 
-**Implementare prima `tubo generate systemd`, non `--install`.**
+**Implement `tubo generate systemd` first, not `--install`.**
 
-Motivi:
+Reasons:
 
-- e' piu' sicuro e piu' trasparente;
-- evita side effects privilegiati o dipendenti dalla macchina;
-- evita di dover decidere subito tra user unit e system unit;
-- lascia all'operatore il controllo su path del binario, environment, enable/start e logging;
-- e' coerente con il modello daemonless: `tubo` genera config, il sistema operativo gestisce il lifecycle.
+- it is safer and more transparent;
+- it avoids privileged or machine-dependent side effects;
+- it avoids choosing too early between user units and system units;
+- it leaves the operator in control of binary path, environment, enable/start, and logging;
+- it matches the daemonless model: `tubo` generates config, the OS manages the lifecycle.
 
-### Scelta Linux
+### Linux choice
 
-Per Linux, il target iniziale raccomandato e' **systemd user units**.
+For Linux, the recommended initial target is **systemd user units**.
 
-Non partire da system unit globali:
+Do not start with global system units:
 
-- le user unit non richiedono root per il caso comune;
-- si adattano meglio a un tool developer/operator self-hosted;
-- riducono il rischio di scrivere file in `/etc/systemd/system` o di imporre policy di sistema troppo presto.
+- user units do not require root for the common case;
+- they fit better with a self-hosted developer/operator tool;
+- they reduce the risk of writing to `/etc/systemd/system` or imposing system policy too early.
 
-### Scelta macOS
+### macOS choice
 
-Per macOS, la decisione raccomandata e' **rimandare l'automazione `launchd` a una seconda fase**.
+For macOS, the recommended decision is to **defer `launchd` automation to a second phase**.
 
-Nel frattempo:
+In the meantime:
 
-- documentare una strategia equivalente con `launchd`;
-- non implementare ancora `tubo generate launchd` nella prima PR;
-- non implementare ancora `--install` cross-platform.
+- document an equivalent strategy with `launchd`;
+- do not implement `tubo generate launchd` in the first PR;
+- do not implement cross-platform `--install` yet.
 
-Motivo: prima conviene stabilizzare naming, metadata e relazione tra `process/...` e unit file sul percorso systemd.
+Reason: first stabilize naming, metadata, and the relationship between `process/...` and unit files on the systemd path.
 
-## UX raccomandata
+## Recommended UX
 
-### Fase 1: generazione esplicita
+### Phase 1: explicit generation
 
 ```bash
 tubo generate systemd process/attach-lmstudio
 ```
 
-oppure:
+or:
 
 ```bash
 tubo generate systemd attach --name lmstudio --target http://127.0.0.1:1234
 ```
 
-Analogamente:
+Similarly:
 
 ```bash
 tubo generate systemd connect lmstudio --local 127.0.0.1:51234
@@ -73,17 +73,17 @@ tubo generate systemd gateway --listen :8443
 tubo generate systemd relay
 ```
 
-### Non raccomandato come prima mossa
+### Not recommended as a first step
 
 ```bash
 tubo attach ... --install --enable
 ```
 
-Questa UX puo' arrivare in una fase successiva, ma non dovrebbe essere il primo passo implementativo.
+That UX may come later, but it should not be the first implementation step.
 
-## Naming stabile delle unit
+## Stable unit naming
 
-Mapping raccomandato:
+Recommended mapping:
 
 | Resource ID | systemd user unit |
 |---|---|
@@ -92,61 +92,61 @@ Mapping raccomandato:
 | `process/gateway-default` | `tubo-gateway-default.service` |
 | `process/relay-default` | `tubo-relay-default.service` |
 
-Regole:
+Rules:
 
-- prefisso fisso `tubo-`;
-- base name derivato dal process name locale gia' usato da `-d`;
-- suffix `.service` per systemd;
-- stesso naming anche se il processo non e' attualmente running.
+- fixed `tubo-` prefix;
+- base name derived from the local process name already used by `-d`;
+- `.service` suffix for systemd;
+- same naming even if the process is not running yet.
 
-Questo permette di trattare `process/...` come ID stabile anche quando il lifecycle reale e' delegato al supervisor.
+This allows `process/...` to be treated as a stable ID even when the real lifecycle is delegated to a supervisor.
 
-## Interazione con `tubo ps/get processes/logs/stop/describe/inspect`
+## Interaction with `tubo ps/get processes/logs/stop/describe/inspect`
 
-Dopo l'inventory e il refactor del process registry, questi comandi descrivono i runtime Tubo registrati localmente (foreground o detached) quando Tubo conosce state/pid metadata.
+After the inventory and process registry refactor, these commands describe locally registered Tubo runtimes (foreground or detached) when Tubo knows state/PID metadata.
 
-Resta vero che:
+It remains true that:
 
-- non diventano wrapper impliciti di `systemctl --user` o `launchctl`;
-- i processi gestiti esternamente possono apparire solo se usano lo stesso data/config context e registrano metadata compatibili;
-- i log sono tailabili solo quando Tubo conosce un file log owned.
+- they do not become implicit wrappers around `systemctl --user` or `launchctl`;
+- externally managed processes may appear only if they use the same data/config context and register compatible metadata;
+- logs are tailable only when Tubo knows an owned log file.
 
-### Motivazione
+### Why
 
-- evita behavior sorprendente e platform-specific;
-- evita di mescolare file-log locali con journal di systemd;
-- evita dipendenze forti da comandi esterni e da permessi utente;
-- consente di introdurre systemd in modo incrementale.
+- avoids surprising platform-specific behavior;
+- avoids mixing local log files with systemd journal;
+- avoids strong dependencies on external commands and user permissions;
+- allows incremental systemd adoption.
 
-### Come si lavora in pratica in questa fase
+### How this works in practice at this stage
 
-Per processi installati via unit file o altri supervisor esterni:
+For processes installed via unit files or other external supervisors:
 
-- gestione lifecycle: `systemctl --user start|stop|restart ...` (o equivalente);
-- logs: `journalctl --user-unit ...` quando non esiste un log file Tubo-owned;
+- lifecycle management: `systemctl --user start|stop|restart ...` (or equivalent);
+- logs: `journalctl --user-unit ...` when no Tubo-owned log file exists;
 - inspect: `systemctl --user status ...`.
 
-`process/...` resta comunque l'ID canonico per naming, generazione e documentazione.
+`process/...` remains the canonical ID for naming, generation, and documentation.
 
-### Evoluzione futura possibile
+### Possible future evolution
 
-Se in futuro servira' una vista unificata dei supervisor esterni, si puo' ancora aggiungere una modalita' esplicita, ad esempio:
+If a unified view of external supervisors is needed later, we can still add an explicit mode, for example:
 
 - `tubo get processes --supervised`
-- `tubo describe process/attach-lmstudio` che mostri anche `supervisor=systemd`
+- `tubo describe process/attach-lmstudio` showing `supervisor=systemd`
 - `tubo logs process/attach-lmstudio --systemd`
 
-## File e metadata raccomandati
+## Recommended files and metadata
 
-### Output generato
+### Generated output
 
-Per Linux user units, output target:
+For Linux user units, output target:
 
 ```text
 ~/.config/systemd/user/tubo-attach-lmstudio.service
 ```
 
-Unit template raccomandato:
+Recommended unit template:
 
 ```ini
 [Unit]
@@ -167,9 +167,9 @@ Environment=XDG_DATA_HOME=%h/.local/share
 WantedBy=default.target
 ```
 
-### Metadata sidecar consigliato
+### Recommended sidecar metadata
 
-Anche se `tubo ps` non integra ancora systemd, e' utile prevedere un sidecar leggibile da tooling futuro, per esempio:
+Even if `tubo ps` does not integrate systemd yet, it is useful to plan for a future-readable sidecar, for example:
 
 ```json
 {
@@ -187,23 +187,23 @@ Anche se `tubo ps` non integra ancora systemd, e' utile prevedere un sidecar leg
 }
 ```
 
-Path consigliato:
+Recommended path:
 
 ```text
 ~/.local/share/tubo/processes/attach-lmstudio.supervisor.json
 ```
 
-Questo sidecar non implica che il processo sia stato avviato con `-d`; serve solo come metadata per una futura integrazione.
+This sidecar does not imply that the process was started with `-d`; it only serves as metadata for a future integration.
 
-## Strategia macOS / launchd
+## macOS / launchd strategy
 
-Decisione raccomandata per questa issue:
+Decision recommended for this issue:
 
-- documentare `launchd`;
-- non implementare ancora generator/install automatico;
-- usare la stessa semantica di naming di `process/...`.
+- document `launchd`;
+- do not implement generator/install automation yet;
+- use the same `process/...` naming semantics.
 
-Naming equivalente suggerito:
+Suggested equivalent naming:
 
 ```text
 io.origama.tubo.attach-lmstudio
@@ -237,7 +237,7 @@ Plist sketch:
 </plist>
 ```
 
-## Esempi operativi
+## Operational examples
 
 ### Attach
 
@@ -275,20 +275,13 @@ systemctl --user daemon-reload
 systemctl --user enable --now tubo-relay-default.service
 ```
 
-## Decisioni finali per #48
+## Summary for implementation
 
-1. Integrazione supervisor **opzionale**; non sostituisce `-d`.
-2. Prima implementazione raccomandata: **`tubo generate systemd`**.
-3. Linux: partire da **systemd user units**.
-4. macOS: **launchd documentato ma rimandato** come implementazione.
-5. `--install` / `--enable` non sono il primo passo raccomandato.
-6. `process/...` resta l'ID canonico anche per servizi installati.
-7. I comandi locali `ps/logs/stop/inspect` leggono i runtime Tubo registrati localmente; per i servizi supervisionati senza log file Tubo-owned si usano gli strumenti nativi del sistema operativo.
-
-## Possibile roadmap successiva
-
-1. implementare `tubo generate systemd ...`;
-2. aggiungere metadata sidecar per unit generate;
-3. valutare `tubo generate launchd ...`;
-4. solo dopo valutare `--install` / `--enable`;
-5. solo dopo valutare una vista unificata `tubo get processes --supervised`.
+1. Keep the base model daemonless.
+2. Add `tubo generate systemd` first.
+3. Keep `-d` as the lightweight detached mode.
+4. Do not implement `--install` first.
+5. Keep `launchd` as a later phase.
+6. `process/...` remains the canonical ID for installed services too.
+7. Local `ps/logs/stop/inspect` read locally registered Tubo runtimes; for supervised services without Tubo-owned log files, use the OS-native tools.
+8. Optional supervisor integration is a future enhancement, not part of the core.

@@ -1,20 +1,20 @@
 # Operability Runbook
 
-Questo documento e' il riferimento operativo canonico per:
+This document is the canonical operational reference for:
 
-1. avviare i componenti;
-2. creare un tunnel p2p funzionante;
-3. creare un tunnel p2p **sicuro** (private swarm PSK) tra due o piu' servizi.
+1. starting the components;
+2. creating a working P2P tunnel;
+3. creating a **secure** P2P tunnel (private swarm PSK) between two or more services.
 
-## 1) Prerequisiti
+## 1) Prerequisites
 
 - Go 1.24+
 - Docker + Docker Compose plugin
-- rete raggiungibile tra nodi (almeno outbound dai nodi service verso il nodo edge/bootstrap)
+- network reachability between nodes (at least outbound from service nodes to the edge/bootstrap node)
 
-## 2) Componenti runtime reali
+## 2) Real runtime components
 
-Nuova UX consigliata: `tubo` con intent-based command espliciti:
+Recommended new UX: explicit intent-based `tubo` commands:
 
 ```bash
 tubo relay --config relay.yaml
@@ -22,24 +22,24 @@ tubo gateway --config edge.yaml
 tubo attach --config service.yaml
 ```
 
-Ruoli disponibili tramite `tubo`:
+Available roles through `tubo`:
 
-- `relay` (bootstrap + relay v2 + health endpoint); ora e' solo trasporto/bootstrap, non un router discovery
-- `gateway` (ingress HTTP + discovery consumer)
-- `attach` (publisher + stream handler verso servizio origin HTTP oppure raw TCP, in base al target)
-- in configurazioni cluster-aware, `gateway`/`attach`/observer selezionano un topic discovery V2 opaco derivato da `current_cluster` + `current_namespace`
-- il vecchio discovery swarm `/discovery/v1.0` e' stato rimosso: usa solo la discovery basata su cluster/namespace + capability
-- `bridge` rimane disponibile come logica client-side, ma il comando runtime storico `bridge run` non e' piu' supportato
+- `relay` (bootstrap + relay v2 + health endpoint); today it is only transport/bootstrap, not a discovery router
+- `gateway` (HTTP ingress + discovery consumer)
+- `attach` (publisher + stream handler toward the origin HTTP service or raw TCP, depending on the target)
+- in cluster-aware configurations, `gateway`/`attach`/observer select an opaque Discovery V2 topic derived from `current_cluster` + `current_namespace`
+- the old discovery swarm `/discovery/v1.0` has been removed: only cluster/namespace + capability-based discovery remains
+- `bridge` is still available as client-side logic, but the historical runtime command `bridge run` is no longer supported
 
-## 3) Quick Start locale (Docker Compose)
+## 3) Local quick start (Docker Compose)
 
-Da root repository:
+From the repository root:
 
 ```bash
 docker compose up -d --build
 ```
 
-Verifiche minime:
+Minimum checks:
 
 ```bash
 curl -fsS http://127.0.0.1:8443/healthz
@@ -50,24 +50,24 @@ curl -fsS http://127.0.0.1:8444/services
 curl -fsS http://127.0.0.1:8444/routes
 ```
 
-Test end-to-end consigliato:
+Recommended end-to-end test:
 
 ```bash
 ./tests/smoke-compose.sh
 ```
 
-## 4) Tunnel p2p sicuro (private swarm PSK)
+## 4) Secure P2P tunnel (private swarm PSK)
 
-### 4.1 Generazione chiave swarm
+### 4.1 Generate the swarm key
 
-Genera `swarm.key` (formato libp2p pnet):
+Generate `swarm.key` (libp2p pnet format):
 
 ```bash
-# nuovo metodo consigliato
+# recommended new method
 tubo keygen swarm --out swarm.key
 chmod 600 swarm.key
 
-# equivalente manuale
+# equivalent manual form
 KEY_HEX="$(openssl rand -hex 32)"
 cat > swarm.key <<EOF_KEY
 /key/swarm/psk/1.0.0/
@@ -77,28 +77,28 @@ EOF_KEY
 chmod 600 swarm.key
 ```
 
-Distribuire `swarm.key` **solo** ai nodi fidati. Non committare nel repository.
+Distribute `swarm.key` **only** to trusted nodes. Do not commit it to the repository.
 
-Per esempi YAML completi (relay, edge, service, bridge) e `tests/e2e/compose/tubo/compose.yml`, vedi [`reference/cli.md`](../reference/cli.md). Nei cluster-aware setup, il flusso locale consigliato e': `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, poi `tubo use ...`, `tubo share service/...` e `tubo attach ...` / `tubo connect --token ...`. Se il target del servizio e' `tcp://host:port`, `attach` pubblica `service_kind=tcp`, lo share token conserva quel kind e `connect` esporra' localmente un endpoint `tcp://127.0.0.1:PORT` invece del bridge HTTP: questo e' il percorso canonico per TLS passthrough. Quando il namespace e' discovery-enabled (`connect_policy: namespace_members`), puoi anche invitare Bob con `tubo share cluster/home --namespace <ns> --role member`, fargli fare `tubo join cluster/home --token ...`, poi usare `tubo get services` e `tubo connect <service>` by name nello stesso scope; un invite `--role viewer` puo' listare ma non ottenere lease di connect. Per il bundle pubblico, `tubo join`/`tubo attach`/`tubo connect` da config pulita installano `home/default` e i metadata del cluster pubblico, cosi' il publish grant listener puo' auto-approvare il flusso semplificato senza richiedere un join cluster esplicito. Lo share token e' ora un `ShareInvite` bearer connect-only: non autorizza listing generico, risolve il `service_id` esatto, non sostituisce la membership capability, e lato server e' one-time al momento del primo successful lease/session redemption (non al primo HTTP request). `tubo share revoke <share-invite>` puo' bloccarne la redemption locale, mentre `tubo revoke invite|session|service-access|publish ...` aggiorna lo store revoche issuer-side usato da `grants serve`. Il modello attuale assume un solo issuer attivo per scope; ha piani HA/consensus per issuer sono rinviati a un design futuro. Per `get services -A` o namespace aggiuntivi, assicurati che ogni namespace abbia la sua `membership_capability_file` (oppure una capability broad con namespace `*`). I join via invite salvano anche un grant firmato che autorizza le query sul nodo remoto.
+For complete YAML examples (relay, edge, service, bridge) and `tests/e2e/compose/tubo/compose.yml`, see [`reference/cli.md`](../reference/cli.md). In cluster-aware setups, the recommended local flow is: `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, then `tubo use ...`, `tubo share service/...` and `tubo attach ...` / `tubo connect --token ...`. If the service target is `tcp://host:port`, `attach` publishes `service_kind=tcp`, the share token preserves that kind, and `connect` exposes a local `tcp://127.0.0.1:PORT` endpoint instead of the HTTP bridge: this is the canonical TLS passthrough path. When the namespace is discovery-enabled (`connect_policy: namespace_members`), you can also invite Bob with `tubo share cluster/home --namespace <ns> --role member`, have him run `tubo join cluster/home --token ...`, then use `tubo get services` and `tubo connect <service>` by name in the same scope; a `--role viewer` invite can list but cannot obtain a connect lease. For the public bundle, `tubo join`/`tubo attach`/`tubo connect` from a clean config install `home/default` and the public cluster metadata, so the publish grant listener can auto-approve the simplified flow without requiring an explicit cluster join. The share token is now a `ShareInvite` bearer connect-only token: it does not authorize generic listing, it resolves the exact `service_id`, it does not replace membership capability, and on the server side it is one-time at the first successful lease/session redemption (not at the first HTTP request). `tubo share revoke <share-invite>` can block its local redemption, while `tubo revoke invite|session|service-access|publish ...` updates the issuer-side revocation store used by `grants serve`. The current model assumes a single active issuer per scope; HA/consensus plans for issuers are deferred to a future design. For `get services -A` or additional namespaces, make sure each namespace has its own `membership_capability_file` (or a broad capability with namespace `*`). Invite-based joins also save a signed grant that authorizes queries on the remote node.
 
-Nota operativa per `tubo-public`: puoi avere piu' relay pubblici senza problemi, ma oggi e' raccomandato avere **un solo Grant Service autorevole per ogni cluster/namespace pubblico** (per esempio `home/default`). I relay gestiscono solo reachability/trasporto; invece grant service multipli con store indipendenti possono approvare contemporaneamente lo stesso `service name` per peer diversi, creando split-brain e risultati discovery non deterministici. In breve: **multi-relay ok, single grant service per authority scope**.
+Operational note for `tubo-public`: you can run multiple public relays without issues, but today it is recommended to have **only one authoritative Grant Service per public cluster/namespace** (for example `home/default`). Relays only handle reachability/transport; multiple grant services with independent stores can approve the same `service name` for different peers at the same time, creating split-brain and non-deterministic discovery results. In short: **multi-relay ok, single grant service per authority scope**.
 
-La precedenza della configurazione e':
+Configuration precedence is:
 
 ```text
-flag CLI > env var > config file > default > interactive
+CLI flag > env var > config file > default > interactive prompt
 ```
 
-### 4.2 Variabili supportate (implementate)
+### 4.2 Supported variables (implemented)
 
 - `LIBP2P_PRIVATE_NETWORK_KEY=/path/to/swarm.key`
 - `LIBP2P_PRIVATE_NETWORK_KEY_B64=<base64_32_bytes>`
 
-Se valorizzate, host libp2p viene creato con private network PSK.
+If either is set, the libp2p host is created with a private network PSK.
 
-## 5) Test reale a 3 macchine (laptop NAT + edge NAT + relay pubblico)
+## 5) Real 3-machine test (laptop NAT + edge NAT + public relay)
 
-### 5.1 Avvia relay (host pubblico stabile)
+### 5.1 Start relay (stable public host)
 
 ```bash
 NODE_SEED=public-relay-seed \
@@ -113,29 +113,29 @@ LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
 go run ./cmd/tubo relay
 ```
 
-Il relay stampa nei log:
+The relay prints in the logs:
 
-1. il proprio `peer_id`;
-2. gli indirizzi libp2p disponibili;
-3. un blocco `startup command hints` con `BOOTSTRAP_PEERS` e `RELAY_PEERS` gia' valorizzati per `edge` e `service`.
+1. its own `peer_id`;
+2. the available libp2p addresses;
+3. a `startup command hints` block with `BOOTSTRAP_PEERS` and `RELAY_PEERS` already filled in for `edge` and `service`.
 
-Se l'indirizzo pubblico non viene inferito correttamente, forzarlo:
+If the public address is not inferred correctly, force it:
 
 ```bash
 RELAY_PUBLIC_ADDR=/ip4/<RELAY_PUBLIC_IP>/tcp/4001
 ```
 
-Se `RELAY_PUBLIC_ADDR` non include `/p2p/<PEER_ID>`, il relay aggiunge automaticamente il proprio PeerID nei comandi suggeriti.
+If `RELAY_PUBLIC_ADDR` does not include `/p2p/<PEER_ID>`, the relay automatically adds its own PeerID in the suggested commands.
 
-Porte firewall minime sul relay:
+Minimum firewall ports on the relay:
 
-1. `tcp/4001` (obbligatoria, bootstrap + relay circuit v2)
-2. `tcp/8092` (opzionale, health check)
-3. `tcp/22` (SSH gestione)
+1. `tcp/4001` (required, bootstrap + relay circuit v2)
+2. `tcp/8092` (optional, health check)
+3. `tcp/22` (SSH management)
 
-### 5.2 Avvia edge
+### 5.2 Start edge
 
-Nel caso NAT/NAT, l'edge deve poter usare il relay pubblico come unico peer statico. Non e' necessario esporre l'edge come bootstrap peer per i service.
+For NAT/NAT, the edge must be able to use the public relay as its only static peer. It is not necessary to expose the edge as a bootstrap peer for services.
 
 ```bash
 EDGE_LISTEN=:8443 \
@@ -148,11 +148,11 @@ LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
 go run ./cmd/tubo gateway
 ```
 
-Recuperare `peer_id` edge dai log (`edge gateway peer_id=...`).
+Retrieve the edge `peer_id` from the logs (`edge gateway peer_id=...`).
 
-### 5.3 Avvia service sul laptop (LM Studio)
+### 5.3 Start the service on the laptop (LM Studio)
 
-Nel caso NAT/NAT, il service deve usare il relay pubblico come `BOOTSTRAP_PEERS` e `RELAY_PEERS`. Non usare l'edge come bootstrap peer se l'edge e' dietro NAT.
+For NAT/NAT, the service must use the public relay as both `BOOTSTRAP_PEERS` and `RELAY_PEERS`. Do not use the edge as a bootstrap peer if the edge is behind NAT.
 
 ```bash
 SERVICE_NAME=lmstudio \
@@ -169,16 +169,16 @@ HEARTBEAT_INTERVAL=5s \
 go run ./cmd/tubo attach
 ```
 
-### 5.4 Verifica discovery e route sul nodo edge
+### 5.4 Verify discovery and route on the edge node
 
 ```bash
 curl -fsS http://127.0.0.1:8444/services
 curl -fsS http://127.0.0.1:8444/routes
 ```
 
-Atteso: `count >= 1` e route auto-creata per `lmstudio`.
+Expected: `count >= 1` and auto-created route for `lmstudio`.
 
-### 5.5 Esegui la query reale dal client sull'host edge
+### 5.5 Execute the real request from the client on the edge host
 
 ```bash
 curl -sS \
@@ -188,57 +188,49 @@ curl -sS \
   http://127.0.0.1:8443/api/v1/chat
 ```
 
-Atteso: `HTTP 200` e body JSON restituito da LM Studio.
+Expected: `HTTP 200` and a JSON body returned by LM Studio.
 
-Nota: per TLS passthrough o altri protocolli TCP, usa `SERVICE_TARGET=tcp://127.0.0.1:<PORTA>` (o `tubo attach tcp://127.0.0.1:<PORTA> --name ...`). In quel caso `connect` esporra' un listener raw TCP locale e potrai verificare il servizio con client TLS/TCP nativi invece che tramite il gateway HTTP.
+Note: for TLS passthrough or other TCP protocols, use `SERVICE_TARGET=tcp://127.0.0.1:<PORT>` (or `tubo attach tcp://127.0.0.1:<PORT> --name ...`). In that case `connect` exposes a local raw TCP listener and you can verify the service with native TLS/TCP clients instead of the HTTP gateway.
 
-### 5.6 Smoke distribuito con Terraform su 3 Linode multi-region
+### 5.6 Distributed smoke on Terraform/Linode (3 hosts, multi-region)
 
-Per un bench distribuito repeatable su cloud, e' disponibile anche uno stack Terraform + smoke harness:
+For a repeatable distributed cloud bench, there is also a Terraform stack + smoke harness:
 
 - Terraform: `infra/terraform/linode-distributed/`
 - doc: `docs/runbooks/LINODE_TERRAFORM_TESTBENCH.md`
 - smoke: `./tests/smoke-terraform-linode.sh`
 
-La topologia usa:
+The topology uses:
 
-- `relay` pubblico
-- `edge` NAT-like (SSH-only, ingress chiuso)
-- `service` NAT-like (SSH-only, ingress chiuso)
+- public `relay`
+- NAT-like `edge` (SSH-only, ingress closed)
+- NAT-like `service` (SSH-only, ingress closed)
 
-Poiche' edge e service sono volutamente chiusi in ingresso, la verifica HTTP viene eseguita dall'interno dell'host edge via SSH.
+Because edge and service are intentionally closed to inbound traffic, HTTP verification is executed from inside the edge host over SSH.
 
-### 5.7 Smoke distribuito con sole 2 macchine
+### 5.7 Distributed smoke with only 2 machines
 
-Se hai solo 2 macchine reali disponibili, il compromesso operativo consigliato e':
+If you only have 2 real machines available, the recommended operational compromise is:
 
-- `edge` sulla macchina A;
-- `relay` sulla macchina B (pubblica, obbligatoria);
-- `service` + servizio di esempio sulla stessa macchina B;
-- `service` bindato su loopback (`/ip4/127.0.0.1/tcp/40123`) con `force_reachability: private` per impedire il direct dial pubblico.
+- `edge` on machine A;
+- `relay` on machine B (public, required);
+- `service` + example service on the same machine B;
+- `service` bound to loopback (`/ip4/127.0.0.1/tcp/40123`) with `force_reachability: private` to prevent public direct dialing.
 
-Questo produce comunque un bench **relay-first distribuito** utile, anche se non e' un 3-host puro.
+This still produces a useful **distributed relay-first** bench, even though it is not a pure 3-host setup.
 
-Smoke script dedicato:
+Details: `tests/distributed-two-host.md`
 
-```bash
-./tests/smoke-distributed-two-host.sh
-```
+## 6) Add another service on the same tunnel
 
-Dettagli: `tests/distributed-two-host.md`
+1. create a new `service` with a unique `SERVICE_NAME`;
+2. use the same `LIBP2P_PRIVATE_NETWORK_KEY` as the swarm;
+3. point `BOOTSTRAP_PEERS` to the public relay;
+4. point `RELAY_PEERS` to the public relay and set `ENABLE_AUTORELAY=true`;
+5. verify a route appears in `GET /routes`;
+6. call the edge with `Host: <SERVICE_NAME>`.
 
-## 6) Aggiungere un servizio ulteriore sullo stesso tunnel
-
-Pattern:
-
-1. nuovo `service` con `SERVICE_NAME` univoco;
-2. stesso `LIBP2P_PRIVATE_NETWORK_KEY` della swarm;
-3. `BOOTSTRAP_PEERS` verso relay pubblico;
-4. `RELAY_PEERS` verso relay pubblico + `ENABLE_AUTORELAY=true`;
-5. verifica comparsa route su `GET /routes`;
-6. chiamare edge con `Host: <SERVICE_NAME>`.
-
-Esempio servizio aggiuntivo:
+Example additional service:
 
 ```bash
 SERVICE_NAME=internal-api \
@@ -255,35 +247,52 @@ HEARTBEAT_INTERVAL=5s \
 go run ./cmd/tubo attach
 ```
 
-## 7) Stato sicurezza: cosa e' implementato vs target
+## 7) Security state: implemented vs target
 
-Implementato oggi:
+Implemented today:
 
-- discovery announcement firmati;
-- private swarm PSK (env key path o b64);
-- binary `relay` con relay service + AutoNAT service + router GossipSub discovery;
-- parser allowlist PeerID (`LIBP2P_ALLOWED_PEERS`) + connection gater su relay, edge, service e bridge.
+- pubsub discovery;
+- signed announcements;
+- relayed traffic;
+- private swarm PSK;
+- per-service discovery and routing;
+- multi-host smoke tests.
 
-Target ancora da implementare:
+Still target / in progress:
 
-- binding `ServiceName -> PeerID` enforcement applicativo oltre al controllo di connessione;
-- diagnostica reachability/AutoNAT completa.
+- stronger peer authorization end-to-end;
+- better reachability diagnostics;
+- full hole punching robustness;
+- richer route introspection;
+- more complete error taxonomy for 502 cases;
+- policy-driven TLS passthrough and TCP/UDP generalization.
 
-## 8) Troubleshooting rapido
+## 8) Troubleshooting
 
-Se `502` da edge:
+### `service` not discovered
 
-1. controllare che servizio sia presente in `GET /services`;
-2. controllare route in `GET /routes`;
-3. verificare `BOOTSTRAP_PEERS` e `EDGE_PEER_ID` corretti;
-4. verificare che tutti i nodi usino la stessa PSK (o nessuna PSK in locale);
-5. controllare log `service` per raggiungibilita' `SERVICE_TARGET`.
+1. check that `BOOTSTRAP_PEERS` and `RELAY_PEERS` are correct;
+2. check that the service has heartbeated at least once;
+3. verify the libp2p host is using the same PSK;
+4. check the edge discovery topic matches the service scope;
+5. inspect logs for invalid signatures or lease expiration.
 
-Log utili attesi:
+### `curl` returns 502
 
-1. `relay`: `startup command hints`, `relay_addr`, connessioni `relay p2p connected/disconnected`.
-2. `edge`: `proxy request`, `route matched`, `resolved`, `relay fallback`, `proxy completed`.
-3. `service`: `service upstream request`, `service upstream response`, `service stream completed`.
-4. `bridge`: `bridge request`, `bridge completed`.
+Verify:
 
-Se un `GET` o una richiesta senza body resta appesa, verificare che il client stia usando una versione con final body chunk vuoto: il service deve vedere `service stream completed`, non solo `service upstream request`.
+1. service is present in `GET /services`;
+2. the route exists in `GET /routes`;
+3. the service is still alive and heartbeating;
+4. `BOOTSTRAP_PEERS` and `EDGE_PEER_ID` are correct;
+5. all nodes use the same PSK (or no PSK in local dev).
+
+### Useful expected logs
+
+- relay: bootstrap/relay readiness and health check success
+- edge: discovery add/remove events and route creation/removal
+- service: heartbeat sent and upstream forwarding successful
+
+### Hung GET or no-body request
+
+If a `GET` or a request without a body hangs, make sure the client is using a version with a final empty body chunk: the service should see `service stream completed`, not only `service upstream request`.

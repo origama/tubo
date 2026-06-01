@@ -1,26 +1,26 @@
 # Linode Terraform Testbench
 
-Questo documento descrive il nuovo testbench distribuito su Linode creato con Terraform.
+This document describes the new distributed Linode testbench created with Terraform.
 
-## Obiettivo
+## Goal
 
-Creare 3 macchine in region diverse:
+Create 3 machines in different regions:
 
-- `relay` pubblico e aperto su `tcp/4001`
-- `edge` gestito via SSH ma chiuso in ingresso applicativo/libp2p
-- `service` gestito via SSH ma chiuso in ingresso applicativo/libp2p
+- public `relay` exposed on `tcp/4001`
+- `edge` managed over SSH but closed to inbound application/libp2p traffic
+- `service` managed over SSH but closed to inbound application/libp2p traffic
 
-## Perche' edge/service sono "NAT-like"
+## Why edge/service are "NAT-like"
 
-Con soli 3 Linode in region diverse, un NAT reale richiederebbe gateway addizionali o una topologia piu' complessa.
+With only 3 Linodes in different regions, a real NAT setup would require extra gateways or a more complex topology.
 
-Per il bench, quello che ci interessa davvero e' forzare questi vincoli:
+For this bench, what we really care about is enforcing these constraints:
 
-- `edge` e `service` non devono essere dialabili direttamente dall'esterno sul path libp2p;
-- il relay deve essere l'unico peer statico pubblicamente raggiungibile;
-- il traffico tunnel deve andare via relay.
+- `edge` and `service` must not be directly dialable from the outside on the libp2p path;
+- the relay must be the only publicly reachable static peer;
+- tunnel traffic must go through the relay.
 
-Per questo il bench usa firewall host-level (`ufw`) e `force_reachability: private` su edge/service.
+For this reason, the bench uses host-level firewalls (`ufw`) and `force_reachability: private` on edge/service.
 
 ## Layout
 
@@ -33,58 +33,58 @@ Smoke harness:
 - `tests/smoke-terraform-linode.sh`
 - `tests/smoke-terraform-linode-mixed-version.sh`
 
-## Workflow atteso
+## Expected workflow
 
-1. preparare `terraform.tfvars`
+1. prepare `terraform.tfvars`
 2. `terraform init`
 3. `terraform apply`
-4. eseguire `./tests/smoke-terraform-linode.sh`
-5. verificare risposta end-to-end e `connection_path=relayed`
-6. `terraform destroy` a fine test
+4. run `./tests/smoke-terraform-linode.sh`
+5. verify end-to-end response and `connection_path=relayed`
+6. `terraform destroy` when the test is complete
 
-## Cosa fa lo smoke
+## What the smoke test does
 
-Lo smoke base:
+The base smoke test:
 
-1. compila `tubo` e `dummy-api-server` in locale;
-2. genera una PSK effimera;
-3. legge gli IP da `terraform output`;
-4. carica binari, swarm key e config YAML sui tre nodi;
-5. avvia:
-   - `relay` sul nodo relay
-   - `edge` sul nodo edge
-   - `dummy-api-server` + `service` sul nodo service
-6. interroga `edge` tramite SSH locale al nodo edge;
-7. verifica nei log dell'edge che il percorso sia relayed.
+1. builds `tubo` and `dummy-api-server` locally;
+2. generates an ephemeral PSK;
+3. reads IPs from `terraform output`;
+4. uploads binaries, swarm key, and YAML config to the three nodes;
+5. starts:
+   - `relay` on the relay node
+   - `edge` on the edge node
+   - `dummy-api-server` + `service` on the service node
+6. queries `edge` through local SSH access to the edge node;
+7. verifies in edge logs that the path is relayed.
 
-## Nota pratica
+## Practical note
 
-Poiche' l'edge e' volutamente chiuso in ingresso, la richiesta di test viene eseguita **dall'interno dell'host edge via SSH**, non da Internet pubblica.
+Because edge is intentionally closed to inbound traffic, the test request is executed **from inside the edge host over SSH**, not from the public Internet.
 
-Questo e' coerente con l'obiettivo del bench: testare il piano dati distribuito relay-first, non l'esposizione pubblica dell'ingress edge.
+This is consistent with the goal of the bench: testing the distributed relay-first data plane, not public exposure of edge ingress.
 
-## Smoke mixed-version
+## Mixed-version smoke
 
-Per la compatibilita' cross-version esiste anche:
+For cross-version compatibility there is also:
 
 - `tests/smoke-terraform-linode-mixed-version.sh`
 
-Lo script costruisce un binario corrente e un binario legacy (ref configurabile via `LEGACY_REF`) e valida almeno questi casi sul bench reale:
+The script builds a current binary and a legacy binary (ref configurable via `LEGACY_REF`) and validates at least these cases on the real bench:
 
-1. edge corrente -> service legacy (`/p2p-tunnel/1.0` fallback)
-2. edge legacy -> service corrente (service corrente accetta legacy)
-3. edge corrente -> service corrente (`/p2p-tunnel/1.1` con hello handshake)
+1. current edge -> legacy service (`/p2p-tunnel/1.0` fallback)
+2. legacy edge -> current service (current service accepts legacy)
+3. current edge -> current service (`/p2p-tunnel/1.1` with hello handshake)
 
-Quando i nodi correnti sono in uso, lo script interroga anche gli endpoint di debug/admin del protocollo per raccogliere evidenza della negoziazione corrente.
+When current nodes are in use, the script also queries protocol debug/admin endpoints to collect evidence of the active negotiation.
 
-## File da toccare quando avremo il PAT
+## Files to update once the PAT is available
 
 - `infra/terraform/linode-distributed/terraform.tfvars`
 
-Valori necessari:
+Required values:
 
 - `linode_token`
 - `root_pass`
 - `ssh_public_key`
 - `ssh_private_key_path`
-- region desiderate
+- desired regions

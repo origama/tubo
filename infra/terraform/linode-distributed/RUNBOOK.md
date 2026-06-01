@@ -1,12 +1,12 @@
 # Linode distributed testbench runbook
 
-## Prerequisiti
+## Prerequisites
 
-- Terraform stack applicato in `infra/terraform/linode-distributed`
-- token Linode disponibile in `~/.token`
-- accesso SSH funzionante ai 3 nodi
+- Terraform stack applied in `infra/terraform/linode-distributed`
+- Linode token available in `~/.token`
+- working SSH access to the 3 nodes
 
-Esporta il token per Terraform:
+Export the token for Terraform:
 
 ```bash
 export TF_VAR_linode_token="$(< ~/.token)"
@@ -28,7 +28,7 @@ cd /root/tubo/infra/terraform/linode-distributed
 terraform apply
 ```
 
-### Output utili
+### Useful outputs
 
 ```bash
 terraform output relay_public_ip
@@ -42,51 +42,51 @@ terraform output edge_firewall_id
 terraform output service_firewall_id
 ```
 
-## Nodi correnti
+## Current nodes
 
 - relay: `172.104.128.174`
 - edge: `45.79.168.161`
 - service: `172.104.190.233`
 
-## Smoke test distribuito
+## Distributed smoke test
 
 ```bash
 cd /root/tubo
 ./tests/smoke-terraform-linode.sh
 ```
 
-Lo smoke:
+The smoke:
 
-- builda `tubo` e `dummy-api-server`
-- genera una swarm key temporanea
-- carica binari e YAML sui nodi
-- avvia relay / edge / service / dummy origin
-- verifica health, discovery, route e `connection_path=relayed`
+- builds `tubo` and `dummy-api-server`
+- generates a temporary swarm key
+- uploads binaries and YAML to the nodes
+- starts relay / edge / service / dummy origin
+- verifies health, discovery, route, and `connection_path=relayed`
 
-Per lasciare i processi remoti in esecuzione:
+To leave remote processes running:
 
 ```bash
 cd /root/tubo
 KEEP_RUNNING=1 ./tests/smoke-terraform-linode.sh
 ```
 
-## Benchmark persistenti con risultati confrontabili
+## Persistent benchmarks with comparable results
 
-Esegue il setup sul testbed Linode/Terraform, lancia gli scenari di carico e salva:
+Runs the setup on the Linode/Terraform testbed, executes the load scenarios, and saves:
 
 - `tests/perf/results/linode-terraform/<timestamp>/report.json`
 - `tests/perf/results/linode-terraform/<timestamp>/summary.md`
 - `tests/perf/results/linode-terraform/latest.json`
 - `tests/perf/results/linode-terraform/latest.md`
 
-Comando:
+Command:
 
 ```bash
 cd /root/tubo
 python3 ./tests/perf/run_linode_terraform_perf.py
 ```
 
-## SSH rapido
+## Quick SSH
 
 ```bash
 ssh root@172.104.128.174
@@ -94,7 +94,7 @@ ssh root@45.79.168.161
 ssh root@172.104.190.233
 ```
 
-## Log remoti
+## Remote logs
 
 ### Relay
 
@@ -120,7 +120,7 @@ ssh root@172.104.190.233 'tail -n 200 /var/log/tubo/service.log'
 ssh root@172.104.190.233 'tail -n 200 /var/log/tubo/dummy-api-server.log'
 ```
 
-## Health checks remoti
+## Remote health checks
 
 ### Relay
 
@@ -143,13 +143,13 @@ ssh root@45.79.168.161 'curl -fsS http://127.0.0.1:8444/routes'
 ssh root@172.104.190.233 'curl -fsS http://127.0.0.1:8091/healthz'
 ```
 
-## Verifica relay path
+## Verify the relay path
 
 ```bash
 ssh root@45.79.168.161 "grep 'connection_path=relayed' /var/log/tubo/edge.log"
 ```
 
-## Stop processi remoti
+## Stop remote processes
 
 ```bash
 for host in 172.104.128.174 45.79.168.161 172.104.190.233; do
@@ -164,16 +164,16 @@ for host in 172.104.128.174 45.79.168.161 172.104.190.233; do
 done
 ```
 
-## Destroy infrastruttura
+## Destroy the infrastructure
 
 ```bash
 cd /root/tubo/infra/terraform/linode-distributed
 terraform destroy
 ```
 
-## Note operative
+## Operational notes
 
-- Terraform gestisce solo 3 Linode e 3 Linode Cloud Firewall.
-- Il provisioning runtime non passa piu' da Terraform.
-- Le regole cloud firewall sono allineate a `rwct-fw`, con `4001/tcp` aperta solo sul relay.
-- I benchmark salvano risultati storici e un `latest.*` per confronto rapido tra run successivi.
+- Terraform only manages 3 Linodes and 3 Linode Cloud Firewalls.
+- Runtime provisioning no longer goes through Terraform.
+- Cloud firewall rules are aligned with `rwct-fw`, with `4001/tcp` open only on the relay.
+- Benchmarks save historical results and a `latest.*` snapshot for quick comparison between runs.

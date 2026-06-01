@@ -21,8 +21,8 @@
 
 ## Strengths
 
-- Traffico piccolo/misto senza payload grandi: stabilità eccellente.
-- P95 sotto 1s per traffico leggero (778.5 ms).
+- Small/mixed traffic without large payloads: excellent stability.
+- P95 below 1s for light traffic (778.5 ms).
 - Relay-first baseline p50 754.7 ms.
-- Burst singolo 512 KiB stabilizzato: p95 962.8 ms.
-- Burst grandi consecutivi senza errori nel run corrente.
+- Single 512 KiB burst stabilized: p95 962.8 ms.
+- Consecutive large bursts with no errors in the current run.

@@ -1,102 +1,102 @@
 # Tubo CLI UX v2
 
-Questo documento raccoglie il design proposto per una nuova UX della CLI di `tubo`, piu' orientata alle intenzioni dell'utente e meno ai ruoli interni dell'implementazione.
+This document collects the proposed design for a new `tubo` CLI UX, oriented more toward user intent and less toward internal implementation roles.
 
-L'obiettivo e' mantenere `tubo` come single binary, daemonless by default, ma rendere piu' semplice il flusso quotidiano per:
+The goal is to keep `tubo` as a single binary, daemonless by default, while making the day-to-day flow simpler for:
 
-- pubblicare servizi locali nello swarm;
-- consumare servizi remoti come endpoint locali;
-- avviare gateway e relay;
-- gestire processi long-running senza demone centrale;
-- interrogare risorse pubblicate nello swarm con una grammatica coerente.
+- publishing local services into the swarm;
+- consuming remote services as local endpoints;
+- starting gateways and relays;
+- managing long-running processes without a central daemon;
+- querying published swarm resources with a consistent grammar.
 
-Questa proposta non rimuove subito i comandi attuali. Li riclassifica come layer avanzato/compatibile, sopra cui introdurre una UX piu' diretta.
+This proposal does not immediately remove the current commands. It reclassifies them as an advanced/compatibility layer, on top of which a more direct UX can be introduced.
 
 ---
 
-## Stato implementazione corrente
+## Current implementation status
 
-Gia' implementato nella CLI corrente:
+Already implemented in the current CLI:
 
 - `attach`, `connect`, `gateway`, `relay`;
 - `join`;
-- `-d` / `--detach` con state locale XDG-style;
+- `-d` / `--detach` with XDG-style local state;
 - `ps`, `get processes`, `logs`, `stop`, `rm --stale`, `describe process/...`, `inspect process/...`;
 - `get services`, `get service/<name>`, `describe service/<name>`, `inspect service/<name> --json`, `watch services`;
-- init implicito locale per `attach`, `gateway` e `relay`.
+- implicit local init for `attach`, `gateway`, and `relay`.
 
-Ancora fuori scope / futuro in questo documento:
+Still out of scope / future in this document:
 
 - `get agents`, `get peers`;
 - `watch events`;
-- integrazione opzionale systemd/launchd.
+- optional systemd/launchd integration.
 
 ---
 
-## Obiettivi
+## Goals
 
-La nuova UX dovrebbe permettere di:
+The new UX should make it possible to:
 
-- pubblicare un endpoint locale nello swarm con un comando intuitivo;
-- aprire localmente un tunnel verso un servizio remoto;
-- avviare un gateway HTTP generico verso servizi nello swarm;
-- avviare un relay/bootstrap node;
-- configurare facilmente un host per usare uno swarm esistente;
-- lasciare processi long-running in foreground by default;
-- staccare processi in background con `-d` / `--detach` in stile Podman;
-- ispezionare processi locali detached con `ps`, `logs`, `stop`, `inspect`;
-- interrogare risorse pubblicizzate nello swarm con una grammatica stile `kubectl`: `get`, `describe`, `inspect`, `watch`;
-- ridurre il bisogno di scrivere, renderizzare e distribuire manualmente file topology/config per il caso comune.
-
----
-
-## Principio base
-
-`Daemonless` non significa che non esistono processi long-running.
-
-Significa che non esiste un demone centrale obbligatorio, tipo `dockerd`, che deve essere sempre attivo per usare la CLI.
-
-Invece:
-
-- `tubo attach` avvia un processo che deve restare vivo per pubblicare un servizio;
-- `tubo connect` avvia un processo che deve restare vivo per mantenere un listener locale;
-- `tubo gateway` avvia un processo gateway HTTP;
-- `tubo relay` avvia un processo relay.
-
-Per default questi processi restano in foreground. Con `-d` vengono avviati in background e gestiti tramite state locale.
-
-Questo e' piu' vicino al modello Podman che al modello Docker.
+- publish a local endpoint into the swarm with an intuitive command;
+- open a local tunnel to a remote service;
+- start a generic HTTP gateway for services in the swarm;
+- start a relay/bootstrap node;
+- easily configure a host to use an existing swarm;
+- leave long-running processes in the foreground by default;
+- detach processes to the background with `-d` / `--detach` in a Podman-like style;
+- inspect detached local processes with `ps`, `logs`, `stop`, `inspect`;
+- query swarm resources with a kubectl-like grammar: `get`, `describe`, `inspect`, `watch`;
+- reduce the need to manually write, render, and distribute topology/config files for the common case.
 
 ---
 
-## Nuovo modello mentale
+## Core principle
+
+`Daemonless` does not mean that no long-running processes exist.
+
+It means there is no mandatory central daemon, like `dockerd`, that must always be running in order to use the CLI.
+
+Instead:
+
+- `tubo attach` starts a process that must stay alive to publish a service;
+- `tubo connect` starts a process that must stay alive to keep a local listener open;
+- `tubo gateway` starts an HTTP gateway process;
+- `tubo relay` starts a relay process.
+
+By default these processes stay in the foreground. With `-d`, they are started in the background and managed through local state.
+
+This is closer to Podman than Docker.
+
+---
+
+## New mental model
 
 ```text
-attach    = pubblica un endpoint locale nello swarm
-connect   = apre un tunnel locale verso un servizio dello swarm
-gateway   = espone un gateway HTTP verso servizi dello swarm
-relay     = avvia un relay/bootstrap node
-join      = configura questo host per usare uno swarm esistente
-init      = crea una nuova configurazione locale/swarm locale
+attach    = publish a local endpoint into the swarm
+connect   = open a local tunnel toward a swarm service
+gateway   = expose an HTTP gateway to swarm services
+relay     = start a relay/bootstrap node
+join      = configure this host for an existing swarm
+init      = create a new local / local-swarm configuration
 
-get       = lista o recupera risorse locali/remoto-swarm
-describe  = mostra dettagli leggibili di una risorsa
-inspect   = mostra dettagli tecnici/raw di una risorsa
-watch     = osserva cambiamenti live
+get       = list or fetch resources
+describe  = show human-readable resource details
+inspect   = show technical/raw resource details
+watch     = observe services
 
-ps        = alias pratico per processi locali detached
-logs      = mostra log dei processi detached locali
-stop      = ferma processi detached locali
-rm        = rimuove state/log locali di processi terminati
+ps        = practical alias for local detached processes
+logs      = show logs for detached processes
+stop      = stop detached local processes
+rm        = remove local state/logs for terminated processes
 ```
 
-La parola `mesh` resta utile come concetto architetturale, ma non deve necessariamente essere un namespace primario della CLI.
+The word `mesh` remains useful as an architectural concept, but it does not necessarily need to be a primary CLI namespace.
 
 ---
 
-## Grammatica stile kubectl
+## kubectl-like grammar
 
-Per le operazioni di lettura/ispezione, la UX si ispira a `kubectl`:
+For read/inspect operations, the UX borrows the `kubectl` style:
 
 ```bash
 tubo get services
@@ -106,16 +106,16 @@ tubo inspect service/lmstudio --json
 tubo watch services
 ```
 
-Questo consente di separare verbo e risorsa:
+This separates verb and resource:
 
 ```text
-get       = vista breve/tabellare
-describe  = vista umana dettagliata
-inspect   = vista tecnica/raw, adatta anche a scripting/debug
-watch     = stream di cambiamenti/eventi
+get       = brief/tabular view
+describe  = detailed human view
+inspect   = technical/raw view, suitable for scripting/debugging
+watch     = live change/event stream
 ```
 
-Risorse possibili:
+Possible resources:
 
 ```text
 service / services / svc
@@ -132,7 +132,7 @@ event / events
 capability / capabilities
 ```
 
-Esempi di ID tipizzati:
+Typed resource IDs:
 
 ```text
 service/lmstudio
@@ -147,22 +147,22 @@ route/lmstudio
 
 ---
 
-## Mapping dalla UX attuale alla UX proposta
+## Mapping from current UX to proposed UX
 
-| UX attuale | Nuova UX proposta | Note |
+| Current UX | Proposed UX | Notes |
 |---|---|---|
-| `tubo service run --name X --target URL` | `tubo attach URL --name X` | Pubblica un endpoint locale nello swarm. |
-| `tubo bridge run ...` | `tubo connect X --local ADDR` | Apre un tunnel locale verso un servizio remoto. Richiede evoluzione del bridge/discovery. |
-| `tubo edge run --listen :8443` | `tubo gateway --listen :8443` | L'attuale edge e' un gateway HTTP, non una connessione puntuale. |
-| `tubo relay run` | `tubo relay` | Forma breve, piu' diretta. |
-| topology/config manuale per entrare in uno swarm | `tubo join --relay ... --swarm-key ...` | Importa configurazione di uno swarm esistente. |
-| `tubo mesh services` | `tubo get services` | `mesh` non e' necessario come namespace primario. |
-| `tubo mesh inspect X` | `tubo describe X` / `tubo inspect X` | `describe` per output umano, `inspect` per output tecnico/raw. |
-| `tubo mesh watch` | `tubo watch services` | Watch diventa un verbo top-level. |
-| processi in foreground | default | Nessun flag necessario. |
-| processi in background | `-d` / `--detach` | Implementato con state locale, senza demone centrale. |
+| `tubo service run --name X --target URL` | `tubo attach URL --name X` | Publishes a local endpoint into the swarm. |
+| `tubo bridge run ...` | `tubo connect X --local ADDR` | Opens a local tunnel to a remote service. Requires bridge/discovery evolution. |
+| `tubo edge run --listen :8443` | `tubo gateway --listen :8443` | Current edge is an HTTP gateway, not a point-to-point connection. |
+| `tubo relay run` | `tubo relay` | Shorter, more direct form. |
+| manual topology/config to join a swarm | `tubo join --relay ... --swarm-key ...` | Imports configuration for an existing swarm. |
+| `tubo mesh services` | `tubo get services` | `mesh` is not needed as a primary namespace. |
+| `tubo mesh inspect X` | `tubo describe X` / `tubo inspect X` | `describe` for human output, `inspect` for technical output. |
+| `tubo mesh watch` | `tubo watch services` | `watch` becomes a top-level verb. |
+| foreground processes | default | No flag required. |
+| background processes | `-d` / `--detach` | Implemented with local state, no central daemon. |
 
-I comandi esistenti possono restare disponibili come advanced/compatibility commands:
+The existing commands can remain available as advanced/compatibility commands:
 
 ```bash
 tubo service run
@@ -177,25 +177,25 @@ tubo topology commands
 
 ---
 
-## Perche' `service` diventa `attach`
+## Why `service` becomes `attach`
 
-Il ruolo attuale `service` prende un `ServiceName` e un `Target`, crea un host libp2p, registra gli stream handler, pubblica announcement nello swarm, mantiene heartbeat e inoltra richieste verso il target HTTP.
+The current `service` role takes a `ServiceName` and a `Target`, creates a libp2p host, registers stream handlers, publishes announcements in the swarm, keeps heartbeats alive, and forwards requests to the HTTP target.
 
-Semanticamente, quindi, l'utente sta attaccando un servizio locale alla rete `tubo`.
+Semantically, the user is attaching a local service to the `tubo` network.
 
-Comando attuale:
+Current command:
 
 ```bash
 tubo service run --name lmstudio --target http://127.0.0.1:1234
 ```
 
-Nuova UX:
+Proposed UX:
 
 ```bash
 tubo attach http://127.0.0.1:1234 --name lmstudio
 ```
 
-oppure:
+or:
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
@@ -203,54 +203,54 @@ tubo attach --target http://127.0.0.1:1234 --name lmstudio
 
 ---
 
-## Perche' `edge` non dovrebbe diventare `connect`
+## Why `edge` should not become `connect`
 
-L'attuale `edge` non si limita a connettersi a un singolo servizio.
+The current `edge` is not just connecting to a single service.
 
-Fa da gateway HTTP:
+It acts as an HTTP gateway:
 
-- avvia un server HTTP;
-- avvia una admin API;
-- entra nello swarm;
-- sottoscrive discovery;
-- mantiene route table;
-- riceve richieste HTTP;
-- risolve `host/path -> service/peer`;
-- apre stream diretti o via relay;
-- gestisce retry, stale route e relay recovery;
-- proxy-a request/response.
+- it starts an HTTP server;
+- it starts an admin API;
+- it joins the swarm;
+- it subscribes to discovery;
+- it maintains a route table;
+- it receives HTTP requests;
+- it resolves `host/path -> service/peer`;
+- it opens direct or relayed streams;
+- it handles retries, stale routes, and relay recovery;
+- it proxies requests/responses.
 
-Quindi `connect` sarebbe fuorviante come alias diretto di `edge`.
+So `connect` would be misleading as a direct alias for `edge`.
 
-La proposta e':
+The proposal is:
 
 ```bash
 tubo gateway --listen :8443
 ```
 
-per l'attuale edge.
+for the current edge.
 
-Il comando `connect`, invece, dovrebbe essere una UX nuova o evoluta dal bridge:
+The `connect` command, instead, should be a new UX or an evolution of the bridge:
 
 ```bash
 tubo connect lmstudio --local 127.0.0.1:51234
 ```
 
-cioe': rendi disponibile localmente il servizio remoto `lmstudio`.
+meaning: make the remote service `lmstudio` available locally.
 
 ---
 
 ## Foreground by default
 
-I comandi long-running devono restare in foreground se l'utente non chiede esplicitamente il detach.
+Long-running commands should stay in the foreground unless the user explicitly asks for detaching.
 
-Esempio:
+Example:
 
 ```bash
 tubo attach http://127.0.0.1:1234 --name lmstudio
 ```
 
-Output possibile:
+Possible output:
 
 ```text
 attaching service "lmstudio"
@@ -259,1094 +259,375 @@ peer: 12D3...
 status: published
 ```
 
-Il processo resta attivo e stampa log in console fino a `Ctrl+C`.
-
-Questo e' il comportamento piu' semplice per sviluppo, debug e demo.
-
----
-
-## Detach mode
-
-Con `-d` o `--detach`, il processo viene lasciato in background.
-
-Esempio:
+If the user wants background mode:
 
 ```bash
 tubo attach http://127.0.0.1:1234 --name lmstudio -d
 ```
 
-Output possibile:
-
-```text
-attached service "lmstudio"
-id: process/attach-lmstudio
-pid: 18422
-logs: ~/.local/share/tubo/logs/attach-lmstudio.log
-```
-
-Altro esempio:
-
-```bash
-tubo connect lmstudio --local 127.0.0.1:51234 -d
-```
-
-Output possibile:
-
-```text
-connected service "lmstudio"
-id: process/connect-lmstudio-51234
-local: http://127.0.0.1:51234
-pid: 18480
-logs: ~/.local/share/tubo/logs/connect-lmstudio-51234.log
-```
+This is the simplest behavior for development, debugging, and demos.
 
 ---
 
-## State locale per processi detached
+## Detached process model
 
-Senza demone centrale, `tubo` puo' gestire i processi detached tramite file locali.
+Without a central daemon, `tubo` can manage detached processes through local files.
 
-Path proposti, seguendo XDG quando possibile:
+Example local state:
 
 ```text
-~/.local/share/tubo/processes/
-~/.local/share/tubo/logs/
-~/.local/share/tubo/run/
+~/.local/share/tubo/processes/attach-lmstudio.json
+~/.local/share/tubo/processes/connect-lmstudio-51234.json
+~/.local/share/tubo/logs/attach-lmstudio.log
+~/.local/share/tubo/run/attach-lmstudio.pid
 ```
 
-Esempio state file:
+`-d` would:
 
-```json
-{
-  "id": "process/attach-lmstudio",
-  "kind": "process",
-  "command": "attach",
-  "name": "attach-lmstudio",
-  "service": "lmstudio",
-  "pid": 18422,
-  "started_at": "2026-05-02T12:00:00Z",
-  "target": "http://127.0.0.1:1234",
-  "log_file": "~/.local/share/tubo/logs/attach-lmstudio.log",
-  "status_addr": "127.0.0.1:8091"
-}
-```
+1. start the process in the background;
+2. write a stable process ID;
+3. keep metadata and logs on disk;
+4. allow `ps`, `logs`, `stop`, `inspect`, `rm --stale`.
 
-`tubo ps` legge questi file, verifica se il PID e' vivo e mostra lo stato.
+`tubo ps` reads these files, checks whether the PID is alive, and shows status.
+
+This is much closer to Podman / `podman generate systemd` than to a central service manager.
 
 ---
 
-## Process management locale
+## Local process management UX
 
-### `tubo ps`
-
-Mostra i processi `tubo` detached avviati su questa macchina.
+Useful commands:
 
 ```bash
 tubo ps
-```
-
-`ps` e' un alias pratico di:
-
-```bash
 tubo get processes
-```
-
-Output target:
-
-```text
-NAME                    COMMAND   STATUS    PID     LOCAL                  TARGET
-attach-lmstudio          attach    running   18422   -                      http://127.0.0.1:1234
-connect-lmstudio-51234   connect   running   18480   127.0.0.1:51234        lmstudio
-gateway-default          gateway   running   18520   :8443                  swarm
-relay-default            relay     running   18590   /ip4/0.0.0.0/tcp/4001  -
-```
-
-Flag utili:
-
-```bash
-tubo ps --all
-tubo ps --json
-tubo ps --kind attach
-```
-
-### `tubo get processes`
-
-```bash
-tubo get processes
-```
-
-Output equivalente a `tubo ps`, ma coerente con la grammatica resource-based.
-
-### `tubo logs`
-
-```bash
-tubo logs attach-lmstudio
-```
-
-oppure, con ID tipizzato:
-
-```bash
-tubo logs process/attach-lmstudio
-```
-
-Follow:
-
-```bash
-tubo logs -f process/attach-lmstudio
-```
-
-Tail:
-
-```bash
-tubo logs --tail 100 process/gateway-default
-```
-
-### `tubo stop`
-
-```bash
-tubo stop process/attach-lmstudio
-tubo stop process/connect-lmstudio-51234
-tubo stop process/gateway-default
-```
-
-Alias breve ammesso se non ambiguo:
-
-```bash
-tubo stop attach-lmstudio
-```
-
-### `tubo describe process/...`
-
-```bash
 tubo describe process/attach-lmstudio
-```
-
-Dovrebbe mostrare una vista umana:
-
-```yaml
-Name: attach-lmstudio
-Kind: process
-Command: attach
-Status: running
-PID: 18422
-Target: http://127.0.0.1:1234
-Service: lmstudio
-Log file: ~/.local/share/tubo/logs/attach-lmstudio.log
-State file: ~/.local/share/tubo/processes/attach-lmstudio.json
-```
-
-### `tubo inspect process/...`
-
-```bash
 tubo inspect process/attach-lmstudio --json
-```
-
-Dovrebbe mostrare lo state tecnico/raw, adatto a debugging e scripting.
-
-### `tubo rm`
-
-Rimuove state/log locali di processi terminati.
-
-```bash
+tubo logs process/connect-lmstudio-51234
+tubo stop process/connect-lmstudio-51234
 tubo rm --stale
 ```
 
----
+A human-readable `describe` view should show:
 
-## Processi locali vs risorse nello swarm
+- process ID;
+- command;
+- pid;
+- status;
+- service ID (if any);
+- scope (if any);
+- local listener;
+- target;
+- start time;
+- log file path.
 
-Questa distinzione e' centrale.
+The technical/raw `inspect` view should be script-friendly and include the full stored metadata.
 
-```bash
-tubo ps
-# oppure
-
-tubo get processes
-```
-
-mostra cosa gira localmente su questa macchina.
-
-```bash
-tubo get services
-```
-
-mostra servizi pubblicizzati nello swarm.
-
-Esempio:
-
-- `tubo ps` puo' mostrare `process/connect-lmstudio-51234`, cioe' il processo locale che mantiene aperto un tunnel;
-- `tubo get services` puo' mostrare `service/lmstudio`, cioe' il servizio remoto pubblicato nello swarm.
-
-Sono due piani diversi.
+This distinction is central.
 
 ---
 
-## Discovery delle risorse nello swarm
+## Process resources vs swarm resources
 
-La UX primaria non usa piu' `tubo mesh ...` come namespace principale.
+The CLI should clearly separate:
 
-Usa invece:
+- local processes running on this machine;
+- services/resources published in the swarm.
 
-```bash
-tubo get services
-tubo get agents
-tubo get peers
-tubo describe service/lmstudio
-tubo inspect service/lmstudio --json
-tubo watch services
-```
+For example:
 
-### Come fa `get services` a vedere lo swarm?
-
-`tubo get services` non puo' vedere magicamente lo swarm da fuori. Deve partecipare alla rete o usare una cache locale.
-
-Comportamento raccomandato:
-
-1. Se esiste un processo locale gia' connesso allo swarm, usare la sua cache/admin API quando disponibile.
-2. Se non esiste una cache locale, interrogare la discovery cache di un bootstrap/relay peer via `/tubo/discovery/query/1.0`.
-3. Se la query remota fallisce o non restituisce abbastanza dati, avviare un observer effimero:
-   - carica config locale da `join`/`init`;
-   - carica swarm key;
-   - crea un host libp2p temporaneo;
-   - si connette a bootstrap/relay peer;
-   - ascolta discovery per un timeout esplicito;
-   - stampa le risorse osservate;
-   - esce.
-
-L'output deve sempre dire chiaramente quale modalita' sta usando.
-
-Esempio con cache locale:
-
-```text
-using local cache from process/gateway-default
-observing swarm for 5s to discover fresh announcements...
-```
-
-Esempio senza cache locale ma con query remota riuscita:
-
-```text
-no local cache found
-querying discovery cache from relay 12D3...
-received 2 services
-```
-
-Fallback se la query remota fallisce:
-
-```text
-no local cache found
-remote discovery query failed: timeout
-starting temporary observer for 10s...
-```
-
-Flag utili:
-
-```bash
-tubo get services --cached-only
-tubo get services --live
-tubo get services --timeout 15s
-tubo get services --json
-```
-
-### `tubo get services`
-
-```bash
-tubo get services
-```
-
-Output target:
-
-```text
-NAME        STATUS    PATH       PEER       CAPABILITIES
-lmstudio    online    relayed    12D3...    model.openai-compatible
-ollama      online    direct     12D3...    model.ollama
-```
-
-Alias possibile:
-
-```bash
-tubo get svc
-```
-
-### `tubo get service/lmstudio`
-
-```bash
-tubo get service/lmstudio
-```
-
-Output breve:
-
-```text
-NAME        STATUS    PATH       PEER       TTL
-lmstudio    online    relayed    12D3...    24s
-```
-
-### `tubo describe service/lmstudio`
-
-```bash
-tubo describe service/lmstudio
-```
-
-Output umano dettagliato:
-
-```yaml
-Name: lmstudio
-Kind: service
-Status: online
-Peer ID: 12D3...
-Path: relayed
-TTL: 30s
-Expires in: 24s
-Capabilities:
-  - model.openai-compatible
-Addresses:
-  - /ip4/.../p2p-circuit/p2p/12D3...
-Observed from:
-  - local cache: process/gateway-default
-  - live discovery: 5s
-```
-
-### `tubo inspect service/lmstudio`
-
-```bash
-tubo inspect service/lmstudio --json
-```
-
-Dovrebbe produrre una vista tecnica/raw, adatta a debug e automazione.
-
-### `tubo get agents`
-
-Futuro, quando saranno introdotti agent announcement.
-
-```bash
-tubo get agents
-```
-
-Output target:
-
-```text
-NAME               STATUS    PEER       CAPABILITIES
-reviewer.gpubox    online    12D3...    agent.code_review, tool.go_test
-builder.linode     busy      12D3...    tool.docker_build, tool.go_test
-```
-
-### `tubo watch services`
-
-```bash
-tubo watch services
-```
-
-Output target:
-
-```text
-watching services...
-using local cache: process/gateway-default
-also observing swarm live
-
-ADDED     service/lmstudio       peer=12D3... path=relayed
-ADDED     service/ollama         peer=12D3... path=direct
-REMOVED   service/old-service
-```
-
-### `tubo watch events`
-
-Futuro, se verra' introdotto uno stream eventi generalizzato oltre ai servizi.
-
-```bash
-tubo watch events
-```
-
-Output target:
-
-```text
-ADDED     service/lmstudio
-ADDED     agent/reviewer.gpubox
-UPDATED   service/ollama
-REMOVED   peer/12D3...
-```
-
-### Nota implementativa
-
-L'edge admin ora espone `/services` con `count` e `items[]`, quindi `get services` puo' usare una cache locale reale quando un gateway locale e' gia' attivo. In assenza di cache, la CLI prova prima una remote discovery query verso un bootstrap/relay peer e solo dopo fa fallback a un observer effimero con timeout esplicito.
+- `tubo ps` can show `process/connect-lmstudio-51234`, i.e. the local process keeping a tunnel open;
+- `tubo get services` can show `service/lmstudio`, i.e. the remote service published in the swarm.
 
 ---
 
-## Risoluzione ambiguita' in `describe` e `inspect`
+## Discovery UX
 
-`inspect` e `describe` possono riferirsi sia a processi locali sia a risorse nello swarm.
+`get services` cannot magically see the swarm from outside. It must participate in the network or use a local cache.
 
-Per evitare ambiguita', si raccomanda l'uso di ID tipizzati:
+The intended behavior is:
+
+1. If a local edge cache exists, use it.
+2. If not, try a remote discovery query through a bootstrap/relay peer.
+3. If that fails or is insufficient, start an ephemeral observer:
+   - connect to the swarm for an explicit timeout;
+   - collect at least one discovery heartbeat when possible;
+   - then exit.
+
+The output should always say clearly which mode is being used.
+
+Useful flags:
 
 ```bash
-tubo describe service/lmstudio
-tubo describe process/attach-lmstudio
-tubo inspect agent/reviewer.gpubox
-tubo inspect peer/12D3...
+tubo get services --config <path> --timeout 20s --live
+tubo get services --cached-only --json
 ```
 
-Se l'utente usa un nome non tipizzato:
-
-```bash
-tubo inspect lmstudio
-```
-
-`tubo` puo' auto-risolvere solo se il match e' univoco.
-
-Se e' ambiguo:
-
-```text
-ambiguous resource "lmstudio"
-
-matches:
-  service/lmstudio
-  process/attach-lmstudio
-
-try:
-  tubo inspect service/lmstudio
-  tubo inspect process/attach-lmstudio
-```
+`config print` masks secrets and never prints the contents of `swarm.key`.
 
 ---
 
-## `init` vs `join`
+## LM Studio / Ollama examples
 
-Questa distinzione va chiarita bene.
-
-```text
-init = crea una nuova configurazione locale / nuovo swarm locale
-join = importa/configura uno swarm esistente su questa macchina
-```
-
-### `tubo init`
-
-Serve quando parti da zero.
+LM Studio published in the swarm:
 
 ```bash
-tubo init
-```
-
-Crea una configurazione locale e, se serve, una swarm key:
-
-```text
-~/.config/tubo/config.yaml
-~/.config/tubo/swarm.key
-```
-
-Output possibile:
-
-```text
-initialized tubo config
-config: ~/.config/tubo/config.yaml
-swarm key: ~/.config/tubo/swarm.key
-
-next:
-  tubo attach http://127.0.0.1:1234 --name lmstudio
-  tubo relay -d
-```
-
-### `tubo join`
-
-Serve quando hai gia' uno swarm da usare.
-
-```bash
-tubo join \
-  --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... \
-  --swarm-key ./swarm.key
-```
-
-Questo non avvia un processo. Salva localmente le informazioni necessarie:
-
-- swarm key;
-- relay peers;
-- bootstrap peers;
-- eventuali default di rete.
-
-Output possibile:
-
-```text
-joined swarm config
-relay: /ip4/1.2.3.4/tcp/4001/p2p/12D3...
-swarm key installed: ~/.config/tubo/swarm.key
-
-next:
-  tubo get services
-  tubo attach http://127.0.0.1:1234 --name my-service
-  tubo connect lmstudio
-```
-
-### Init implicito
-
-Per ridurre attrito, alcuni comandi possono fare init implicito se manca config locale.
-
-Esempio:
-
-```bash
-tubo attach http://127.0.0.1:1234 --name lmstudio
-```
-
-Se non esiste config:
-
-```text
-no tubo config found
-created local config: ~/.config/tubo/config.yaml
-created private swarm key: ~/.config/tubo/swarm.key
-
-attaching service "lmstudio"
-```
-
-Flag utile:
-
-```bash
---no-init
-```
-
-per fallire invece di creare config automaticamente, utile in CI o ambienti controllati.
-
----
-
-## Happy path: creare uno swarm e pubblicare LM Studio
-
-### Host relay
-
-```bash
-tubo relay -d
-```
-
-Se non esiste config, il comando puo' fare init implicito e stampare un comando `join` da condividere.
-
-Output target:
-
-```text
-relay running
-id: process/relay-default
-peer: 12D3...
-addr: /ip4/1.2.3.4/tcp/4001/p2p/12D3...
-
-share this with other nodes:
-  tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
-```
-
-### Host con LM Studio
-
-```bash
-tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 tubo attach http://127.0.0.1:1234 --name lmstudio -d
-```
-
-### Host client
-
-```bash
-tubo join --relay /ip4/1.2.3.4/tcp/4001/p2p/12D3... --swarm-key ./swarm.key
 tubo get services
-tubo connect lmstudio --local 127.0.0.1:51234
+tubo describe service/lmstudio
 ```
 
-Poi il client usa:
-
-```text
-http://127.0.0.1:51234
-```
-
-come se LM Studio fosse locale.
-
----
-
-## Happy path: Ollama remoto
-
-### Host remoto con Ollama
+Ollama published in the swarm:
 
 ```bash
 tubo attach http://127.0.0.1:11434 --name ollama -d
-```
-
-### Host client
-
-```bash
 tubo get services
-tubo connect ollama --local 127.0.0.1:11434 -d
-```
-
-Poi:
-
-```bash
-curl http://127.0.0.1:11434/api/tags
+tubo describe service/ollama
 ```
 
 ---
 
-## Happy path: gateway HTTP generico
-
-Invece di aprire un tunnel locale per un singolo servizio, si puo' avviare un gateway HTTP.
+## Init commands
 
 ```bash
-tubo gateway --listen :8443 -d
+tubo init relay --out relay.yaml
+tubo init edge --out edge.yaml
+tubo init service --out service.yaml
+tubo init bridge --out bridge.yaml
 ```
 
-Il gateway riceve richieste HTTP e instrada verso servizi scoperti nello swarm.
-
-Esempio concettuale:
-
-```bash
-curl -H 'Host: lmstudio' http://gateway-host:8443/v1/models
-```
-
-oppure, se il routing supporta host/path specifici:
-
-```bash
-curl http://gateway-host:8443/lmstudio/v1/models
-```
-
-Il dettaglio esatto del routing dipende dalla route table e dalla futura UX routing.
+Existing files are not overwritten without `--force`.
 
 ---
 
-## Happy path: agenti nella mesh
-
-Questa e' una direzione futura, ma la CLI dovrebbe lasciare spazio al concetto.
-
-Un agente potrebbe pubblicarsi come risorsa nello swarm:
-
-```bash
-tubo attach http://127.0.0.1:7777 \
-  --name reviewer.gpubox \
-  --kind agent \
-  --capability agent.code_review \
-  --capability tool.go_test
-```
-
-Poi altri agenti o utenti potrebbero trovarlo:
-
-```bash
-tubo get agents
-tubo get agents --capability agent.code_review
-tubo describe agent/reviewer.gpubox
-tubo connect reviewer.gpubox
-```
-
-La differenza concettuale:
-
-```text
-service = endpoint passivo richiamabile
-agent   = entita' attiva che puo' ricevere task, collaborare, delegare
-```
-
-Questo apre scenari come:
-
-- remote model providers;
-- agent delegation;
-- build/test workers;
-- browser/tool workers;
-- agenti vicini ai dati;
-- private MCP-like service mesh.
-
-Questa parte richiede discovery metadata, capabilities e policy. Non deve bloccare il primo MVP della CLI.
-
----
-
-## Use case coperti bene dalla nuova UX
-
-### 1. Pubblicare un servizio HTTP locale
-
-```bash
-tubo attach http://127.0.0.1:1234 --name lmstudio
-```
-
-Sostituisce il caso comune di `tubo service run`.
-
-### 2. Consumare un servizio remoto come locale
-
-```bash
-tubo connect lmstudio --local 127.0.0.1:51234
-```
-
-Questo e' uno dei principali miglioramenti di UX rispetto al modello attuale.
-
-### 3. Avviare un gateway HTTP
-
-```bash
-tubo gateway --listen :8443
-```
-
-Nome piu' chiaro per l'attuale ruolo `edge`.
-
-### 4. Avviare un relay
-
-```bash
-tubo relay -d
-```
-
-Forma breve e piu' naturale dell'attuale `tubo relay run`.
-
-### 5. Primo utilizzo locale
-
-```bash
-tubo attach http://127.0.0.1:1234 --name lmstudio
-```
-
-con init implicito se manca config.
-
-### 6. Entrare in uno swarm esistente
-
-```bash
-tubo join --relay ... --swarm-key ...
-```
-
-Sostituisce molti passaggi manuali di config per il caso comune.
-
-### 7. Gestione processi locali
-
-```bash
-tubo ps
-tubo logs -f process/attach-lmstudio
-tubo stop process/attach-lmstudio
-```
-
-Rende usabili i processi detached senza demone centrale.
-
-### 8. Discovery delle risorse nello swarm
-
-```bash
-tubo get services
-tubo describe service/lmstudio
-tubo watch services
-```
-
-Permette di capire cosa e' disponibile nello swarm, senza richiedere necessariamente un gateway long-running.
-
----
-
-## Use case che restano advanced o fuori dal primo MVP
-
-La nuova UX non deve eliminare tutti i comandi attuali. Alcuni use case restano meglio serviti dal layer advanced.
-
-### 1. Topologie dichiarative multi-nodo
-
-Oggi esistono comandi come:
-
-```bash
-tubo topology render --config topology.yaml --out generated
-tubo topology commands --config topology.yaml
-```
-
-Questi restano utili per:
-
-- demo ripetibili;
-- CI;
-- test distribuiti;
-- deployment multi-host;
-- ambienti lab;
-- configurazioni deterministicamente rigenerate.
-
-La nuova UX e' piu' imperativa e human-friendly. La topology YAML resta advanced.
-
-### 2. Config file espliciti
-
-Comandi come:
-
-```bash
-tubo config validate --config service.yaml
-tubo config print --config service.yaml
-tubo doctor --config service.yaml
-```
-
-restano utili per:
-
-- produzione;
-- troubleshooting;
-- CI;
-- review della config effettiva;
-- ambienti non interattivi.
-
-### 3. Peer ID deterministici
-
-```bash
-tubo id from-seed service-lmstudio-seed
-```
-
-Resta utile per:
-
-- allowlist;
-- topology;
-- peer ID stabili;
-- test ripetibili.
-
-### 4. Key management esplicito
+## Example `swarm.key`
 
 ```bash
 tubo keygen swarm --out swarm.key
+chmod 600 swarm.key
 ```
 
-Resta utile per:
-
-- generazione offline;
-- secret manager;
-- distribuzione controllata;
-- rotazione chiavi;
-- produzione.
-
-### 5. Tuning avanzato relay
-
-La UX semplice:
-
-```bash
-tubo relay -d
-```
-
-non copre tutta la configurazione avanzata:
-
-- max reservations;
-- max reservations per IP/ASN;
-- max circuits per peer;
-- buffer size;
-- reservation TTL;
-- limit duration;
-- data limit;
-- AutoNAT;
-- discovery pubsub router.
-
-Questi restano via config/flag avanzati.
-
-### 6. Tuning avanzato attach/service
-
-La UX semplice:
-
-```bash
-tubo attach http://127.0.0.1:1234 --name lmstudio
-```
-
-non copre tutti i dettagli:
-
-- p2p listen addr;
-- seed;
-- heartbeat interval;
-- force reachability;
-- autorelay;
-- hole punching;
-- health listen;
-- private key base64/file.
-
-Questi restano flag/config avanzati.
-
-### 7. Gateway routing avanzato
-
-La UX semplice:
-
-```bash
-tubo gateway --listen :8443
-```
-
-non copre necessariamente:
-
-- route custom;
-- admin listen;
-- direct stream timeout;
-- manual route add;
-- policy/tenant routing futuro.
-
-Restano via config/admin API/flag avanzati.
-
-### 8. Bridge raw by peer/seed
-
-L'attuale bridge puo' connettersi tramite peer addr o seed. La nuova UX `connect <service>` si basa invece su discovery by service name.
-
-Casi raw/direct restano advanced, ad esempio in futuro:
-
-```bash
-tubo connect --peer /ip4/.../p2p/12D3... --local 127.0.0.1:51234
-```
-
-### 9. CI e automazione non interattiva
-
-La nuova UX deve restare scriptabile, ma in CI spesso servono:
-
-- `--config` esplicito;
-- `--no-init`;
-- output `--json`;
-- errori se manca config;
-- nessuna scrittura automatica in home.
-
-### 10. Persistence gestita dal sistema
-
-`-d` lascia processi in background, ma non fornisce:
-
-- restart al reboot;
-- restart on failure;
-- logging di sistema;
-- dependency management.
-
-Per questo e' utile una futura integrazione opzionale con systemd/launchd.
-
-Esempi possibili:
-
-```bash
-tubo attach http://127.0.0.1:1234 --name lmstudio --install --enable
-tubo generate systemd process/attach-lmstudio
-```
-
-Questa e' una capability opzionale, non parte del nucleo daemonless.
-
----
-
-## Comandi one-shot futuri
-
-Oltre a `connect`, potrebbe essere utile avere comandi one-shot.
-
-### `tubo call`
-
-Chiama un servizio senza aprire un tunnel persistente:
-
-```bash
-tubo call lmstudio /v1/models
-tubo call ollama /api/tags
-```
-
-Utile per script, agenti e debug.
-
-### `tubo open`
-
-Apre un servizio nel browser o crea un tunnel temporaneo:
-
-```bash
-tubo open dashboard
-```
-
-Se non esiste una connessione locale, puo' crearne una temporanea.
-
----
-
-## Compatibilita' e migrazione
-
-La nuova UX dovrebbe essere introdotta senza rompere gli utenti attuali.
-
-Comandi attuali da mantenere almeno nella prima fase:
-
-```bash
-tubo service run
-tubo edge run
-tubo bridge run
-tubo relay run
-tubo config print
-tubo config validate
-tubo doctor
-tubo topology render
-tubo topology commands
-tubo keygen swarm
-tubo id from-seed
-```
-
-La documentazione dovrebbe presentarli come:
+The generated file uses the libp2p pnet format:
 
 ```text
-Advanced role commands
+/key/swarm/psk/1.0.0/
+/base16/
+<32 random bytes in hex>
 ```
-
-oppure:
-
-```text
-Compatibility layer
-```
-
-La nuova UX diventa il percorso principale nel README e nel quickstart.
 
 ---
 
-## Possibile gerarchia finale CLI
+## Service config
 
-```text
-tubo init
-tubo join
-
-tubo attach
-tubo connect
-tubo gateway
-tubo relay
-
-tubo get <resource>
-tubo describe <resource>
-tubo inspect <resource>
-tubo watch <resource>
-
-tubo ps
-tubo logs
-tubo stop
-tubo rm
-
-tubo call
-tubo doctor
-tubo version
-
-tubo config ...
-tubo keygen ...
-tubo id ...
-tubo topology ...
+```yaml
+role: service
+node:
+  seed: service-lmstudio-seed
+  p2p_listen: /ip4/0.0.0.0/tcp/40123
+network:
+  private_key_file: /etc/p2p/swarm.key
+  bootstrap_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+  relay_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+  autorelay: true
+  hole_punching: true
+  force_reachability: private
+service:
+  name: lmstudio
+  target: http://192.168.1.28:1234
+health_listen: 127.0.0.1:8091
+heartbeat_interval: 5s
 ```
-
-La UX primaria non richiede piu' un namespace `mesh`. Se in futuro serve, `tubo mesh ...` puo' restare come namespace advanced o interno, ma il quickstart dovrebbe usare `get`, `describe`, `inspect`, `watch`.
 
 ---
 
-## MVP suggerito
+## Edge config
 
-Ordine consigliato / stato attuale:
-
-1. introdurre alias intent-based semplici — fatto;
-2. implementare `join` come config import — fatto;
-3. implementare `-d/--detach` — fatto;
-4. implementare `ps/logs/stop/inspect/rm` — fatto;
-5. implementare `connect <service>` by discovery — fatto;
-6. implementare `get services`, `describe service/...`, `watch services` — fatto;
-7. aggiungere init implicito — fatto;
-8. aggiornare docs/README — documentato con #47;
-9. investigare systemd/launchd — rimane #48.
+```yaml
+role: edge
+node:
+  seed: edge-seed
+  p2p_listen: /ip4/0.0.0.0/tcp/4001
+network:
+  private_key_file: /etc/p2p/swarm.key
+  bootstrap_peers: [/ip4/1.2.3.4/tcp/4001/p2p/12D3...]
+  relay_peers: [/ip4/1.2.3.4/tcp/4001/p2p/12D3...]
+edge:
+  listen: :8443
+  admin_listen: 127.0.0.1:8444
+  direct_stream_timeout: 750ms
+```
 
 ---
 
-## Issue tracking
+## Relay config
 
-Il lavoro e' tracciato nella epic:
-
-```text
-#39 — Epic: CLI UX v2 — attach/connect/gateway, daemonless detach e mesh commands
+```yaml
+role: relay
+node:
+  seed: public-relay-seed
+  p2p_listen: /ip4/0.0.0.0/tcp/4001
+network:
+  private_key_file: /etc/p2p/swarm.key
+relay:
+  public_addr: /ip4/1.2.3.4/tcp/4001
+  health_listen: 127.0.0.1:8092
+  enable_relay_service: true
+  enable_autonat_service: true
+  enable_discovery_pubsub: true
+  force_reachability_public: true
 ```
-
-Sub-issue operative esistenti:
-
-```text
-#40 — CLI UX v2: implementare comandi intent-based attach, gateway e relay breve
-#41 — CLI UX v2: implementare tubo connect per tunnel locale by service name
-#42 — CLI UX v2: implementare daemonless -d/--detach mode
-#43 — CLI UX v2: aggiungere process management locale ps/logs/stop/inspect/rm
-#44 — CLI UX v2: implementare tubo join per configurare uno swarm esistente
-#45 — CLI UX v2: aggiungere init implicito locale quando manca la config
-#46 — CLI UX v2: aggiungere resource discovery commands
-#47 — CLI UX v2: documentare nuova UX e compatibilita' con role commands
-#48 — CLI UX v2: investigare integrazione systemd/launchd per processi persistenti
-```
-
-Le sub-issue #40, #41, #42, #43, #44, #45 e #46 sono state poi implementate in questa forma resource-oriented.
 
 ---
 
-## Decisioni chiave
+## Bridge config
 
-1. `service -> attach` ha senso semanticamente.
-2. `edge -> connect` non e' corretto come rename diretto.
-3. L'attuale edge dovrebbe diventare `gateway` nella UX user-facing.
-4. `connect` dovrebbe essere un local tunnel verso un service name.
-5. `join` configura uno swarm esistente, non avvia processi.
-6. `init` crea nuovo contesto locale; puo' essere implicito per ridurre attrito.
-7. `ps` e `get services` devono restare concetti separati: processi locali vs risorse nello swarm.
-8. `get services` deve spiegare se usa cache locale, observer effimero o entrambi.
-9. `-d` deve essere daemonless, non dipendere da un `tubod`.
-10. systemd/launchd sono integrazioni opzionali per persistenza, non requisiti della CLI base.
-11. I comandi role-based attuali restano come advanced/compatibility layer.
-12. Il namespace `mesh` non e' necessario nella UX primaria; si preferisce `get/describe/inspect/watch`.
+```yaml
+role: bridge
+node:
+  seed: bridge-demo-seed
+  p2p_listen: /ip4/127.0.0.1/tcp/0
+network:
+  private_key_file: /etc/p2p/swarm.key
+bridge:
+  listen: 127.0.0.1:18081
+  service_seed: service-lmstudio-seed
+  service_p2p_listen: /ip4/127.0.0.1/tcp/40123
+```
+
+---
+
+## Resource config model (Phase 1)
+
+The configuration supports a minimal resource model for overlay, cluster, and namespace, but runtime still reads `network:` as the operational source of truth.
+
+```yaml
+current_overlay: public
+current_cluster: home
+current_namespace: default
+
+overlays:
+  public:
+    relays: []
+    bootstrap_peers: []
+    swarm_key_file: ""
+
+clusters:
+  home:
+    cluster_id: ""
+    authority_public_key: ""
+    capabilities: []
+    namespaces:
+      default: {}
+
+network:
+  private_key_file: /etc/p2p/swarm.key
+  bootstrap_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+  relay_peers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+```
+
+`current_overlay` materializes overlay fields into `network:` when the file uses the new layout; the writers for `join` and signed bundles write both formats for compatibility. `tubo join overlay/public` is the explicit public join form; `tubo join overlay/manual --relay ... --swarm-key ...` is the explicit manual/legacy join form. When the current config carries a cluster with identity metadata (`cluster_id` + `authority_public_key` + membership grant/capability), runtime discovery uses an opaque V2 topic derived from `current_cluster/current_namespace` and validates topic/scope, membership capability, and replay nonce; configs without those metadata no longer support runtime discovery.
+
+---
+
+## Local resource CLI (Phase 2a)
+
+With the new local model you can inspect, create, invite, and select overlay, cluster, and namespace entries already present in the config:
+
+```bash
+tubo get overlays
+tubo get clusters
+tubo get namespaces
+
+tubo create cluster/home
+tubo create namespace/observability
+tubo create service/myapi
+
+tubo share cluster/home --role member
+tubo share cluster/home --role grant-requester --grant-peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+tubo share service/myapi --expires 1h
+tubo join cluster/home --token <cluster-invite>
+
+tubo describe overlay/public
+tubo describe cluster/home
+tubo describe namespace/default
+
+tubo use overlay/public
+tubo use cluster/home
+tubo use namespace/default
+```
+
+Notes:
+
+- `get overlays` and `get clusters` read only the local config.
+- `get namespaces` uses the current `current_cluster`.
+- `create cluster/...` generates a local authority keypair, writes a `cluster_id`, sets `authority_public_key`, creates the `default` namespace, saves a local membership capability without printing secrets, and initializes the namespace policy as `discovery: enabled` + `connect_policy: namespace_members`. In new collaborative configs, the creator capability also includes `connect`, so `connect <service>` by name works immediately in the same namespace.
+- `create namespace/...` requires a valid `current_cluster`, adds the namespace to the current cluster, makes the new `current_namespace` explicit, materializes a signed membership capability for that namespace, and initializes the local policy as `discovery: enabled` + `connect_policy: namespace_members`. Here too the local creator capability includes `connect`; older namespaces are not widened automatically and `tubo doctor` now warns when the current discovery-enabled context still lacks `connect`.
+- `create service/...` requires `current_cluster` and `current_namespace`, materializes a stable `service_owner_key_file` for the service identity, derives `service_id` from that key, signs a local `ServiceClaim`, and also saves a `service_publish_lease_file` when the node owns the local authority; Discovery V2 uses the lease as the primary authorization.
+- `attach` in cluster/namespace mode automatically materializes a stable service identity if missing: `service_id` is derived from the service owner key stored in the local config (`0600`), while `service_seed` is generated once and stored in the local config (`0600`).
+- before starting the runtime, `attach` resolves publish authorization: it uses an existing valid `PublishLease`, signs it locally if the node owns `authority_private_key_file`, or submits/polls a Publish Grant request if the service has `grant_service_peer`; an expired lease is treated as absent and therefore goes through the normal renewal/request path, and an expired local `ServiceClaim` is also treated as stale/renewable state rather than a fatal error. The `ServiceClaim` fallback remains local compatibility only. When available, it also prints a copyable `service_share_token` connect-only token for Bob (`tubo connect --token ...`). If publish authorization is valid but the token cannot yet be generated (for example because the remote endpoint is not ready), `attach` suggests rerunning `tubo share service/...`; the old `tubo grants request ... --poll` hint remains reserved for cases where the grant request is still actually pending.
+- in the signed bundle public default (`tubo-public` / `home/default`), `attach` runs in **unlisted** mode: the service remains reachable via invite token and libp2p stream, but it does not start ambient publication/discovery and the output makes `visibility: unlisted` + `access: invite token required` explicit. In this scope, the token printed by `attach` must be self-contained: if there is still no relay-aware/remote-dialable endpoint, `attach` fails before printing an unusable invite.
+- in collaborative namespaces with discovery enabled, `attach` also registers a libp2p `/tubo/grants/1.0` endpoint on the service’s peer and publishes a service-scoped `grant_service` in Discovery V2 with reachable peers (relay-aware when available, otherwise only actually dialable direct ones). `connect <service>` now uses this endpoint to obtain discovery-driven leases: `namespace_members` accepts both local membership capabilities with `connect` and imported cluster invites with `connect` permission; revoked invites can no longer obtain new leases.
+- `share cluster/...` uses the local authority key to emit a signed invite, includes namespace/expiry/grant data, and prints a copyable `tubo join ...` command. `--role member` grants `subscribe,list,publish,connect`, `--role viewer` grants only `subscribe,list` (you can see the service but not open connect leases), while `--role grant-requester --grant-peer ...` emits an invite without direct publish rights but with metadata to request a Publish Grant.
+- `share service/...` resolves the current or explicit cluster/namespace (`--cluster`/`--namespace`) and prints a copyable `tubo connect --token ...` command; if the local authority key is available it uses the local authority path, otherwise it can delegate minting to the cluster grant service when the local service owner holds a valid `PublishLease` with `share.mint` and a `grant_service_peer`. If the local `PublishLease` is missing or expired, `share service/...` does not require a new service name: it reuses the same local identity / same `service_id`, tries to renew or re-request publish authorization for that scope first, then continues with delegated minting if the renewal is approved; leases with invalid signature/scope/service/peer are still fatal errors and do not enter the renewal path. If you pass `service/<service_id>`, it uses exact lookup instead of the display name. The token includes cluster/namespace/service/authority metadata, including `service_kind`, but does not authorize generic listing and the new tokens no longer include a reusable embedded bearer `ConnectCapability`. When available it can also include a self-contained `service_endpoint` with relay-aware `/p2p-circuit` addresses, so invite-only flows do not depend on ambient listing; in the public default this endpoint is no longer optional, so `share service/...` fails clearly if it can only produce local/non-dialable addresses. If it also includes `grant_service` metadata, `connect --token` redeems it into a short-lived `ConnectAccessLease` and a `ConnectRefreshLease` bound to the bridge’s local key. The bridge renews the access lease before expiry. Share invites are now one-time at the grant endpoint: `one-time` means one successful lease/session redemption, not one HTTP request on the tunnel, and a denied redemption no longer falls back to legacy bearer grants. The local `share-invite-registry.json` remains only a UX guard rail; the authoritative decision happens on the server that redeems the invite. `share revoke <share-invite>` marks the `jti` as revoked/used in the local config, while `tubo revoke invite|session|service-access|publish ...` updates the issuer-side revocation store used by `grants serve`.
+- `join cluster/... --token ...` and `join <cluster-invite>` verify the invite and store cluster metadata + grant in the local config without touching the runtime.
+- `describe overlay/...`, `describe cluster/...`, and `describe namespace/...` show only local metadata and do not print secrets. `describe namespace/...` also includes the effective policy (`discovery`, `connect_policy`) of the current namespace; for the signed public bundle, `home/default` implicitly resolves to `discovery: disabled` + `connect_policy: invite_only` even when an older config did not yet have those fields explicitly. `describe service/...` also shows `Connect policy` and, when available, the protocol/peer of the `grant_service` published by the observed service.
+- `use` updates only the local config file; it does not start or stop runtime processes.
+- `--json` remains available for `get` and for the new local flows when useful.
+
+---
+
+## Publish grants
+
+Authority nodes can start the grant protocol listener and review local requests. For the public bundle, `grants serve --public-auto-approve` uses the public cluster authority key and automatically approves publish requests for the simplified attach/connect flow:
+
+```bash
+tubo grants serve --cluster home --namespace default --public-auto-approve \
+  --connect-access-ttl 10m --connect-refresh-ttl 48h
+# prints direct addr plus relay addr when relay peers are configured
+tubo grants pending
+tubo grants describe gr_123
+tubo grants approve gr_123 --ttl 168h
+tubo grants deny gr_123
+
+tubo grants request service/myapi --peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
+tubo grants request service/myapi --poll
+# if joined with a grant-requester invite, --peer can be omitted
+tubo grants history
+```
+
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and prints relay-aware `/p2p-circuit` addresses for signed invites; it does not publish itself in Discovery V2. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `grants history` now prints `SCOPE` and `SERVICE_ID`, sorts by `service_id`, and prefixes the output with the local store path so the source is explicit. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, revoked, or still-pending grants stop publication.
+
+---
+
+## Multi-node setup
+
+For multi-node setups, use one of these two paths:
+
+- canonical local flow: `tubo join`, `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, `tubo share ...`, `tubo attach`, `tubo connect --token ...`
+- YAML per role: `tubo init relay|edge|service|bridge` and then edit the generated files with relay peers, swarm key, and the required cluster/namespace metadata
+
+---
+
+## Key decisions
+
+1. Keep the core model daemonless.
+2. Add `tubo generate systemd` first.
+3. Keep `-d` as lightweight detached mode.
+4. Do not implement `--install` first.
+5. Keep `launchd` for a later phase.
+6. `process/...` remains the canonical ID for installed services too.
+7. Local `ps/logs/stop/inspect` read locally registered Tubo runtimes; for supervised services without Tubo-owned log files, use the OS-native tools.
+8. Optional supervisor integration is a future enhancement, not part of the core.
 
 ---
 
 ## Open questions
 
-- Quando introdurre `kind=agent` e `capabilities` negli announcement?
-- Come collegare `agent_name`, `service_name`, `peer_id` e policy?
-- Quanto mantenere in vita i vecchi role commands nella documentazione principale?
-- Come presentare in futuro `get peers` / `get agents` senza sovraccaricare il quickstart?
-- Quale integrazione opzionale offrire per systemd/launchd senza indebolire il modello daemonless?
+- How far should automatic local generation go?
+- Should `connect` eventually become a true persistent tunnel UX, or remain a bridge evolution?
+- How much should the old role commands stay visible in the primary documentation?

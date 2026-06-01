@@ -1,28 +1,28 @@
 # tubo CLI
 
-`tubo` e' l'eseguibile principale per avviare i ruoli runtime senza ricordare molte variabili d'ambiente.
+`tubo` is the main executable for starting runtime roles without having to remember many environment variables.
 
-## Precedenza configurazione
+## Configuration precedence
 
-La configurazione effettiva segue:
-
-```text
-flag CLI > env var > config file > default > prompt interattivo
-```
-
-Il prompt interattivo e' riservato ai casi TTY, senza `--non-interactive`, e con `CI` diverso da `true`. In modalita' non interattiva i campi required mancanti producono un errore operativo esplicito.
-
-## Output e logging CLI
-
-Contratto corrente:
+Effective configuration follows:
 
 ```text
-stdout = risultato primario del comando
-stderr = progress/warning/hint umani
-log tecnici = nascosti di default, visibili con verbosity/log-level
+CLI flag > env var > config file > default > interactive prompt
 ```
 
-Controlli globali supportati:
+The interactive prompt is only used in TTY cases, when `--non-interactive` is not set, and when `CI` is not `true`. In non-interactive mode, missing required fields produce an explicit operational error.
+
+## CLI output and logging
+
+Current contract:
+
+```text
+stdout = primary command result
+stderr = human progress/warning/hint output
+technical logs = hidden by default, visible with verbosity/log-level
+```
+
+Supported global controls:
 
 ```bash
 tubo --quiet ...
@@ -32,42 +32,42 @@ tubo -vvv ...
 tubo --log-level error|warn|info|debug|trace ...
 ```
 
-Le forme sopra sono accettate sia prima del comando sia dopo il top-level subcommand, per esempio `tubo -vv share service/myapi` e `tubo share -vv service/myapi`.
+The forms above are accepted both before the command and after the top-level subcommand, for example `tubo -vv share service/myapi` and `tubo share -vv service/myapi`.
 
-Default attuale:
+Current defaults:
 
-- one-shot commands: output pulito, senza diagnostica tecnica;
-- runtime foreground (`attach`, `connect`, `gateway`, `relay`, `grants serve`): output pulito di default; i log tecnici compaiono solo con `-v`/`-vv`/`--log-level ...`;
-- processi registrati da Tubo: i log restano disponibili via `tubo logs ...` quando Tubo conosce un log file.
+- one-shot commands: clean output, no technical diagnostics;
+- runtime foreground commands (`attach`, `connect`, `gateway`, `relay`, `grants serve`): clean output by default; technical logs appear only with `-v`/`-vv`/`--log-level ...`;
+- processes registered by Tubo: logs remain available through `tubo logs ...` when Tubo knows a log file.
 
-Per i comandi `--json`, Tubo deve mantenere stdout parseable JSON anche quando il comando fa sub-flow interni come implicit join o refresh grant.
+For `--json` commands, Tubo must keep stdout as parseable JSON even when the command performs internal sub-flows such as implicit join or grant refresh.
 
-## Comandi principali
+## Main commands
 
-La UX primaria di `tubo` e' intent-based:
+The primary `tubo` UX is intent-based:
 
 ```text
-attach    = pubblica un endpoint locale HTTP o raw TCP nello swarm
-connect   = apre un listener locale HTTP o raw TCP verso un servizio remoto
-gateway   = avvia un HTTP gateway verso lo swarm
-relay     = avvia un relay/bootstrap node
-join      = configura questa macchina per uno swarm esistente
+attach    = publish a local HTTP or raw TCP endpoint into the swarm
+connect   = open a local HTTP or raw TCP listener toward a remote service
+gateway   = start an HTTP gateway into the swarm
+relay     = start a relay/bootstrap node
+join      = configure this machine for an existing swarm
 
-get       = lista o recupera risorse
-create    = crea risorse locali nella config
-share     = crea inviti membership locali per un cluster
-grants    = gestisce richieste Publish Grant
-describe  = mostra dettagli leggibili
-inspect   = mostra dettagli tecnici/raw
-watch     = osserva servizi nello swarm
+get       = list or fetch resources
+create    = create local config resources
+share     = create local membership invites for a cluster
+grants    = manage Publish Grant requests
+describe  = show human-readable details
+inspect   = show technical/raw details
+watch     = watch services in the swarm
 
-ps        = mostra processi locali registrati
-logs      = segue o taila i log locali quando Tubo conosce il file
-stop      = ferma un processo locale registrato
-rm --stale = pulisce state/log di processi terminati
+ps        = show locally registered processes
+logs      = follow or tail local logs when Tubo knows the file
+stop      = stop a locally registered process
+rm --stale = clean up state/logs for terminated processes
 ```
 
-I comandi piu' comuni sono:
+The most common commands are:
 
 ```bash
 tubo relay
@@ -82,7 +82,7 @@ tubo inspect service/lmstudio --json
 tubo watch services
 ```
 
-`attach` supporta sia la forma esplicita sia lo shorthand name+port; accetta anche `service/<name>` come primo argomento. Per raw TCP passthrough usa un target `tcp://host:port` esplicito. In quel caso il servizio viene pubblicato come `service_kind=tcp` e gli invite / `connect` conserveranno quel kind:
+`attach` supports both the explicit form and the shorthand name+port form; it also accepts `service/<name>` as the first argument. For raw TCP passthrough, use an explicit `tcp://host:port` target. In that case the service is published as `service_kind=tcp` and invites / `connect` preserve that kind:
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
@@ -92,13 +92,13 @@ tubo attach tcp://127.0.0.1:8443 --name tlsdemo
 
 ## Happy path
 
-### Host relay
+### Relay host
 
 ```bash
 tubo relay -d
 ```
 
-### Host service
+### Service host
 
 ```bash
 tubo join overlay/manual \
@@ -108,7 +108,7 @@ tubo join overlay/manual \
 tubo attach http://127.0.0.1:1234 --name lmstudio -d
 ```
 
-### Host client
+### Client host
 
 ```bash
 tubo join \
@@ -120,13 +120,13 @@ tubo describe service/lmstudio
 tubo connect lmstudio --local 127.0.0.1:51234 -d
 ```
 
-### Host gateway
+### Gateway host
 
 ```bash
 tubo gateway --listen :8443 -d
 ```
 
-I comandi long-running restano in foreground di default. Con `-d` / `--detach` possono essere lasciati in background:
+Long-running commands stay in the foreground by default. With `-d` / `--detach`, they can be left in the background:
 
 ```bash
 tubo relay -d
@@ -135,17 +135,17 @@ tubo attach http://127.0.0.1:1234 --name lmstudio -d
 tubo connect lmstudio --local 127.0.0.1:51234 -d
 ```
 
-## Join/init implicito e `--no-init`
+## Implicit join/init and `--no-init`
 
-Se manca la config locale di default:
+If the local default config does not exist yet:
 
-- `attach`, `connect`, `gateway`, `relay` e i comandi discovery (`get`, `describe`, `inspect`, `watch`) fanno **implicit public join** verso la rete pubblica di default scaricando e verificando il bundle firmato; il bundle pubblico installa anche i metadata del cluster `home/default` (cluster ID, authority public key e grant-service peers), cosi' `tubo attach`/`tubo connect` possono partire da config pulita senza un `join cluster/home` esplicito;
-- questo significa che, da zero, relay/service/client partono tutti nella stessa swarm key del bundle pubblico;
-- in cluster/namespace mode, `attach` crea o riusa una identita' stabile per `(cluster, namespace, service)` (`service_id`, `service_owner_key_file`, `service_seed`, `service_claim_file`) prima di avviare il runtime;
-- senza config esplicita, `attach` genera ancora un seed libp2p unico per processo se non passi `--seed`, evitando PeerID demo condivisi tra macchine diverse;
-- `attach` ascolta di default su `/ip4/0.0.0.0/tcp/0` per permettere direct dial/hole punching quando la rete lo consente.
+- `attach`, `connect`, `gateway`, `relay`, and the discovery commands (`get`, `describe`, `inspect`, `watch`) perform an **implicit public join** to the default public network by downloading and verifying the signed bundle; the public bundle also installs the `home/default` cluster metadata (cluster ID, authority public key, and grant-service peers), so `tubo attach`/`tubo connect` can start from a clean config without an explicit `join cluster/home`;
+- this means that, from zero, relay/service/client all start on the same swarm key from the public bundle;
+- in cluster/namespace mode, `attach` creates or reuses a stable identity for `(cluster, namespace, service)` (`service_id`, `service_owner_key_file`, `service_seed`, `service_claim_file`) before starting the runtime;
+- without explicit config, `attach` still generates a unique libp2p seed per process if you do not pass `--seed`, avoiding shared demo PeerIDs between machines;
+- `attach` listens by default on `/ip4/0.0.0.0/tcp/0` to allow direct dialing/hole punching when the network permits it.
 
-File coinvolti:
+Files involved:
 
 ```text
 ~/.config/tubo/config.yaml
@@ -153,15 +153,15 @@ File coinvolti:
 ~/.config/tubo/clusters/.../namespaces/.../services/...owner.key
 ```
 
-Per disabilitare esplicitamente il comportamento implicito:
+To disable implicit behavior explicitly:
 
 ```bash
 --no-init
 ```
 
-In `CI=true`, sia l'implicit public join sia l'init implicito sono disabilitati e il comando fallisce con next steps espliciti invece di creare state locale implicitamente.
+In `CI=true`, both the implicit public join and the implicit init are disabled and the command fails with explicit next steps instead of creating local state implicitly.
 
-## Utility
+## Utilities
 
 ```bash
 tubo keygen swarm --out swarm.key
@@ -173,18 +173,18 @@ tubo doctor --config service.yaml
 
 ## Init vs Join
 
-`init` crea una nuova configurazione locale; `join` importa la configurazione di uno swarm esistente.
+`init` creates a new local configuration; `join` imports the configuration of an existing swarm.
 
-`join` configura localmente questa macchina per usare uno swarm esistente. Non avvia processi in background.
+`join` configures this machine locally to use an existing swarm. It does not start background processes.
 
-Modalita' default (bundle firmato rete pubblica Tubo):
+Default mode (signed public-network bundle):
 
 ```bash
 tubo join
 tubo join tubo-public
 ```
 
-Modalita' manuale (swarm esistente privato):
+Manual mode (private existing swarm):
 
 ```bash
 tubo join \
@@ -192,7 +192,7 @@ tubo join \
   --swarm-key ./swarm.key
 ```
 
-Per scripting:
+For scripting:
 
 ```bash
 tubo join \
@@ -201,56 +201,56 @@ tubo join \
   --json
 ```
 
-Per bundle custom:
+For a custom bundle:
 
 ```bash
 tubo join --bundle-url https://example.com/network.bundle
 ```
 
-Per test/dev prima che il bundle di default sia pubblicato davvero su GitHub Pages, puoi anche forzare l'URL usato da `tubo join` e dall'implicit public join:
+For test/dev, before the default bundle is actually published on GitHub Pages, you can also force the URL used by `tubo join` and the implicit public join:
 
 ```bash
 export TUBO_DEFAULT_PUBLIC_BUNDLE_URL=https://example.com/tubo-public.bundle
 ```
 
-Di default salva:
+By default it saves:
 
 ```text
 ~/.config/tubo/config.yaml
 ~/.config/tubo/swarm.key
 ```
 
-Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, oppure fare un check TCP basilare del relay con `--check`.
+You can change the directory with `--config-dir`, force overwrite with `--force`, or run a basic TCP reachability check on the relay with `--check`.
 
 ## Connect
 
-`connect` apre un listener locale verso un servizio scoperto nello swarm: HTTP per i servizi `service_kind=http`, raw TCP per i servizi `service_kind=tcp`.
+`connect` opens a local listener toward a service discovered in the swarm: HTTP for `service_kind=http`, raw TCP for `service_kind=tcp`.
 
-Se la config locale di default non esiste ancora, `connect` prova prima a fare implicit public join alla rete pubblica di default.
-Anche `get services`, `describe`, `inspect` e `watch` usano lo stesso bootstrap implicito.
+If the local default config does not exist yet, `connect` first attempts the implicit public join to the default public network.
+`get services`, `describe`, `inspect`, and `watch` use the same bootstrap path.
 
 ```bash
 tubo connect lmstudio --local 127.0.0.1:51234
-# per un servizio tcp il listener locale e' raw TCP, per esempio tcp://127.0.0.1:51234
+# for a tcp service, the local listener is raw TCP, for example tcp://127.0.0.1:51234
 ```
 
-Con `-d` / `--detach`, il tunnel client resta in background come `process/connect-...` ed e' visibile in `tubo ps` / `tubo get processes`. Anche la forma foreground resta registrata e quindi visibile in `tubo ps`.
+With `-d` / `--detach`, the client tunnel remains in the background as `process/connect-...` and is visible in `tubo ps` / `tubo get processes`. The foreground form is also registered and therefore visible in `tubo ps`.
 
-Se `--local` non e' specificato, sceglie automaticamente una porta libera su `127.0.0.1`.
+If `--local` is not specified, Tubo automatically picks a free port on `127.0.0.1`.
 
-Per scripting:
+For scripting:
 
 ```bash
 tubo connect lmstudio --json
 ```
 
-`connect` usa la stessa risoluzione discovery di `get service/<name>`: cache locale quando disponibile, poi remote discovery query verso un bootstrap/relay peer, e solo infine observer effimero live. Il nome puo' essere passato sia come `lmstudio` sia come `service/lmstudio`, oppure puo' arrivare da `--token <share-invite>` senza fare listing dei servizi. La forma `service/<service_id>` forza invece un lookup esatto sul `service_id`, utile quando i display name sono duplicati; in quel caso un nome ambiguo fallisce con un hint verso `tubo connect service/<service_id>`. Con un invite, `connect` risolve sempre il `service_id` esatto invece di fidarsi del display name e rifiuta token firmati da un issuer diverso da quello gia' pinning per lo scope locale. Se il token contiene un `service_endpoint` self-contained, `connect --token` usa direttamente quell'endpoint senza passare dalla discovery; i token legacy senza endpoint possono ancora fare fallback alla discovery solo negli scope dove la discovery e' abilitata. I token nuovi propagano anche `service_kind`: per un servizio `tcp`, `connect` apre quindi un listener locale raw TCP e l'endpoint stampato/JSON usa `tcp://host:port` invece di `http://...`. L'accesso dati pero' passa sempre dal grant endpoint: quando il token contiene metadata `grant_service`, `connect --token` deve prima redimere l'invite in un `ConnectAccessLease`/`ConnectRefreshLease`; se la redemption viene negata (`already redeemed`, revoca, scope mismatch, ecc.) Tubo non fa piu' fallback a bearer grant embedded legacy. Se invece il servizio discovery-enabled pubblica metadata `grant_service`, `connect <name>` usa quel grant endpoint per richiedere un `ConnectAccessLease`/`ConnectRefreshLease` service-scoped prima di aprire il tunnel: oggi il publisher attached firma lease delegati con la propria service owner key, mentre il service valida catena authority -> publish lease (delegation) -> connect lease -> connect proof. Le opzioni `--cluster` e `--namespace` vengono risolte dal config corrente quando presenti o dal token di servizio; `get services` supporta anche `-n/--namespace` e `-A/--all-namespaces` per preparare i futuri lookup scoped. Nel public default del bundle firmato (`home/default` su `tubo-public`), la discovery ambientale e' ora trattata come disabilitata: `get services`, `watch services`, `describe service/...`, `inspect service/...` e `connect <name>` falliscono con un hint verso `tubo connect --token <share-invite>` o verso uno scope collaborativo privato/custom; un vecchio invite senza `service_endpoint` fallisce con un errore di compatibilita' invece di tentare un listing ambientale.
+`connect` uses the same discovery resolution as `get service/<name>`: local cache when available, then remote discovery query toward a bootstrap/relay peer, and only then an ephemeral live observer. The name can be passed either as `lmstudio` or `service/lmstudio`, or provided via `--token <share-invite>` without listing services. The `service/<service_id>` form forces an exact lookup by `service_id`, which is useful when display names are duplicated; in that case, an ambiguous name fails with a hint toward `tubo connect service/<service_id>`. With an invite, `connect` always resolves the exact `service_id` instead of trusting the display name and rejects tokens signed by an issuer different from the one already pinned for the local scope. If the token contains a self-contained `service_endpoint`, `connect --token` uses that endpoint directly without going through discovery; legacy tokens without an endpoint can still fall back to discovery only in scopes where discovery is enabled. New tokens also propagate `service_kind`: for a `tcp` service, `connect` opens a local raw TCP listener and the printed/JSON endpoint uses `tcp://host:port` instead of `http://...`. Data access always goes through the grant endpoint: when the token contains `grant_service` metadata, `connect --token` must first redeem the invite into a `ConnectAccessLease`/`ConnectRefreshLease`; if redemption is denied (`already redeemed`, revocation, scope mismatch, etc.) Tubo no longer falls back to legacy embedded bearer grants. If the discovery-enabled service publishes `grant_service` metadata, `connect <name>` uses that grant endpoint to request a service-scoped `ConnectAccessLease`/`ConnectRefreshLease` before opening the tunnel: today the attached publisher signs delegated leases with its service owner key, while the service validates the chain authority -> publish lease (delegation) -> connect lease -> connect proof. The `--cluster` and `--namespace` options are resolved from the current config when present or from the service token; `get services` also supports `-n/--namespace` and `-A/--all-namespaces` for future scoped lookups. In the signed bundle public default (`home/default` on `tubo-public`), ambient discovery is now treated as disabled: `get services`, `watch services`, `describe service/...`, `inspect service/...`, and `connect <name>` fail with a hint toward `tubo connect --token <share-invite>` or toward a private/custom collaborative scope; an old invite without `service_endpoint` fails with a compatibility error instead of trying an ambient listing.
 
-HTTP normale e WebSocket (`Upgrade: websocket`) sono inoltrati sullo stesso tunnel. Se un servizio pubblicizza solo indirizzi direct loopback/unspecified (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` li ignora per il dial remoto e usa il path relayed. Il client `connect` abilita AutoRelay/hole punching quando la config contiene relay peer; il successo del direct upgrade dipende comunque da NAT/firewall e dagli indirizzi annunciati dal service. Anche quando il path iniziale e' `relayed`, libp2p puo' aprire in seguito una connessione direct tramite hole punching.
+Normal HTTP and WebSocket (`Upgrade: websocket`) are forwarded over the same tunnel. If a service advertises only direct loopback/unspecified addresses (`127.0.0.1`, `0.0.0.0`, `::1`), `connect` ignores them for remote dialing and uses the relayed path. The `connect` client enables AutoRelay/hole punching when the config contains relay peers; successful direct upgrade still depends on NAT/firewall behavior and on the advertised service addresses. Even when the initial path is `relayed`, libp2p can later open a direct connection through hole punching.
 
-## Detached process state
+## Local process state
 
-Quando usi `-d`, `tubo` salva state locale in stile daemonless:
+With `-d`, Tubo stores local state in a daemonless style:
 
 ```text
 ~/.local/share/tubo/processes/
@@ -258,20 +258,20 @@ Quando usi `-d`, `tubo` salva state locale in stile daemonless:
 ~/.local/share/tubo/run/
 ```
 
-con supporto XDG tramite `XDG_DATA_HOME` quando impostato.
+with XDG support via `XDG_DATA_HOME` when set.
 
-Per persistenza dopo reboot o restart-on-failure tramite supervisor del sistema operativo, vedi anche `docs/runbooks/PROCESS_SUPERVISORS.md`.
+For persistence after reboot or restart-on-failure via the OS supervisor, also see `docs/runbooks/PROCESS_SUPERVISORS.md`.
 
-## Processi locali vs risorse nello swarm
+## Local processes vs swarm resources
 
-Questa distinzione e' importante:
+This distinction is important:
 
 ```bash
 tubo ps
 tubo get processes
 ```
 
-mostrano processi locali registrati su questa macchina.
+show local processes registered on this machine.
 
 ```bash
 tubo get services
@@ -279,13 +279,13 @@ tubo describe service/lmstudio
 tubo inspect service/lmstudio --json
 ```
 
-mostrano invece risorse discovery osservate nello swarm.
+show discovery resources observed in the swarm instead.
 
-Esempio: `process/connect-lmstudio-51234` e' il processo locale che mantiene il tunnel; `service/lmstudio` e' la risorsa pubblicizzata dal publisher remoto.
+Example: `process/connect-lmstudio-51234` is the local process that keeps the tunnel open; `service/lmstudio` is the resource advertised by the remote publisher.
 
-## Process management locale
+## Local process management
 
-I processi locali registrati possono essere ispezionati e gestiti con:
+Registered local processes can be inspected and managed with:
 
 ```bash
 tubo ps
@@ -297,12 +297,12 @@ tubo stop process/connect-lmstudio-51234
 tubo rm --stale
 ```
 
-`ps` / `get processes` riguardano i processi locali registrati su questa macchina. La tabella mostra anche `SERVICE ID` e `SCOPE` quando il processo pubblica un servizio.
-`get services` riguarda invece le risorse discovery pubblicizzate nello swarm. La tabella e il JSON riportano `SERVICE ID`, `SCOPE` e ora anche `ACCESS`/`connect_policy` quando il servizio pubblica metadata di connessione; il campo `grant_service` viene propagato nel JSON quando presente, cosi' i display name duplicati restano separati e i futuri flussi collaborativi possono vedere anche l'endpoint grant associato. `get service/<service_id>`, `describe service/<service_id>` e `inspect service/<service_id>` fanno lookup esatto. Quando la config locale contiene `current_cluster` / `current_namespace`, questi valori vengono riportati nella scope risolta del comando; puoi sovrascriverli con `--cluster`, `-n/--namespace` e, per le sole liste, `-A/--all-namespaces`. In cluster-mode, la query e la lista sono consentite solo se la capability di membership del namespace lo permette; `-A` richiede capability per ogni namespace o una capability broad con namespace `*`.
+`ps` / `get processes` refer to local processes registered on this machine. The table also shows `SERVICE ID` and `SCOPE` when a process publishes a service.
+`get services`, instead, refers to discovery resources advertised in the swarm. The table and JSON report `SERVICE ID`, `SCOPE`, and now also `ACCESS`/`connect_policy` when the service publishes connection metadata; the `grant_service` field is propagated in JSON when present, so duplicate display names stay separated and future collaborative flows can also see the associated grant endpoint. `get service/<service_id>`, `describe service/<service_id>`, and `inspect service/<service_id>` perform exact lookup. When the local config contains `current_cluster` / `current_namespace`, these values are reported in the command’s resolved scope; you can override them with `--cluster`, `-n/--namespace`, and, for lists only, `-A/--all-namespaces`. In cluster mode, the query and list are allowed only if the namespace membership capability allows it; `-A` requires a capability for each namespace or a broad capability with namespace `*`.
 
 ## Resource discovery
 
-Con una config locale creata via `join`, puoi ispezionare i servizi pubblicizzati nello swarm:
+With a local config created via `join`, you can inspect the services advertised in the swarm:
 
 ```bash
 tubo get services
@@ -312,14 +312,14 @@ tubo inspect service/lmstudio --json
 tubo watch services --timeout 20s
 ```
 
-Comportamento:
+Behavior:
 
-- se trova un edge locale gia' in ascolto sull'admin API, usa la sua cache discovery locale;
-- altrimenti prova una remote discovery query verso il primo bootstrap/relay peer disponibile;
-- se anche la query remota fallisce o non basta, avvia un observer effimero, si collega allo swarm per un timeout esplicito e poi esce; il default e' pensato per coprire almeno un heartbeat discovery iniziale;
-- i messaggi di output indicano esplicitamente se sta usando cache locale, query remota, observer live, o fallback tra questi.
+- if a local edge is already listening on the admin API, it uses its local discovery cache;
+- otherwise it first tries a remote discovery query toward the first available bootstrap/relay peer;
+- if the remote query also fails or is insufficient, it starts an ephemeral observer, connects to the swarm for an explicit timeout, and then exits; the default is intended to cover at least one initial discovery heartbeat;
+- output messages explicitly indicate whether it is using local cache, remote query, live observer, or a fallback between them.
 
-Flag utili in questo MVP:
+Useful flags in this MVP:
 
 ```bash
 --config <path>
@@ -329,11 +329,11 @@ Flag utili in questo MVP:
 --json
 ```
 
-`config print` maschera i segreti (`private_key_b64`) e non stampa il contenuto di `swarm.key`.
+`config print` masks secrets (`private_key_b64`) and does not print the contents of `swarm.key`.
 
-## Esempi LM Studio / Ollama
+## LM Studio / Ollama examples
 
-LM Studio pubblicato nello swarm:
+LM Studio published in the swarm:
 
 ```bash
 tubo attach http://127.0.0.1:1234 --name lmstudio -d
@@ -341,7 +341,7 @@ tubo get services
 tubo describe service/lmstudio
 ```
 
-Ollama pubblicato nello swarm:
+Ollama published in the swarm:
 
 ```bash
 tubo attach http://127.0.0.1:11434 --name ollama -d
@@ -358,24 +358,24 @@ tubo init service --out service.yaml
 tubo init bridge --out bridge.yaml
 ```
 
-I file esistenti non sono sovrascritti senza `--force`.
+Existing files are not overwritten without `--force`.
 
-## Esempio swarm.key
+## Example swarm.key
 
 ```bash
 tubo keygen swarm --out swarm.key
 chmod 600 swarm.key
 ```
 
-Il file generato usa il formato libp2p pnet:
+The generated file uses the libp2p pnet format:
 
 ```text
 /key/swarm/psk/1.0.0/
 /base16/
-<32 byte random in hex>
+<32 random bytes in hex>
 ```
 
-## Config service
+## Service config
 
 ```yaml
 role: service
@@ -398,7 +398,7 @@ health_listen: 127.0.0.1:8091
 heartbeat_interval: 5s
 ```
 
-## Config edge
+## Edge config
 
 ```yaml
 role: edge
@@ -415,7 +415,7 @@ edge:
   direct_stream_timeout: 750ms
 ```
 
-## Config relay
+## Relay config
 
 ```yaml
 role: relay
@@ -433,7 +433,7 @@ relay:
   force_reachability_public: true
 ```
 
-## Config bridge
+## Bridge config
 
 ```yaml
 role: bridge
@@ -448,9 +448,9 @@ bridge:
   service_p2p_listen: /ip4/127.0.0.1/tcp/40123
 ```
 
-## Config resource model (Phase 1)
+## Resource config model (Phase 1)
 
-La configurazione supporta un modello risorse minimale per overlay, cluster e namespace, ma il runtime continua a leggere `network:` come source of truth operativo.
+The configuration supports a minimal resource model for overlay, cluster, and namespace, but runtime still reads `network:` as the operational source of truth.
 
 ```yaml
 current_overlay: public
@@ -479,11 +479,11 @@ network:
     - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 ```
 
-`current_overlay` materializza i campi overlay in `network:` quando il file usa il nuovo layout; le writers di `join` e bundle firmati scrivono entrambi i formati per compatibilità. `tubo join overlay/public` è la forma esplicita del join pubblico; `tubo join overlay/manual --relay ... --swarm-key ...` è la forma esplicita del join manuale/legacy. Quando la config corrente porta un cluster con identity metadata (`cluster_id` + `authority_public_key` + membership grant/capability), il runtime discovery usa un topic V2 opaco derivato da `current_cluster/current_namespace` e valida topic/scope, membership capability e replay nonce; le config senza questi metadati non supportano più discovery runtime.
+`current_overlay` materializes overlay fields into `network:` when the file uses the new layout; the writers for `join` and signed bundles write both formats for compatibility. `tubo join overlay/public` is the explicit public join form; `tubo join overlay/manual --relay ... --swarm-key ...` is the explicit manual/legacy join form. When the current config carries a cluster with identity metadata (`cluster_id` + `authority_public_key` + membership grant/capability), runtime discovery uses an opaque V2 topic derived from `current_cluster/current_namespace` and validates topic/scope, membership capability, and replay nonce; configs without these metadata no longer support runtime discovery.
 
 ## Local resource CLI (Phase 2a)
 
-Dopo il nuovo model locale puoi ispezionare, creare, invitare e selezionare overlay, cluster e namespace già presenti nella config:
+With the new local model you can inspect, create, invite, and select overlay, cluster, and namespace entries already present in the config:
 
 ```bash
 tubo get overlays
@@ -508,27 +508,27 @@ tubo use cluster/home
 tubo use namespace/default
 ```
 
-Note:
+Notes:
 
-- `get overlays` e `get clusters` leggono solo la config locale.
-- `get namespaces` usa il `current_cluster` corrente.
-- `create cluster/...` genera un authority keypair locale, scrive un `cluster_id`, imposta `authority_public_key`, crea il namespace `default`, salva una capability di membership locale senza stampare segreti e inizializza la policy del namespace come `discovery: enabled` + `connect_policy: namespace_members`. Nelle nuove config collaborative la capability del creator include anche `connect`, cosi' `connect <service>` by-name funziona subito nello stesso namespace.
-- `create namespace/...` richiede un `current_cluster` valido, aggiunge il namespace al cluster corrente, rende esplicito il nuovo `current_namespace`, materializza una capability di membership firmata per quel namespace e inizializza la policy locale come `discovery: enabled` + `connect_policy: namespace_members`. Anche qui la capability locale del creator include `connect`; i namespace piu' vecchi non vengono widened automaticamente e `tubo doctor` ora avvisa quando il contesto discovery-enabled corrente non ha ancora `connect`.
-- `create service/...` richiede un `current_cluster` e `current_namespace`, materializza un `service_owner_key_file` stabile per la service identity, deriva il `service_id` da quella chiave, firma una `ServiceClaim` locale e salva anche una `service_publish_lease_file` quando il nodo possiede l'authority locale; Discovery V2 usa la lease come autorizzazione primaria.
-- `attach` in cluster/namespace mode materializza automaticamente una identita' servizio stabile se manca: il `service_id` deriva dalla service owner key salvata nel config locale (`0600`), mentre il `service_seed` viene generato una sola volta e salvato nel config locale (`0600`).
-- prima di avviare il runtime, `attach` risolve l'autorizzazione di pubblicazione: usa una `PublishLease` valida esistente, la firma localmente se il nodo possiede `authority_private_key_file`, oppure invia/polla una Publish Grant request se il servizio ha `grant_service_peer`; un lease scaduto è trattato come assente e quindi rientra nel normale percorso di rinnovo/richiesta, e anche un `ServiceClaim` locale scaduto viene trattato come stato stale/rinnovabile invece che come errore fatale. Il fallback a `ServiceClaim` resta solo compatibilità locale. Quando disponibile stampa anche un `service_share_token` connect-only copiabile per Bob (`tubo connect --token ...`). Se l'autorizzazione di publish è valida ma il token non puo' ancora essere generato (per esempio endpoint remoto non ancora pronto), `attach` suggerisce di rilanciare `tubo share service/...`; il vecchio hint `tubo grants request ... --poll` resta riservato ai casi in cui la grant request e' davvero ancora pending.
-- nel public default del bundle firmato (`tubo-public` / `home/default`), `attach` gira in modalita' **unlisted**: il servizio resta raggiungibile via invite token e stream libp2p, ma non avvia publication/discovery ambientale e l'output esplicita `visibility: unlisted` + `access: invite token required`. In questo scope il token stampato da `attach` deve essere self-contained: se non esiste ancora un endpoint relay-aware/remote-dialable, `attach` fallisce prima di stampare un invite inutilizzabile.
-- nei namespace collaborativi con discovery abilitata, `attach` registra anche un endpoint libp2p `/tubo/grants/1.0` sullo stesso peer del servizio e pubblica in Discovery V2 un `grant_service` service-scoped con peer raggiungibili (relay-aware quando disponibili, altrimenti solo direct realmente dialable). `connect <service>` usa ora questo endpoint per ottenere lease discovery-driven: `namespace_members` accetta sia membership capability locali con `connect`, sia cluster invite importati con permesso `connect`; inviti revocati non possono piu' ottenere nuovi lease.
-- `share cluster/...` usa la chiave authority locale per emettere un invito firmato, include namespace/expiry/grant data e stampa un comando `tubo join ...` copiabile. `--role member` concede `subscribe,list,publish,connect`, `--role viewer` concede solo `subscribe,list` (puoi vedere il servizio ma non aprire lease di connect), mentre `--role grant-requester --grant-peer ...` emette un invito senza diritti publish diretti ma con metadata per richiedere una Publish Grant.
-- `share service/...` risolve il cluster/namespace corrente o esplicito (`--cluster`/`--namespace`) e stampa un comando `tubo connect --token ...` copiabile; se la chiave authority locale e' disponibile usa il path authority-local, altrimenti puo' delegare il mint al cluster grant service quando il service owner locale possiede una `PublishLease` valida con `share.mint` e un `grant_service_peer`. Se la `PublishLease` locale manca o e' scaduta, `share service/...` non richiede un nuovo nome servizio: riusa la stessa identita' locale / stesso `service_id`, prova prima a rinnovare o ri-richiedere l'autorizzazione di publish per quello scope, poi continua col delegated mint se il rinnovo viene approvato; lease con firma/scope/service/peer invalidi restano errori fatali e non entrano nel path di renewal. Se passi `service/<service_id>` usa il lookup esatto invece del display name. Il token include cluster/namespace/service/authority metadata, incluso `service_kind`, ma non autorizza listing generico e i token nuovi non includono piu' un bearer `ConnectCapability` embedded riusabile. Quando disponibile puo' includere anche un `service_endpoint` self-contained con indirizzi relay-aware `/p2p-circuit`, cosi' i flussi invite-only non dipendono da listing ambientale; nel public default questo endpoint non e' piu' opzionale, quindi `share service/...` fallisce chiaramente se puo' produrre solo indirizzi locali/non dialable. Se include anche metadata `grant_service`, `connect --token` lo redime in un `ConnectAccessLease` corto e un `ConnectRefreshLease` bound alla chiave locale del bridge. Il bridge rinnova l'access lease prima della scadenza. Le share invite sono now one-time lato grant endpoint: `one-time` significa una sola successful lease/session redemption, non una sola HTTP request sul tunnel, e una redemption negata non degrada piu' verso bearer grants legacy. La registry locale `share-invite-registry.json` resta solo un guard rail UX; la decisione autorevole avviene sul server che redime l'invite. `share revoke <share-invite>` marca il `jti` come revocato/usato nella config locale, mentre `tubo revoke invite|session|service-access|publish ...` aggiorna lo store revoche issuer-side usato da `grants serve`.
-- `join cluster/... --token ...` e `join <cluster-invite>` verificano l'invito e salvano metadata del cluster + grant nel config locale senza toccare il runtime.
-- `describe overlay/...`, `describe cluster/...` e `describe namespace/...` mostrano solo metadata locale e non stampano segreti. `describe namespace/...` include anche la policy effettiva (`discovery`, `connect_policy`) del namespace corrente; per il bundle pubblico firmato il namespace `home/default` risolve implicitamente come `discovery: disabled` + `connect_policy: invite_only` anche quando una config piu' vecchia non aveva ancora questi campi espliciti. `describe service/...` mostra anche `Connect policy` e, quando disponibile, protocollo/peer del `grant_service` pubblicato dal servizio osservato.
-- `use` aggiorna solo il file di config locale; non avvia o ferma processi runtime.
-- `--json` resta disponibile per `get` e per i nuovi flussi locali quando utile.
+- `get overlays` and `get clusters` read only the local config.
+- `get namespaces` uses the current `current_cluster`.
+- `create cluster/...` generates a local authority keypair, writes a `cluster_id`, sets `authority_public_key`, creates the `default` namespace, saves a local membership capability without printing secrets, and initializes the namespace policy as `discovery: enabled` + `connect_policy: namespace_members`. In new collaborative configs, the creator capability also includes `connect`, so `connect <service>` by name works immediately in the same namespace.
+- `create namespace/...` requires a valid `current_cluster`, adds the namespace to the current cluster, makes the new `current_namespace` explicit, materializes a signed membership capability for that namespace, and initializes the local policy as `discovery: enabled` + `connect_policy: namespace_members`. Here too the local creator capability includes `connect`; older namespaces are not widened automatically and `tubo doctor` now warns when the current discovery-enabled context still lacks `connect`.
+- `create service/...` requires `current_cluster` and `current_namespace`, materializes a stable `service_owner_key_file` for the service identity, derives `service_id` from that key, signs a local `ServiceClaim`, and also saves a `service_publish_lease_file` when the node owns the local authority; Discovery V2 uses the lease as the primary authorization.
+- `attach` in cluster/namespace mode automatically materializes a stable service identity if missing: `service_id` is derived from the service owner key stored in the local config (`0600`), while `service_seed` is generated once and stored in the local config (`0600`).
+- before starting the runtime, `attach` resolves publish authorization: it uses an existing valid `PublishLease`, signs it locally if the node owns `authority_private_key_file`, or submits/polls a Publish Grant request if the service has `grant_service_peer`; an expired lease is treated as absent and therefore goes through the normal renewal/request path, and an expired local `ServiceClaim` is also treated as stale/renewable state rather than a fatal error. The `ServiceClaim` fallback remains local compatibility only. When available, it also prints a copyable `service_share_token` connect-only token for Bob (`tubo connect --token ...`). If publish authorization is valid but the token cannot yet be generated (for example because the remote endpoint is not ready), `attach` suggests rerunning `tubo share service/...`; the old `tubo grants request ... --poll` hint remains reserved for cases where the grant request is still actually pending.
+- in the signed bundle public default (`tubo-public` / `home/default`), `attach` runs in **unlisted** mode: the service remains reachable via invite token and libp2p stream, but it does not start ambient publication/discovery and the output makes `visibility: unlisted` + `access: invite token required` explicit. In this scope, the token printed by `attach` must be self-contained: if there is still no relay-aware/remote-dialable endpoint, `attach` fails before printing an unusable invite.
+- in collaborative namespaces with discovery enabled, `attach` also registers a libp2p `/tubo/grants/1.0` endpoint on the service’s peer and publishes a service-scoped `grant_service` in Discovery V2 with reachable peers (relay-aware when available, otherwise only actually dialable direct ones). `connect <service>` now uses this endpoint to obtain discovery-driven leases: `namespace_members` accepts both local membership capabilities with `connect` and imported cluster invites with `connect` permission; revoked invites can no longer obtain new leases.
+- `share cluster/...` uses the local authority key to emit a signed invite, includes namespace/expiry/grant data, and prints a copyable `tubo join ...` command. `--role member` grants `subscribe,list,publish,connect`, `--role viewer` grants only `subscribe,list` (you can see the service but not open connect leases), while `--role grant-requester --grant-peer ...` emits an invite without direct publish rights but with metadata to request a Publish Grant.
+- `share service/...` resolves the current or explicit cluster/namespace (`--cluster`/`--namespace`) and prints a copyable `tubo connect --token ...` command; if the local authority key is available it uses the local authority path, otherwise it can delegate minting to the cluster grant service when the local service owner holds a valid `PublishLease` with `share.mint` and a `grant_service_peer`. If the local `PublishLease` is missing or expired, `share service/...` does not require a new service name: it reuses the same local identity / same `service_id`, tries to renew or re-request publish authorization for that scope first, then continues with delegated minting if the renewal is approved; leases with invalid signature/scope/service/peer are still fatal errors and do not enter the renewal path. If you pass `service/<service_id>`, it uses exact lookup instead of the display name. The token includes cluster/namespace/service/authority metadata, including `service_kind`, but does not authorize generic listing and the new tokens no longer include a reusable embedded bearer `ConnectCapability`. When available it can also include a self-contained `service_endpoint` with relay-aware `/p2p-circuit` addresses, so invite-only flows do not depend on ambient listing; in the public default this endpoint is no longer optional, so `share service/...` fails clearly if it can only produce local/non-dialable addresses. If it also includes `grant_service` metadata, `connect --token` redeems it into a short-lived `ConnectAccessLease` and a `ConnectRefreshLease` bound to the bridge’s local key. The bridge renews the access lease before expiry. Share invites are now one-time at the grant endpoint: `one-time` means one successful lease/session redemption, not one HTTP request on the tunnel, and a denied redemption no longer falls back to legacy bearer grants. The local `share-invite-registry.json` remains only a UX guard rail; the authoritative decision happens on the server that redeems the invite. `share revoke <share-invite>` marks the `jti` as revoked/used in the local config, while `tubo revoke invite|session|service-access|publish ...` updates the issuer-side revocation store used by `grants serve`.
+- `join cluster/... --token ...` and `join <cluster-invite>` verify the invite and store cluster metadata + grant in the local config without touching the runtime.
+- `describe overlay/...`, `describe cluster/...`, and `describe namespace/...` show only local metadata and do not print secrets. `describe namespace/...` also includes the effective policy (`discovery`, `connect_policy`) of the current namespace; for the signed public bundle, `home/default` implicitly resolves to `discovery: disabled` + `connect_policy: invite_only` even when an older config did not yet have those fields explicitly. `describe service/...` also shows `Connect policy` and, when available, the protocol/peer of the `grant_service` published by the observed service.
+- `use` updates only the local config file; it does not start or stop runtime processes.
+- `--json` remains available for `get` and for the new local flows when useful.
 
 ## Publish Grants
 
-Authority nodes can start the grant protocol listener and review local requests. Per il bundle pubblico, `grants serve --public-auto-approve` usa l'authority key del cluster pubblico e approva automaticamente le richieste di publish per il flusso attach/connect semplificato:
+Authority nodes can start the grant protocol listener and review local requests. For the public bundle, `grants serve --public-auto-approve` uses the public cluster authority key and automatically approves publish requests for the simplified attach/connect flow:
 
 ```bash
 tubo grants serve --cluster home --namespace default --public-auto-approve \
@@ -545,12 +545,11 @@ tubo grants request service/myapi --poll
 tubo grants history
 ```
 
-The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and prints relay-aware `/p2p-circuit` addresses for signed invites; it does not publish itself in Discovery V2. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `grants history` now prints `SCOPE` and `SERVICE_ID`, sorts by `service_id`, and prefixes the output with the local store path so the source is explicit. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, revoked, or still-pending grants stop publication.
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and prints relay-aware `/p2p-circuit` addresses for signed invites; it does not publish itself in Discovery V2. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `grants history` now prints `SCOPE` and `SERVICE_ID`, sorts by `service_id`, and prefixes the output with the local store path so the source is explicit. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, revoked, or still-pending grants stop publication.
 
 ## Multi-node setup
 
-Per setup multi-node usa uno di questi due percorsi:
+For multi-node setups, use one of these two paths:
 
-- flusso locale canonico: `tubo join`, `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, `tubo share ...`, `tubo attach`, `tubo connect --token ...`
-- YAML per ruolo: `tubo init relay|edge|service|bridge` e poi modifica i file generati con relay peer, swarm key e metadata del cluster/namespace necessari
-
+- canonical local flow: `tubo join`, `tubo create cluster/...`, `tubo create namespace/...`, `tubo create service/...`, `tubo share ...`, `tubo attach`, `tubo connect --token ...`
+- role YAML: `tubo init relay|edge|service|bridge` and then edit the generated files with relay peer, swarm key, and required cluster/namespace metadata

@@ -1,94 +1,94 @@
 # Distributed 2-host smoke testbench
 
-Questo smoke test usa **2 macchine reali**:
+This smoke test uses **2 real machines**:
 
-- `edge` sulla macchina locale/agent host (`172.236.202.99` di default)
-- `relay` obbligatoriamente sulla macchina remota (`root@172-232-189-160.ip.linodeusercontent.com`)
-- `service` + `dummy-api-server` co-hosted sulla macchina remota
+- `edge` on the local machine / agent host (`172.236.202.99` by default)
+- `relay` necessarily on the remote machine (`root@172-232-189-160.ip.linodeusercontent.com`)
+- `service` + `dummy-api-server` co-hosted on the remote machine
 
-## Perche' questa topologia
+## Why this topology
 
-Con solo due macchine non possiamo avere `edge`, `relay` e `service` tutti separati come nel compose NAT.
-Questa variante forza comunque un percorso distribuito utile:
+With only two machines, we cannot keep `edge`, `relay`, and `service` fully separated like in the NAT compose setup.
+This variant still forces a useful distributed path:
 
-- l'`edge` gira davvero su un host separato;
-- il `relay` gira davvero sull'host remoto;
-- il `service` remoto e' forzato a usare `p2p_listen=/ip4/127.0.0.1/tcp/40123` + `force_reachability: private`, quindi non e' direttamente dialabile dall'edge;
-- il traffico deve quindi passare via relay.
+- `edge` really runs on a separate host;
+- `relay` really runs on the remote host;
+- the remote `service` is forced to use `p2p_listen=/ip4/127.0.0.1/tcp/40123` + `force_reachability: private`, so it is not directly dialable from edge;
+- traffic must therefore go through the relay.
 
-In pratica non e' un test 3-host puro, ma e' un buon surrogate relay-first distribuito con solo 2 macchine.
+In practice this is not a pure 3-host test, but it is a good distributed relay-first surrogate with only 2 machines.
 
-## Prerequisiti
+## Prerequisites
 
-Locale:
+Local:
 
 - Go toolchain
 - `curl`
 - `ssh` + `scp`
-- accesso SSH root alla macchina relay
+- root SSH access to the relay machine
 
-Remoto:
+Remote:
 
-- Linux amd64 compatibile
+- compatible Linux amd64
 - `curl`
-- porta `4001/tcp` aperta verso Internet
+- `4001/tcp` open to the Internet
 
-## Esecuzione
+## Run
 
 ```bash
 ./tests/smoke-distributed-two-host.sh
 ```
 
-Default importanti:
+Important defaults:
 
 - `REMOTE_HOST=root@172-232-189-160.ip.linodeusercontent.com`
 - `REMOTE_RELAY_IP=172.232.189.160`
 - `EDGE_HOST_IP=172.236.202.99`
 - `SERVICE_NAME=myapi`
 
-## Variabili utili
+## Useful variables
 
-- `KEEP_RUNNING=1` lascia i processi attivi per debug
-- `RUN_DIR=...` cambia la directory locale generata
-- `REMOTE_BASE_DIR=...` cambia la directory remota temporanea
+- `KEEP_RUNNING=1` leaves processes running for debugging
+- `RUN_DIR=...` changes the generated local directory
+- `REMOTE_BASE_DIR=...` changes the temporary remote directory
 - `EDGE_HTTP_LISTEN=127.0.0.1:18443`
 - `EDGE_ADMIN_LISTEN=127.0.0.1:18444`
 
-Esempio:
+Example:
 
 ```bash
 KEEP_RUNNING=1 ./tests/smoke-distributed-two-host.sh
 ```
 
-## Verifiche eseguite
+## Checks performed
 
-Lo script:
+The script:
 
-1. compila `tubo` e `dummy-api-server` in locale;
-2. genera una PSK temporanea;
-3. genera config YAML per `edge`, `relay`, `service`;
-4. copia binari + config sul relay host;
-5. avvia `relay`, `service`, `dummy-api-server` in remoto;
-6. avvia `edge` in locale;
-7. aspetta health + discovery + route;
-8. esegue una request HTTP vera con `Host: myapi`;
-9. controlla nei log dell'edge `connection_path=relayed`.
+1. builds `tubo` and `dummy-api-server` locally;
+2. generates a temporary PSK;
+3. generates YAML config for `edge`, `relay`, and `service`;
+4. copies binaries + config to the relay host;
+5. starts `relay`, `service`, and `dummy-api-server` remotely;
+6. starts `edge` locally;
+7. waits for health + discovery + route;
+8. performs a real HTTP request with `Host: myapi`;
+9. checks `connection_path=relayed` in edge logs.
 
-## Idea migliore con sole 2 macchine?
+## Better idea with only 2 machines?
 
-Sì, ma e' molto vicina a questa:
+Yes, but it is very close to this one:
 
-- tieni `edge` da una parte;
-- sull'altra macchina tieni `relay` e `service`;
-- **lega il service a loopback** per impedire direct dial pubblico;
-- lascia il relay pubblico.
+- keep `edge` on one side;
+- keep `relay` and `service` on the other machine;
+- **bind the service to loopback** to prevent public direct dial;
+- keep the relay public.
 
-Questo e' il compromesso migliore se vuoi verificare davvero:
+This is the best compromise if you really want to verify:
 
-- control plane distribuito;
-- discovery reale;
-- forwarding HTTP reale;
-- relay-first effettivo;
-- debug semplice via SSH su una sola macchina remota.
+- distributed control plane;
+- real discovery;
+- real HTTP forwarding;
+- effective relay-first behavior;
+- simple debugging over SSH on a single remote machine.
 
-L'unica alternativa leggermente migliore, sempre con 2 macchine, e' mettere il `service` dentro una network namespace o VM privata sulla macchina relay per isolarlo ancora di piu'. Ma come primo bench operativo, questo smoke e' gia' abbastanza buono.
+The only slightly better alternative, still with 2 machines, is to place `service` inside a private network namespace or VM on the relay machine to isolate it even more. But as a first operational bench, this smoke test is already good enough.

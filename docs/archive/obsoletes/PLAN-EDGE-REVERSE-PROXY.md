@@ -1,22 +1,22 @@
-# Piano: tubo edge come reverse proxy applicativo
+# Plan: tubo edge as an application reverse proxy
 
-Questo documento riassume il ragionamento sul possibile supporto di `tubo edge` come reverse proxy applicativo con controllo delle rotte.
+This document summarizes the reasoning behind possible support for `tubo edge` as an application reverse proxy with route control.
 
-## Idea generale
+## General idea
 
-`tubo edge` è già vicino a un reverse proxy applicativo.
+`tubo edge` is already close to an application reverse proxy.
 
-Oggi il flusso è:
+Today the flow is:
 
 ```text
 HTTP client -> tubo edge -> routing -> libp2p stream -> tubo service -> upstream HTTP
 ```
 
-L'edge riceve HTTP, sceglie un service, apre uno stream libp2p e inoltra la richiesta. Questo è già il nucleo di un reverse proxy distribuito.
+The edge receives HTTP, chooses a service, opens a libp2p stream, and forwards the request. That is already the core of a distributed reverse proxy.
 
-La proposta è aggregare molti service pubblicizzati nello swarm in un unico albero di URI, simile a nginx/Traefik/Caddy.
+The proposal is to aggregate many services advertised in the swarm into a single URI tree, similar to nginx/Traefik/Caddy.
 
-Esempio:
+Example:
 
 ```text
 https://edge.example.com/lmstudio/...
@@ -24,30 +24,30 @@ https://edge.example.com/ollama/...
 https://edge.example.com/internal-api/...
 ```
 
-Ogni prefisso viene inoltrato al service corrispondente.
+Each prefix is forwarded to the corresponding service.
 
-## Perché ha senso in tubo
+## Why this makes sense in tubo
 
-`tubo` ha già elementi utili:
+`tubo` already has useful pieces:
 
-- discovery dei service nello swarm;
-- service name;
-- edge HTTP;
-- forwarding request/response;
+- service discovery in the swarm;
+- service names;
+- HTTP edge;
+- request/response forwarding;
 - admin API;
 - topology/config YAML;
-- relay libp2p;
+- libp2p relay;
 - private swarm.
 
-Quindi l'edge può diventare un punto di ingresso HTTP unico per tutti i service privati.
+So the edge can become a single HTTP entry point for all private services.
 
-Questo differenzia `tubo` da tunnel più generici come frp/chisel/rathole, che ragionano soprattutto su porte TCP/UDP.
+This differentiates `tubo` from more generic tunnels such as frp/chisel/rathole, which mainly think in terms of TCP/UDP ports.
 
-## Modello desiderato
+## Desired model
 
-### Route statiche
+### Static routes
 
-Configurazione esplicita:
+Explicit configuration:
 
 ```yaml
 routes:
@@ -68,7 +68,7 @@ routes:
       strip_prefix: /internal-api
 ```
 
-Risultato:
+Result:
 
 ```text
 GET /lmstudio/v1/models
@@ -82,7 +82,7 @@ GET /internal-api/users
 
 ### Auto path tree
 
-Modalità automatica basata sui service scoperti:
+Automatic mode based on discovered services:
 
 ```yaml
 edge:
@@ -92,7 +92,7 @@ edge:
     strip_prefix: true
 ```
 
-Se nello swarm compaiono service:
+If the swarm contains services:
 
 ```text
 lmstudio
@@ -100,7 +100,7 @@ ollama
 grafana
 ```
 
-l'edge genera automaticamente:
+the edge automatically generates:
 
 ```text
 /lmstudio/* -> lmstudio
@@ -108,65 +108,65 @@ l'edge genera automaticamente:
 /grafana/*  -> grafana
 ```
 
-Questa è probabilmente la feature più utile per la UX.
+This is probably the single most useful UX feature.
 
 ## Path rewriting
 
-Il punto più delicato è la riscrittura del path.
+The trickiest part is path rewriting.
 
-Se il client chiama:
+If the client calls:
 
 ```text
 /lmstudio/v1/chat/completions
 ```
 
-spesso il target vuole ricevere:
+the target often wants to receive:
 
 ```text
 /v1/chat/completions
 ```
 
-Quindi serve `strip_prefix`.
+So `strip_prefix` is needed.
 
-Ma non tutti i servizi vogliono stripping. Alcune app sono configurate per vivere sotto un subpath e vogliono vedere il path completo.
+But not all services want stripping. Some apps are designed to live under a subpath and want to see the full path.
 
-Perciò le opzioni dovrebbero includere:
+So the options should include:
 
 ```yaml
 rewrite:
   strip_prefix: /lmstudio
 ```
 
-oppure:
+or:
 
 ```yaml
 rewrite:
   preserve_path: true
 ```
 
-Dovrebbe valere la regola del longest-prefix match: tra più route compatibili vince quella con prefisso più specifico.
+The longest-prefix match rule should apply: among compatible routes, the one with the most specific prefix wins.
 
 ## Header forwarding
 
-Per comportarsi come un reverse proxy serio, l'edge deve gestire correttamente header forwarding:
+To behave like a serious reverse proxy, the edge must handle header forwarding correctly:
 
 - `X-Forwarded-For`;
 - `X-Forwarded-Host`;
 - `X-Forwarded-Proto`;
 - `X-Forwarded-Prefix`;
 - `X-Real-IP`;
-- eventualmente header standard `Forwarded`.
+- optionally the standard `Forwarded` header.
 
-`X-Forwarded-Prefix` è importante per app montate sotto subpath.
+`X-Forwarded-Prefix` is important for apps mounted under a subpath.
 
-Configurazione possibile:
+Possible configuration:
 
 ```yaml
 reverse_proxy:
   forwarded_headers: true
 ```
 
-Per route:
+Per-route:
 
 ```yaml
 routes:
@@ -181,11 +181,11 @@ routes:
         X-Forwarded-Prefix: /grafana
 ```
 
-## Discovery metadata e route hints
+## Discovery metadata and route hints
 
-In futuro i service potrebbero pubblicare anche metadata di routing.
+In the future, services could also publish routing metadata.
 
-Esempio lato service:
+Example on the service side:
 
 ```yaml
 service:
@@ -200,7 +200,7 @@ service:
       - ai
 ```
 
-L'announcement di discovery potrebbe includere route hints:
+The discovery announcement could include route hints:
 
 ```text
 service_name
@@ -211,13 +211,13 @@ routes
 tags
 ```
 
-Questo consentirebbe ai service di suggerire come vogliono essere esposti.
+This would let services suggest how they want to be exposed.
 
-## Sicurezza delle route automatiche
+## Route safety
 
-La parte più rischiosa è permettere ai service di scegliere autonomamente le route.
+The riskiest part is allowing services to choose routes autonomously.
 
-Un service malevolo potrebbe annunciare:
+A malicious service could announce:
 
 ```text
 /
@@ -225,33 +225,33 @@ Un service malevolo potrebbe annunciare:
 /api
 ```
 
-rubando traffico destinato ad altri service.
+and hijack traffic intended for other services.
 
-Per questo conviene separare tre modalità.
+For that reason, it is better to separate three modes.
 
-### 1. Route statiche amministrate dall'edge
+### 1. Static routes managed by the edge
 
-L'edge owner decide tutte le route.
+The edge owner decides all routes.
 
-È la modalità più sicura.
+This is the safest mode.
 
-### 2. Auto path tree sicuro
+### 2. Safe auto path tree
 
-L'edge decide automaticamente il prefisso a partire dal service name:
+The edge automatically decides the prefix from the service name:
 
 ```text
 /<service-name>/
 ```
 
-Il service non sceglie path arbitrari.
+The service does not choose arbitrary paths.
 
-Questa modalità è sicura e comoda.
+This is safe and convenient.
 
-### 3. Route hints approvati
+### 3. Approved route hints
 
-Il service pubblica suggerimenti, ma l'edge li accetta solo se policy consente.
+The service publishes hints, but the edge accepts them only if policy allows it.
 
-Esempio:
+Example:
 
 ```yaml
 edge:
@@ -262,7 +262,7 @@ edge:
       - /api/
 ```
 
-Oppure policy per service:
+Or per-service policy:
 
 ```yaml
 edge:
@@ -276,26 +276,26 @@ edge:
           - /internal-api/
 ```
 
-## Controllo delle rotte
+## Route control
 
-Un reverse proxy applicativo dovrebbe offrire controllo esplicito su:
+An application reverse proxy should offer explicit control over:
 
 - host match;
 - path prefix match;
 - service target;
-- rewrite path;
+- path rewrite;
 - header set/add/remove;
-- priorità;
-- timeout per route;
+- priority;
+- route timeout;
 - max body size;
-- auth per route;
+- route auth;
 - allowed methods;
-- rate limit;
+- rate limiting;
 - visibility/admin state;
-- route dinamiche da discovery;
-- route statiche da config.
+- dynamic routes from discovery;
+- static routes from config.
 
-Esempio configurazione evoluta:
+Example of an advanced configuration:
 
 ```yaml
 reverse_proxy:
@@ -319,11 +319,11 @@ routes:
     max_body_size: 100MiB
 ```
 
-## Admin API e diagnosi
+## Admin API and diagnostics
 
-L'edge dovrebbe esporre le route effettive via admin API.
+The edge should expose the effective routes through its admin API.
 
-Endpoint possibili:
+Possible endpoints:
 
 ```text
 GET /routes
@@ -332,53 +332,53 @@ GET /services
 GET /route-match?host=...&path=...
 ```
 
-Informazioni utili:
+Useful information:
 
 - route name;
 - source: static, auto_path_tree, discovery_hint;
 - service;
-- peer selezionato;
-- match host/path;
-- rewrite applicato;
-- stato healthy/unhealthy;
-- ultimo announcement;
-- eventuali collisioni.
+- selected peer;
+- host/path match;
+- applied rewrite;
+- healthy/unhealthy state;
+- last announcement;
+- any collisions.
 
-Questo è importante perché con route dinamiche serve capire perché una richiesta viene inviata a un certo service.
+This matters because dynamic routes require understanding why a request is routed to a specific service.
 
-## Problemi da gestire
+## Problems to handle
 
-Le difficoltà principali sono:
+The main difficulties are:
 
-1. Path rewrite corretto.
-2. Collisioni tra route.
-3. Longest-prefix match.
-4. Sicurezza delle route annunciate dai service.
-5. Header `X-Forwarded-*` corretti.
+1. correct path rewriting.
+2. route collisions.
+3. longest-prefix match.
+4. security of routes announced by services.
+5. correct `X-Forwarded-*` headers.
 6. WebSocket/HTTP upgrade.
-7. Streaming request/response.
-8. Timeout e cancellazione request.
-9. Compatibilità con app non progettate per subpath.
-10. Debug delle route effettive.
+7. streaming request/response.
+8. request timeout and cancellation.
+9. compatibility with apps not designed for subpaths.
+10. debugging the effective routes.
 
-## WebSocket e HTTP upgrade
+## WebSocket and HTTP upgrade
 
-Molte applicazioni moderne usano WebSocket o HTTP upgrade.
+Many modern apps use WebSocket or HTTP upgrade.
 
-Il modello HTTP attuale andrebbe verificato/esteso per supportare:
+The current HTTP model should be verified/extended to support:
 
 - `Connection: Upgrade`;
 - `Upgrade: websocket`;
-- streaming full-duplex dopo handshake;
-- gestione corretta degli header hop-by-hop.
+- full-duplex streaming after handshake;
+- correct handling of hop-by-hop headers.
 
-Questa parte può essere una fase separata.
+This can be a separate phase.
 
-## Piano incrementale
+## Incremental plan
 
-### Fase 1: route statiche con path prefix
+### Phase 1: static routes with path prefix
 
-Obiettivo:
+Goal:
 
 ```yaml
 routes:
@@ -387,83 +387,83 @@ routes:
     strip_prefix: /lmstudio
 ```
 
-Modifiche:
+Changes:
 
-1. Estendere config.
-2. Aggiungere route table con host/path prefix.
-3. Implementare longest-prefix match.
-4. Applicare rewrite prima del forwarding.
-5. Testare match e rewrite.
-6. Documentare.
+1. Extend config.
+2. Add a route table with host/path prefix.
+3. Implement longest-prefix match.
+4. Apply rewrite before forwarding.
+5. Test match and rewrite.
+6. Document it.
 
-Onerosità: bassa/media.
+Effort: low/medium.
 
-### Fase 2: auto path tree da discovery
+### Phase 2: auto path tree from discovery
 
-Obiettivo:
+Goal:
 
 ```text
 /<service-name>/* -> service-name
 ```
 
-Modifiche:
+Changes:
 
-1. Config `edge.auto_path_tree`.
-2. Generare route dinamiche dai service scoperti.
-3. Rimuovere route quando il service scade.
-4. Sanitizzare service name.
-5. Gestire collisioni.
-6. Esportare route effettive da admin API.
+1. `edge.auto_path_tree` config.
+2. Generate dynamic routes from discovered services.
+3. Remove routes when the service expires.
+4. Sanitize service names.
+5. Handle collisions.
+6. Export effective routes from the admin API.
 
-Onerosità: media.
+Effort: medium.
 
-### Fase 3: route hints nei service announcement
+### Phase 3: route hints in service announcements
 
-Obiettivo: permettere ai service di suggerire route.
+Goal: allow services to suggest routes.
 
-Modifiche:
+Changes:
 
-1. Estendere schema announcement.
-2. Firmare/validare i nuovi campi.
-3. Policy edge per accettare/rifiutare hints.
-4. Compatibilità con announcement vecchi.
+1. Extend the announcement schema.
+2. Sign/validate the new fields.
+3. Edge policy to accept/reject hints.
+4. Compatibility with old announcements.
 5. Admin diagnostics.
 
-Onerosità: media.
+Effort: medium.
 
-### Fase 4: reverse proxy features avanzate
+### Phase 4: advanced reverse-proxy features
 
-Aggiungere gradualmente:
+Add gradually:
 
-- auth per route;
-- ACL;
+- route auth;
+- ACLs;
 - rate limiting;
 - max body size;
-- timeout per route;
+- route timeout;
 - header manipulation;
 - WebSocket;
 - TLS edge;
 - health checking;
 - observability.
 
-Onerosità: media/alta, ma incrementale.
+Effort: medium/high, but incremental.
 
-## Conclusione
+## Conclusion
 
-Il supporto dell'edge come reverse proxy applicativo è una direzione molto coerente per `tubo`.
+Supporting the edge as an application reverse proxy is a very coherent direction for `tubo`.
 
-La versione più utile e semplice sarebbe:
+The most useful and simple version would be:
 
 ```text
 https://edge.example.com/<service-name>/...
 ```
 
-con auto-discovery dei service e strip opzionale del prefisso.
+with auto-discovery of services and optional prefix stripping.
 
-Questo trasformerebbe lo swarm in un unico endpoint HTTP navigabile e renderebbe `tubo` un:
+This would turn the swarm into a single navigable HTTP endpoint and make `tubo` a:
 
 ```text
-reverse proxy p2p self-hosted con service discovery libp2p
+self-hosted P2P reverse proxy with libp2p service discovery
 ```
 
-È una feature più distintiva del semplice TCP tunneling, perché valorizza l'architettura già presente in `tubo`.
+It is a more distinctive feature than simple TCP tunneling, because it builds on the architecture `tubo` already has.
