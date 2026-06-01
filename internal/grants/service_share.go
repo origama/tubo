@@ -123,6 +123,7 @@ type ServiceSharePayload struct {
 	NamespaceID        string                       `json:"namespace_id"`
 	ServiceName        string                       `json:"service_name,omitempty"`
 	DisplayNameHint    string                       `json:"display_name_hint,omitempty"`
+	ServiceKind        string                       `json:"service_kind,omitempty"`
 	ServiceID          string                       `json:"service_id,omitempty"`
 	TargetServiceID    string                       `json:"target_service_id,omitempty"`
 	Grant              capability.ConnectCapability `json:"grant"` // deprecated legacy bearer field; ignored for auth and omitted from newly signed tokens
@@ -270,6 +271,15 @@ func ReissueServiceShareTokenWithEpochs(token string, priv ed25519.PrivateKey, e
 	return SignServiceShareToken(payload, priv)
 }
 
+func ReissueServiceShareTokenWithKind(token string, priv ed25519.PrivateKey, serviceKind string) (string, error) {
+	payload, err := ParseAndVerifyServiceShareToken(token)
+	if err != nil {
+		return "", err
+	}
+	payload.ServiceKind = NormalizeServiceShareKind(serviceKind)
+	return SignServiceShareToken(payload, priv)
+}
+
 func ParseAndVerifyServiceShareToken(token string) (ServiceSharePayload, error) {
 	trimmed := strings.TrimSpace(token)
 	prefix := ""
@@ -347,11 +357,11 @@ type ApprovalArtifacts struct {
 	ServiceShareToken    string
 }
 
-func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID string, claimTTL, shareTTL time.Duration, requestedCapabilities []string, servicePublicKey, requestNonce string, ownerSignature []byte) (ApprovalArtifacts, error) {
-	return BuildApprovalArtifactsWithGrantService(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID, claimTTL, shareTTL, requestedCapabilities, servicePublicKey, requestNonce, ownerSignature, nil, nil)
+func BuildApprovalArtifacts(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID, serviceKind string, claimTTL, shareTTL time.Duration, requestedCapabilities []string, servicePublicKey, requestNonce string, ownerSignature []byte) (ApprovalArtifacts, error) {
+	return BuildApprovalArtifactsWithGrantService(priv, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID, serviceKind, claimTTL, shareTTL, requestedCapabilities, servicePublicKey, requestNonce, ownerSignature, nil, nil)
 }
 
-func BuildApprovalArtifactsWithGrantService(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID string, claimTTL, shareTTL time.Duration, requestedCapabilities []string, servicePublicKey, requestNonce string, ownerSignature []byte, grantPeers []string, serviceAddresses []string) (ApprovalArtifacts, error) {
+func BuildApprovalArtifactsWithGrantService(priv ed25519.PrivateKey, clusterName, clusterID, namespaceID, serviceName, serviceID, servicePeerID, serviceKind string, claimTTL, shareTTL time.Duration, requestedCapabilities []string, servicePublicKey, requestNonce string, ownerSignature []byte, grantPeers []string, serviceAddresses []string) (ApprovalArtifacts, error) {
 	if claimTTL <= 0 {
 		claimTTL = ServiceShareDefaultTTL
 	}
@@ -400,6 +410,10 @@ func BuildApprovalArtifactsWithGrantService(priv ed25519.PrivateKey, clusterName
 		if err != nil {
 			return ApprovalArtifacts{}, err
 		}
+	}
+	shareArtifacts.Token, err = ReissueServiceShareTokenWithKind(shareArtifacts.Token, priv, serviceKind)
+	if err != nil {
+		return ApprovalArtifacts{}, err
 	}
 	return ApprovalArtifacts{ServiceClaim: leaseArtifacts.ServiceClaim, PublishLease: leaseArtifacts.Lease, MembershipCapability: membership, ServiceShareToken: shareArtifacts.Token}, nil
 }
@@ -488,6 +502,15 @@ func leaseHasCapability(perms []string, want string) bool {
 	return false
 }
 
+func NormalizeServiceShareKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "tcp":
+		return "tcp"
+	default:
+		return "http"
+	}
+}
+
 func normalizeShareInvitePayload(payload *ServiceSharePayload) {
 	if payload == nil {
 		return
@@ -510,6 +533,7 @@ func normalizeShareInvitePayload(payload *ServiceSharePayload) {
 	if payload.NamespaceID == "" {
 		payload.NamespaceID = payload.Namespace
 	}
+	payload.ServiceKind = NormalizeServiceShareKind(payload.ServiceKind)
 }
 
 func newShareInviteJTI() (string, error) {

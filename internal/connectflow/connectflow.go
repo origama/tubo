@@ -60,6 +60,7 @@ type ShareTokenInfo struct {
 	NamespaceID          string
 	TargetServiceID      string
 	DisplayNameHint      string
+	ServiceKind          string
 	ServiceEndpointPeer  string
 	ServiceEndpointAddrs []string
 	IssuedAt             time.Time
@@ -149,7 +150,7 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 	var service catalog.Service
 	if shareToken != "" {
 		if len(shareInfo.ServiceEndpointAddrs) > 0 {
-			service = catalog.Service{Name: serviceRef, ServiceID: serviceID, PeerID: shareInfo.ServiceEndpointPeer}
+			service = catalog.Service{Name: serviceRef, ServiceID: serviceID, ServiceKind: shareInfo.ServiceKind, PeerID: shareInfo.ServiceEndpointPeer}
 			service.DirectAddresses, service.RelayedAddresses = splitServiceAddresses(shareInfo.ServiceEndpointAddrs)
 			if service.Name == "" {
 				service.Name = shareInfo.DisplayNameHint

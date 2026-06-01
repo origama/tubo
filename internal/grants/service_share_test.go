@@ -42,6 +42,31 @@ func TestBuildServiceShareArtifactsSignsScopedInviteToken(t *testing.T) {
 	}
 }
 
+func TestBuildServiceShareArtifactsDefaultsServiceKindToHTTPAndAllowsTCPReissue(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := BuildServiceShareArtifacts(priv, "home", "cluster-123", "default", "myapi", "service-myapi", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifacts.Payload.ServiceKind != "http" {
+		t.Fatalf("default service kind = %q", artifacts.Payload.ServiceKind)
+	}
+	tcpToken, err := ReissueServiceShareTokenWithKind(artifacts.Token, priv, "tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseAndVerifyServiceShareToken(tcpToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ServiceKind != "tcp" {
+		t.Fatalf("parsed service kind = %q", parsed.ServiceKind)
+	}
+}
+
 func TestBuildServiceShareArtifactsClampsTTL(t *testing.T) {
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

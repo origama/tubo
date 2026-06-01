@@ -72,6 +72,7 @@ func (connectWorkflow) ParseShareToken(token string) (connectflow.ShareTokenInfo
 		NamespaceID:          payload.NamespaceID,
 		TargetServiceID:      payload.TargetServiceID,
 		DisplayNameHint:      payload.DisplayNameHint,
+		ServiceKind:          payload.ServiceKind,
 		ServiceEndpointPeer:  payload.ServiceEndpoint.PeerID,
 		ServiceEndpointAddrs: append([]string(nil), payload.ServiceEndpoint.Addresses...),
 		IssuedAt:             payload.IssuedAt,

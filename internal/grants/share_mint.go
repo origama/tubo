@@ -26,6 +26,7 @@ type ShareMintRequest struct {
 	ClusterID             string       `json:"cluster_id"`
 	NamespaceID           string       `json:"namespace_id"`
 	ServiceID             string       `json:"service_id"`
+	ServiceKind           string       `json:"service_kind,omitempty"`
 	PublishLease          PublishLease `json:"publish_lease"`
 	ServicePeerID         string       `json:"service_peer_id"`
 	ServiceAddresses      []string     `json:"service_addresses"`
@@ -59,6 +60,7 @@ func VerifyShareMintRequest(req ShareMintRequest) error {
 	if req.PublishLease.ServiceID == "" {
 		return errors.New("share mint request publish lease is required")
 	}
+	req.ServiceKind = NormalizeServiceShareKind(req.ServiceKind)
 	if strings.TrimSpace(req.ServicePeerID) == "" {
 		return errors.New("share mint request service peer id is required")
 	}
@@ -117,6 +119,7 @@ func canonicalShareMintRequest(req ShareMintRequest) ([]byte, error) {
 		ClusterID           string    `json:"cluster_id"`
 		NamespaceID         string    `json:"namespace_id"`
 		ServiceID           string    `json:"service_id"`
+		ServiceKind         string    `json:"service_kind,omitempty"`
 		PublishLeaseHash    string    `json:"publish_lease_hash"`
 		ServicePeerID       string    `json:"service_peer_id"`
 		ServiceAddresses    []string  `json:"service_addresses"`
@@ -129,6 +132,7 @@ func canonicalShareMintRequest(req ShareMintRequest) ([]byte, error) {
 		ClusterID:           req.ClusterID,
 		NamespaceID:         req.NamespaceID,
 		ServiceID:           req.ServiceID,
+		ServiceKind:         NormalizeServiceShareKind(req.ServiceKind),
 		PublishLeaseHash:    leaseHash,
 		ServicePeerID:       strings.TrimSpace(req.ServicePeerID),
 		ServiceAddresses:    canonicalShareMintAddresses(req.ServiceAddresses),

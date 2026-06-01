@@ -33,6 +33,7 @@ func TestSignAndVerifyShareMintRequest(t *testing.T) {
 		ClusterID:           "cluster-123",
 		NamespaceID:         "default",
 		ServiceID:           serviceID,
+		ServiceKind:         "tcp",
 		PublishLease:        leaseArtifacts.Lease,
 		ServicePeerID:       "12D3KooWService",
 		ServiceAddresses:    []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWService"},
@@ -45,6 +46,9 @@ func TestSignAndVerifyShareMintRequest(t *testing.T) {
 	}
 	if err := VerifyShareMintRequest(req); err != nil {
 		t.Fatalf("VerifyShareMintRequest() error = %v", err)
+	}
+	if req.ServiceKind != "tcp" {
+		t.Fatalf("ServiceKind = %q", req.ServiceKind)
 	}
 }
 

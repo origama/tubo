@@ -46,6 +46,7 @@ type Message struct {
 	NamespaceID           string                           `json:"namespace_id,omitempty"`
 	ServiceName           string                           `json:"service_name,omitempty"`
 	ServiceID             string                           `json:"service_id,omitempty"`
+	ServiceKind           string                           `json:"service_kind,omitempty"`
 	ServicePublicKey      string                           `json:"service_public_key,omitempty"`
 	ServiceOwnerSignature []byte                           `json:"service_owner_signature,omitempty"`
 	ServicePeerID         string                           `json:"service_peer_id,omitempty"`

@@ -3071,7 +3071,7 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(authorityPriv, "home", cluster.ClusterID, "default", "myapi", svc.ServiceID, servicePeerID.String(), time.Hour, time.Hour, leaseReq.RequestedCapabilities, leaseReq.ServicePublicKey, leaseReq.Nonce, leaseReq.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(authorityPriv, "home", cluster.ClusterID, "default", "myapi", svc.ServiceID, servicePeerID.String(), "http", time.Hour, time.Hour, leaseReq.RequestedCapabilities, leaseReq.ServicePublicKey, leaseReq.Nonce, leaseReq.ServiceOwnerSignature)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -119,7 +119,7 @@ func mintLocalServicePublishLease(cluster cfgpkg.Cluster, clusterName, namespace
 	if err != nil {
 		return err
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), 365*24*time.Hour, attachPublishLeaseTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), 365*24*time.Hour, attachPublishLeaseTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return err
 	}
@@ -244,6 +244,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 			NamespaceID:           cfg.CurrentNamespace,
 			ServiceName:           cfg.Service.Name,
 			ServiceID:             svc.ServiceID,
+			ServiceKind:           string(cfgpkg.NormalizeServiceKind(svc.Kind, "")),
 			ServicePublicKey:      leaseReq.ServicePublicKey,
 			ServiceOwnerSignature: leaseReq.ServiceOwnerSignature,
 			ServicePeerID:         servicePeerID,

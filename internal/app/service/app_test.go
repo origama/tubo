@@ -100,7 +100,7 @@ func writeTestPublishLease(t *testing.T, path string, authorityPriv ed25519.Priv
 	if err != nil {
 		t.Fatal(err)
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(authorityPriv, "home", clusterID, namespaceID, serviceName, owner.ServiceID, servicePeerID.String(), time.Hour, time.Hour, req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(authorityPriv, "home", clusterID, namespaceID, serviceName, owner.ServiceID, servicePeerID.String(), "http", time.Hour, time.Hour, req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
 	if err != nil {
 		t.Fatal(err)
 	}

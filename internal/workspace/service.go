@@ -329,7 +329,7 @@ func (w *Workspace) mintLocalPublishArtifacts(cluster cfgpkg.Cluster, clusterNam
 	if err != nil {
 		return err
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(priv, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), 365*24*time.Hour, serviceShareTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(priv, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), 365*24*time.Hour, serviceShareTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return err
 	}

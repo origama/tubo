@@ -19,6 +19,7 @@ func TestConnectWorkflowParseShareTokenUsesGrantServiceOnlyWhenMetadataExists(t 
 		t.Fatal(err)
 	}
 	payload := artifacts.Payload
+	payload.ServiceKind = "tcp"
 	payload.GrantService = grantspkg.GrantServiceEndpoint{
 		Protocol: grantspkg.ProtocolID,
 		Peers:    []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWFallbackGrantPeer"},
@@ -37,6 +38,9 @@ func TestConnectWorkflowParseShareTokenUsesGrantServiceOnlyWhenMetadataExists(t 
 	}
 	if len(info.ConnectGrantPeers) != 1 {
 		t.Fatalf("ConnectGrantPeers = %#v", info.ConnectGrantPeers)
+	}
+	if info.ServiceKind != "tcp" {
+		t.Fatalf("ServiceKind = %q", info.ServiceKind)
 	}
 	if info.ServiceEndpointPeer != payload.ServiceEndpoint.PeerID || len(info.ServiceEndpointAddrs) != 1 || info.ServiceEndpointAddrs[0] != payload.ServiceEndpoint.Addresses[0] {
 		t.Fatalf("service endpoint = %q %#v", info.ServiceEndpointPeer, info.ServiceEndpointAddrs)
