@@ -664,6 +664,9 @@ func Merge(base, over Config) Config {
 	}
 	if over.Service.Target != "" {
 		b.Service.Target = over.Service.Target
+		if over.Service.Kind == "" {
+			b.Service.Kind = ""
+		}
 	}
 	if over.HealthListen != "" {
 		b.HealthListen = over.HealthListen

@@ -457,4 +457,21 @@ func TestValidateServiceHTTPKindRejectsTCPTarget(t *testing.T) {
 	}
 }
 
+func TestMergeServiceTargetReinfersKindFromHigherPrecedenceTarget(t *testing.T) {
+	base := Defaults("service")
+	normalizeConfig(&base)
+	if base.Service.Kind != ServiceKindHTTP {
+		t.Fatalf("base kind = %q", base.Service.Kind)
+	}
+	over := Config{Role: "service"}
+	over.Service.Target = "tcp://127.0.0.1:9443"
+	merged := Merge(base, over)
+	if merged.Service.Kind != ServiceKindTCP {
+		t.Fatalf("merged kind = %q", merged.Service.Kind)
+	}
+	if err := Validate(merged); err != nil {
+		t.Fatalf("Validate(merged) error = %v", err)
+	}
+}
+
 func osWrite(p, s string) error { return os.WriteFile(p, []byte(s), 0600) }
