@@ -47,8 +47,8 @@ Per i comandi `--json`, Tubo deve mantenere stdout parseable JSON anche quando i
 La UX primaria di `tubo` e' intent-based:
 
 ```text
-attach    = pubblica un endpoint HTTP locale nello swarm
-connect   = apre un listener HTTP locale verso un servizio remoto
+attach    = pubblica un endpoint locale HTTP o raw TCP nello swarm
+connect   = apre un listener locale HTTP o raw TCP verso un servizio remoto
 gateway   = avvia un HTTP gateway verso lo swarm
 relay     = avvia un relay/bootstrap node
 join      = configura questa macchina per uno swarm esistente
@@ -82,7 +82,7 @@ tubo inspect service/lmstudio --json
 tubo watch services
 ```
 
-`attach` supporta sia la forma esplicita sia lo shorthand name+port; accetta anche `service/<name>` come primo argomento. Per raw TCP passthrough usa un target `tcp://host:port` esplicito:
+`attach` supporta sia la forma esplicita sia lo shorthand name+port; accetta anche `service/<name>` come primo argomento. Per raw TCP passthrough usa un target `tcp://host:port` esplicito. In quel caso il servizio viene pubblicato come `service_kind=tcp` e gli invite / `connect` conserveranno quel kind:
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
@@ -224,13 +224,14 @@ Puoi cambiare directory con `--config-dir`, forzare overwrite con `--force`, opp
 
 ## Connect
 
-`connect` apre un listener HTTP locale verso un servizio scoperto nello swarm.
+`connect` apre un listener locale verso un servizio scoperto nello swarm: HTTP per i servizi `service_kind=http`, raw TCP per i servizi `service_kind=tcp`.
 
 Se la config locale di default non esiste ancora, `connect` prova prima a fare implicit public join alla rete pubblica di default.
 Anche `get services`, `describe`, `inspect` e `watch` usano lo stesso bootstrap implicito.
 
 ```bash
 tubo connect lmstudio --local 127.0.0.1:51234
+# per un servizio tcp il listener locale e' raw TCP, per esempio tcp://127.0.0.1:51234
 ```
 
 Con `-d` / `--detach`, il tunnel client resta in background come `process/connect-...` ed e' visibile in `tubo ps` / `tubo get processes`. Anche la forma foreground resta registrata e quindi visibile in `tubo ps`.

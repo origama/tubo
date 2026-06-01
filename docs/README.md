@@ -45,6 +45,8 @@ Project work, planning, implementation scope, and acceptance criteria are tracke
 
 ## Notes
 
+- Current user-facing transport scope: HTTP reverse proxying plus raw TCP/TLS passthrough (`service_kind=http|tcp`).
+- `gateway` remains HTTP ingress; `attach`/`connect` may now publish/expose either HTTP or raw TCP depending on the service kind.
 - Keep new links pointed at the canonical paths above.
 - Historical tracker items were migrated into GitHub issues; do not reintroduce a local tracker.
 - Lightweight repo hygiene check: `make verify-repo-hygiene` (or `./tests/verify-repo-hygiene.sh`).

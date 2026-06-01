@@ -210,13 +210,13 @@ bridge / libp2p stream establishment
 or bridge-session establishment
 ```
 
-not to every proxied HTTP request unless the proxy protocol is explicitly extended.
+not to every proxied HTTP request or every byte/message inside a raw TCP tunnel unless the proxy protocol is explicitly extended.
 
 Equivalent rule:
 
 ```text
 Per-stream or per-session PoP is in scope.
-Per-HTTP-request PoP is out of scope unless protocol changes say otherwise.
+Per-request / per-message PoP is out of scope unless protocol changes say otherwise.
 ```
 
 The PoP proof binds the client key, scope, `service_id`, access-lease hash, nonce/JTI, and issued-at timestamp. In `0.7.0.b0` replay protection is a local service-side cache; concurrent publisher instances for the same service need shared replay state before cross-instance replay protection can be claimed.

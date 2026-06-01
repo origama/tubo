@@ -7,7 +7,7 @@ Backward-compatible legacy stream protocol still accepted:
 
 ## Overview
 
-The wire protocol uses binary framing with varint length prefixes for efficient HTTP-over-libp2p tunneling. Replaces the legacy JSON-based protocol to fix critical issues: multi-value header truncation, no streaming support, and excessive overhead.
+The wire protocol uses binary framing with varint length prefixes for efficient HTTP and raw TCP-over-libp2p tunneling. It replaces the legacy JSON-based protocol to fix critical issues such as multi-value header truncation, no streaming support, and excessive overhead. HTTP remains frame-based; raw TCP is capability-gated and switches to byte streaming after an explicit tunnel-open handshake.
 
 ## Frame Format
 
@@ -159,10 +159,10 @@ Migrate to the new binary protocol for all new tunnels.
 Package: `github.com/origama/tubo/internal/protocol`
 
 Key types and functions:
-- `RequestHeader`, `ResponseHeader`, `BodyChunk`, `ErrorFrame` — frame structs
+- `RequestHeader`, `ResponseHeader`, `BodyChunk`, `ErrorFrame`, `TunnelRequest`, `TunnelReady` — frame structs
 - `EncodeFrame(w, payload)` / `DecodeFrame(r)` — raw frame encoding
 - `StreamWriter` / `StreamReader` — high-level streaming API
-- `WriteRequestHeader()`, `ReadRequestHeader()` — typed convenience methods
+- `WriteRequestHeader()`, `ReadRequestHeader()`, `WriteTunnelRequest()`, `ReadTunnelReadyOrError()` — typed convenience methods
 
 ## Varint Encoding
 
