@@ -91,6 +91,36 @@ func (s *StreamReader) ReadConnectProof() (*ConnectProof, error) {
 	return DecodeConnectProof(r)
 }
 
+func (s *StreamReader) ReadTunnelRequest() (*TunnelRequest, error) {
+	length, ft, err := s.readFrameHeader()
+	if err != nil {
+		return nil, err
+	}
+	if ft != FrameTypeTunnelRequest {
+		return nil, fmt.Errorf("expected TunnelRequest (0x%02x), got frame type 0x%02x", FrameTypeTunnelRequest, ft)
+	}
+	r := &io.LimitedReader{R: s.r, N: int64(length)}
+	return decodeTunnelRequest(r)
+}
+
+func (s *StreamReader) ReadTunnelReadyOrError() (*TunnelReady, *Error, error) {
+	length, ft, err := s.readFrameHeader()
+	if err != nil {
+		return nil, nil, err
+	}
+	r := &io.LimitedReader{R: s.r, N: int64(length)}
+	switch ft {
+	case FrameTypeTunnelReady:
+		ready, err := decodeTunnelReady(r)
+		return ready, nil, err
+	case FrameTypeError:
+		errFrame, err := decodeError(r)
+		return nil, errFrame, err
+	default:
+		return nil, nil, fmt.Errorf("expected TunnelReady (0x%02x) or Error (0x%02x), got frame type 0x%02x", FrameTypeTunnelReady, FrameTypeError, ft)
+	}
+}
+
 // ReadResponseHeaderOrError reads the next frame as either a ResponseHeader or
 // an Error frame. This avoids consuming an Error frame as a wrong response type
 // and then blocking while trying to read another frame.
@@ -230,6 +260,14 @@ func (s *StreamWriter) WriteResponseHeader(m *ResponseHeader) error {
 
 // WriteConnectProof encodes and writes a ConnectProof frame.
 func (s *StreamWriter) WriteConnectProof(m *ConnectProof) error {
+	return EncodeFrame(s.w, m)
+}
+
+func (s *StreamWriter) WriteTunnelRequest(m *TunnelRequest) error {
+	return EncodeFrame(s.w, m)
+}
+
+func (s *StreamWriter) WriteTunnelReady(m *TunnelReady) error {
 	return EncodeFrame(s.w, m)
 }
 

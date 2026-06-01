@@ -49,8 +49,17 @@ func TestHelloRoundtrip(t *testing.T) {
 	if decoded.Role != original.Role {
 		t.Fatalf("role: got %q want %q", decoded.Role, original.Role)
 	}
-	if len(decoded.Capabilities) != 2 || decoded.Capabilities[0] != protocol.CapabilityHelloV1 || decoded.Capabilities[1] != protocol.CapabilityConnectProofV1 {
-		t.Fatalf("capabilities=%v", decoded.Capabilities)
+	for _, want := range []string{protocol.CapabilityHelloV1, protocol.CapabilityConnectProofV1, protocol.CapabilityRawTCPV1} {
+		found := false
+		for _, got := range decoded.Capabilities {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("capability %q missing from %v", want, decoded.Capabilities)
+		}
 	}
 }
 

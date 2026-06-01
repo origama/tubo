@@ -1526,6 +1526,9 @@ func connectCmd(args []string) error {
 	} else {
 		printMessages(result.Messages)
 		fmt.Printf("connected to service %q\n", result.ServiceName)
+		if result.ServiceKind != "" {
+			fmt.Printf("service kind: %s\n", result.ServiceKind)
+		}
 		if result.ServiceID != "" {
 			fmt.Printf("service id: %s\n", result.ServiceID)
 		}

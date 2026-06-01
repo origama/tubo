@@ -24,6 +24,8 @@ const (
 	FrameTypeBodyChunk      byte = 0x03
 	FrameTypeError          byte = 0x04
 	FrameTypeConnectProof   byte = 0x05
+	FrameTypeTunnelRequest  byte = 0x06
+	FrameTypeTunnelReady    byte = 0x07
 )
 
 type Hello struct {
@@ -36,10 +38,11 @@ type Hello struct {
 const (
 	CapabilityHelloV1        = "hello-v1"
 	CapabilityConnectProofV1 = "connect-proof-v1"
+	CapabilityRawTCPV1       = "raw-tcp-v1"
 )
 
 func SupportedCapabilities() []string {
-	return []string{CapabilityHelloV1, CapabilityConnectProofV1}
+	return []string{CapabilityHelloV1, CapabilityConnectProofV1, CapabilityRawTCPV1}
 }
 
 func NegotiateCapabilities(remote []string) []string {
@@ -86,6 +89,14 @@ type Error struct {
 }
 
 // ConnectProof carries a signed connect authorization proof from the client peer.
+type TunnelRequest struct {
+	Kind string
+}
+
+type TunnelReady struct {
+	Kind string
+}
+
 type ConnectProof struct {
 	ClusterID       string    `json:"cluster_id"`
 	NamespaceID     string    `json:"namespace_id"`

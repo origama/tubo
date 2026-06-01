@@ -3,6 +3,7 @@ package p2p
 import (
 	"bufio"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -49,6 +50,48 @@ type readCloser struct {
 }
 
 func (rc *readCloser) Close() error { return nil }
+
+func tcpTargetAddress(localTarget string) (string, error) {
+	u, err := url.Parse(localTarget)
+	if err != nil {
+		return "", err
+	}
+	if !strings.EqualFold(u.Scheme, "tcp") {
+		return "", fmt.Errorf("raw tcp requires tcp:// target, got %q", localTarget)
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return "", fmt.Errorf("tcp target requires host:port")
+	}
+	return u.Host, nil
+}
+
+func closeWriteIfPossible(v any) {
+	type closeWriter interface{ CloseWrite() error }
+	if cw, ok := v.(closeWriter); ok {
+		_ = cw.CloseWrite()
+	}
+}
+
+func ProxyTCPStream(left net.Conn, right network.Stream) (int64, int64, error) {
+	errCh := make(chan error, 1)
+	var sent int64
+	go func() {
+		var err error
+		sent, err = io.Copy(right, left)
+		closeWriteIfPossible(right)
+		errCh <- err
+	}()
+	received, recvErr := io.Copy(left, right)
+	closeWriteIfPossible(left)
+	sendErr := <-errCh
+	if recvErr != nil && !errors.Is(recvErr, net.ErrClosed) {
+		return sent, received, recvErr
+	}
+	if sendErr != nil && !errors.Is(sendErr, net.ErrClosed) {
+		return sent, received, sendErr
+	}
+	return sent, received, nil
+}
 
 // HandleServiceStream handles an incoming libp2p stream as a service (server side).
 // It reads the HTTP request from the peer, forwards it to the local upstream target,
@@ -236,6 +279,123 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 
 // HandleClientRequest sends an HTTP request over a libp2p stream and reads the response.
 // Supports streaming bodies for both request and response.
+func HandleServiceTCPStream(localTarget string, connectAuth *ConnectProofValidation) func(network.Stream) {
+	return func(s network.Stream) {
+		defer s.Close()
+		start := time.Now()
+		remotePeer := s.Conn().RemotePeer()
+		reader := protocol.NewStreamReader(s)
+		writer := protocol.NewStreamWriter(s)
+
+		var peerHello *protocol.Hello
+		var err error
+		if streamUsesHello(s) {
+			peerHello, err = reader.ReadHello()
+			if err != nil {
+				_ = writer.WriteError(&protocol.Error{Code: 400, Message: "decode hello: " + err.Error()})
+				return
+			}
+			if err := validatePeerHello(peerHello); err != nil {
+				_ = writer.WriteError(&protocol.Error{Code: 426, Message: err.Error()})
+				return
+			}
+			if !hasCapability(peerHello.Capabilities, protocol.CapabilityRawTCPV1) {
+				_ = writer.WriteError(&protocol.Error{Code: 426, Message: "raw tcp not supported by remote peer"})
+				return
+			}
+			if err := writer.WriteHello(localHello("service")); err != nil {
+				return
+			}
+		}
+
+		if connectAuth != nil && connectAuth.Require && peerHello != nil && peerHello.Role == "bridge" {
+			if !hasCapability(peerHello.Capabilities, protocol.CapabilityConnectProofV1) {
+				_ = writer.WriteError(&protocol.Error{Code: 426, Message: "connect proof required"})
+				return
+			}
+			proof, err := reader.ReadConnectProof()
+			if err != nil {
+				code := 400
+				msg := "decode connect proof: " + err.Error()
+				if strings.Contains(err.Error(), "expected ConnectProof") {
+					code = 428
+					msg = "connect proof required"
+				}
+				_ = writer.WriteError(&protocol.Error{Code: code, Message: msg})
+				return
+			}
+			if err := connectAuth.Validate(remotePeer, s.Conn().RemotePublicKey(), proof); err != nil {
+				_ = writer.WriteError(&protocol.Error{Code: 403, Message: err.Error()})
+				return
+			}
+		}
+
+		req, err := reader.ReadTunnelRequest()
+		if err != nil {
+			_ = writer.WriteError(&protocol.Error{Code: 400, Message: "decode tunnel request: " + err.Error()})
+			return
+		}
+		if req.Kind != "tcp" {
+			_ = writer.WriteError(&protocol.Error{Code: 400, Message: "unsupported tunnel kind: " + req.Kind})
+			return
+		}
+		targetAddr, err := tcpTargetAddress(localTarget)
+		if err != nil {
+			_ = writer.WriteError(&protocol.Error{Code: 500, Message: err.Error()})
+			return
+		}
+		upstream, err := (&net.Dialer{Timeout: 5 * time.Second}).Dial("tcp", targetAddr)
+		if err != nil {
+			_ = writer.WriteError(&protocol.Error{Code: 502, Message: "tcp target dial failed: " + err.Error()})
+			return
+		}
+		defer upstream.Close()
+		if err := writer.WriteTunnelReady(&protocol.TunnelReady{Kind: "tcp"}); err != nil {
+			return
+		}
+		sent, received, err := ProxyTCPStream(upstream, s)
+		if err != nil {
+			log.Printf("service tcp tunnel closed peer=%s target=%s bytes_in=%d bytes_out=%d err=%v duration=%s", remotePeer, targetAddr, received, sent, err, time.Since(start))
+			return
+		}
+		log.Printf("service tcp tunnel completed peer=%s target=%s bytes_in=%d bytes_out=%d duration=%s", remotePeer, targetAddr, received, sent, time.Since(start))
+	}
+}
+
+func StartClientTCPTunnel(s network.Stream, role string, connectProof *protocol.ConnectProof) error {
+	writer := protocol.NewStreamWriter(s)
+	reader := protocol.NewStreamReader(s)
+	peerHello, err := negotiateClientHello(s, reader, writer, role)
+	if err != nil {
+		return err
+	}
+	if peerHello == nil || !hasCapability(peerHello.Capabilities, protocol.CapabilityRawTCPV1) {
+		return fmt.Errorf("remote peer does not support raw tcp")
+	}
+	if connectProof != nil {
+		if !hasCapability(peerHello.Capabilities, protocol.CapabilityConnectProofV1) {
+			return fmt.Errorf("remote peer does not support connect proof")
+		}
+		if err := writer.WriteConnectProof(connectProof); err != nil {
+			return fmt.Errorf("write connect proof: %w", err)
+		}
+	}
+	if err := writer.WriteTunnelRequest(&protocol.TunnelRequest{Kind: "tcp"}); err != nil {
+		return fmt.Errorf("write tunnel request: %w", err)
+	}
+	ready, errFrame, err := reader.ReadTunnelReadyOrError()
+	if err != nil {
+		return fmt.Errorf("read tunnel ready: %w", err)
+	}
+	if errFrame != nil {
+		return fmt.Errorf("server error (code %d): %s", errFrame.Code, errFrame.Message)
+	}
+	if ready.Kind != "tcp" {
+		return fmt.Errorf("tunnel kind mismatch: got %q", ready.Kind)
+	}
+	return nil
+}
+
 func HandleClientRequest(s network.Stream, role, method, path, query string, headers map[string][]string, body io.Reader, connectProof *protocol.ConnectProof) (*http.Response, error) {
 	writer := protocol.NewStreamWriter(s)
 	reader := protocol.NewStreamReader(s)

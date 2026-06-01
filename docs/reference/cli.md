@@ -82,11 +82,12 @@ tubo inspect service/lmstudio --json
 tubo watch services
 ```
 
-`attach` supporta sia la forma esplicita sia lo shorthand name+port; accetta anche `service/<name>` come primo argomento:
+`attach` supporta sia la forma esplicita sia lo shorthand name+port; accetta anche `service/<name>` come primo argomento. Per raw TCP passthrough usa un target `tcp://host:port` esplicito:
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
 tubo attach lmstudio --port 1234
+tubo attach tcp://127.0.0.1:8443 --name tlsdemo
 ```
 
 ## Happy path
