@@ -1144,7 +1144,7 @@ func serviceAdminViewFromEntry(entry *discovery.ServiceEntry) serviceAdminView {
 		Path:             path,
 		TTLSeconds:       int64(entry.TTL.Seconds()),
 		ExpiresInSeconds: int64(expiresIn.Seconds()),
-		Capabilities:     []string{},
+		Capabilities:     append([]string(nil), entry.Capabilities...),
 		RegisteredAt:     entry.Registered.Format(time.RFC3339),
 	}
 }

@@ -488,7 +488,7 @@ func ServiceResourceFromEntry(entry *discovery.ServiceEntry) Service {
 	if expiresIn < 0 {
 		expiresIn = 0
 	}
-	return NormalizeService(Service{Kind: "service", ServiceKind: entry.ServiceKind, Name: entry.ServiceName, ServiceID: entry.ServiceID, ServicePublicKey: entry.ServicePublicKey, ConnectPolicy: entry.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(entry.GrantService), PeerID: entry.PeerID.String(), Addresses: append([]string(nil), entry.Addresses...), Status: "online", TTLSeconds: int64(entry.TTL.Seconds()), ExpiresInSeconds: int64(expiresIn.Seconds()), Capabilities: []string{}, RegisteredAt: entry.Registered.Format(time.RFC3339)})
+	return NormalizeService(Service{Kind: "service", ServiceKind: entry.ServiceKind, Name: entry.ServiceName, ServiceID: entry.ServiceID, ServicePublicKey: entry.ServicePublicKey, ConnectPolicy: entry.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(entry.GrantService), PeerID: entry.PeerID.String(), Addresses: append([]string(nil), entry.Addresses...), Status: "online", TTLSeconds: int64(entry.TTL.Seconds()), ExpiresInSeconds: int64(expiresIn.Seconds()), Capabilities: append([]string(nil), entry.Capabilities...), RegisteredAt: entry.Registered.Format(time.RFC3339)})
 }
 
 func ServiceFromQueryService(service discoveryquery.Service) Service {

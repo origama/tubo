@@ -4142,10 +4142,10 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 	}
 	serviceIDA := serviceidentity.ServiceIDFromPublicKey(pubA)
 	serviceIDB := serviceidentity.ServiceIDFromPublicKey(pubB)
-	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", "http", serviceidentity.EncodePublicKey(pubA), "", nil, []string{addr}, 30*time.Second); err != nil {
+	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", "http", serviceidentity.EncodePublicKey(pubA), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", "http", serviceidentity.EncodePublicKey(pubB), "", nil, []string{addr}, 30*time.Second); err != nil {
+	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", "http", serviceidentity.EncodePublicKey(pubB), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))

@@ -187,6 +187,7 @@ func (w *Workspace) ensureServiceState(configPath string, cfg cfgpkg.Config, ser
 	created := !existed
 	changed := false
 	kind := cfgpkg.NormalizeServiceKind(cfg.Service.Kind, cfg.Service.Target)
+	cfg.Service.Kind = kind
 	if svc.Kind != kind {
 		svc.Kind = kind
 		changed = true

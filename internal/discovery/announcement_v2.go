@@ -37,6 +37,7 @@ type AnnouncementV2Payload struct {
 	MembershipCapability []byte                          `json:"membership_capability,omitempty"`
 	ServiceClaim         []byte                          `json:"service_claim,omitempty"` // legacy compatibility when publish_lease is absent
 	PublishLease         []byte                          `json:"publish_lease,omitempty"`
+	Capabilities         []string                        `json:"capabilities,omitempty"`
 	RegisteredAt         time.Time                       `json:"registered_at,omitempty"`
 }
 
