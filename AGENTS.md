@@ -1,154 +1,229 @@
-# AGENTS.md — Entry Point For Coding Agents
+# AGENTS.md — Coding Agent Entry Point
 
-This file is the **canonical entry point** for all coding agents (including Codex).
+This is the required entry point for coding agents working on Tubo.
 
-## 1) Project mission
+Tubo evolves quickly. Do not treat this file as a complete implementation map.
+Use it as an operating contract, then verify the current state in code, docs,
+GitHub Issues, and changelog before changing anything.
 
-**P2P API Tunnel Platform**: a self-hosted platform that forwards HTTP traffic to services behind NAT/firewalls using encrypted libp2p streams and distributed discovery via signed pubsub.
+## Product model
 
-Base flow:
+Tubo creates private libp2p tunnels for HTTP APIs, raw TCP/TLS services, and
+future AI agent workflows.
+
+The current CLI is intent-based:
 
 ```text
-Client HTTP -> Edge Gateway -> libp2p stream -> Service Agent -> Origin Service
+tubo relay
+tubo gateway
+tubo attach ...
+tubo connect ...
+tubo join ...
+tubo get|describe|inspect|watch ...
+tubo ps|logs|stop|rm ...
 ```
 
-## 2) Current implementation status (as-is)
+Do not use or reintroduce legacy runtime commands such as:
 
-Working components:
+```text
+tubo edge run
+tubo service run
+tubo bridge run
+tubo relay run
+```
 
-- `cmd/tubo` (`tubo edge run`): HTTP ingress, discovery subscription, local cache, auto-routing, stream proxying, relay fallback, admin API.
-- `cmd/tubo` (`tubo service run`): signed service announcement, heartbeat, stream handler, forwarding to local/remote HTTP targets.
-- `cmd/tubo` (`tubo bridge run`): client-side HTTP proxy toward a service peer.
-- `cmd/tubo` (`tubo relay run`): public bootstrap/relay v2 node with health endpoint, PSK support, and PeerID allowlist support (connection gater).
-- `internal/protocol`: binary framing + bidirectional body streaming.
-- `internal/discovery`: signed announcements + TTL cache + add/remove events.
-- `internal/p2p`: host creation from seed + private swarm PSK support + PeerID allowlist parser.
+## Before working
 
-Known gaps:
+Always read or verify:
 
-- AutoNAT/hole punching is not complete yet.
-- Advanced reachability diagnostics are not complete yet.
+1. the assigned GitHub Issue and linked issues;
+2. the relevant code on the current branch;
+3. `docs/README.md`;
+4. `docs/reference/cli.md`;
+5. the relevant `docs/runbooks/*` file;
+6. `CHANGELOG.md`;
+7. `docs/reference/VERSIONING.md` for protocol, compatibility, release,
+   persisted-state, config, or wire-behavior changes.
 
-## 3) Mandatory workflow for agents
+GitHub Issues are the canonical tracker for planning, scope, acceptance
+criteria, status, and follow-up. Do not create local task trackers.
 
-### 3.1 Before starting
+Historical material under `docs/archive/obsoletes/` must not guide new work
+unless the issue explicitly asks for historical analysis.
 
-1. Read this `AGENTS.md`.
-2. Read the assigned GitHub issue and linked issues.
-3. Verify the real code state on the current branch.
-4. Read the relevant documentation in `docs/`.
-5. If the work touches releases, compatibility, or protocol behavior, read `docs/reference/VERSIONING.md`.
-6. If you find untracked work, open or update a GitHub issue instead of using local trackers.
+## Engineering rules
 
-### 3.2 During the work
+Prefer small, testable, incremental changes.
 
-1. If behavior/config/interface changes, update the documentation in `docs/` **immediately**.
-2. Keep code, env vars, and operational runbooks consistent.
-3. Do not leave untracked operational TODOs: they must have a GitHub issue or be resolved in the PR.
+Preserve:
 
-### 3.3 Before closing
+- simple CLI UX;
+- coherent code, docs, config, examples, and runbooks;
+- clean stdout/stderr behavior;
+- deterministic tests;
+- documented compatibility expectations.
 
-1. Run the current verification gates.
-2. Update the GitHub issue with status, evidence, executed tests, and follow-up.
-3. Update the docs touched by the change.
+Avoid:
 
-## 4) Current completion gates (mandatory)
+- broad refactors mixed with behavior changes;
+- hidden TODOs;
+- duplicated planning state;
+- fragile tests coupled to implementation details;
+- changes that complicate the user model without clear benefit.
 
-A task is `DONE` only if these pass:
+## Documentation rules
 
-1. `go test ./...`
-2. `./tests/smoke-compose.sh`
-3. `RUN_INTEGRATION=1 go test -v ./tests/integration` (recommended before merge when Docker is stable)
+Technical docs live in `docs/`.
 
-Note: tests in `tests/integration` are skipped (`SKIP`) when the Docker daemon is unavailable (infrastructure error).
+Canonical entry points:
 
-## 5) Documentation policy (single source)
+```text
+docs/README.md
+docs/reference/cli.md
+docs/reference/PROTOCOL.md
+docs/reference/SECURITY.md
+docs/reference/VERSIONING.md
+docs/runbooks/OPERABILITY.md
+docs/runbooks/PROCESS_SUPERVISORS.md
+CHANGELOG.md
+```
 
-Rules:
+Any behavior, CLI, config, protocol, test, or operational change must update the
+relevant docs in the same PR.
 
-1. Technical documentation lives in `docs/`.
-2. `docs/README.md` is the canonical index for the documentation.
-3. Any implementation change must be reflected in the relevant documentation in the same PR/commit.
-4. Historical/superseded documents belong in `docs/archive/obsoletes/` and must not guide new implementations.
+## Issue / PR workflow
 
-## 6) Canonical operational runbook
+Non-trivial work should be grounded in a GitHub Issue.
 
-For component startup and secure P2P tunnel creation across 2+ services, use this single reference:
+Good issues include:
 
-- `docs/runbooks/OPERABILITY.md`
+```text
+context
+goal
+scope
+out of scope
+acceptance criteria
+expected tests
+risks
+open questions
+```
 
-For versioning policy and cross-role/node compatibility:
+If an issue is too large, split it into smaller subissues before implementing.
 
-- `docs/reference/VERSIONING.md`
+Before closing an issue, comment with:
 
-In particular:
+```text
+what changed
+evidence
+tests run
+known limitations
+follow-up issues
+```
 
-- local quick start with Docker Compose;
-- private swarm PSK setup;
-- multi-host startup (`edge` + multiple `service` nodes);
-- end-to-end discovery/routes/proxy verification;
-- current limitations and troubleshooting.
+## Verification gates
 
-## 7) Project workflow
+Default full gate:
 
-GitHub Issues are the canonical source for:
+```bash
+make verify
+```
 
-- work status;
-- implementation scope;
-- acceptance criteria;
-- priority;
-- verification evidence;
-- follow-up.
+For docs/hygiene-only changes:
 
-Do not use local files as parallel trackers. The historical material migrated from the old tracker is preserved in `#180` only as a migration snapshot.
+```bash
+make verify-repo-hygiene
+```
 
-## 8) GitHub issue / PR labels
+Useful targeted gates:
 
-Issues and PRs should use consistent GitHub labels for triage and prioritization.
+```bash
+go test ./...
+go test -race ./...
+go build ./...
+./tests/smoke-compose.sh
+./tests/smoke-cli-ux.sh
+RUN_INTEGRATION=1 go test -v ./tests/integration
+tests/e2e/run.sh all
+tests/e2e/run.sh 001-default-cluster-default-namespace
+```
 
-### 8.1 Type
+If only targeted gates are run, explain why broader verification was skipped.
 
-- `bug`
-- `performance`
-- `security`
-- `docs`
-- `test`
-- `infra`
-- `release`
-- `planning`
-- `enhancement`
+Docker-dependent tests may skip when Docker is unavailable. Treat that as an
+infrastructure limitation, not proof of correctness.
 
-### 8.2 Area
+## Code map
 
-- `area:edge`
-- `area:service`
-- `area:relay`
-- `area:protocol`
-- `area:testbench`
-- `area:cli`
-- `area:docs`
-- `area:linode`
+Start searches from these areas, but verify current structure before editing:
 
-### 8.3 Priority
+```text
+cmd/tubo/              CLI and command wiring
+internal/app/          runtime application logic
+internal/config/       config loading and materialization
+internal/catalog/      service/resource catalog
+internal/discovery/    discovery publication/query/cache
+internal/grants/       grants, leases, invites, authorization
+internal/p2p/          libp2p host/network behavior
+internal/protocol/     tunnel protocol and stream framing
+internal/connectflow/  connect resolution and tunnel setup
+internal/launcher/     detached process management
+tests/                 smoke, integration, e2e, hygiene
+docs/                  canonical documentation
+```
 
-- `prio:high`
-- `prio:medium`
-- `prio:low`
+## CLI output contract
 
-### 8.4 Status / risk
+```text
+stdout = primary command result
+stderr = progress, warnings, hints
+technical logs = hidden unless verbosity/log-level is enabled
+```
 
-- `needs-triage`
-- `investigation`
-- `blocked`
-- `breaking-compat`
-- `good-first-release-candidate`
+For `--json`, stdout must remain parseable JSON, including during implicit join,
+grant refresh, discovery query, or lease redemption.
 
-### 8.5 Rule of thumb
+## Security / compatibility
 
-Each issue/PR should have at least:
+Be conservative with:
 
-1. one **type** label;
-2. one **area** label (or more if needed);
-3. one **priority** label when the priority is known.
+```text
+invite tokens
+grants and leases
+service identity
+namespace membership
+public bundle trust
+persisted config/state
+protocol negotiation
+raw TCP/TLS passthrough
+public-default invite-only semantics
+```
 
-Also use `investigation`, `blocked`, or `breaking-compat` when they help clarify the risk or current work state.
+Never commit secrets, swarm keys, private keys, access tokens, local runtime
+state, or user-specific config.
+
+## Labels
+
+Use consistent GitHub labels.
+
+Types:
+
+```text
+bug performance security docs test infra release planning enhancement
+```
+
+Areas:
+
+```text
+area:edge area:service area:relay area:protocol area:testbench
+area:cli area:docs area:linode
+```
+
+Priority / status:
+
+```text
+prio:high prio:medium prio:low
+needs-triage investigation blocked breaking-compat
+good-first-release-candidate
+```
+
+Each issue or PR should normally have at least one type label and one area label.
