@@ -36,18 +36,28 @@ type GrantService struct {
 	Peers    []string `json:"peers"`
 }
 
+type NamespaceDiscoveryEntry struct {
+	Version   string    `json:"version,omitempty"`
+	Type      string    `json:"type"`
+	KeyID     string    `json:"key_id"`
+	Secret    string    `json:"secret"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitempty"`
+}
+
 type Payload struct {
-	Version            string       `json:"version"`
-	Kind               string       `json:"kind"`
-	JTI                string       `json:"jti"`
-	ClusterName        string       `json:"cluster_name"`
-	ClusterID          string       `json:"cluster_id"`
-	AuthorityPublicKey string       `json:"authority_public_key"`
-	Namespace          string       `json:"namespace"`
-	Grant              Grant        `json:"grant"`
-	GrantService       GrantService `json:"grant_service,omitempty"`
-	IssuedAt           time.Time    `json:"issued_at"`
-	ExpiresAt          time.Time    `json:"expires_at"`
+	Version            string                   `json:"version"`
+	Kind               string                   `json:"kind"`
+	JTI                string                   `json:"jti"`
+	ClusterName        string                   `json:"cluster_name"`
+	ClusterID          string                   `json:"cluster_id"`
+	AuthorityPublicKey string                   `json:"authority_public_key"`
+	Namespace          string                   `json:"namespace"`
+	Discovery          *NamespaceDiscoveryEntry `json:"discovery,omitempty"`
+	Grant              Grant                    `json:"grant"`
+	GrantService       GrantService             `json:"grant_service,omitempty"`
+	IssuedAt           time.Time                `json:"issued_at"`
+	ExpiresAt          time.Time                `json:"expires_at"`
 }
 
 func GrantForRole(role string) (Grant, error) {
@@ -127,6 +137,12 @@ func ValidatePayload(payload Payload) error {
 	if payload.ClusterName == "" || payload.ClusterID == "" || payload.AuthorityPublicKey == "" || payload.Namespace == "" || payload.JTI == "" {
 		return errors.New("cluster invite is missing required fields")
 	}
+	if payload.Discovery == nil {
+		return errors.New("cluster invite is missing namespace discovery entry")
+	}
+	if err := ValidateNamespaceDiscoveryEntry(*payload.Discovery); err != nil {
+		return fmt.Errorf("cluster invite discovery: %w", err)
+	}
 	if time.Now().UTC().After(payload.ExpiresAt.UTC()) {
 		return errors.New("cluster invite expired")
 	}
@@ -162,6 +178,26 @@ func ValidatePayload(payload Payload) error {
 
 func IsToken(token string) bool {
 	return strings.HasPrefix(token, TokenPrefix)
+}
+
+func ValidateNamespaceDiscoveryEntry(entry NamespaceDiscoveryEntry) error {
+	if strings.TrimSpace(entry.Type) != cfgpkg.SecretTypeNamespaceDiscovery {
+		return fmt.Errorf("unsupported discovery entry type %q", entry.Type)
+	}
+	if strings.TrimSpace(entry.KeyID) == "" {
+		return errors.New("discovery entry key id is required")
+	}
+	if strings.TrimSpace(entry.Secret) == "" {
+		return errors.New("discovery entry secret is required")
+	}
+	secretBytes, err := base64.RawURLEncoding.DecodeString(entry.Secret)
+	if err != nil {
+		return fmt.Errorf("decode discovery entry secret: %w", err)
+	}
+	if len(secretBytes) != cfgpkg.NamespaceDiscoverySecretLength {
+		return fmt.Errorf("discovery entry secret must be %d bytes", cfgpkg.NamespaceDiscoverySecretLength)
+	}
+	return nil
 }
 
 func AllowsPermissions(grant cfgpkg.ClusterMembershipGrant, clusterName, clusterID, namespace string, required ...string) bool {

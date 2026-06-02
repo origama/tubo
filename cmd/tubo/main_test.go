@@ -19,6 +19,7 @@ import (
 	"time"
 
 	capability "github.com/origama/tubo/internal/capability"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -1455,6 +1456,18 @@ func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNa
 	if !stringSliceEqualSet(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
 		t.Fatalf("unexpected membership grant permissions: %#v", grant.Permissions)
 	}
+	ns := cluster.Namespaces[wantNamespace]
+	if ns.Discovery != cfgpkg.NamespaceDiscoveryEnabled {
+		t.Fatalf("joined namespace discovery = %q", ns.Discovery)
+	}
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretCurrent.KeyID == "" || ns.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("joined namespace discovery secret missing: %#v", ns)
+	}
+	if info, err := os.Stat(ns.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("joined namespace discovery secret file missing: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("joined namespace discovery secret permissions = %04o", info.Mode().Perm())
+	}
 }
 
 func TestClusterInvitationShareAndJoin(t *testing.T) {
@@ -1479,6 +1492,13 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 		t.Fatalf("share output missing join command: %s", out)
 	}
 	token := extractClusterInviteToken(t, out)
+	payload, err := parseAndVerifyClusterInviteToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Discovery == nil || payload.Discovery.Type != cfgpkg.SecretTypeNamespaceDiscovery || payload.Discovery.KeyID == "" || payload.Discovery.Secret == "" {
+		t.Fatalf("cluster invite missing discovery entry: %#v", payload.Discovery)
+	}
 
 	joinHome := filepath.Join(t.TempDir(), "join-home")
 	t.Setenv("XDG_CONFIG_HOME", joinHome)
@@ -1488,6 +1508,9 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	}
 	if !strings.Contains(out, "joined cluster \"home\"") {
 		t.Fatalf("unexpected invite join output: %s", out)
+	}
+	if strings.Contains(out, payload.Discovery.Secret) || strings.Contains(out, payload.Discovery.KeyID) {
+		t.Fatalf("join output leaked discovery entry metadata/material: %s", out)
 	}
 	assertJoinedClusterInviteConfig(t, filepath.Join(joinHome, "tubo", "config.yaml"), token, "observability")
 
@@ -1687,6 +1710,31 @@ func TestClusterInviteReuseRejectedLocally(t *testing.T) {
 	}
 }
 
+func TestClusterInvitationShareFailsWithoutNamespaceDiscoveryEntry(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	ns.DiscoverySecretCurrent = nil
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "2h"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing discovery_secret_current") {
+		t.Fatalf("expected missing discovery entry error, got %v", err)
+	}
+}
+
 func TestGrantRequesterInviteRequiresGrantPeer(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -1775,7 +1823,11 @@ func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiredPayload := clusterInvitePayload{Version: clusterInviteVersion, Kind: clusterInviteKind, JTI: "expired-jti", ClusterName: "home", ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, Namespace: "default", Grant: grant, IssuedAt: time.Now().Add(-2 * time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Hour).UTC()}
+	secretBytes, err := cfgpkg.ReadNamespaceDiscoverySecretFile(cluster.Namespaces["default"].DiscoverySecretCurrent.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredPayload := clusterInvitePayload{Version: clusterInviteVersion, Kind: clusterInviteKind, JTI: "expired-jti", ClusterName: "home", ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, Namespace: "default", Discovery: &clusterinvite.NamespaceDiscoveryEntry{Version: "v1", Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: cluster.Namespaces["default"].DiscoverySecretCurrent.KeyID, Secret: base64.RawURLEncoding.EncodeToString(secretBytes), CreatedAt: cluster.Namespaces["default"].DiscoverySecretCurrent.CreatedAt}, Grant: grant, IssuedAt: time.Now().Add(-2 * time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Hour).UTC()}
 	expiredPayloadBytes, err := json.Marshal(expiredPayload)
 	if err != nil {
 		t.Fatal(err)

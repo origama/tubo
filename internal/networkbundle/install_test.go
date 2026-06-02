@@ -178,6 +178,8 @@ func TestInstallPublicBundleWritesPublicClusterMetadata(t *testing.T) {
 	}
 	if ns := cluster.Namespaces[payload.PublicCluster.DefaultNamespace]; ns.Discovery != cfgpkg.NamespaceDiscoveryDisabled || ns.ConnectPolicy != cfgpkg.ConnectPolicyInviteOnly {
 		t.Fatalf("unexpected public default namespace policy: %#v", ns)
+	} else if ns.DiscoverySecretCurrent != nil || ns.DiscoverySecretPrevious != nil {
+		t.Fatalf("public default namespace must not install discovery secrets: %#v", ns)
 	}
 	if cfg.Network.PrivateKeyFile != filepath.Join(dir, "swarm.key") || cfg.Network.PrivateKeyB64 != "" {
 		t.Fatalf("unexpected network key config: %#v", cfg.Network)
