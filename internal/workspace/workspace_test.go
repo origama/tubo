@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +50,14 @@ func TestResolveScope(t *testing.T) {
 }
 
 func TestListDescribeAndUseLocalResources(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "default.secret")
+	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := cfgpkg.Config{
 		CurrentOverlay:   "public",
 		CurrentCluster:   "home",
@@ -63,7 +72,7 @@ func TestListDescribeAndUseLocalResources(t *testing.T) {
 				AuthorityPublicKey: "ssh-ed25519 AAAATEST home",
 				Capabilities:       []string{"list", "publish"},
 				Namespaces: map[string]cfgpkg.Namespace{
-					"default":       {Discovery: cfgpkg.NamespaceDiscoveryEnabled, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember},
+					"default":       {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_test", File: secretPath, CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)}, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember},
 					"observability": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyPublic},
 				},
 			},
@@ -113,6 +122,9 @@ func TestListDescribeAndUseLocalResources(t *testing.T) {
 	}
 	if !namespaceDesc.CurrentCluster || !namespaceDesc.CurrentNamespace || namespaceDesc.CurrentOverlay != "public" || namespaceDesc.Discovery != cfgpkg.NamespaceDiscoveryEnabled || namespaceDesc.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember || namespaceDesc.PublicDefault {
 		t.Fatalf("namespaceDesc=%#v", namespaceDesc)
+	}
+	if namespaceDesc.DiscoverySecretCurrent == nil || namespaceDesc.DiscoverySecretCurrent.KeyID == "" || namespaceDesc.DiscoverySecretCurrent.File == "" || namespaceDesc.DiscoverySecretCurrent.Fingerprint == "" {
+		t.Fatalf("namespaceDesc discovery secret=%#v", namespaceDesc.DiscoverySecretCurrent)
 	}
 
 	updated, err := ws.Use(path, Ref{Kind: "overlay", Name: "staging"})

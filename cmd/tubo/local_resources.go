@@ -140,6 +140,26 @@ func printNamespaceDescription(desc workspace.NamespaceDescription) {
 	fmt.Printf("Public default: %t\n", desc.PublicDefault)
 	fmt.Println("Metadata:")
 	fmt.Println("  - namespace is defined locally in the current cluster")
+	printSecretDescription("Current discovery secret", desc.DiscoverySecretCurrent)
+	printSecretDescription("Previous discovery secret", desc.DiscoverySecretPrevious)
+}
+
+func printSecretDescription(label string, desc *workspace.SecretDescription) {
+	fmt.Printf("%s:\n", label)
+	if desc == nil {
+		fmt.Println("  - none")
+		return
+	}
+	fmt.Printf("  Type: %s\n", desc.Type)
+	fmt.Printf("  Key ID: %s\n", desc.KeyID)
+	fmt.Printf("  File: %s\n", desc.File)
+	if desc.CreatedAt != "" {
+		fmt.Printf("  Created at: %s\n", desc.CreatedAt)
+	}
+	if desc.ExpiresAt != "" {
+		fmt.Printf("  Expires at: %s\n", desc.ExpiresAt)
+	}
+	fmt.Printf("  Fingerprint: %s\n", desc.Fingerprint)
 }
 
 func localUseCmd(args []string) error {

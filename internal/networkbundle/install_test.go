@@ -50,7 +50,7 @@ func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
 	cfg.Clusters["home"] = homecluster
 	// Also add a separate private cluster that must NOT be touched
 	cfg.Clusters["oricluster"] = cfgpkg.Cluster{
-		ClusterID:         "cluster-ori-xyz",
+		ClusterID:          "cluster-ori-xyz",
 		AuthorityPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAorioriori",
 		Namespaces: map[string]cfgpkg.Namespace{
 			"orins": {Services: map[string]cfgpkg.NamespaceService{
@@ -93,6 +93,45 @@ func TestInstallBundlePreservesExistingNamespaceServices(t *testing.T) {
 	}
 	if svc, ok := stagingNs.Services["backendapi"]; !ok || svc.ServiceID != "service-staging-456" {
 		t.Fatalf("home/staging/backendapi service lost after bundle re-install: %#v", stagingNs.Services)
+	}
+	if stagingNs.DiscoverySecretCurrent == nil || stagingNs.DiscoverySecretCurrent.KeyID == "" || stagingNs.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("home/staging discovery secret missing after bundle re-install: %#v", stagingNs)
+	}
+	if info, err := os.Stat(stagingNs.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("home/staging discovery secret file missing: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("home/staging discovery secret permissions = %04o", info.Mode().Perm())
+	}
+	cfgAfter.Role = "relay"
+	if err := cfgpkg.Validate(cfgAfter); err != nil {
+		t.Fatalf("Validate(cfgAfter) error = %v", err)
+	}
+}
+
+func TestInstallPrivateBundleGeneratesNamespaceDiscoverySecret(t *testing.T) {
+	now := time.Now().UTC()
+	payload := samplePayload(now.Add(-time.Hour), now.Add(time.Hour))
+	payload.PublicCluster = nil
+	dir := t.TempDir()
+	res, err := Install(&payload, InstallOptions{ConfigDir: dir, Force: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(res.ConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	if ns.Discovery != cfgpkg.NamespaceDiscoveryEnabled {
+		t.Fatalf("default namespace discovery = %q", ns.Discovery)
+	}
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretCurrent.KeyID == "" || ns.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("default namespace discovery secret missing: %#v", ns)
+	}
+	if info, err := os.Stat(ns.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("default namespace discovery secret file missing: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("default namespace discovery secret permissions = %04o", info.Mode().Perm())
 	}
 }
 

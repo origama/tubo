@@ -8,6 +8,7 @@ import (
 
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	workspace "github.com/origama/tubo/internal/workspace"
 	"gopkg.in/yaml.v3"
 )
 
@@ -121,6 +122,12 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 					if bundleNs.MembershipCapabilityFile == "" {
 						bundleNs.MembershipCapabilityFile = existingNs.MembershipCapabilityFile
 					}
+					if bundleNs.DiscoverySecretCurrent == nil {
+						bundleNs.DiscoverySecretCurrent = existingNs.DiscoverySecretCurrent
+					}
+					if bundleNs.DiscoverySecretPrevious == nil {
+						bundleNs.DiscoverySecretPrevious = existingNs.DiscoverySecretPrevious
+					}
 					cluster.Namespaces[nsName] = bundleNs
 				} else {
 					// Namespace only exists locally: carry it forward.
@@ -135,6 +142,9 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 				cluster.MembershipCapabilityFile = existingCluster.MembershipCapabilityFile
 			}
 		}
+	}
+	if err := ensureNamespaceDiscoverySecrets(configPath, clusterName, cluster.Namespaces); err != nil {
+		return nil, err
 	}
 	joined := cfgpkg.Merge(existing, cfgpkg.Config{
 		CurrentOverlay:   payload.Name,
@@ -181,6 +191,29 @@ func Install(payload *NetworkPayload, opts InstallOptions) (*InstallResult, erro
 		RelayPeers:     append([]string(nil), payload.Relays...),
 		BootstrapPeers: append([]string(nil), payload.Relays...),
 	}, nil
+}
+
+func ensureNamespaceDiscoverySecrets(configPath, clusterName string, namespaces map[string]cfgpkg.Namespace) error {
+	paths := workspace.DerivePaths(configPath)
+	for namespaceName, namespace := range namespaces {
+		if namespace.Discovery != cfgpkg.NamespaceDiscoveryEnabled || namespace.DiscoverySecretCurrent != nil {
+			continue
+		}
+		secretPath := paths.NamespaceDiscoveryCurrentSecret(clusterName, namespaceName)
+		secretBytes, ref, err := cfgpkg.BuildNamespaceDiscoverySecretRef(secretPath, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(secretPath), 0700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(secretPath, secretBytes, 0600); err != nil {
+			return err
+		}
+		namespace.DiscoverySecretCurrent = ref
+		namespaces[namespaceName] = namespace
+	}
+	return nil
 }
 
 func mustParseTime(value string) time.Time {

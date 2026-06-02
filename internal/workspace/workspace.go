@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
 )
@@ -195,7 +196,8 @@ func (w *Workspace) DescribeNamespace(configPath, name string) (NamespaceDescrip
 	if !ok {
 		return NamespaceDescription{}, fmt.Errorf("current cluster %q not found in config", cfg.CurrentCluster)
 	}
-	if _, ok := cluster.Namespaces[name]; !ok {
+	namespace, ok := cluster.Namespaces[name]
+	if !ok {
 		return NamespaceDescription{}, fmt.Errorf("namespace %q not found in cluster %q", name, cfg.CurrentCluster)
 	}
 	scope, err := cfgpkg.ResolveEffectiveScope(cfg, cfg.CurrentCluster, name, false)
@@ -203,7 +205,33 @@ func (w *Workspace) DescribeNamespace(configPath, name string) (NamespaceDescrip
 		return NamespaceDescription{}, err
 	}
 	policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
-	return NamespaceDescription{Name: name, Cluster: cfg.CurrentCluster, CurrentCluster: true, CurrentNamespace: name == cfg.CurrentNamespace, CurrentOverlay: cfg.CurrentOverlay, Discovery: policy.Discovery, ConnectPolicy: policy.ConnectPolicy, PublicDefault: policy.PublicDefault}, nil
+	currentSecret, err := describeManagedSecret(namespace.DiscoverySecretCurrent)
+	if err != nil {
+		return NamespaceDescription{}, err
+	}
+	previousSecret, err := describeManagedSecret(namespace.DiscoverySecretPrevious)
+	if err != nil {
+		return NamespaceDescription{}, err
+	}
+	return NamespaceDescription{Name: name, Cluster: cfg.CurrentCluster, CurrentCluster: true, CurrentNamespace: name == cfg.CurrentNamespace, CurrentOverlay: cfg.CurrentOverlay, Discovery: policy.Discovery, ConnectPolicy: policy.ConnectPolicy, PublicDefault: policy.PublicDefault, DiscoverySecretCurrent: currentSecret, DiscoverySecretPrevious: previousSecret}, nil
+}
+
+func describeManagedSecret(ref *cfgpkg.ManagedSecretRef) (*SecretDescription, error) {
+	if ref == nil {
+		return nil, nil
+	}
+	fingerprint, err := cfgpkg.NamespaceDiscoverySecretFingerprint(ref)
+	if err != nil {
+		return nil, err
+	}
+	desc := &SecretDescription{Type: ref.Type, KeyID: ref.KeyID, File: ref.File, Fingerprint: fingerprint}
+	if !ref.CreatedAt.IsZero() {
+		desc.CreatedAt = ref.CreatedAt.UTC().Format(time.RFC3339)
+	}
+	if !ref.ExpiresAt.IsZero() {
+		desc.ExpiresAt = ref.ExpiresAt.UTC().Format(time.RFC3339)
+	}
+	return desc, nil
 }
 
 func (w *Workspace) Use(configPath string, ref Ref) (cfgpkg.Config, error) {

@@ -58,15 +58,26 @@ type ClusterNamespaceDescription struct {
 	Current bool
 }
 
+type SecretDescription struct {
+	Type        string
+	KeyID       string
+	File        string
+	CreatedAt   string
+	ExpiresAt   string
+	Fingerprint string
+}
+
 type NamespaceDescription struct {
-	Name             string
-	Cluster          string
-	CurrentCluster   bool
-	CurrentNamespace bool
-	CurrentOverlay   string
-	Discovery        cfgpkg.NamespaceDiscovery
-	ConnectPolicy    cfgpkg.ConnectPolicy
-	PublicDefault    bool
+	Name                    string
+	Cluster                 string
+	CurrentCluster          bool
+	CurrentNamespace        bool
+	CurrentOverlay          string
+	Discovery               cfgpkg.NamespaceDiscovery
+	ConnectPolicy           cfgpkg.ConnectPolicy
+	PublicDefault           bool
+	DiscoverySecretCurrent  *SecretDescription
+	DiscoverySecretPrevious *SecretDescription
 }
 
 type NamespaceList struct {
