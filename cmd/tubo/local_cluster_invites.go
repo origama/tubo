@@ -58,6 +58,23 @@ type clusterJoinResult struct {
 	Grant       cfgpkg.ClusterMembershipGrant `json:"grant"`
 }
 
+func clusterMembershipGrantMetadata(payload clusterInvitePayload) cfgpkg.ClusterMembershipGrant {
+	return cfgpkg.ClusterMembershipGrant{
+		InviteVersion:        payload.Version,
+		InviteID:             payload.JTI,
+		ClusterName:          payload.ClusterName,
+		ClusterID:            payload.ClusterID,
+		AuthorityPublicKey:   payload.AuthorityPublicKey,
+		Namespace:            payload.Namespace,
+		Role:                 payload.Grant.Role,
+		Permissions:          append([]string(nil), payload.Grant.Permissions...),
+		GrantServiceProtocol: payload.GrantService.Protocol,
+		GrantServicePeers:    append([]string(nil), payload.GrantService.Peers...),
+		IssuedAt:             payload.IssuedAt,
+		ExpiresAt:            payload.ExpiresAt,
+	}
+}
+
 func localShareCmd(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: tubo share cluster/<name>|service/<name>|revoke [flags]")
@@ -270,21 +287,7 @@ func localJoinClusterInviteCmd(args []string) error {
 		ConfigPath:  filepath.Join(*configDir, "config.yaml"),
 		ClusterName: payload.ClusterName,
 		Namespace:   payload.Namespace,
-		Grant: cfgpkg.ClusterMembershipGrant{
-			InviteToken:          token,
-			InviteVersion:        payload.Version,
-			InviteID:             payload.JTI,
-			ClusterName:          payload.ClusterName,
-			ClusterID:            payload.ClusterID,
-			AuthorityPublicKey:   payload.AuthorityPublicKey,
-			Namespace:            payload.Namespace,
-			Role:                 payload.Grant.Role,
-			Permissions:          append([]string(nil), payload.Grant.Permissions...),
-			GrantServiceProtocol: payload.GrantService.Protocol,
-			GrantServicePeers:    append([]string(nil), payload.GrantService.Peers...),
-			IssuedAt:             payload.IssuedAt,
-			ExpiresAt:            payload.ExpiresAt,
-		},
+		Grant:       clusterMembershipGrantMetadata(payload),
 	}
 	if *jsonOut {
 		return printJSON(result)
@@ -366,21 +369,9 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	joinedNamespace.DiscoverySecretCurrent = installedRef
 	joinedNamespace.DiscoverySecretPrevious = nil
 	cluster.Namespaces[payload.Namespace] = joinedNamespace
-	cluster.MembershipGrant = &cfgpkg.ClusterMembershipGrant{
-		InviteToken:          token,
-		InviteVersion:        payload.Version,
-		InviteID:             payload.JTI,
-		ClusterName:          payload.ClusterName,
-		ClusterID:            payload.ClusterID,
-		AuthorityPublicKey:   payload.AuthorityPublicKey,
-		Namespace:            payload.Namespace,
-		Role:                 payload.Grant.Role,
-		Permissions:          append([]string(nil), payload.Grant.Permissions...),
-		GrantServiceProtocol: payload.GrantService.Protocol,
-		GrantServicePeers:    append([]string(nil), payload.GrantService.Peers...),
-		IssuedAt:             payload.IssuedAt,
-		ExpiresAt:            payload.ExpiresAt,
-	}
+	_ = token
+	grant := clusterMembershipGrantMetadata(payload)
+	cluster.MembershipGrant = &grant
 	joined.Clusters[payload.ClusterName] = cluster
 	// Bug fix: do not unconditionally overwrite the current cluster/namespace.
 	// Only switch context if there is no cluster selected yet, so that existing

@@ -892,7 +892,7 @@ func Validate(c Config) error {
 			if namespace.ConnectPolicy != "" && namespace.ConnectPolicy != ConnectPolicyInviteOnly && namespace.ConnectPolicy != ConnectPolicyNamespaceMember && namespace.ConnectPolicy != ConnectPolicyPublic {
 				return fmt.Errorf("clusters.%s.namespaces.%s.connect_policy: unsupported value %q", clusterName, namespaceName, namespace.ConnectPolicy)
 			}
-			if namespace.Discovery == NamespaceDiscoveryEnabled && strings.TrimSpace(cluster.ClusterID) != "" {
+			if namespace.Discovery == NamespaceDiscoveryEnabled {
 				if namespace.DiscoverySecretCurrent == nil {
 					return fmt.Errorf("clusters.%s.namespaces.%s.discovery_secret_current: required when discovery is enabled", clusterName, namespaceName)
 				}
@@ -975,7 +975,16 @@ func Doctor(c Config) error {
 	}
 	return nil
 }
-func Mask(c Config) Config { c.Network.PrivateKeyB64 = ""; return c }
+func Mask(c Config) Config {
+	c.Network.PrivateKeyB64 = ""
+	for clusterName, cluster := range c.Clusters {
+		if cluster.MembershipGrant != nil {
+			cluster.MembershipGrant.InviteToken = ""
+			c.Clusters[clusterName] = cluster
+		}
+	}
+	return c
+}
 func CSV(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
