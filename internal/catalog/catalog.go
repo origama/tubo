@@ -428,15 +428,25 @@ func ObserveServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(Watc
 	}
 	cache := discovery.NewCache(30*time.Second, time.Second)
 	defer cache.Stop()
-	sub := discovery.NewPubSubSubscriber(topic, cache)
-	if discoveryRuntime.Mode == cfgpkg.DiscoveryModeNamespaceV2 {
-		sub = discovery.NewPubSubSubscriberWithMode(topic, cache, discovery.ModeNamespaceV2, discoveryRuntime.ClusterID, discoveryRuntime.NamespaceID)
-		if cluster, ok := cfg.Clusters[cfg.CurrentCluster]; ok && cluster.AuthorityPublicKey != "" {
-			if raw, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey); err == nil {
-				sub.SetAuthorityPublicKey(raw)
-			} else {
-				return nil, fmt.Errorf("parse authority public key: %w", err)
-			}
+	topics := []*pubsub.Topic{topic}
+	contexts := []discovery.NamespaceDiscoveryContext{}
+	if discoveryRuntime.Context != nil {
+		contexts = append(contexts, *discoveryRuntime.Context)
+	}
+	if discoveryRuntime.PreviousTopic != "" && discoveryRuntime.PreviousContext != nil {
+		previousTopic, err := ps.Join(discoveryRuntime.PreviousTopic)
+		if err != nil {
+			return nil, fmt.Errorf("join previous discovery topic: %w", err)
+		}
+		topics = append(topics, previousTopic)
+		contexts = append(contexts, *discoveryRuntime.PreviousContext)
+	}
+	sub := discovery.NewPubSubSubscriberV3(topics, cache, contexts)
+	if cluster, ok := cfg.Clusters[cfg.CurrentCluster]; ok && cluster.AuthorityPublicKey != "" {
+		if raw, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey); err == nil {
+			sub.SetAuthorityPublicKey(raw)
+		} else {
+			return nil, fmt.Errorf("parse authority public key: %w", err)
 		}
 	}
 	stopCh := sub.Start(ctx)

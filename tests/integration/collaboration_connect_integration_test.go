@@ -145,13 +145,13 @@ func TestCollaborationConnectByNameUsesAdvertisedGrantEndpoint(t *testing.T) {
 	edgeP2P := freePort(t)
 	serviceP2P := freePort(t)
 	serviceHealth := freePort(t)
-	topic := discovery.NamespaceTopic("cluster-123", "default")
+	secretRef, topic, dctx := mustIntegrationDiscoveryRef(t, "cluster-123", "default")
 
-	edgeApp, err := edgeapp.New(ctx, edgeapp.Config{HTTPListen: fmt.Sprintf("127.0.0.1:%d", edgeHTTP), AdminListen: fmt.Sprintf("127.0.0.1:%d", edgeAdmin), P2PListen: fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P), Seed: "collab-connect-edge", BootstrapRetryInterval: 500 * time.Millisecond, DirectStreamTimeout: 250 * time.Millisecond, AuthorityPublicKey: authorityKey, DiscoveryTopic: topic, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default"})
+	edgeApp, err := edgeapp.New(ctx, edgeapp.Config{HTTPListen: fmt.Sprintf("127.0.0.1:%d", edgeHTTP), AdminListen: fmt.Sprintf("127.0.0.1:%d", edgeAdmin), P2PListen: fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P), Seed: "collab-connect-edge", BootstrapRetryInterval: 500 * time.Millisecond, DirectStreamTimeout: 250 * time.Millisecond, AuthorityPublicKey: authorityKey, DiscoveryTopic: topic, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx})
 	if err != nil {
 		t.Fatal(err)
 	}
-	serviceApp, err := serviceapp.New(ctx, serviceapp.Config{Listen: fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", serviceP2P), Seed: serviceSeed, ServiceName: "myapi", ServiceID: owner.ServiceID, ServiceOwnerKeyFile: ownerPath, Target: upstream.URL, HealthListen: fmt.Sprintf("127.0.0.1:%d", serviceHealth), HeartbeatInterval: 500 * time.Millisecond, BootstrapRetryInterval: 500 * time.Millisecond, DiscoveryEnabled: true, DiscoveryTopic: topic, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: authorityKey, ConnectPolicy: string(cfgpkg.ConnectPolicyNamespaceMember), MembershipCapabilityFile: serviceCapPath, ServicePublishLeaseFile: leasePath, ClusterName: "home"})
+	serviceApp, err := serviceapp.New(ctx, serviceapp.Config{Listen: fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", serviceP2P), Seed: serviceSeed, ServiceName: "myapi", ServiceID: owner.ServiceID, ServiceOwnerKeyFile: ownerPath, Target: upstream.URL, HealthListen: fmt.Sprintf("127.0.0.1:%d", serviceHealth), HeartbeatInterval: 500 * time.Millisecond, BootstrapRetryInterval: 500 * time.Millisecond, DiscoveryEnabled: true, DiscoveryTopic: topic, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: authorityKey, ConnectPolicy: string(cfgpkg.ConnectPolicyNamespaceMember), MembershipCapabilityFile: serviceCapPath, ServicePublishLeaseFile: leasePath, ClusterName: "home"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestCollaborationConnectByNameUsesAdvertisedGrantEndpoint(t *testing.T) {
 		return false
 	}, "collaboration discovery cache")
 
-	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: "collab-connect-client", P2PListen: "/ip4/127.0.0.1/tcp/0"}, Edge: cfgpkg.Edge{AdminListen: fmt.Sprintf("127.0.0.1:%d", edgeAdmin)}, CurrentCluster: "home", CurrentNamespace: "default", Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: authorityKey, MembershipCapabilityFile: clientCapPath, Namespaces: map[string]cfgpkg.Namespace{"default": {MembershipCapabilityFile: clientCapPath}}}}}
+	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: "collab-connect-client", P2PListen: "/ip4/127.0.0.1/tcp/0"}, Edge: cfgpkg.Edge{AdminListen: fmt.Sprintf("127.0.0.1:%d", edgeAdmin)}, CurrentCluster: "home", CurrentNamespace: "default", Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: authorityKey, MembershipCapabilityFile: clientCapPath, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: secretRef, MembershipCapabilityFile: clientCapPath}}}}}
 	cfgPath := filepath.Join(work, "client.yaml")
 	if err := cfgpkg.WriteFile(cfgPath, cfg, true); err != nil {
 		t.Fatal(err)

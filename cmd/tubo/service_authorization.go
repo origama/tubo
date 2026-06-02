@@ -30,7 +30,7 @@ func resolveAuthorizedServiceScopes(cfg cfgpkg.Config, clusterFlag, namespaceFla
 	if err != nil {
 		return nil, err
 	}
-	if runtime.Mode != cfgpkg.DiscoveryModeNamespaceV2 {
+	if runtime.Mode != cfgpkg.DiscoveryModeNamespaceV3 {
 		return nil, errors.New("cluster/namespace discovery is required")
 	}
 	if base.Cluster == "" {

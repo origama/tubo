@@ -86,8 +86,8 @@ func TestShareInviteRedeemIsOneTimeAcrossClientsAndServiceRestart(t *testing.T) 
 		serviceCtx, serviceCancel := context.WithCancel(parent)
 		serviceP2P := freePort(t)
 		serviceHealth := freePort(t)
-		topic := discovery.NamespaceTopic("cluster-123", "default")
-		app, err := serviceapp.New(serviceCtx, serviceapp.Config{Listen: fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", serviceP2P), Seed: serviceSeed, ServiceName: "myapi", ServiceID: owner.ServiceID, ServiceOwnerKeyFile: ownerPath, Target: upstream.URL, HealthListen: fmt.Sprintf("127.0.0.1:%d", serviceHealth), HeartbeatInterval: 500 * time.Millisecond, BootstrapRetryInterval: 500 * time.Millisecond, DiscoveryEnabled: true, DiscoveryTopic: topic, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: authorityKey, ConnectPolicy: string("invite_only"), MembershipCapabilityFile: serviceCapPath, ServicePublishLeaseFile: leasePath, ClusterName: "home"})
+		_, topic, dctx := mustIntegrationDiscoveryRef(t, "cluster-123", "default")
+		app, err := serviceapp.New(serviceCtx, serviceapp.Config{Listen: fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", serviceP2P), Seed: serviceSeed, ServiceName: "myapi", ServiceID: owner.ServiceID, ServiceOwnerKeyFile: ownerPath, Target: upstream.URL, HealthListen: fmt.Sprintf("127.0.0.1:%d", serviceHealth), HeartbeatInterval: 500 * time.Millisecond, BootstrapRetryInterval: 500 * time.Millisecond, DiscoveryEnabled: true, DiscoveryTopic: topic, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: authorityKey, ConnectPolicy: string("invite_only"), MembershipCapabilityFile: serviceCapPath, ServicePublishLeaseFile: leasePath, ClusterName: "home"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,8 +242,8 @@ func TestDelegatedShareMintInviteRedeemsOnce(t *testing.T) {
 	defer serviceCancel()
 	serviceP2P := freePort(t)
 	serviceHealth := freePort(t)
-	topic := discovery.NamespaceTopic("cluster-123", "default")
-	serviceApp, err := serviceapp.New(serviceCtx, serviceapp.Config{Listen: fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", serviceP2P), Seed: serviceSeed, ServiceName: "myapi", ServiceID: owner.ServiceID, ServiceOwnerKeyFile: ownerPath, Target: upstream.URL, HealthListen: fmt.Sprintf("127.0.0.1:%d", serviceHealth), HeartbeatInterval: 500 * time.Millisecond, BootstrapRetryInterval: 500 * time.Millisecond, DiscoveryEnabled: true, DiscoveryTopic: topic, DiscoveryMode: discovery.ModeNamespaceV2.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: authorityKey, ConnectPolicy: string("invite_only"), MembershipCapabilityFile: serviceCapPath, ServicePublishLeaseFile: leasePath, ClusterName: "home"})
+	_, topic, dctx := mustIntegrationDiscoveryRef(t, "cluster-123", "default")
+	serviceApp, err := serviceapp.New(serviceCtx, serviceapp.Config{Listen: fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", serviceP2P), Seed: serviceSeed, ServiceName: "myapi", ServiceID: owner.ServiceID, ServiceOwnerKeyFile: ownerPath, Target: upstream.URL, HealthListen: fmt.Sprintf("127.0.0.1:%d", serviceHealth), HeartbeatInterval: 500 * time.Millisecond, BootstrapRetryInterval: 500 * time.Millisecond, DiscoveryEnabled: true, DiscoveryTopic: topic, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: authorityKey, ConnectPolicy: string("invite_only"), MembershipCapabilityFile: serviceCapPath, ServicePublishLeaseFile: leasePath, ClusterName: "home"})
 	if err != nil {
 		t.Fatal(err)
 	}
