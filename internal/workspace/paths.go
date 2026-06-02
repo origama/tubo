@@ -37,6 +37,14 @@ func (p Paths) NamespaceMembershipCapability(cluster, namespace string) string {
 	return filepath.Join(p.NamespaceDir(cluster, namespace), "membership.cap.json")
 }
 
+func (p Paths) NamespaceDiscoveryCurrentSecret(cluster, namespace string) string {
+	return filepath.Join(p.NamespaceDir(cluster, namespace), "discovery-current.secret")
+}
+
+func (p Paths) NamespaceDiscoveryPreviousSecret(cluster, namespace string) string {
+	return filepath.Join(p.NamespaceDir(cluster, namespace), "discovery-previous.secret")
+}
+
 func (p Paths) ServiceMembershipCapability(cluster, namespace string) string {
 	return filepath.Join(p.NamespaceDir(cluster, namespace), "cluster.membership.cap.json")
 }
