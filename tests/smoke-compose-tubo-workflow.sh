@@ -223,7 +223,10 @@ if [[ -z "$cluster_id" || -z "$authority_public_key" ]]; then
   exit 1
 fi
 
-tubo create namespace/tenant-a --config "$config_path" >/dev/null
+tenant_a_ns_out="$(tubo create namespace/tenant-a --config "$config_path")"
+host_tenant_a_discovery_secret_file="$(extract_field "discovery secret file" "$tenant_a_ns_out")"
+tenant_a_discovery_key_id="$(extract_field "discovery key id" "$tenant_a_ns_out")"
+tenant_a_discovery_secret_file="${container_root}/clusters/home/namespaces/tenant-a/discovery-current.secret"
 tenant_a_out="$(tubo create service/myapi --config "$config_path")"
 service_a_id="$(extract_field "service id" "$tenant_a_out")"
 service_a_seed="$(extract_field "service seed" "$tenant_a_out")"
@@ -239,7 +242,10 @@ generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$serv
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_tenant_a_cluster_cap_file"
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$cluster_id" "$host_tenant_a_namespace_cap_file"
 
-tubo create namespace/tenant-b --config "$config_path" >/dev/null
+tenant_b_ns_out="$(tubo create namespace/tenant-b --config "$config_path")"
+host_tenant_b_discovery_secret_file="$(extract_field "discovery secret file" "$tenant_b_ns_out")"
+tenant_b_discovery_key_id="$(extract_field "discovery key id" "$tenant_b_ns_out")"
+tenant_b_discovery_secret_file="${container_root}/clusters/home/namespaces/tenant-b/discovery-current.secret"
 tubo use namespace/tenant-b --config "$config_path" >/dev/null
 service_b_out="$(tubo create service/myapi --config "$config_path")"
 service_b_id="$(extract_field "service id" "$service_b_out")"
@@ -336,6 +342,12 @@ clusters:
     membership_capability_file: ${tenant_a_cluster_cap_file}
     namespaces:
       tenant-a:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_a_discovery_key_id}
+          file: ${tenant_a_discovery_secret_file}
         membership_capability_file: ${tenant_a_namespace_cap_file}
         services:
           myapi:
@@ -345,6 +357,12 @@ clusters:
             service_claim_file: ${service_a_claim_file}
             service_publish_lease_file: ${service_a_publish_lease_file}
       tenant-b:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_b_discovery_key_id}
+          file: ${tenant_b_discovery_secret_file}
         membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
@@ -384,6 +402,12 @@ clusters:
     membership_capability_file: ${tenant_a_cluster_cap_file}
     namespaces:
       tenant-a:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_a_discovery_key_id}
+          file: ${tenant_a_discovery_secret_file}
         membership_capability_file: ${tenant_a_namespace_cap_file}
         services:
           myapi:
@@ -393,6 +417,12 @@ clusters:
             service_claim_file: ${service_a_claim_file}
             service_publish_lease_file: ${service_a_publish_lease_file}
       tenant-b:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_b_discovery_key_id}
+          file: ${tenant_b_discovery_secret_file}
         membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
@@ -432,6 +462,12 @@ clusters:
     membership_capability_file: ${tenant_b_cluster_cap_file}
     namespaces:
       tenant-a:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_a_discovery_key_id}
+          file: ${tenant_a_discovery_secret_file}
         membership_capability_file: ${tenant_a_namespace_cap_file}
         services:
           myapi:
@@ -441,6 +477,12 @@ clusters:
             service_claim_file: ${service_a_claim_file}
             service_publish_lease_file: ${service_a_publish_lease_file}
       tenant-b:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_b_discovery_key_id}
+          file: ${tenant_b_discovery_secret_file}
         membership_capability_file: ${tenant_b_namespace_cap_file}
         services:
           myapi:
@@ -470,6 +512,14 @@ clusters:
     authority_public_key: ${authority_public_key}
     authority_private_key_file: ${authority_key_file}
     membership_capability_file: ${tenant_a_namespace_cap_file}
+    namespaces:
+      tenant-a:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_a_discovery_key_id}
+          file: ${host_tenant_a_discovery_secret_file}
 YAML
 
 cat > "$config_path" <<YAML
@@ -491,6 +541,12 @@ clusters:
     membership_capability_file: ${host_tenant_a_cluster_cap_file}
     namespaces:
       tenant-a:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_a_discovery_key_id}
+          file: ${host_tenant_a_discovery_secret_file}
         membership_capability_file: ${host_tenant_a_namespace_cap_file}
         services:
           myapi:
@@ -500,6 +556,12 @@ clusters:
             service_claim_file: ${host_service_a_claim_file}
             service_publish_lease_file: ${host_service_a_publish_lease_file}
       tenant-b:
+        discovery: enabled
+        connect_policy: namespace_members
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: ${tenant_b_discovery_key_id}
+          file: ${host_tenant_b_discovery_secret_file}
         membership_capability_file: ${host_tenant_b_namespace_cap_file}
         services:
           myapi:
@@ -513,6 +575,8 @@ YAML
 find "$config_dir" -type d -exec chmod 755 {} +
 find "$config_dir" -type f -exec chmod 644 {} +
 chmod 644 "$host_authority_key_file" "$host_tenant_a_cluster_cap_file" "$host_tenant_a_namespace_cap_file" "$host_tenant_b_cluster_cap_file" "$host_tenant_b_namespace_cap_file" "$host_service_a_owner_key_file" "$host_service_a_claim_file" "$host_service_b_owner_key_file" "$host_service_b_claim_file" "$host_swarm_key_file"
+chmod 600 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
+chown 65532:65532 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
 
 if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
   echo "[smoke-tubo-workflow] forcing image rebuild"
