@@ -1764,6 +1764,7 @@ func TestClusterInviteGrantAuthorizesNamespaceQueries(t *testing.T) {
 			"home": {
 				ClusterID:          "cluster-123",
 				AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))),
+				Namespaces:         map[string]cfgpkg.Namespace{"pinamespace": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "pinamespace")}},
 				MembershipGrant: &cfgpkg.ClusterMembershipGrant{
 					InviteToken:        "tubo-invite-v1.test",
 					InviteVersion:      clusterInviteVersion,
@@ -4100,7 +4101,7 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
 		Edge:             cfgpkg.Edge{AdminListen: "127.0.0.1:1"},
-		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath}},
+		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}},
 	}
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
@@ -4169,7 +4170,7 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
 		Edge:             cfgpkg.Edge{AdminListen: "127.0.0.1:1"},
-		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath}},
+		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}},
 	}
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
@@ -4252,7 +4253,7 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
 		Clusters: map[string]cfgpkg.Cluster{
-			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath},
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
 		},
 	}
 	return cfg, serviceScope{Cluster: "home", Namespace: "observability"}, serviceIDA, serviceIDB
@@ -4334,7 +4335,7 @@ func TestDiscoverServiceExactFallsBackToDisplayNameWhenServiceIDMissing(t *testi
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
 		Clusters: map[string]cfgpkg.Cluster{
-			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath},
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
 		},
 	}
 	result, service, err := discoverServiceExactWithConfig(cfg, 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"}, "myapi", "service-fallback")
@@ -4528,8 +4529,8 @@ func TestResolveAuthorizedServiceScopes(t *testing.T) {
 				AuthorityPublicKey:       authorityKey,
 				MembershipCapabilityFile: defaultCap,
 				Namespaces: map[string]cfgpkg.Namespace{
-					"default": {MembershipCapabilityFile: defaultCap},
-					"metrics": {MembershipCapabilityFile: metricsCap},
+					"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, clusterID, "default"), MembershipCapabilityFile: defaultCap},
+					"metrics": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, clusterID, "metrics"), MembershipCapabilityFile: metricsCap},
 				},
 			},
 		},
@@ -4553,8 +4554,8 @@ func TestResolveAuthorizedServiceScopes(t *testing.T) {
 		AuthorityPublicKey:       authorityKey,
 		MembershipCapabilityFile: defaultCap,
 		Namespaces: map[string]cfgpkg.Namespace{
-			"default": {MembershipCapabilityFile: defaultCap},
-			"metrics": {},
+			"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, clusterID, "default"), MembershipCapabilityFile: defaultCap},
+			"metrics": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, clusterID, "metrics")},
 		},
 	}
 	if _, err := resolveAuthorizedServiceScopes(cfg, "", "", true); err == nil {
@@ -4563,6 +4564,19 @@ func TestResolveAuthorizedServiceScopes(t *testing.T) {
 	if _, err := resolveAuthorizedServiceScopes(cfgpkg.Config{}, "", "", false); err == nil {
 		t.Fatal("expected cluster discovery requirement error")
 	}
+}
+
+func mustWriteNamespaceDiscoverySecretRef(t *testing.T, clusterID, namespace string) *cfgpkg.ManagedSecretRef {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), fmt.Sprintf("%s-%s.discovery.secret", clusterID, namespace))
+	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: fmt.Sprintf("nsdk_%s_%s", clusterID, namespace), File: path, CreatedAt: time.Now().UTC()}
 }
 
 func mustWriteMembershipCapability(t *testing.T, priv ed25519.PrivateKey, cap capability.MembershipCapability) string {

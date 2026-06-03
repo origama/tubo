@@ -161,15 +161,19 @@ type DiscoveryMode string
 const (
 	DiscoveryModeLegacyV1    DiscoveryMode = "legacy-v1"
 	DiscoveryModeNamespaceV2 DiscoveryMode = "namespace-v2"
+	DiscoveryModeNamespaceV3 DiscoveryMode = "namespace-v3"
 )
 
 func (m DiscoveryMode) String() string { return string(m) }
 
 type DiscoveryRuntime struct {
-	Mode        DiscoveryMode
-	Topic       string
-	ClusterID   string
-	NamespaceID string
+	Mode            DiscoveryMode
+	Topic           string
+	PreviousTopic   string
+	ClusterID       string
+	NamespaceID     string
+	Context         *discovery.NamespaceDiscoveryContext
+	PreviousContext *discovery.NamespaceDiscoveryContext
 }
 
 type Duration time.Duration
@@ -378,22 +382,66 @@ func (c Config) ScopeIssuer(clusterName, namespaceName string) (ScopeIssuer, boo
 }
 
 func (c Config) DiscoveryRuntime() DiscoveryRuntime {
-	cluster := c.Clusters[c.CurrentCluster]
-	if c.CurrentCluster != "" && c.CurrentNamespace != "" && cluster.ClusterID != "" && cluster.AuthorityPublicKey != "" && (cluster.MembershipCapabilityFile != "" || cluster.MembershipGrant != nil) {
-		return DiscoveryRuntime{
-			Mode:        DiscoveryModeNamespaceV2,
-			Topic:       discovery.NamespaceTopic(cluster.ClusterID, c.CurrentNamespace),
-			ClusterID:   cluster.ClusterID,
-			NamespaceID: c.CurrentNamespace,
-		}
+	runtime, err := c.discoveryRuntime()
+	if err != nil {
+		return DiscoveryRuntime{}
 	}
-	return DiscoveryRuntime{}
+	return runtime
 }
 
 func (c Config) RequireDiscoveryRuntime() (DiscoveryRuntime, error) {
-	runtime := c.DiscoveryRuntime()
-	if runtime.Mode != DiscoveryModeNamespaceV2 {
+	runtime, err := c.discoveryRuntime()
+	if err != nil {
+		return DiscoveryRuntime{}, err
+	}
+	if runtime.Mode != DiscoveryModeNamespaceV3 || runtime.Context == nil {
 		return DiscoveryRuntime{}, fmt.Errorf("cluster/namespace discovery is required; run `tubo create cluster/...` and `tubo use cluster/...` first")
+	}
+	return runtime, nil
+}
+
+func (c Config) discoveryRuntime() (DiscoveryRuntime, error) {
+	clusterName := strings.TrimSpace(c.CurrentCluster)
+	namespaceName := strings.TrimSpace(c.CurrentNamespace)
+	if clusterName == "" || namespaceName == "" {
+		return DiscoveryRuntime{}, nil
+	}
+	cluster, ok := c.Clusters[clusterName]
+	if !ok || strings.TrimSpace(cluster.ClusterID) == "" || strings.TrimSpace(cluster.AuthorityPublicKey) == "" {
+		return DiscoveryRuntime{}, nil
+	}
+	if strings.TrimSpace(cluster.MembershipCapabilityFile) == "" && cluster.MembershipGrant == nil {
+		return DiscoveryRuntime{}, nil
+	}
+	namespace, ok := cluster.Namespaces[namespaceName]
+	if !ok {
+		return DiscoveryRuntime{}, nil
+	}
+	currentCtx, err := namespaceDiscoveryContext(cluster.ClusterID, namespaceName, namespace.DiscoverySecretCurrent)
+	if err != nil {
+		return DiscoveryRuntime{}, fmt.Errorf("namespace discovery current secret: %w", err)
+	}
+	if currentCtx == nil {
+		return DiscoveryRuntime{}, fmt.Errorf("namespace discovery current secret is required for %s/%s", clusterName, namespaceName)
+	}
+	topic, err := discovery.DeriveNamespaceTopicV3(*currentCtx)
+	if err != nil {
+		return DiscoveryRuntime{}, fmt.Errorf("derive namespace discovery topic: %w", err)
+	}
+	runtime := DiscoveryRuntime{Mode: DiscoveryModeNamespaceV3, Topic: topic, ClusterID: cluster.ClusterID, NamespaceID: namespaceName, Context: currentCtx}
+	if namespace.DiscoverySecretPrevious != nil && (namespace.DiscoverySecretPrevious.ExpiresAt.IsZero() || time.Now().UTC().Before(namespace.DiscoverySecretPrevious.ExpiresAt.UTC())) {
+		previousCtx, err := namespaceDiscoveryContext(cluster.ClusterID, namespaceName, namespace.DiscoverySecretPrevious)
+		if err != nil {
+			return DiscoveryRuntime{}, fmt.Errorf("namespace discovery previous secret: %w", err)
+		}
+		if previousCtx != nil {
+			previousTopic, err := discovery.DeriveNamespaceTopicV3(*previousCtx)
+			if err != nil {
+				return DiscoveryRuntime{}, fmt.Errorf("derive previous namespace discovery topic: %w", err)
+			}
+			runtime.PreviousTopic = previousTopic
+			runtime.PreviousContext = previousCtx
+		}
 	}
 	return runtime, nil
 }
@@ -900,6 +948,17 @@ func Validate(c Config) error {
 	}
 	return nil
 }
+func namespaceDiscoveryContext(clusterID, namespaceID string, ref *ManagedSecretRef) (*discovery.NamespaceDiscoveryContext, error) {
+	if ref == nil {
+		return nil, nil
+	}
+	secret, err := ReadNamespaceDiscoverySecretFile(ref.File)
+	if err != nil {
+		return nil, err
+	}
+	return &discovery.NamespaceDiscoveryContext{ClusterID: clusterID, NamespaceID: namespaceID, KeyID: ref.KeyID, Secret: secret}, nil
+}
+
 func Doctor(c Config) error {
 	if err := Validate(c); err != nil {
 		return err

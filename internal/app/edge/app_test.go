@@ -14,6 +14,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	"github.com/origama/tubo/internal/p2p"
@@ -128,7 +129,16 @@ func TestGatewayDiscoveryQueryServesCachedServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), discovery.NamespaceTopic("cluster-123", "default"), discovery.ModeNamespaceV2.String(), "cluster-123", "default")
+	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dctx := &discovery.NamespaceDiscoveryContext{ClusterID: "cluster-123", NamespaceID: "default", KeyID: "nsdk_test", Secret: secret}
+	topic, err := discovery.DeriveNamespaceTopicV3(*dctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), topic, "", discovery.ModeNamespaceV3.String(), "cluster-123", "default", dctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

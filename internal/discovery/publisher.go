@@ -56,3 +56,17 @@ func (p *Publisher) PublishV2(ctx context.Context, ann AnnouncementV2) error {
 	}
 	return nil
 }
+
+func (p *Publisher) PublishV3(ctx context.Context, ann AnnouncementV3) error {
+	if err := ann.Sign(p.privKey); err != nil {
+		return fmt.Errorf("sign announcement v3: %w", err)
+	}
+	data, err := ann.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal announcement v3: %w", err)
+	}
+	if err := p.topic.Publish(ctx, data); err != nil {
+		return fmt.Errorf("publish v3 to topic: %w", err)
+	}
+	return nil
+}

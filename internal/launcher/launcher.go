@@ -44,21 +44,24 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 			return err
 		}
 		runner, err := deps.NewEdge(ctx, edge.Config{
-			HTTPListen:             cfg.Edge.Listen,
-			P2PListen:              cfg.Node.P2PListen,
-			Seed:                   cfg.Node.Seed,
-			AdminListen:            cfg.Edge.AdminListen,
-			BootstrapPeers:         cfg.Network.BootstrapPeers,
-			RelayPeers:             cfg.Network.RelayPeers,
-			BootstrapRetryInterval: 5 * time.Second,
-			DirectStreamTimeout:    cfg.Edge.DirectStreamTimeout.Duration(),
-			PrivateKeyFile:         cfg.Network.PrivateKeyFile,
-			PrivateKeyB64:          cfg.Network.PrivateKeyB64,
-			AuthorityPublicKey:     cluster.AuthorityPublicKey,
-			DiscoveryTopic:         runtime.Topic,
-			DiscoveryMode:          runtime.Mode.String(),
-			DiscoveryClusterID:     runtime.ClusterID,
-			DiscoveryNamespaceID:   runtime.NamespaceID,
+			HTTPListen:               cfg.Edge.Listen,
+			P2PListen:                cfg.Node.P2PListen,
+			Seed:                     cfg.Node.Seed,
+			AdminListen:              cfg.Edge.AdminListen,
+			BootstrapPeers:           cfg.Network.BootstrapPeers,
+			RelayPeers:               cfg.Network.RelayPeers,
+			BootstrapRetryInterval:   5 * time.Second,
+			DirectStreamTimeout:      cfg.Edge.DirectStreamTimeout.Duration(),
+			PrivateKeyFile:           cfg.Network.PrivateKeyFile,
+			PrivateKeyB64:            cfg.Network.PrivateKeyB64,
+			AuthorityPublicKey:       cluster.AuthorityPublicKey,
+			DiscoveryTopic:           runtime.Topic,
+			DiscoveryPreviousTopic:   runtime.PreviousTopic,
+			DiscoveryMode:            runtime.Mode.String(),
+			DiscoveryClusterID:       runtime.ClusterID,
+			DiscoveryNamespaceID:     runtime.NamespaceID,
+			DiscoveryContext:         runtime.Context,
+			DiscoveryPreviousContext: runtime.PreviousContext,
 		})
 		if err != nil {
 			return err
@@ -71,7 +74,7 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		}
 		policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
 		discoveryEnabled := policy.Discovery != cfgpkg.NamespaceDiscoveryDisabled
-		runtime := cfgpkg.DiscoveryRuntime{Mode: cfgpkg.DiscoveryModeNamespaceV2, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace}
+		runtime := cfgpkg.DiscoveryRuntime{}
 		if discoveryEnabled {
 			runtime, err = cfg.RequireDiscoveryRuntime()
 			if err != nil {
@@ -88,32 +91,35 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		deps.StartAttachPublishLeaseRenewal(ctx, configPath, cfg, authz.Service, authz.ServicePeerID)
 		serviceKind := string(cfgpkg.NormalizeServiceKind(authz.Service.Kind, cfg.Service.Target))
 		runner, err := deps.NewService(ctx, service.Config{
-			Listen:                  cfg.Node.P2PListen,
-			Seed:                    authz.Service.ServiceSeed,
-			ServiceName:             cfg.Service.Name,
-			ServiceKind:             serviceKind,
-			ServiceID:               authz.Service.ServiceID,
-			ServiceOwnerKeyFile:     authz.Service.ServiceOwnerKeyFile,
-			Target:                  cfg.Service.Target,
-			HealthListen:            cfg.HealthListen,
-			PrivateKeyFile:          cfg.Network.PrivateKeyFile,
-			PrivateKeyB64:           cfg.Network.PrivateKeyB64,
-			BootstrapPeers:          cfg.Network.BootstrapPeers,
-			RelayPeers:              cfg.Network.RelayPeers,
-			Autorelay:               cfg.Network.Autorelay,
-			HolePunching:            cfg.Network.HolePunching,
-			ForceReachability:       cfg.Network.ForceReachability,
-			HeartbeatInterval:       cfg.HeartbeatInterval.Duration(),
-			BootstrapRetryInterval:  5 * time.Second,
-			DiscoveryTopic:          runtime.Topic,
-			DiscoveryMode:           runtime.Mode.String(),
-			DiscoveryClusterID:      runtime.ClusterID,
-			DiscoveryNamespaceID:    runtime.NamespaceID,
-			AuthorityPublicKey:      cluster.AuthorityPublicKey,
-			AuthorityPrivateKeyFile: cluster.AuthorityPrivateKeyFile,
-			ClusterName:             cfg.CurrentCluster,
-			ConnectPolicy:           string(policy.ConnectPolicy),
-			DiscoveryEnabled:        discoveryEnabled,
+			Listen:                   cfg.Node.P2PListen,
+			Seed:                     authz.Service.ServiceSeed,
+			ServiceName:              cfg.Service.Name,
+			ServiceKind:              serviceKind,
+			ServiceID:                authz.Service.ServiceID,
+			ServiceOwnerKeyFile:      authz.Service.ServiceOwnerKeyFile,
+			Target:                   cfg.Service.Target,
+			HealthListen:             cfg.HealthListen,
+			PrivateKeyFile:           cfg.Network.PrivateKeyFile,
+			PrivateKeyB64:            cfg.Network.PrivateKeyB64,
+			BootstrapPeers:           cfg.Network.BootstrapPeers,
+			RelayPeers:               cfg.Network.RelayPeers,
+			Autorelay:                cfg.Network.Autorelay,
+			HolePunching:             cfg.Network.HolePunching,
+			ForceReachability:        cfg.Network.ForceReachability,
+			HeartbeatInterval:        cfg.HeartbeatInterval.Duration(),
+			BootstrapRetryInterval:   5 * time.Second,
+			DiscoveryTopic:           runtime.Topic,
+			DiscoveryPreviousTopic:   runtime.PreviousTopic,
+			DiscoveryMode:            runtime.Mode.String(),
+			DiscoveryClusterID:       runtime.ClusterID,
+			DiscoveryNamespaceID:     runtime.NamespaceID,
+			DiscoveryContext:         runtime.Context,
+			DiscoveryPreviousContext: runtime.PreviousContext,
+			AuthorityPublicKey:       cluster.AuthorityPublicKey,
+			AuthorityPrivateKeyFile:  cluster.AuthorityPrivateKeyFile,
+			ClusterName:              cfg.CurrentCluster,
+			ConnectPolicy:            string(policy.ConnectPolicy),
+			DiscoveryEnabled:         discoveryEnabled,
 			Visibility: func() string {
 				if discoveryEnabled {
 					return "discoverable"

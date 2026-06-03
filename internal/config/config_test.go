@@ -231,6 +231,14 @@ func TestEnvCSVAndMerge(t *testing.T) {
 }
 
 func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "discovery-current.secret")
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := Config{
 		CurrentCluster:   "home",
 		CurrentNamespace: "tenant-a",
@@ -239,15 +247,25 @@ func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T)
 				ClusterID:                "cluster-123",
 				AuthorityPublicKey:       "ssh-ed25519 AAAA",
 				MembershipCapabilityFile: "/tmp/cap.json",
+				Namespaces: map[string]Namespace{
+					"tenant-a": {Discovery: NamespaceDiscoveryEnabled, DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_test", File: secretPath, CreatedAt: time.Now().UTC()}},
+				},
 			},
 		},
 	}
 	runtime := cfg.DiscoveryRuntime()
-	if runtime.Mode != DiscoveryModeNamespaceV2 {
+	if runtime.Mode != DiscoveryModeNamespaceV3 {
 		t.Fatalf("mode = %q", runtime.Mode)
 	}
-	if runtime.Topic != discovery.NamespaceTopic("cluster-123", "tenant-a") {
-		t.Fatalf("topic = %q", runtime.Topic)
+	wantTopic, err := discovery.DeriveNamespaceTopicV3(discovery.NamespaceDiscoveryContext{ClusterID: "cluster-123", NamespaceID: "tenant-a", KeyID: "nsdk_test", Secret: secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Topic != wantTopic {
+		t.Fatalf("topic = %q want %q", runtime.Topic, wantTopic)
+	}
+	if runtime.Context == nil || runtime.Context.KeyID != "nsdk_test" {
+		t.Fatalf("runtime context = %#v", runtime.Context)
 	}
 	if runtime.ClusterID != "cluster-123" || runtime.NamespaceID != "tenant-a" {
 		t.Fatalf("runtime = %#v", runtime)
