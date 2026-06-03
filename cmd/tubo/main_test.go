@@ -3695,6 +3695,9 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if strings.Contains(out, "PRIVATE KEY") {
 		t.Fatalf("create output leaked private key material: %s", out)
 	}
+	if !strings.Contains(out, "default namespace discovery fingerprint:") {
+		t.Fatalf("cluster create output missing discovery secret metadata: %s", out)
+	}
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -3711,6 +3714,11 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if cfg.CurrentCluster != "home" || cfg.CurrentNamespace != "default" {
 		t.Fatalf("unexpected current context: %#v", cfg)
+	}
+	if ns := cluster.Namespaces["default"]; ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretCurrent.KeyID == "" || ns.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("default namespace discovery secret missing: %#v", ns)
+	} else if _, err := os.Stat(ns.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("default namespace discovery secret file missing: %v", err)
 	}
 	if _, err := os.Stat(cluster.AuthorityPrivateKeyFile); err != nil {
 		t.Fatalf("private key file missing: %v", err)
@@ -3743,7 +3751,7 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "created namespace \"observability\"") {
+	if !strings.Contains(out, "created namespace \"observability\"") || !strings.Contains(out, "discovery fingerprint:") {
 		t.Fatalf("unexpected namespace create output: %s", out)
 	}
 	cfg, err = cfgpkg.LoadFile(configPath)
@@ -3759,6 +3767,12 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if observabilityNamespace.MembershipCapabilityFile == "" {
 		t.Fatalf("namespace membership capability not created: %#v", observabilityNamespace)
+	}
+	if observabilityNamespace.DiscoverySecretCurrent == nil || observabilityNamespace.DiscoverySecretCurrent.KeyID == "" || observabilityNamespace.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("namespace discovery secret not created: %#v", observabilityNamespace)
+	}
+	if _, err := os.Stat(observabilityNamespace.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("namespace discovery secret file missing: %v", err)
 	}
 	observabilityCapBytes, err := os.ReadFile(observabilityNamespace.MembershipCapabilityFile)
 	if err != nil {

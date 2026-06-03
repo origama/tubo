@@ -2,7 +2,9 @@ package config
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -471,6 +473,119 @@ func TestMergeServiceTargetReinfersKindFromHigherPrecedenceTarget(t *testing.T) 
 	}
 	if err := Validate(merged); err != nil {
 		t.Fatalf("Validate(merged) error = %v", err)
+	}
+}
+
+func TestGenerateNamespaceDiscoverySecretMetadata(t *testing.T) {
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secret) != NamespaceDiscoverySecretLength {
+		t.Fatalf("len(secret) = %d", len(secret))
+	}
+	allZero := true
+	for _, b := range secret {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Fatal("generated secret is all zeros")
+	}
+	keyID, err := GenerateSecretKeyID("nsdk", time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^nsdk_20260602T100000Z_[0-9a-f]{8}$`).MatchString(keyID) {
+		t.Fatalf("unexpected key id format: %q", keyID)
+	}
+	fp := SecretFingerprint(secret)
+	if fp == "" || !strings.HasPrefix(fp, "sha256:") {
+		t.Fatalf("unexpected fingerprint %q", fp)
+	}
+}
+
+func TestValidateDiscoverySecretRefs(t *testing.T) {
+	dir := t.TempDir()
+	secretPath := filepath.Join(dir, "ns.secret")
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Role: "relay", Clusters: map[string]Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]Namespace{"default": {
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_20260602_abcd1234", File: secretPath, CreatedAt: time.Now().UTC()},
+	}}}}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate(valid cfg) error = %v", err)
+	}
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{Discovery: NamespaceDiscoveryEnabled}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "discovery_secret_current") {
+		t.Fatalf("expected missing discovery secret error, got %v", err)
+	}
+	missingPath := filepath.Join(dir, "missing.secret")
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_20260602_abcd1234", File: missingPath, CreatedAt: time.Now().UTC()},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("expected missing secret file error, got %v", err)
+	}
+	shortPath := filepath.Join(dir, "short.secret")
+	if err := os.WriteFile(shortPath, []byte("short"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_20260602_abcd1234", File: shortPath, CreatedAt: time.Now().UTC()},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "must be 32 bytes") {
+		t.Fatalf("expected short secret error, got %v", err)
+	}
+}
+
+func TestConfigRoundTripWithDiscoverySecretRefs(t *testing.T) {
+	dir := t.TempDir()
+	secretPath := filepath.Join(dir, "current.secret")
+	previousPath := filepath.Join(dir, "previous.secret")
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, prev, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Role: "relay", Clusters: map[string]Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]Namespace{"default": {
+		Discovery:               NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent:  &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_current", File: secretPath, CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)},
+		DiscoverySecretPrevious: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)},
+	}}}}}
+	path := filepath.Join(dir, "config.yaml")
+	if err := WriteFile(path, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := loaded.Clusters["home"].Namespaces["default"]
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretPrevious == nil {
+		t.Fatalf("discovery secret refs missing after roundtrip: %#v", ns)
+	}
+	if ns.DiscoverySecretCurrent.File != secretPath || ns.DiscoverySecretPrevious.File != previousPath {
+		t.Fatalf("unexpected roundtrip refs: %#v", ns)
 	}
 }
 

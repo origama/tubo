@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -151,6 +152,15 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if ns := storedCluster.Namespaces["default"]; ns.Discovery != cfgpkg.NamespaceDiscoveryEnabled || ns.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember {
 		t.Fatalf("default namespace policy=%#v", ns)
+	} else {
+		if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretCurrent.KeyID == "" || ns.DiscoverySecretCurrent.File == "" {
+			t.Fatalf("default namespace discovery secret missing: %#v", ns)
+		}
+		if info, err := os.Stat(ns.DiscoverySecretCurrent.File); err != nil {
+			t.Fatalf("default namespace discovery secret file missing: %v", err)
+		} else if info.Mode().Perm() != 0o600 {
+			t.Fatalf("default namespace discovery secret permissions = %04o", info.Mode().Perm())
+		}
 	}
 	ns, err := ws.CreateNamespace(path, "observability")
 	if err != nil {
@@ -172,6 +182,14 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if storedNamespace.Discovery != cfgpkg.NamespaceDiscoveryEnabled || storedNamespace.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember {
 		t.Fatalf("stored namespace policy=%#v", storedNamespace)
+	}
+	if storedNamespace.DiscoverySecretCurrent == nil || storedNamespace.DiscoverySecretCurrent.KeyID == "" || storedNamespace.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("stored namespace discovery secret missing: %#v", storedNamespace)
+	}
+	if info, err := os.Stat(storedNamespace.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("namespace discovery secret file missing: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("namespace discovery secret permissions = %04o", info.Mode().Perm())
 	}
 }
 

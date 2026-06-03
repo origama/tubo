@@ -469,7 +469,14 @@ clusters:
     authority_public_key: ""
     capabilities: []
     namespaces:
-      default: {}
+      default:
+        discovery: enabled
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: nsdk_20260602T100000Z_abcd1234
+          file: ~/.config/tubo/clusters/home/namespaces/default/discovery-current.secret
+          created_at: "2026-06-02T10:00:00Z"
+        discovery_secret_previous: null
 
 network:
   private_key_file: /etc/p2p/swarm.key
@@ -512,8 +519,8 @@ Notes:
 
 - `get overlays` and `get clusters` read only the local config.
 - `get namespaces` uses the current `current_cluster`.
-- `create cluster/...` generates a local authority keypair, writes a `cluster_id`, sets `authority_public_key`, creates the `default` namespace, saves a local membership capability without printing secrets, and initializes the namespace policy as `discovery: enabled` + `connect_policy: namespace_members`. In new collaborative configs, the creator capability also includes `connect`, so `connect <service>` by name works immediately in the same namespace.
-- `create namespace/...` requires a valid `current_cluster`, adds the namespace to the current cluster, makes the new `current_namespace` explicit, materializes a signed membership capability for that namespace, and initializes the local policy as `discovery: enabled` + `connect_policy: namespace_members`. Here too the local creator capability includes `connect`; older namespaces are not widened automatically and `tubo doctor` now warns when the current discovery-enabled context still lacks `connect`.
+- `create cluster/...` generates a local authority keypair, writes a `cluster_id`, sets `authority_public_key`, creates the `default` namespace, generates a random 32-byte `namespace-discovery` secret file with mode `0600`, saves a local membership capability without printing secret bytes, and initializes the namespace policy as `discovery: enabled` + `connect_policy: namespace_members`. In new collaborative configs, the creator capability also includes `connect`, so `connect <service>` by name works immediately in the same namespace.
+- `create namespace/...` requires a valid `current_cluster`, adds the namespace to the current cluster, makes the new `current_namespace` explicit, materializes a signed membership capability for that namespace, generates a random 32-byte `namespace-discovery` secret file with mode `0600`, and initializes the local policy as `discovery: enabled` + `connect_policy: namespace_members`. Here too the local creator capability includes `connect`; older namespaces are not widened automatically and `tubo doctor` now warns when the current discovery-enabled context still lacks `connect`.
 - `create service/...` requires `current_cluster` and `current_namespace`, materializes a stable `service_owner_key_file` for the service identity, derives `service_id` from that key, signs a local `ServiceClaim`, and also saves a `service_publish_lease_file` when the node owns the local authority; Discovery V2 uses the lease as the primary authorization.
 - `attach` in cluster/namespace mode automatically materializes a stable service identity if missing: `service_id` is derived from the service owner key stored in the local config (`0600`), while `service_seed` is generated once and stored in the local config (`0600`).
 - before starting the runtime, `attach` resolves publish authorization: it uses an existing valid `PublishLease`, signs it locally if the node owns `authority_private_key_file`, or submits/polls a Publish Grant request if the service has `grant_service_peer`; an expired lease is treated as absent and therefore goes through the normal renewal/request path, and an expired local `ServiceClaim` is also treated as stale/renewable state rather than a fatal error. The `ServiceClaim` fallback remains local compatibility only. When available, it also prints a copyable `service_share_token` connect-only token for Bob (`tubo connect --token ...`). If publish authorization is valid but the token cannot yet be generated (for example because the remote endpoint is not ready), `attach` suggests rerunning `tubo share service/...`; the old `tubo grants request ... --poll` hint remains reserved for cases where the grant request is still actually pending.

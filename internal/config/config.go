@@ -139,6 +139,8 @@ const (
 type Namespace struct {
 	MembershipCapabilityFile string                      `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
 	Discovery                NamespaceDiscovery          `yaml:"discovery,omitempty" json:"discovery,omitempty"`
+	DiscoverySecretCurrent   *ManagedSecretRef           `yaml:"discovery_secret_current,omitempty" json:"discovery_secret_current,omitempty"`
+	DiscoverySecretPrevious  *ManagedSecretRef           `yaml:"discovery_secret_previous,omitempty" json:"discovery_secret_previous,omitempty"`
 	ConnectPolicy            ConnectPolicy               `yaml:"connect_policy,omitempty" json:"connect_policy,omitempty"`
 	Services                 map[string]NamespaceService `yaml:"services,omitempty" json:"services,omitempty"`
 }
@@ -520,6 +522,14 @@ func cloneCluster(in Cluster) Cluster {
 
 func cloneNamespace(in Namespace) Namespace {
 	out := Namespace{MembershipCapabilityFile: in.MembershipCapabilityFile, Discovery: in.Discovery, ConnectPolicy: in.ConnectPolicy}
+	if in.DiscoverySecretCurrent != nil {
+		current := *in.DiscoverySecretCurrent
+		out.DiscoverySecretCurrent = &current
+	}
+	if in.DiscoverySecretPrevious != nil {
+		previous := *in.DiscoverySecretPrevious
+		out.DiscoverySecretPrevious = &previous
+	}
 	if len(in.Services) > 0 {
 		out.Services = make(map[string]NamespaceService, len(in.Services))
 		for k, v := range in.Services {
@@ -833,6 +843,24 @@ func Validate(c Config) error {
 			}
 			if namespace.ConnectPolicy != "" && namespace.ConnectPolicy != ConnectPolicyInviteOnly && namespace.ConnectPolicy != ConnectPolicyNamespaceMember && namespace.ConnectPolicy != ConnectPolicyPublic {
 				return fmt.Errorf("clusters.%s.namespaces.%s.connect_policy: unsupported value %q", clusterName, namespaceName, namespace.ConnectPolicy)
+			}
+			if namespace.Discovery == NamespaceDiscoveryEnabled && strings.TrimSpace(cluster.ClusterID) != "" {
+				if namespace.DiscoverySecretCurrent == nil {
+					return fmt.Errorf("clusters.%s.namespaces.%s.discovery_secret_current: required when discovery is enabled", clusterName, namespaceName)
+				}
+				if err := validateManagedSecretRef(clusterName, namespaceName, "discovery_secret_current", namespace.DiscoverySecretCurrent, false); err != nil {
+					return err
+				}
+			}
+			if namespace.DiscoverySecretCurrent != nil && namespace.Discovery != NamespaceDiscoveryEnabled {
+				if err := validateManagedSecretRef(clusterName, namespaceName, "discovery_secret_current", namespace.DiscoverySecretCurrent, false); err != nil {
+					return err
+				}
+			}
+			if namespace.DiscoverySecretPrevious != nil {
+				if err := validateManagedSecretRef(clusterName, namespaceName, "discovery_secret_previous", namespace.DiscoverySecretPrevious, true); err != nil {
+					return err
+				}
 			}
 		}
 	}
