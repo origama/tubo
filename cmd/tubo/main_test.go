@@ -1319,6 +1319,86 @@ func TestLocalSecretCommandsReportPreviousAndMissingFiles(t *testing.T) {
 	}
 }
 
+func TestLocalRotateSecretCommand(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := cfg.Clusters["home"].Namespaces["default"].DiscoverySecretCurrent
+	beforeBytes, err := os.ReadFile(before.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"rotate", "secret/namespace-discovery/home/default", "--config", configPath, "--grace", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"rotated namespace discovery secret for home/default", "grace: 2h0m0s", "Current discovery secret:", "Previous discovery secret:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rotate output missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, base64.RawURLEncoding.EncodeToString(beforeBytes)) {
+		t.Fatalf("rotate output leaked raw secret bytes: %s", out)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretPrevious == nil {
+		t.Fatalf("rotation missing refs: %#v", ns)
+	}
+	if ns.DiscoverySecretCurrent.KeyID == before.KeyID || ns.DiscoverySecretPrevious.KeyID != before.KeyID {
+		t.Fatalf("unexpected rotated key ids: current=%#v previous=%#v before=%#v", ns.DiscoverySecretCurrent, ns.DiscoverySecretPrevious, before)
+	}
+	payloadOut, err := capture(func() error { return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "1h"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractClusterInviteToken(t, payloadOut)
+	payload, err := parseAndVerifyClusterInviteToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Discovery == nil || payload.Discovery.KeyID != ns.DiscoverySecretCurrent.KeyID {
+		t.Fatalf("share after rotation did not use new current discovery key: %#v", payload.Discovery)
+	}
+	if payload.Discovery.KeyID == before.KeyID {
+		t.Fatal("share after rotation still used old current key id")
+	}
+}
+
+func TestLocalRotateSecretCommandRejectsMissingCurrent(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	ns.DiscoverySecretCurrent = nil
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error {
+		return run([]string{"rotate", "secret/namespace-discovery/home/default", "--config", configPath, "--grace", "1h"})
+	}); err == nil || !strings.Contains(err.Error(), "missing discovery_secret_current") {
+		t.Fatalf("expected missing current secret error, got %v", err)
+	}
+}
+
 func TestLocalSecretCommandsRejectUnsupportedPaths(t *testing.T) {
 	configPath := writeLocalResourceConfig(t)
 	for _, args := range [][]string{
