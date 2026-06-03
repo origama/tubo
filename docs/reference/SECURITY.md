@@ -24,7 +24,7 @@ This file is the short operational summary.
 
 - metadata privacy is limited in the public model;
 - Discovery V3 improves namespace metadata protection, but observable PubSub timing/size metadata still remains;
-- Discovery V2 fallback is intentionally broken for discovery-enabled namespace runtime in `v0.8.0`;
+- Discovery V2 fallback is intentionally broken for discovery-enabled namespace runtime in `v0.9.0`;
 - revocation is TTL/cache/fresh-state bounded unless issuer state is consulted;
 - short-lived invite/redemption state should be treated as sensitive.
 

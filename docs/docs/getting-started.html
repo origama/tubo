@@ -60,7 +60,7 @@
 
     <p><strong>Install a specific version:</strong></p>
     <div class="code-block" style="margin:16px 0 24px">
-      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> <span style="color:#86efac">-fsSL</span> https://www.tubo.click/install.sh | sh <span style="color:#86efac">-s</span> <span style="color:#fde68a">-- --version v0.7.0</span></pre>
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> <span style="color:#86efac">-fsSL</span> https://www.tubo.click/install.sh | sh <span style="color:#86efac">-s</span> <span style="color:#fde68a">-- --version v0.9.0</span></pre>
     </div>
 
     <p><strong>Build from source:</strong></p>
@@ -72,7 +72,7 @@
     <p>Verify the installation:</p>
     <div class="code-block" style="margin:16px 0 24px">
       <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo version</span>
-<span style="color:#86efac">tubo v0.7.0  protocol 1.1</span></pre>
+<span style="color:#86efac">tubo v0.9.0  protocol 1.1</span></pre>
     </div>
 
     <h2>2. Join the public network</h2>
@@ -98,8 +98,8 @@
       a service announcement, and starts accepting libp2p streams.
     </p>
     <div class="code-block" style="margin:16px 0 24px">
-      <pre><span style="color:#6b7280"># Attach a service running on port 8080</span>
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> <span style="color:#fde68a">myapi</span> <span style="color:#86efac">--port</span> <span style="color:#fde68a">8080</span> <span style="color:#86efac">-d</span>
+      <pre><span style="color:#6b7280"># Attach an HTTP service running on 127.0.0.1:8080</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> <span style="color:#fde68a">http://127.0.0.1:8080</span> <span style="color:#86efac">--name</span> <span style="color:#fde68a">myapi</span> <span style="color:#86efac">-d</span>
 
 <span style="color:#86efac">✓ Service published</span>
 <span style="color:#c4b5fd">  name        myapi</span>

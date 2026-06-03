@@ -64,9 +64,9 @@ Compatibility is defined by the **protocol version**, not only by the product ve
 
 ### Expected operator outcome
 
-`v0.8.0` note:
+`v0.9.0` note:
 - Discovery V3 for discovery-enabled namespaces intentionally replaces the earlier Discovery V2 namespace runtime;
-- there is no Discovery V2 fallback for collaborative namespace runtime in `v0.8.0`;
+- there is no Discovery V2 fallback for collaborative namespace runtime in `v0.9.0`;
 - operators should upgrade relay/service/client binaries together when enabling secret-backed collaborative discovery.
 
 

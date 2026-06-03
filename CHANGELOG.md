@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-This project follows the versioning policy in `docs/VERSIONING.md`.
+This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
@@ -20,6 +20,34 @@ This project follows the versioning policy in `docs/VERSIONING.md`.
 - Protocol version: 1.1
 - Protocol compatibility change: none
 - Operator action required: none
+
+## [v0.9.0] - 2026-06-03
+
+Secret-backed namespace discovery release with Discovery V3 runtime, namespace invite install flows, current/previous secret rotation, metadata-only secret management CLI, and aligned end-to-end/documentation coverage.
+
+### Added
+- Secret-backed Discovery V3 namespace topics and encrypted payload helpers for collaborative discovery scopes.
+- Namespace discovery entry installation through cluster invite share/join flows.
+- Metadata-only secret management commands: `tubo get secrets`, `tubo describe secret/namespace-discovery/...`, and `tubo rotate secret/namespace-discovery/... --grace ...`.
+- End-to-end and integration coverage for secret-backed namespace discovery, including Alice/Bob invite join + discover, mismatched secret state, rotation grace behavior, and expired-previous handling.
+- Canonical Discovery V3 threat-model documentation and updated operational guidance for relay/public-bundle boundaries.
+
+### Changed
+- Discovery-enabled collaborative namespace runtime is now Discovery V3-only and requires a valid namespace discovery secret entry for ambient discovery.
+- `share cluster/...` now carries the current namespace discovery entry, while `join cluster/... --token ...` installs the current discovery secret locally with metadata-only config state.
+- Secret rotation now follows the managed `current` / `previous` model, and local secret views repair expired previous state by clearing stale metadata and removing the old local file when safe.
+- Workflow compose/static docs/examples now use real Discovery V3 secret state and current `attach http://... --name ...` CLI examples.
+
+### Fixed
+- Fixed service-side Discovery V3 local cache population and authority-key wiring so local query/cache behavior remains deterministic after publish.
+- Fixed join/install flows so cluster invite joins remain metadata-only in config output and do not persist full invite secrets.
+- Fixed smoke/integration workflow configs so collaborative discovery scenarios include valid namespace discovery secret files and permissions.
+
+### Compatibility
+- Product version: v0.9.0
+- Protocol version: 1.1
+- Protocol compatibility change: none for the data-plane stream protocol; collaborative ambient discovery now intentionally requires Discovery V3 and no longer falls back to Discovery V2 in discovery-enabled namespace runtime
+- Operator action required: update relay/edge/service/client binaries together if you use collaborative namespace discovery, cluster invites, or namespace discovery secret rotation
 
 ## [v0.8.0] - 2026-06-01
 
@@ -283,7 +311,7 @@ Relay-first recovery release focused on making traffic recover cleanly after rel
 First clean versioned release with explicit product/protocol versioning, protocol negotiation, and real mixed-version compatibility evidence on the Linode multi-host bench.
 
 ### Added
-- Release/versioning policy in `docs/VERSIONING.md`.
+- Release/versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo version` command with product version, protocol version, commit, and build date output.
 - Root `VERSION` file, `CHANGELOG.md`, and manual release checklist in `docs/RELEASING.md`.
 - Protocol 1.1 hello handshake carrying `protocol major.minor`, role, and capabilities.

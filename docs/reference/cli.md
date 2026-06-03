@@ -89,7 +89,7 @@ tubo watch services
 
 ```bash
 tubo attach --target http://127.0.0.1:1234 --name lmstudio
-tubo attach lmstudio --port 1234
+tubo attach http://127.0.0.1:1234 --name lmstudio
 tubo attach tcp://127.0.0.1:8443 --name tlsdemo
 ```
 

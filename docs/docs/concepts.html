@@ -98,20 +98,21 @@
       <li><strong>service ID</strong> — a stable cryptographic identity derived from the service owner key (e.g. <code>svc_abc123def456</code>). Authorisation always binds to the service ID.</li>
     </ul>
     <p>
-      When you run <code>tubo attach lmstudio --port 1234</code>, Tubo generates or reuses a
+      When you run <code>tubo attach http://127.0.0.1:1234 --name lmstudio</code>, Tubo generates or reuses a
       stable service owner key under <code>~/.config/tubo/clusters/.../services/</code> and
       derives the service ID from it. The service ID remains stable across restarts.
     </p>
 
     <h2>Discovery</h2>
     <p>
-      Service announcements are published over libp2p GossipSub on an opaque topic derived from
-      the cluster and namespace IDs. Each announcement is Ed25519-signed by the service owner key
-      and carries a <code>ServiceClaim</code> signed by the cluster authority.
+      In collaborative namespaces, service announcements are published over libp2p GossipSub on an
+      opaque Discovery V3 topic derived from the namespace discovery entry, not from public cluster
+      and namespace IDs alone. Each announcement is Ed25519-signed by the service owner key and
+      carries a <code>PublishLease</code>/<code>ServiceClaim</code> chain signed by the cluster authority.
     </p>
     <p>Clients validate the full chain before routing to a peer:</p>
     <ol>
-      <li>Topic is correct for the current cluster/namespace.</li>
+      <li>Topic is correct for the current cluster/namespace discovery entry.</li>
       <li>Announcement signature is valid (service owner key).</li>
       <li>ServiceClaim is signed by a trusted authority.</li>
       <li>Nonce has not been seen before (replay protection).</li>

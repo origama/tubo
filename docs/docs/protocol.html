@@ -149,15 +149,17 @@ sequenceDiagram
       to <code>/p2p-tunnel/1.0</code> automatically.
     </p>
     <p>
-      Tubo 0.7+ supports both versions on the service side. Legacy Tubo (pre-0.40) only
-      supports <code>/p2p-tunnel/1.0</code>. Mixed-version clusters work transparently.
+      Tubo 0.9.0 still supports both stream protocol versions on the service side. Legacy nodes that
+      only speak <code>/p2p-tunnel/1.0</code> can still negotiate the older data-plane stream.
+      Mixed-version data-plane clusters work as long as they do not require newer optional capabilities.
     </p>
 
     <h2>Discovery protocol</h2>
     <p>
-      Service announcements are published on a GossipSub topic derived from the cluster and namespace IDs.
-      The topic string is an opaque hash — nodes outside the cluster cannot enumerate services.
-      Each announcement is JSON-encoded and Ed25519-signed. Subscribers validate the full chain before
+      In collaborative namespaces, service announcements are published on a secret-backed Discovery V3
+      GossipSub topic derived from the namespace discovery entry. The topic string is still opaque, but
+      overlay reachability alone is not enough to discover services in that namespace. Each announcement is
+      JSON-encoded and Ed25519-signed. Subscribers validate the authority-bound publication chain before
       admitting an entry into the discovery cache.
     </p>
   </main>

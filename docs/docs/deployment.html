@@ -130,7 +130,7 @@ WantedBy=multi-user.target</pre>
     <span style="color:#86efac">--swarm-key</span> ~/.config/tubo/swarm.key
 
 <span style="color:#6b7280"># Publish a service</span>
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> myapi <span style="color:#86efac">--port</span> 8080 <span style="color:#86efac">-d</span></pre>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> http://127.0.0.1:8080 <span style="color:#86efac">--name</span> myapi <span style="color:#86efac">-d</span></pre>
     </div>
 
     <h3>systemd unit (service)</h3>
@@ -141,7 +141,7 @@ After=network-online.target myapi.service
 Wants=network-online.target
 
 [Service]
-ExecStart=/usr/local/bin/tubo attach myapi --port 8080
+ExecStart=/usr/local/bin/tubo attach http://127.0.0.1:8080 --name myapi
 Restart=on-failure
 RestartSec=10s
 User=myapp
