@@ -60,6 +60,18 @@ type PubSubSubscriber struct {
 	mu                 sync.Mutex
 }
 
+func (s *PubSubSubscriber) HasAuthorityPublicKey() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.authorityPublicKey) > 0
+}
+
+func (s *PubSubSubscriber) ScopeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.scopes)
+}
+
 // NewPubSubSubscriber creates a subscriber that listens on the discovery topic.
 func NewPubSubSubscriber(topic *pubsub.Topic, cache *Cache) *PubSubSubscriber {
 	return NewPubSubSubscriberWithMode(topic, cache, ModeLegacyV1, "", "")

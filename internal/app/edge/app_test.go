@@ -7,6 +7,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +117,105 @@ func TestHandleAddRoute(t *testing.T) {
 	}
 	if _, ok := gw.routes.Match("demo.local", "/api/test"); !ok {
 		t.Fatal("expected route to be stored")
+	}
+}
+
+func TestNewGatewayConfiguresCurrentAndPreviousDiscoveryScopes(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentCtx := &discovery.NamespaceDiscoveryContext{ClusterID: "cluster-123", NamespaceID: "default", KeyID: "nsdk_current", Secret: currentSecret}
+	previousCtx := &discovery.NamespaceDiscoveryContext{ClusterID: "cluster-123", NamespaceID: "default", KeyID: "nsdk_previous", Secret: previousSecret}
+	currentTopic, err := discovery.DeriveNamespaceTopicV3(*currentCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousTopic, err := discovery.DeriveNamespaceTopicV3(*previousCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-prev-valid-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), currentTopic, previousTopic, discovery.ModeNamespaceV3.String(), "cluster-123", "default", currentCtx, previousCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer close(stopCh)
+	defer gw.cache.Stop()
+	defer gw.host.Close()
+	if gw.subscriber == nil || gw.subscriber.ScopeCount() != 2 {
+		t.Fatalf("expected current+previous discovery scopes, got %#v count=%d", gw.subscriber, func() int {
+			if gw.subscriber == nil {
+				return 0
+			}
+			return gw.subscriber.ScopeCount()
+		}())
+	}
+}
+
+func TestDiscoveryRuntimeIgnoresExpiredPreviousScopeForGateway(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	currentPath := filepath.Join(dir, "current.secret")
+	previousPath := filepath.Join(dir, "previous.secret")
+	currentSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(currentPath, currentSecret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, previousSecret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "default", Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: filepath.Join(dir, "membership.cap.json"), Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_current", File: currentPath, CreatedAt: time.Now().UTC()}, DiscoverySecretPrevious: &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Now().Add(-time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Minute).UTC()}}}}}}
+	if err := os.WriteFile(filepath.Join(dir, "membership.cap.json"), []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := cfg.DiscoveryRuntime()
+	if runtime.PreviousTopic != "" || runtime.PreviousContext != nil {
+		t.Fatalf("expected expired previous discovery scope to be ignored: %#v", runtime)
+	}
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-prev-expired-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), runtime.Topic, runtime.PreviousTopic, runtime.Mode.String(), runtime.ClusterID, runtime.NamespaceID, runtime.Context, runtime.PreviousContext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer close(stopCh)
+	defer gw.cache.Stop()
+	defer gw.host.Close()
+	if gw.subscriber == nil || gw.subscriber.ScopeCount() != 1 {
+		t.Fatalf("expected only current discovery scope, got %#v count=%d", gw.subscriber, func() int {
+			if gw.subscriber == nil {
+				return 0
+			}
+			return gw.subscriber.ScopeCount()
+		}())
 	}
 }
 
