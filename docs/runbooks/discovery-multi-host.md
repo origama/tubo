@@ -2,7 +2,7 @@
 
 This runbook covers two distinct layers:
 
-1. the current as-is state of the project, which now requires Discovery V2 at the cluster/namespace level;
+1. the current as-is state of the project, which now requires Discovery V3 with namespace discovery entries at the cluster/namespace level;
 2. the recommended operational target for private NAT/NAT deployments (LM Studio on a laptop + Hermes/edge on a remote host).
 
 For operational startup and secure P2P tunneling across 2+ services, use this as the primary reference:
@@ -16,7 +16,7 @@ For operational startup and secure P2P tunneling across 2+ services, use this as
 `tubo attach` today:
 
 1. creates a libp2p host (`p2p.NewHostWithSeedAndPSK`);
-2. publishes a signed and encrypted `AnnouncementV2` on the namespace V2 topic;
+2. publishes a signed and encrypted `AnnouncementV3` on the namespace V3 topic derived from the namespace discovery entry;
 3. includes display name (`ServiceName`), `ServiceID`, service public key, `Addresses`, membership capability, and a valid `PublishLease` (with legacy `ServiceClaim` kept only for compatibility);
 4. starts a heartbeat (`HEARTBEAT_INTERVAL`, default `15s`) that republishes the same announcement;
 5. connects to the bootstrap peers (`BOOTSTRAP_PEERS`) and retries (`BOOTSTRAP_RETRY_INTERVAL`, default `5s`);
@@ -27,7 +27,7 @@ For operational startup and secure P2P tunneling across 2+ services, use this as
 `tubo gateway` today:
 
 1. creates a libp2p host;
-2. joins the namespace Discovery V2 topic;
+2. joins the namespace Discovery V3 topic (current + non-expired previous when configured);
 3. uses `PubSubSubscriber` to:
    - deserialize the announcement;
    - verify topic/cluster/namespace;
@@ -40,7 +40,7 @@ For operational startup and secure P2P tunneling across 2+ services, use this as
 ### 1.3 Cache and auto-routing
 
 - The cache is keyed primarily by `service_id`; `serviceName`/display name remains a compatibility index and is not unique (`internal/discovery/cache.go`).
-- Edges update the cache through validated Discovery V2; they do not accept `announce_service` on the query protocol.
+- Edges update the cache through validated Discovery V3; they do not accept `announce_service` on the query protocol.
 - Relays can keep a query/sync cache to support remote `get services`.
 - The effective TTL of V2 announcements is bounded by the announcement TTL and the expiry of the embedded `PublishLease`/claim.
 - On `added`, the gateway creates an auto-route:
@@ -53,9 +53,9 @@ So an HTTP request with `Host: <serviceName>` is forwarded to the discovered pee
 ### 1.4 Important current limitations
 
 1. Duplicate display names are accepted as separate records when the `service_id` differs; legacy HTTP routes based on hostname remain ambiguous if two services in the same scope use the same display name.
-2. Relay query caches propagate `service_id` when available and do not replace Discovery V2 validation on edges.
+2. Relay query caches propagate `service_id` when available and do not replace Discovery V3 validation on edges.
 3. If the announced addresses are not reachable, direct dialing fails.
-4. The current encryption of the Discovery V2 payload derives the key from `cluster_id` + `namespace_id`; this separates the payload by scope but does **not** provide a strong private-namespace metadata boundary if the IDs are public or guessable. For the 0.7 target, see `docs/reference/security-model-0.7.md` and the future `namespace_discovery_key`.
+4. Discovery V3 uses a real namespace discovery entry for topic derivation and payload protection; it no longer derives secrecy only from public `cluster_id` + `namespace_id`. This improves private-namespace metadata protection, but it still does not hide topic existence, timing, or message-size metadata from peers able to observe PubSub traffic. See `../reference/discovery-v3-threat-model.md`.
 5. Hole punching/AutoNAT are still not complete in the project.
 6. Private swarm PSK is supported through env (`LIBP2P_PRIVATE_NETWORK_KEY` or `LIBP2P_PRIVATE_NETWORK_KEY_B64`) on `edge`, `service`, `bridge`, and `relay`.
 7. `LIBP2P_ALLOWED_PEERS` + connection gating are implemented in the `relay`, but not yet enforced end-to-end across all binaries.
@@ -65,7 +65,7 @@ So an HTTP request with `Host: <serviceName>` is forwarded to the discovered pee
 
 ### 2.1 Mandatory controlled public node
 
-For deployments with nodes potentially behind NAT, there must be at least one stable public node managed by us. With Discovery V2 the public node serves as bootstrap/relay transport, not as a discovery swarm router.
+For deployments with nodes potentially behind NAT, there must be at least one stable public node managed by us. With Discovery V3 the public node still serves as bootstrap/relay transport, not as a namespace discovery authority.
 
 Minimum requirements:
 
@@ -166,7 +166,7 @@ For this private deployment:
 1. do not use the public DHT;
 2. do not use random bootstrap peers;
 3. do not use external public relays;
-4. use only opaque Discovery V2 topics derived from cluster/namespace;
+4. use only opaque Discovery V3 topics derived from namespace discovery entries;
 5. continue discovery with signed announcements and verified capabilities.
 
 ## 5) Private relay, AutoRelay, and NAT reachability
