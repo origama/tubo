@@ -27,6 +27,18 @@ func TestParseRef(t *testing.T) {
 	if ref.Kind != "cluster" || ref.Name != "home" {
 		t.Fatalf("ref=%#v", ref)
 	}
+	secretType, clusterName, namespaceName, err := ParseSecretRef("secret/namespace-discovery/home/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secretType != cfgpkg.SecretTypeNamespaceDiscovery || clusterName != "home" || namespaceName != "default" {
+		t.Fatalf("secret ref=%q %q %q", secretType, clusterName, namespaceName)
+	}
+	for _, bad := range []string{"bad", "secret/foo/home/default", "secret/namespace-discovery", "secret/namespace-discovery/home", "secret/namespace-discovery/home/default/extra"} {
+		if _, _, _, err := ParseSecretRef(bad); err == nil {
+			t.Fatalf("expected error for invalid secret ref %q", bad)
+		}
+	}
 	if _, err := ParseRef("bad"); err == nil {
 		t.Fatal("expected error for invalid ref")
 	}
@@ -125,6 +137,20 @@ func TestListDescribeAndUseLocalResources(t *testing.T) {
 	}
 	if namespaceDesc.DiscoverySecretCurrent == nil || namespaceDesc.DiscoverySecretCurrent.KeyID == "" || namespaceDesc.DiscoverySecretCurrent.File == "" || namespaceDesc.DiscoverySecretCurrent.Fingerprint == "" {
 		t.Fatalf("namespaceDesc discovery secret=%#v", namespaceDesc.DiscoverySecretCurrent)
+	}
+	secrets, err := ws.ListSecrets(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets) != 1 || secrets[0].Status != "current" || secrets[0].FileStatus != "ok" {
+		t.Fatalf("secrets=%#v", secrets)
+	}
+	secretDesc, err := ws.DescribeSecret(path, "secret/namespace-discovery/home/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secretDesc.Type != cfgpkg.SecretTypeNamespaceDiscovery || secretDesc.Cluster != "home" || secretDesc.Namespace != "default" || secretDesc.Current == nil || secretDesc.Current.Fingerprint == "" {
+		t.Fatalf("secretDesc=%#v", secretDesc)
 	}
 
 	updated, err := ws.Use(path, Ref{Kind: "overlay", Name: "staging"})
