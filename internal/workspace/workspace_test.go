@@ -290,6 +290,119 @@ func TestResolveMembershipCapabilityFileRequiresRuntimeEvidence(t *testing.T) {
 	}
 }
 
+func TestRotateNamespaceDiscoverySecret(t *testing.T) {
+	path := writeTestConfig(t, cfgpkg.Config{})
+	ws := Open(FSStore{})
+	if _, err := ws.CreateCluster(path, "home"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCurrent := before.Clusters["home"].Namespaces["default"].DiscoverySecretCurrent
+	if oldCurrent == nil {
+		t.Fatal("missing current secret before rotation")
+	}
+	oldCurrentBytes, err := os.ReadFile(oldCurrent.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := ws.RotateNamespaceDiscoverySecret(path, "secret/namespace-discovery/home/default", 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.Current == nil || rotated.Previous == nil {
+		t.Fatalf("rotation result missing refs: %#v", rotated)
+	}
+	after, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := after.Clusters["home"].Namespaces["default"]
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretPrevious == nil {
+		t.Fatalf("rotation state missing refs: %#v", ns)
+	}
+	if ns.DiscoverySecretCurrent.KeyID == oldCurrent.KeyID {
+		t.Fatal("expected new current key id after rotation")
+	}
+	if ns.DiscoverySecretPrevious.KeyID != oldCurrent.KeyID {
+		t.Fatalf("previous key id = %q want %q", ns.DiscoverySecretPrevious.KeyID, oldCurrent.KeyID)
+	}
+	if ns.DiscoverySecretPrevious.ExpiresAt.IsZero() || time.Until(ns.DiscoverySecretPrevious.ExpiresAt) <= time.Hour {
+		t.Fatalf("unexpected previous expiry: %v", ns.DiscoverySecretPrevious.ExpiresAt)
+	}
+	rotatedPreviousBytes, err := os.ReadFile(ns.DiscoverySecretPrevious.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rotatedPreviousBytes) != string(oldCurrentBytes) {
+		t.Fatal("previous secret bytes do not match old current bytes")
+	}
+	rotatedCurrentBytes, err := os.ReadFile(ns.DiscoverySecretCurrent.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rotatedCurrentBytes) == string(oldCurrentBytes) {
+		t.Fatal("new current secret bytes should differ from old current bytes")
+	}
+	runtime := after.DiscoveryRuntime()
+	if runtime.Context == nil || runtime.PreviousContext == nil {
+		t.Fatalf("expected current and previous runtime contexts after rotation: %#v", runtime)
+	}
+	if runtime.Context.KeyID != ns.DiscoverySecretCurrent.KeyID || runtime.PreviousContext.KeyID != ns.DiscoverySecretPrevious.KeyID {
+		t.Fatalf("unexpected runtime key ids: %#v", runtime)
+	}
+}
+
+func TestRotateNamespaceDiscoverySecretRequiresCurrentAndAuthority(t *testing.T) {
+	path := writeTestConfig(t, cfgpkg.Config{})
+	ws := Open(FSStore{})
+	if _, err := ws.CreateCluster(path, "home"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	ns.DiscoverySecretCurrent = nil
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := ws.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.RotateNamespaceDiscoverySecret(path, "secret/namespace-discovery/home/default", time.Hour); err == nil || !strings.Contains(err.Error(), "missing discovery_secret_current") {
+		t.Fatalf("expected missing current secret error, got %v", err)
+	}
+	cfg, err = ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster = cfg.Clusters["home"]
+	cluster.AuthorityPrivateKeyFile = ""
+	ns = cluster.Namespaces["default"]
+	ns.DiscoverySecretCurrent = mustSecretRef(t, path, "home", "default")
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := ws.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.RotateNamespaceDiscoverySecret(path, "secret/namespace-discovery/home/default", time.Hour); err == nil || !strings.Contains(err.Error(), "rotation requires local cluster authority material") {
+		t.Fatalf("expected missing authority material error, got %v", err)
+	}
+}
+
+func mustSecretRef(t *testing.T, configPath, cluster, namespace string) *cfgpkg.ManagedSecretRef {
+	t.Helper()
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.Clusters[cluster].Namespaces[namespace].DiscoverySecretCurrent
+}
+
 func TestLoadConfigOrErrorMissing(t *testing.T) {
 	ws := Open(FSStore{})
 	_, err := ws.LoadConfigOrError(t.TempDir() + "/missing.yaml")
