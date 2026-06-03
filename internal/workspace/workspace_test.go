@@ -355,6 +355,51 @@ func TestRotateNamespaceDiscoverySecret(t *testing.T) {
 	}
 }
 
+func TestListSecretsCleansUpExpiredPreviousDiscoverySecret(t *testing.T) {
+	path := writeTestConfig(t, cfgpkg.Config{})
+	ws := Open(FSStore{})
+	if _, err := ws.CreateCluster(path, "home"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	previousPath := filepath.Join(t.TempDir(), "expired-previous.secret")
+	previousSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, previousSecret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ns.DiscoverySecretPrevious = &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Now().Add(-2 * time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Minute).UTC()}
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := ws.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ws.ListSecrets(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status != "current" {
+		t.Fatalf("expected only current secret after cleanup, got %#v", items)
+	}
+	cfg, err = ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Clusters["home"].Namespaces["default"].DiscoverySecretPrevious != nil {
+		t.Fatalf("expected expired previous secret metadata to be cleared, got %#v", cfg.Clusters["home"].Namespaces["default"].DiscoverySecretPrevious)
+	}
+	if _, err := os.Stat(previousPath); !os.IsNotExist(err) {
+		t.Fatalf("expected expired previous secret file to be removed, got err=%v", err)
+	}
+}
+
 func TestRotateNamespaceDiscoverySecretRequiresCurrentAndAuthority(t *testing.T) {
 	path := writeTestConfig(t, cfgpkg.Config{})
 	ws := Open(FSStore{})
