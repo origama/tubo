@@ -28,7 +28,7 @@ func ParseRef(resource string) (Ref, error) {
 		return Ref{}, fmt.Errorf("unsupported resource %q", resource)
 	}
 	switch parts[0] {
-	case "overlay", "cluster", "namespace", "service":
+	case "overlay", "cluster", "namespace", "service", "secret":
 		return Ref{Kind: parts[0], Name: parts[1]}, nil
 	default:
 		return Ref{}, fmt.Errorf("unsupported resource %q", resource)
@@ -184,6 +184,78 @@ func (w *Workspace) DescribeCluster(configPath, name string) (ClusterDescription
 	return ClusterDescription{Name: name, Current: name == cfg.CurrentCluster, ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, Capabilities: append([]string(nil), cluster.Capabilities...), Namespaces: namespaces}, nil
 }
 
+func ParseSecretRef(resource string) (secretType, clusterName, namespaceName string, err error) {
+	ref, err := ParseRef(resource)
+	if err != nil {
+		return "", "", "", err
+	}
+	if ref.Kind != "secret" {
+		return "", "", "", fmt.Errorf("unsupported secret resource %q", resource)
+	}
+	parts := strings.Split(ref.Name, "/")
+	if len(parts) != 3 || parts[0] != cfgpkg.SecretTypeNamespaceDiscovery || parts[1] == "" || parts[2] == "" {
+		return "", "", "", fmt.Errorf("unsupported secret resource %q", resource)
+	}
+	return parts[0], parts[1], parts[2], nil
+}
+
+func (w *Workspace) ListSecrets(configPath string) ([]SecretDescription, error) {
+	cfg, err := w.LoadConfigOrError(configPath)
+	if err != nil {
+		return nil, err
+	}
+	clusterNames := make([]string, 0, len(cfg.Clusters))
+	for clusterName := range cfg.Clusters {
+		clusterNames = append(clusterNames, clusterName)
+	}
+	sort.Strings(clusterNames)
+	items := make([]SecretDescription, 0)
+	for _, clusterName := range clusterNames {
+		cluster := cfg.Clusters[clusterName]
+		namespaceNames := make([]string, 0, len(cluster.Namespaces))
+		for namespaceName := range cluster.Namespaces {
+			namespaceNames = append(namespaceNames, namespaceName)
+		}
+		sort.Strings(namespaceNames)
+		for _, namespaceName := range namespaceNames {
+			namespace := cluster.Namespaces[namespaceName]
+			if desc := describeManagedSecret(clusterName, namespaceName, "current", namespace.DiscoverySecretCurrent); desc != nil {
+				items = append(items, *desc)
+			}
+			if desc := describeManagedSecret(clusterName, namespaceName, "previous", namespace.DiscoverySecretPrevious); desc != nil {
+				items = append(items, *desc)
+			}
+		}
+	}
+	return items, nil
+}
+
+func (w *Workspace) DescribeSecret(configPath, resource string) (SecretScopeDescription, error) {
+	secretType, clusterName, namespaceName, err := ParseSecretRef(resource)
+	if err != nil {
+		return SecretScopeDescription{}, err
+	}
+	cfg, err := w.LoadConfigOrError(configPath)
+	if err != nil {
+		return SecretScopeDescription{}, err
+	}
+	cluster, ok := cfg.Clusters[clusterName]
+	if !ok {
+		return SecretScopeDescription{}, fmt.Errorf("cluster %q not found", clusterName)
+	}
+	namespace, ok := cluster.Namespaces[namespaceName]
+	if !ok {
+		return SecretScopeDescription{}, fmt.Errorf("namespace %q not found in cluster %q", namespaceName, clusterName)
+	}
+	return SecretScopeDescription{
+		Type:      secretType,
+		Cluster:   clusterName,
+		Namespace: namespaceName,
+		Current:   describeManagedSecret(clusterName, namespaceName, "current", namespace.DiscoverySecretCurrent),
+		Previous:  describeManagedSecret(clusterName, namespaceName, "previous", namespace.DiscoverySecretPrevious),
+	}, nil
+}
+
 func (w *Workspace) DescribeNamespace(configPath, name string) (NamespaceDescription, error) {
 	cfg, err := w.LoadConfigOrError(configPath)
 	if err != nil {
@@ -205,33 +277,55 @@ func (w *Workspace) DescribeNamespace(configPath, name string) (NamespaceDescrip
 		return NamespaceDescription{}, err
 	}
 	policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
-	currentSecret, err := describeManagedSecret(namespace.DiscoverySecretCurrent)
-	if err != nil {
-		return NamespaceDescription{}, err
-	}
-	previousSecret, err := describeManagedSecret(namespace.DiscoverySecretPrevious)
-	if err != nil {
-		return NamespaceDescription{}, err
-	}
+	currentSecret := describeManagedSecret(cfg.CurrentCluster, name, "current", namespace.DiscoverySecretCurrent)
+	previousSecret := describeManagedSecret(cfg.CurrentCluster, name, "previous", namespace.DiscoverySecretPrevious)
 	return NamespaceDescription{Name: name, Cluster: cfg.CurrentCluster, CurrentCluster: true, CurrentNamespace: name == cfg.CurrentNamespace, CurrentOverlay: cfg.CurrentOverlay, Discovery: policy.Discovery, ConnectPolicy: policy.ConnectPolicy, PublicDefault: policy.PublicDefault, DiscoverySecretCurrent: currentSecret, DiscoverySecretPrevious: previousSecret}, nil
 }
 
-func describeManagedSecret(ref *cfgpkg.ManagedSecretRef) (*SecretDescription, error) {
+func describeManagedSecret(clusterName, namespaceName, status string, ref *cfgpkg.ManagedSecretRef) *SecretDescription {
 	if ref == nil {
-		return nil, nil
+		return nil
 	}
-	fingerprint, err := cfgpkg.NamespaceDiscoverySecretFingerprint(ref)
-	if err != nil {
-		return nil, err
+	desc := &SecretDescription{Type: ref.Type, Cluster: clusterName, Namespace: namespaceName, Status: status, KeyID: ref.KeyID, File: ref.File, FileStatus: "missing", PermissionState: "-", Diagnostic: "file not found"}
+	if status == "previous" && !ref.ExpiresAt.IsZero() && time.Now().UTC().After(ref.ExpiresAt.UTC()) {
+		desc.Status = "expired"
 	}
-	desc := &SecretDescription{Type: ref.Type, KeyID: ref.KeyID, File: ref.File, Fingerprint: fingerprint}
 	if !ref.CreatedAt.IsZero() {
 		desc.CreatedAt = ref.CreatedAt.UTC().Format(time.RFC3339)
 	}
 	if !ref.ExpiresAt.IsZero() {
 		desc.ExpiresAt = ref.ExpiresAt.UTC().Format(time.RFC3339)
 	}
-	return desc, nil
+	info, err := os.Stat(ref.File)
+	if err != nil {
+		desc.Diagnostic = err.Error()
+		if os.IsNotExist(err) {
+			desc.FileStatus = "missing"
+		}
+		return desc
+	}
+	perm := info.Mode().Perm()
+	desc.PermissionState = fmt.Sprintf("%04o", perm)
+	if perm == 0o600 {
+		desc.PermissionState = "0600"
+	} else {
+		desc.PermissionState = fmt.Sprintf("%04o (expected 0600)", perm)
+	}
+	secret, err := cfgpkg.ReadNamespaceDiscoverySecretFile(ref.File)
+	if err != nil {
+		desc.FileStatus = "invalid"
+		desc.Diagnostic = err.Error()
+		return desc
+	}
+	desc.Fingerprint = cfgpkg.SecretFingerprint(secret)
+	if perm == 0o600 {
+		desc.FileStatus = "ok"
+		desc.Diagnostic = ""
+	} else {
+		desc.FileStatus = "permissions"
+		desc.Diagnostic = fmt.Sprintf("expected permissions 0600, got %04o", perm)
+	}
+	return desc
 }
 
 func (w *Workspace) Use(configPath string, ref Ref) (cfgpkg.Config, error) {

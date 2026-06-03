@@ -17,6 +17,8 @@ type clusterView = workspace.ClusterView
 
 type namespaceView = workspace.NamespaceView
 
+type secretView = workspace.SecretDescription
+
 func printOverlayViews(items []overlayView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tCURRENT\tRELAYS\tBOOTSTRAP_PEERS\tSWARM_KEY_FILE")
@@ -76,6 +78,31 @@ func printNamespaceViews(items []namespaceView) {
 			current = "*"
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\n", item.Name, current, item.Cluster)
+	}
+	_ = w.Flush()
+}
+
+func printSecretViews(items []secretView) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "TYPE\tSCOPE\tSTATUS\tKEY_ID\tEXPIRES\tFINGERPRINT\tFILE_STATUS")
+	for _, item := range items {
+		scope := item.Cluster + "/" + item.Namespace
+		if scope == "/" {
+			scope = "-"
+		}
+		expires := item.ExpiresAt
+		if expires == "" {
+			expires = "-"
+		}
+		fingerprint := item.Fingerprint
+		if fingerprint == "" {
+			fingerprint = "-"
+		}
+		fileStatus := item.FileStatus
+		if fileStatus == "" {
+			fileStatus = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Type, scope, item.Status, item.KeyID, expires, fingerprint, fileStatus)
 	}
 	_ = w.Flush()
 }
@@ -151,6 +178,15 @@ func printSecretDescription(label string, desc *workspace.SecretDescription) {
 		return
 	}
 	fmt.Printf("  Type: %s\n", desc.Type)
+	if desc.Cluster != "" {
+		fmt.Printf("  Cluster: %s\n", desc.Cluster)
+	}
+	if desc.Namespace != "" {
+		fmt.Printf("  Namespace: %s\n", desc.Namespace)
+	}
+	if desc.Status != "" {
+		fmt.Printf("  Status: %s\n", desc.Status)
+	}
 	fmt.Printf("  Key ID: %s\n", desc.KeyID)
 	fmt.Printf("  File: %s\n", desc.File)
 	if desc.CreatedAt != "" {
@@ -159,7 +195,22 @@ func printSecretDescription(label string, desc *workspace.SecretDescription) {
 	if desc.ExpiresAt != "" {
 		fmt.Printf("  Expires at: %s\n", desc.ExpiresAt)
 	}
-	fmt.Printf("  Fingerprint: %s\n", desc.Fingerprint)
+	if desc.Fingerprint != "" {
+		fmt.Printf("  Fingerprint: %s\n", desc.Fingerprint)
+	}
+	fmt.Printf("  File status: %s\n", desc.FileStatus)
+	fmt.Printf("  Permissions: %s\n", desc.PermissionState)
+	if desc.Diagnostic != "" {
+		fmt.Printf("  Diagnostic: %s\n", desc.Diagnostic)
+	}
+}
+
+func printSecretScopeDescription(desc workspace.SecretScopeDescription) {
+	fmt.Printf("Type: %s\n", desc.Type)
+	fmt.Printf("Cluster: %s\n", desc.Cluster)
+	fmt.Printf("Namespace: %s\n", desc.Namespace)
+	printSecretDescription("Current discovery secret", desc.Current)
+	printSecretDescription("Previous discovery secret", desc.Previous)
 }
 
 func localUseCmd(args []string) error {
@@ -226,6 +277,19 @@ func localGetResource(resource string, configPath string, jsonOut bool) error {
 		}
 		printNamespaceViews(result.Items)
 		return nil
+	case "secrets":
+		items, err := ws.ListSecrets(configPath)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return printJSON(struct {
+				Count int          `json:"count"`
+				Items []secretView `json:"items"`
+			}{Count: len(items), Items: items})
+		}
+		printSecretViews(items)
+		return nil
 	default:
 		return fmt.Errorf("unsupported local resource list %q", resource)
 	}
@@ -258,6 +322,13 @@ func localDescribeResource(resource string, configPath string) error {
 			return err
 		}
 		printNamespaceDescription(desc)
+		return nil
+	case "secret":
+		desc, err := ws.DescribeSecret(configPath, resource)
+		if err != nil {
+			return err
+		}
+		printSecretScopeDescription(desc)
 		return nil
 	default:
 		return fmt.Errorf("unsupported describe resource %q", resource)

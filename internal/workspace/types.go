@@ -59,12 +59,26 @@ type ClusterNamespaceDescription struct {
 }
 
 type SecretDescription struct {
-	Type        string
-	KeyID       string
-	File        string
-	CreatedAt   string
-	ExpiresAt   string
-	Fingerprint string
+	Type            string `json:"type"`
+	Cluster         string `json:"cluster,omitempty"`
+	Namespace       string `json:"namespace,omitempty"`
+	Status          string `json:"status,omitempty"`
+	KeyID           string `json:"key_id,omitempty"`
+	File            string `json:"file,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
+	Fingerprint     string `json:"fingerprint,omitempty"`
+	FileStatus      string `json:"file_status,omitempty"`
+	PermissionState string `json:"permission_state,omitempty"`
+	Diagnostic      string `json:"diagnostic,omitempty"`
+}
+
+type SecretScopeDescription struct {
+	Type      string             `json:"type"`
+	Cluster   string             `json:"cluster"`
+	Namespace string             `json:"namespace"`
+	Current   *SecretDescription `json:"current,omitempty"`
+	Previous  *SecretDescription `json:"previous,omitempty"`
 }
 
 type NamespaceDescription struct {

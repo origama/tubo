@@ -1142,6 +1142,24 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 		}
 	}
 
+	out, err = capture(func() error { return run([]string{"get", "secrets", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secrets struct {
+		Count int          `json:"count"`
+		Items []secretView `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &secrets); err != nil {
+		t.Fatalf("secret json parse: %v\nout=%s", err, out)
+	}
+	if secrets.Count != 1 || len(secrets.Items) != 1 || secrets.Items[0].Type != cfgpkg.SecretTypeNamespaceDiscovery || secrets.Items[0].Fingerprint == "" || secrets.Items[0].FileStatus != "ok" {
+		t.Fatalf("unexpected secrets payload: %#v", secrets)
+	}
+	if strings.Contains(out, "PRIVATE KEY") || strings.Contains(out, "tubo-invite-v1.") {
+		t.Fatalf("get secrets json leaked sensitive material: %s", out)
+	}
+
 	out, err = capture(func() error { return run([]string{"describe", "overlay/public"}) })
 	if err != nil {
 		t.Fatal(err)
@@ -1169,6 +1187,16 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public", "Discovery: enabled", "Connect policy: namespace_members", "Current discovery secret:", "Fingerprint:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe namespace output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error { return run([]string{"describe", "secret/namespace-discovery/home/default"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Type: namespace-discovery", "Cluster: home", "Namespace: default", "Current discovery secret:", "Status: current", "File status: ok", "Fingerprint:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe secret output missing %q: %s", want, out)
 		}
 	}
 
@@ -1240,6 +1268,67 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	for _, want := range []string{"prod", "*", "ops"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("get namespaces after use output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestLocalSecretCommandsReportPreviousAndMissingFiles(t *testing.T) {
+	configPath := writeLocalResourceConfig(t)
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousPath := filepath.Join(t.TempDir(), "previous.secret")
+	previousSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, previousSecret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	ns.DiscoverySecretCurrent.File = filepath.Join(t.TempDir(), "missing.secret")
+	ns.DiscoverySecretPrevious = &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)}
+	cluster := cfg.Clusters["home"]
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := capture(func() error { return run([]string{"get", "secrets", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"current", "previous", "missing", "ok"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("get secrets output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error {
+		return run([]string{"describe", "secret/namespace-discovery/home/default", "--config", configPath})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Current discovery secret:", "File status: missing", "Previous discovery secret:", "Status: previous", "File status: ok", "Diagnostic:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe secret output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestLocalSecretCommandsRejectUnsupportedPaths(t *testing.T) {
+	configPath := writeLocalResourceConfig(t)
+	for _, args := range [][]string{
+		{"describe", "secret/foo/home/default", "--config", configPath},
+		{"describe", "secret/namespace-discovery", "--config", configPath},
+		{"describe", "secret/namespace-discovery/home", "--config", configPath},
+		{"describe", "secret/namespace-discovery/home/default/extra", "--config", configPath},
+	} {
+		if _, err := capture(func() error { return run(args) }); err == nil || !strings.Contains(err.Error(), "unsupported secret resource") {
+			t.Fatalf("expected unsupported secret resource error for %v, got %v", args, err)
 		}
 	}
 }
