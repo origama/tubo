@@ -1427,7 +1427,7 @@ func tamperTokenPayload(t *testing.T, token, prefix string, oldBytes, newBytes [
 	return prefix + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + parts[1]
 }
 
-func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNamespace string) {
+func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantNamespace string) {
 	t.Helper()
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
@@ -1450,7 +1450,7 @@ func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNa
 		t.Fatalf("membership grant missing: %#v", cluster)
 	}
 	grant := cluster.MembershipGrant
-	if grant.InviteToken != wantToken || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
+	if grant.InviteToken != "" || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
 		t.Fatalf("unexpected membership grant: %#v", grant)
 	}
 	if !stringSliceEqualSet(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
@@ -1512,14 +1512,25 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	if strings.Contains(out, payload.Discovery.Secret) || strings.Contains(out, payload.Discovery.KeyID) {
 		t.Fatalf("join output leaked discovery entry metadata/material: %s", out)
 	}
-	assertJoinedClusterInviteConfig(t, filepath.Join(joinHome, "tubo", "config.yaml"), token, "observability")
+	joinedConfigPath := filepath.Join(joinHome, "tubo", "config.yaml")
+	assertJoinedClusterInviteConfig(t, joinedConfigPath, "observability")
+	joinedConfigRaw, err := os.ReadFile(joinedConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(joinedConfigRaw, []byte(token)) {
+		t.Fatal("joined config persisted full cluster invite token")
+	}
+	if bytes.Contains(joinedConfigRaw, []byte(payload.Discovery.Secret)) {
+		t.Fatal("joined config persisted raw discovery entry value")
+	}
 
 	joinPositional := filepath.Join(t.TempDir(), "join-positional")
 	t.Setenv("XDG_CONFIG_HOME", joinPositional)
 	if _, err := capture(func() error { return run([]string{"join", token}) }); err != nil {
 		t.Fatal(err)
 	}
-	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), token, "observability")
+	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), "observability")
 }
 
 func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
@@ -1560,15 +1571,29 @@ func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
 		t.Fatalf("expected clean stderr for cluster join json, got: %q", stderr)
 	}
 	var joinResult struct {
-		ConfigPath  string `json:"config_path"`
-		ClusterName string `json:"cluster_name"`
-		Namespace   string `json:"namespace"`
+		ConfigPath  string                        `json:"config_path"`
+		ClusterName string                        `json:"cluster_name"`
+		Namespace   string                        `json:"namespace"`
+		Grant       cfgpkg.ClusterMembershipGrant `json:"grant"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &joinResult); err != nil {
 		t.Fatalf("cluster join stdout is not valid json: %v\n%s", err, stdout)
 	}
 	if joinResult.ClusterName != "home" || joinResult.ConfigPath == "" {
 		t.Fatalf("unexpected cluster join json: %#v", joinResult)
+	}
+	if joinResult.Grant.InviteToken != "" {
+		t.Fatalf("join json leaked invite token: %#v", joinResult.Grant)
+	}
+	if strings.Contains(stdout, shareResult.Token) {
+		t.Fatal("join json leaked full cluster invite token")
+	}
+	payload, err := parseAndVerifyClusterInviteToken(shareResult.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Discovery != nil && strings.Contains(stdout, payload.Discovery.Secret) {
+		t.Fatal("join json leaked raw discovery entry value")
 	}
 }
 
