@@ -1375,6 +1375,56 @@ func TestLocalRotateSecretCommand(t *testing.T) {
 	}
 }
 
+func TestLocalSecretCommandsCleanupExpiredPrevious(t *testing.T) {
+	configPath := writeLocalResourceConfig(t)
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousPath := filepath.Join(t.TempDir(), "expired-previous.secret")
+	previousSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, previousSecret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	ns.DiscoverySecretPrevious = &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Now().Add(-time.Minute).UTC()}
+	cluster := cfg.Clusters["home"]
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return run([]string{"get", "secrets", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "nsdk_previous") || strings.Contains(out, "expired") {
+		t.Fatalf("expected expired previous secret to be cleaned up from get secrets output, got: %s", out)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Clusters["home"].Namespaces["default"].DiscoverySecretPrevious != nil {
+		t.Fatalf("expected expired previous secret metadata to be cleared, got %#v", cfg.Clusters["home"].Namespaces["default"].DiscoverySecretPrevious)
+	}
+	if _, err := os.Stat(previousPath); !os.IsNotExist(err) {
+		t.Fatalf("expected expired previous secret file to be removed, got err=%v", err)
+	}
+	out, err = capture(func() error {
+		return run([]string{"describe", "secret/namespace-discovery/home/default", "--config", configPath})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Previous discovery secret:\n  - none") {
+		t.Fatalf("expected describe secret to show cleaned previous state, got: %s", out)
+	}
+}
+
 func TestLocalRotateSecretCommandRejectsMissingCurrent(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {

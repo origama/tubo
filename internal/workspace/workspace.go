@@ -204,6 +204,9 @@ func (w *Workspace) ListSecrets(configPath string) ([]SecretDescription, error) 
 	if err != nil {
 		return nil, err
 	}
+	if err := w.cleanupExpiredNamespaceDiscoverySecrets(configPath, &cfg); err != nil {
+		return nil, err
+	}
 	clusterNames := make([]string, 0, len(cfg.Clusters))
 	for clusterName := range cfg.Clusters {
 		clusterNames = append(clusterNames, clusterName)
@@ -239,6 +242,9 @@ func (w *Workspace) DescribeSecret(configPath, resource string) (SecretScopeDesc
 	if err != nil {
 		return SecretScopeDescription{}, err
 	}
+	if err := w.cleanupExpiredNamespaceDiscoverySecrets(configPath, &cfg); err != nil {
+		return SecretScopeDescription{}, err
+	}
 	cluster, ok := cfg.Clusters[clusterName]
 	if !ok {
 		return SecretScopeDescription{}, fmt.Errorf("cluster %q not found", clusterName)
@@ -259,6 +265,9 @@ func (w *Workspace) DescribeSecret(configPath, resource string) (SecretScopeDesc
 func (w *Workspace) DescribeNamespace(configPath, name string) (NamespaceDescription, error) {
 	cfg, err := w.LoadConfigOrError(configPath)
 	if err != nil {
+		return NamespaceDescription{}, err
+	}
+	if err := w.cleanupExpiredNamespaceDiscoverySecrets(configPath, &cfg); err != nil {
 		return NamespaceDescription{}, err
 	}
 	if cfg.CurrentCluster == "" {
