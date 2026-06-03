@@ -2,6 +2,7 @@ package discovery_test
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,6 +64,7 @@ func TestNamespaceTopicV3IsOpaqueAndStable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	legacyTopic := discovery.NamespaceTopic(ctxA.ClusterID, ctxA.NamespaceID)
 	if topicA != topicB {
 		t.Fatalf("topic not stable: %q != %q", topicA, topicB)
 	}
@@ -72,8 +74,11 @@ func TestNamespaceTopicV3IsOpaqueAndStable(t *testing.T) {
 	if topicA == topicSecretChanged {
 		t.Fatalf("topic should change when secret changes: %q", topicA)
 	}
-	if !bytes.HasPrefix([]byte(topicA), []byte("/discovery/v3/")) {
+	if !strings.HasPrefix(topicA, "/discovery/v3/") {
 		t.Fatalf("unexpected topic prefix: %q", topicA)
+	}
+	if topicA == legacyTopic {
+		t.Fatalf("v3 topic should differ from legacy topic: %q", topicA)
 	}
 	for _, leaked := range []string{"cluster-123", "tenant-a", "nsdk_20260602_abcd1234"} {
 		if bytes.Contains([]byte(topicA), []byte(leaked)) {
@@ -126,7 +131,19 @@ func TestAnnouncementV3SignVerifyAndDecrypt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, leaked := range [][]byte{[]byte("cluster-123"), []byte("tenant-a"), []byte("my-api"), []byte("/ip4/127.0.0.1/tcp/8080"), []byte("12D3KooWGrant")} {
+	for _, leaked := range [][]byte{
+		[]byte("cluster-123"),
+		[]byte("tenant-a"),
+		[]byte("my-api"),
+		[]byte("service-123"),
+		[]byte("service-pub-123"),
+		[]byte("namespace_members"),
+		[]byte("membership-capability-bytes"),
+		[]byte("publish-lease-bytes"),
+		[]byte("service-claim-bytes"),
+		[]byte("/ip4/127.0.0.1/tcp/8080"),
+		[]byte("12D3KooWGrant"),
+	} {
 		if bytes.Contains(raw, leaked) {
 			t.Fatalf("cleartext data leaked in public envelope: %q in %s", leaked, raw)
 		}
@@ -148,6 +165,24 @@ func TestAnnouncementV3SignVerifyAndDecrypt(t *testing.T) {
 	ctxWrong := testV3Context(0x22)
 	if _, err := got.Payload(ctxWrong); err == nil {
 		t.Fatal("expected mismatched secret context to fail")
+	}
+
+	ctxWrongCluster := ctx
+	ctxWrongCluster.ClusterID = "cluster-other"
+	if _, err := got.Payload(ctxWrongCluster); err == nil {
+		t.Fatal("expected wrong cluster context to fail opening payload")
+	}
+
+	ctxWrongNamespace := ctx
+	ctxWrongNamespace.NamespaceID = "tenant-other"
+	if _, err := got.Payload(ctxWrongNamespace); err == nil {
+		t.Fatal("expected wrong namespace context to fail opening payload")
+	}
+
+	ctxWrongKeyID := ctx
+	ctxWrongKeyID.KeyID = "nsdk_20260602_otherkey"
+	if _, err := got.Payload(ctxWrongKeyID); err == nil || !strings.Contains(err.Error(), "key id mismatch") {
+		t.Fatalf("expected key id mismatch, got %v", err)
 	}
 }
 
