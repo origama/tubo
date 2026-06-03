@@ -158,6 +158,8 @@ func run(args []string) error {
 		return grantsCmd(args[1:])
 	case "create":
 		return localCreateCmd(args[1:])
+	case "rotate":
+		return localRotateCmd(args[1:])
 	case "logs":
 		return logsCmd(args[1:])
 	case "stop":
@@ -395,7 +397,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|create|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|create|rotate|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -413,6 +415,7 @@ Usage:
   tubo share service/myapp --expires 1h
   tubo share revoke <share-invite>
   tubo revoke <invite|session|service-access|publish> <id-or-service>
+  tubo rotate secret/namespace-discovery/home/default --grace 24h
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [overlay/public|tubo-public]
@@ -522,6 +525,7 @@ Path selection:
   tubo get overlays [--json]
   tubo get clusters [--json]
   tubo get namespaces [--json]
+  tubo get secrets [--json]
   tubo get processes [--json]
 
 Inspect local processes, local config resources, or services announced in the swarm.`)
@@ -532,6 +536,7 @@ Inspect local processes, local config resources, or services announced in the sw
   tubo describe overlay/<name>
   tubo describe cluster/<name>
   tubo describe namespace/<name>
+  tubo describe secret/namespace-discovery/<cluster>/<namespace>
 
 Show local config metadata or discovered resource details.`)
 	case "relay":
@@ -589,6 +594,11 @@ Record issuer-side revocation state for invite redemption, connect refresh, serv
   tubo create service/<name>
 
 Create local clusters, namespaces, and namespace-scoped service identities in the current config.`)
+	case "rotate":
+		fmt.Println(`Usage:
+  tubo rotate secret/namespace-discovery/<cluster>/<namespace> --grace 24h [--json]
+
+Rotate the managed namespace discovery secret using the current/previous model.`)
 	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
@@ -1613,7 +1623,7 @@ func getCmd(args []string) error {
 		}
 		printProcessesTable(items)
 		return nil
-	case resource == "overlays" || resource == "clusters" || resource == "namespaces":
+	case resource == "overlays" || resource == "clusters" || resource == "namespaces" || resource == "secrets":
 		return localGetResource(resource, *configPath, *jsonOut)
 	}
 	cfg, err := catalog.LoadDiscoveryConfig(*configPath)
@@ -1711,7 +1721,7 @@ func describeCmd(args []string) error {
 		return errors.New("usage: tubo describe <service/name|process/name|overlay/name|cluster/name|namespace/name> [flags]")
 	}
 	resource := args[0]
-	if strings.HasPrefix(resource, "overlay/") || strings.HasPrefix(resource, "cluster/") || strings.HasPrefix(resource, "namespace/") {
+	if strings.HasPrefix(resource, "overlay/") || strings.HasPrefix(resource, "cluster/") || strings.HasPrefix(resource, "namespace/") || strings.HasPrefix(resource, "secret/") {
 		fs := flag.NewFlagSet("describe", flag.ContinueOnError)
 		configPath := fs.String("config", defaultTuboConfigPath(), "")
 		if err := fs.Parse(args[1:]); err != nil {

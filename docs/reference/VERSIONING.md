@@ -55,7 +55,7 @@ Compatibility is defined by the **protocol version**, not only by the product ve
 - all nodes with the same `protocol major` must be able to connect
 - `PATCH` product releases must remain protocol-compatible
 - `MINOR` product releases should remain protocol-compatible unless explicitly documented otherwise
-- if one side supports newer optional protocol features, it must fall back to the common supported behavior
+- if one side supports newer optional protocol features, it must fall back to the common supported behavior when that fallback is intentionally supported
 
 ### Not guaranteed
 
@@ -63,6 +63,12 @@ Compatibility is defined by the **protocol version**, not only by the product ve
 - use of a new feature that requires a capability not supported by the remote node
 
 ### Expected operator outcome
+
+`v0.8.0` note:
+- Discovery V3 for discovery-enabled namespaces intentionally replaces the earlier Discovery V2 namespace runtime;
+- there is no Discovery V2 fallback for collaborative namespace runtime in `v0.8.0`;
+- operators should upgrade relay/service/client binaries together when enabling secret-backed collaborative discovery.
+
 
 Mixed deployments like these should keep working:
 

@@ -56,6 +56,7 @@ join      = configure this machine for an existing swarm
 get       = list or fetch resources
 create    = create local config resources
 share     = create local membership invites for a cluster
+rotate    = rotate managed namespace discovery secrets
 grants    = manage Publish Grant requests
 describe  = show human-readable details
 inspect   = show technical/raw details
@@ -77,7 +78,9 @@ tubo gateway
 tubo attach http://127.0.0.1:1234 --name lmstudio
 tubo connect lmstudio --local 127.0.0.1:51234
 tubo get services
+tubo get secrets
 tubo describe service/lmstudio
+tubo describe secret/namespace-discovery/home/default
 tubo inspect service/lmstudio --json
 tubo watch services
 ```
@@ -469,7 +472,14 @@ clusters:
     authority_public_key: ""
     capabilities: []
     namespaces:
-      default: {}
+      default:
+        discovery: enabled
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: nsdk_20260602T100000Z_abcd1234
+          file: ~/.config/tubo/clusters/home/namespaces/default/discovery-current.secret
+          created_at: "2026-06-02T10:00:00Z"
+        discovery_secret_previous: null
 
 network:
   private_key_file: /etc/p2p/swarm.key
@@ -479,7 +489,7 @@ network:
     - /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 ```
 
-`current_overlay` materializes overlay fields into `network:` when the file uses the new layout; the writers for `join` and signed bundles write both formats for compatibility. `tubo join overlay/public` is the explicit public join form; `tubo join overlay/manual --relay ... --swarm-key ...` is the explicit manual/legacy join form. When the current config carries a cluster with identity metadata (`cluster_id` + `authority_public_key` + membership grant/capability), runtime discovery uses an opaque V2 topic derived from `current_cluster/current_namespace` and validates topic/scope, membership capability, and replay nonce; configs without these metadata no longer support runtime discovery.
+`current_overlay` materializes overlay fields into `network:` when the file uses the new layout; the writers for `join` and signed bundles write both formats for compatibility. `tubo join overlay/public` is the explicit public join form; `tubo join overlay/manual --relay ... --swarm-key ...` is the explicit manual/legacy join form. When the current config carries a collaborative cluster with identity metadata plus a usable namespace discovery secret, runtime discovery uses an opaque Discovery V3 topic derived from the namespace discovery entry and validates scope, membership capability, service identity, publish authorization, and replay state. Configs without these metadata do not support collaborative ambient discovery.
 
 ## Local resource CLI (Phase 2a)
 
@@ -489,6 +499,7 @@ With the new local model you can inspect, create, invite, and select overlay, cl
 tubo get overlays
 tubo get clusters
 tubo get namespaces
+tubo get secrets
 
 tubo create cluster/home
 tubo create namespace/observability
@@ -502,6 +513,9 @@ tubo join cluster/home --token <cluster-invite>
 tubo describe overlay/public
 tubo describe cluster/home
 tubo describe namespace/default
+tubo describe secret/namespace-discovery/home/default
+
+tubo rotate secret/namespace-discovery/home/default --grace 24h
 
 tubo use overlay/public
 tubo use cluster/home
@@ -512,16 +526,19 @@ Notes:
 
 - `get overlays` and `get clusters` read only the local config.
 - `get namespaces` uses the current `current_cluster`.
-- `create cluster/...` generates a local authority keypair, writes a `cluster_id`, sets `authority_public_key`, creates the `default` namespace, saves a local membership capability without printing secrets, and initializes the namespace policy as `discovery: enabled` + `connect_policy: namespace_members`. In new collaborative configs, the creator capability also includes `connect`, so `connect <service>` by name works immediately in the same namespace.
-- `create namespace/...` requires a valid `current_cluster`, adds the namespace to the current cluster, makes the new `current_namespace` explicit, materializes a signed membership capability for that namespace, and initializes the local policy as `discovery: enabled` + `connect_policy: namespace_members`. Here too the local creator capability includes `connect`; older namespaces are not widened automatically and `tubo doctor` now warns when the current discovery-enabled context still lacks `connect`.
-- `create service/...` requires `current_cluster` and `current_namespace`, materializes a stable `service_owner_key_file` for the service identity, derives `service_id` from that key, signs a local `ServiceClaim`, and also saves a `service_publish_lease_file` when the node owns the local authority; Discovery V2 uses the lease as the primary authorization.
+- `create cluster/...` generates a local authority keypair, writes a `cluster_id`, sets `authority_public_key`, creates the `default` namespace, generates a random 32-byte `namespace-discovery` secret file with mode `0600`, saves a local membership capability without printing secret bytes, and initializes the namespace policy as `discovery: enabled` + `connect_policy: namespace_members`. In new collaborative configs, the creator capability also includes `connect`, so `connect <service>` by name works immediately in the same namespace.
+- `create namespace/...` requires a valid `current_cluster`, adds the namespace to the current cluster, makes the new `current_namespace` explicit, materializes a signed membership capability for that namespace, generates a random 32-byte `namespace-discovery` secret file with mode `0600`, and initializes the local policy as `discovery: enabled` + `connect_policy: namespace_members`. Here too the local creator capability includes `connect`; older namespaces are not widened automatically and `tubo doctor` now warns when the current discovery-enabled context still lacks `connect`.
+- `create service/...` requires `current_cluster` and `current_namespace`, materializes a stable `service_owner_key_file` for the service identity, derives `service_id` from that key, signs a local `ServiceClaim`, and also saves a `service_publish_lease_file` when the node owns the local authority; Discovery V3 uses the lease as the primary publication authorization.
 - `attach` in cluster/namespace mode automatically materializes a stable service identity if missing: `service_id` is derived from the service owner key stored in the local config (`0600`), while `service_seed` is generated once and stored in the local config (`0600`).
 - before starting the runtime, `attach` resolves publish authorization: it uses an existing valid `PublishLease`, signs it locally if the node owns `authority_private_key_file`, or submits/polls a Publish Grant request if the service has `grant_service_peer`; an expired lease is treated as absent and therefore goes through the normal renewal/request path, and an expired local `ServiceClaim` is also treated as stale/renewable state rather than a fatal error. The `ServiceClaim` fallback remains local compatibility only. When available, it also prints a copyable `service_share_token` connect-only token for Bob (`tubo connect --token ...`). If publish authorization is valid but the token cannot yet be generated (for example because the remote endpoint is not ready), `attach` suggests rerunning `tubo share service/...`; the old `tubo grants request ... --poll` hint remains reserved for cases where the grant request is still actually pending.
 - in the signed bundle public default (`tubo-public` / `home/default`), `attach` runs in **unlisted** mode: the service remains reachable via invite token and libp2p stream, but it does not start ambient publication/discovery and the output makes `visibility: unlisted` + `access: invite token required` explicit. In this scope, the token printed by `attach` must be self-contained: if there is still no relay-aware/remote-dialable endpoint, `attach` fails before printing an unusable invite.
-- in collaborative namespaces with discovery enabled, `attach` also registers a libp2p `/tubo/grants/1.0` endpoint on the service’s peer and publishes a service-scoped `grant_service` in Discovery V2 with reachable peers (relay-aware when available, otherwise only actually dialable direct ones). `connect <service>` now uses this endpoint to obtain discovery-driven leases: `namespace_members` accepts both local membership capabilities with `connect` and imported cluster invites with `connect` permission; revoked invites can no longer obtain new leases.
-- `share cluster/...` uses the local authority key to emit a signed invite, includes namespace/expiry/grant data, and prints a copyable `tubo join ...` command. `--role member` grants `subscribe,list,publish,connect`, `--role viewer` grants only `subscribe,list` (you can see the service but not open connect leases), while `--role grant-requester --grant-peer ...` emits an invite without direct publish rights but with metadata to request a Publish Grant.
+- in collaborative namespaces with discovery enabled, `attach` also registers a libp2p `/tubo/grants/1.0` endpoint on the service’s peer and publishes a service-scoped `grant_service` in Discovery V3 with reachable peers (relay-aware when available, otherwise only actually dialable direct ones). `connect <service>` now uses this endpoint to obtain discovery-driven leases: `namespace_members` accepts both local membership capabilities with `connect` and imported cluster invites with `connect` permission; revoked invites can no longer obtain new leases.
+- `share cluster/...` uses the local authority key to emit a signed invite, includes namespace/expiry/grant data plus the current `namespace-discovery` entry for the selected namespace, and prints a copyable `tubo join ...` command. The secret bytes remain inside the signed invite token, not in standalone CLI fields. `--role member` grants `subscribe,list,publish,connect`, `--role viewer` grants only `subscribe,list` (you can see the service but not open connect leases), while `--role grant-requester --grant-peer ...` emits an invite without direct publish rights but with metadata to request a Publish Grant. If the namespace is missing a usable current discovery entry, `share cluster/...` now fails clearly instead of minting an unusable invite.
 - `share service/...` resolves the current or explicit cluster/namespace (`--cluster`/`--namespace`) and prints a copyable `tubo connect --token ...` command; if the local authority key is available it uses the local authority path, otherwise it can delegate minting to the cluster grant service when the local service owner holds a valid `PublishLease` with `share.mint` and a `grant_service_peer`. If the local `PublishLease` is missing or expired, `share service/...` does not require a new service name: it reuses the same local identity / same `service_id`, tries to renew or re-request publish authorization for that scope first, then continues with delegated minting if the renewal is approved; leases with invalid signature/scope/service/peer are still fatal errors and do not enter the renewal path. If you pass `service/<service_id>`, it uses exact lookup instead of the display name. The token includes cluster/namespace/service/authority metadata, including `service_kind`, but does not authorize generic listing and the new tokens no longer include a reusable embedded bearer `ConnectCapability`. When available it can also include a self-contained `service_endpoint` with relay-aware `/p2p-circuit` addresses, so invite-only flows do not depend on ambient listing; in the public default this endpoint is no longer optional, so `share service/...` fails clearly if it can only produce local/non-dialable addresses. If it also includes `grant_service` metadata, `connect --token` redeems it into a short-lived `ConnectAccessLease` and a `ConnectRefreshLease` bound to the bridge’s local key. The bridge renews the access lease before expiry. Share invites are now one-time at the grant endpoint: `one-time` means one successful lease/session redemption, not one HTTP request on the tunnel, and a denied redemption no longer falls back to legacy bearer grants. The local `share-invite-registry.json` remains only a UX guard rail; the authoritative decision happens on the server that redeems the invite. `share revoke <share-invite>` marks the `jti` as revoked/used in the local config, while `tubo revoke invite|session|service-access|publish ...` updates the issuer-side revocation store used by `grants serve`.
-- `join cluster/... --token ...` and `join <cluster-invite>` verify the invite and store cluster metadata + grant in the local config without touching the runtime.
+- `join cluster/... --token ...` and `join <cluster-invite>` verify the invite, install the namespace discovery secret file locally with mode `0600`, and store only the safe config reference/metadata plus the membership grant in the local config without touching the runtime.
+- `get secrets` lists local namespace-discovery current/previous entries as metadata only. When a `previous` entry is already expired, the local secret-management view cleans up that expired metadata and removes the old local `discovery-previous.secret` file when safe.
+- `describe secret/namespace-discovery/<cluster>/<namespace>` shows metadata only for the current/previous entries in that scope, including missing-file diagnostics when relevant. It also reflects the same expired-previous cleanup/repair behavior.
+- `rotate secret/namespace-discovery/<cluster>/<namespace> --grace <duration>` moves the current entry to `previous`, sets an explicit grace expiry, and creates a fresh current entry. Publishers use only the new current entry; observers accept current plus non-expired previous entries.
 - `describe overlay/...`, `describe cluster/...`, and `describe namespace/...` show only local metadata and do not print secrets. `describe namespace/...` also includes the effective policy (`discovery`, `connect_policy`) of the current namespace; for the signed public bundle, `home/default` implicitly resolves to `discovery: disabled` + `connect_policy: invite_only` even when an older config did not yet have those fields explicitly. `describe service/...` also shows `Connect policy` and, when available, the protocol/peer of the `grant_service` published by the observed service.
 - `use` updates only the local config file; it does not start or stop runtime processes.
 - `--json` remains available for `get` and for the new local flows when useful.
@@ -545,7 +562,7 @@ tubo grants request service/myapi --poll
 tubo grants history
 ```
 
-The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and prints relay-aware `/p2p-circuit` addresses for signed invites; it does not publish itself in Discovery V2. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `grants history` now prints `SCOPE` and `SERVICE_ID`, sorts by `service_id`, and prefixes the output with the local store path so the source is explicit. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, revoked, or still-pending grants stop publication.
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and prints relay-aware `/p2p-circuit` addresses for signed invites; it is not itself a namespace discovery publisher. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `grants history` now prints `SCOPE` and `SERVICE_ID`, sorts by `service_id`, and prefixes the output with the local store path so the source is explicit. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, revoked, or still-pending grants stop publication.
 
 ## Multi-node setup
 

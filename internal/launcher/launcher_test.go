@@ -2,6 +2,8 @@ package launcher
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,6 +15,19 @@ import (
 )
 
 type stubRunner struct{ started bool }
+
+func testNamespaceDiscoveryRef(t *testing.T, clusterID, namespace string) *cfgpkg.ManagedSecretRef {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), clusterID+"-"+namespace+".secret")
+	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_test", File: path, CreatedAt: time.Now().UTC()}
+}
 
 func (s *stubRunner) Start(context.Context) error { s.started = true; return nil }
 
@@ -72,7 +87,7 @@ func TestRunServiceUsesAttachAuthorizationAndStartsRunner(t *testing.T) {
 	cfg.HeartbeatInterval = cfgpkg.Duration(2 * time.Second)
 	cfg.Service.Name = "svc"
 	cfg.Service.Target = "http://127.0.0.1:9000"
-	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-1", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, Namespaces: map[string]cfgpkg.Namespace{"default": {}}}
+	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-1", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: testNamespaceDiscoveryRef(t, "cluster-1", "default")}}}
 	deps := &stubDeps{authz: AttachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "svc-1", ServiceSeed: "seed-1"}, ServicePeerID: "12D3KooW...", MembershipCapabilityFile: "membership.cap", ServiceClaimFile: "claim.cap", ServicePublishLeaseFile: "lease.json"}}
 	if err := Run(context.Background(), deps, "service", "/tmp/config.yaml", cfg); err != nil {
 		t.Fatal(err)
@@ -90,7 +105,7 @@ func TestRunServiceUsesAttachAuthorizationAndStartsRunner(t *testing.T) {
 
 func TestRunServicePrefersAuthorizedServiceKind(t *testing.T) {
 	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "default"}
-	cfg.Clusters = map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-1", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, Namespaces: map[string]cfgpkg.Namespace{"default": {}}}}
+	cfg.Clusters = map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-1", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: testNamespaceDiscoveryRef(t, "cluster-1", "default")}}}}
 	cfg.Node.P2PListen = "/ip4/127.0.0.1/tcp/40123"
 	cfg.Service.Name = "svc"
 	cfg.Service.Kind = cfgpkg.ServiceKindHTTP
@@ -126,7 +141,7 @@ func TestRunServiceUsesUnlistedModeForPublicDefault(t *testing.T) {
 	if deps.serviceCfg.Visibility != "unlisted" {
 		t.Fatalf("visibility = %q", deps.serviceCfg.Visibility)
 	}
-	if deps.serviceCfg.DiscoveryMode != cfgpkg.DiscoveryModeNamespaceV2.String() || deps.serviceCfg.DiscoveryClusterID != "cluster-public-2026" || deps.serviceCfg.DiscoveryNamespaceID != "default" {
+	if deps.serviceCfg.DiscoveryMode != "" || deps.serviceCfg.DiscoveryTopic != "" || deps.serviceCfg.DiscoveryContext != nil {
 		t.Fatalf("unexpected discovery scope for unlisted mode: %#v", deps.serviceCfg)
 	}
 }

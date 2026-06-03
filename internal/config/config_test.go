@@ -1,8 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"os"
+	"path/filepath"
 	"reflect"
+	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -229,6 +233,14 @@ func TestEnvCSVAndMerge(t *testing.T) {
 }
 
 func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "discovery-current.secret")
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := Config{
 		CurrentCluster:   "home",
 		CurrentNamespace: "tenant-a",
@@ -237,15 +249,25 @@ func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T)
 				ClusterID:                "cluster-123",
 				AuthorityPublicKey:       "ssh-ed25519 AAAA",
 				MembershipCapabilityFile: "/tmp/cap.json",
+				Namespaces: map[string]Namespace{
+					"tenant-a": {Discovery: NamespaceDiscoveryEnabled, DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_test", File: secretPath, CreatedAt: time.Now().UTC()}},
+				},
 			},
 		},
 	}
 	runtime := cfg.DiscoveryRuntime()
-	if runtime.Mode != DiscoveryModeNamespaceV2 {
+	if runtime.Mode != DiscoveryModeNamespaceV3 {
 		t.Fatalf("mode = %q", runtime.Mode)
 	}
-	if runtime.Topic != discovery.NamespaceTopic("cluster-123", "tenant-a") {
-		t.Fatalf("topic = %q", runtime.Topic)
+	wantTopic, err := discovery.DeriveNamespaceTopicV3(discovery.NamespaceDiscoveryContext{ClusterID: "cluster-123", NamespaceID: "tenant-a", KeyID: "nsdk_test", Secret: secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.Topic != wantTopic {
+		t.Fatalf("topic = %q want %q", runtime.Topic, wantTopic)
+	}
+	if runtime.Context == nil || runtime.Context.KeyID != "nsdk_test" {
+		t.Fatalf("runtime context = %#v", runtime.Context)
 	}
 	if runtime.ClusterID != "cluster-123" || runtime.NamespaceID != "tenant-a" {
 		t.Fatalf("runtime = %#v", runtime)
@@ -432,8 +454,13 @@ func TestValidateRequired(t *testing.T) {
 func TestMaskSecrets(t *testing.T) {
 	c := Defaults("service")
 	c.Network.PrivateKeyB64 = "secret"
-	if Mask(c).Network.PrivateKeyB64 != "" {
+	c.Clusters = map[string]Cluster{"home": {MembershipGrant: &ClusterMembershipGrant{InviteToken: "tubo-invite-v1.secret-token"}}}
+	masked := Mask(c)
+	if masked.Network.PrivateKeyB64 != "" {
 		t.Fatal("secret not masked")
+	}
+	if masked.Clusters["home"].MembershipGrant == nil || masked.Clusters["home"].MembershipGrant.InviteToken != "" {
+		t.Fatalf("invite token not masked: %#v", masked.Clusters["home"].MembershipGrant)
 	}
 }
 
@@ -471,6 +498,165 @@ func TestMergeServiceTargetReinfersKindFromHigherPrecedenceTarget(t *testing.T) 
 	}
 	if err := Validate(merged); err != nil {
 		t.Fatalf("Validate(merged) error = %v", err)
+	}
+}
+
+func TestGenerateNamespaceDiscoverySecretMetadata(t *testing.T) {
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secret) != NamespaceDiscoverySecretLength {
+		t.Fatalf("len(secret) = %d", len(secret))
+	}
+	allZero := true
+	for _, b := range secret {
+		if b != 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		t.Fatal("generated secret is all zeros")
+	}
+	keyID, err := GenerateSecretKeyID("nsdk", time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^nsdk_20260602T100000Z_[0-9a-f]{8}$`).MatchString(keyID) {
+		t.Fatalf("unexpected key id format: %q", keyID)
+	}
+	fp := SecretFingerprint(secret)
+	if fp == "" || !strings.HasPrefix(fp, "sha256:") {
+		t.Fatalf("unexpected fingerprint %q", fp)
+	}
+}
+
+func TestValidateDiscoverySecretRefs(t *testing.T) {
+	dir := t.TempDir()
+	secretPath := filepath.Join(dir, "ns.secret")
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Role: "relay", Clusters: map[string]Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]Namespace{"default": {
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_20260602_abcd1234", File: secretPath, CreatedAt: time.Now().UTC()},
+	}}}}}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate(valid cfg) error = %v", err)
+	}
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{Discovery: NamespaceDiscoveryEnabled}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "discovery_secret_current") {
+		t.Fatalf("expected missing discovery secret error, got %v", err)
+	}
+	missingPath := filepath.Join(dir, "missing.secret")
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_20260602_abcd1234", File: missingPath, CreatedAt: time.Now().UTC()},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("expected missing secret file error, got %v", err)
+	}
+	shortPath := filepath.Join(dir, "short.secret")
+	if err := os.WriteFile(shortPath, []byte("short"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_20260602_abcd1234", File: shortPath, CreatedAt: time.Now().UTC()},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "must be 32 bytes") {
+		t.Fatalf("expected short secret error, got %v", err)
+	}
+	wrongTypePath := filepath.Join(dir, "wrong-type.secret")
+	if err := os.WriteFile(wrongTypePath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: "other", KeyID: "nsdk_20260602_abcd1234", File: wrongTypePath, CreatedAt: time.Now().UTC()},
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "unsupported value") {
+		t.Fatalf("expected wrong type error, got %v", err)
+	}
+	wrongPermPath := filepath.Join(dir, "wrong-perm.secret")
+	if err := os.WriteFile(wrongPermPath, secret, 0644); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_20260602_abcd1234", File: wrongPermPath, CreatedAt: time.Now().UTC()},
+	}
+	if runtime.GOOS != "windows" {
+		if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "expected permissions 0600") {
+			t.Fatalf("expected wrong permission error, got %v", err)
+		}
+	}
+	dirPath := filepath.Join(dir, "not-a-file")
+	if err := os.MkdirAll(dirPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Clusters["home"].Namespaces["default"] = Namespace{
+		Discovery:              NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_20260602_abcd1234", File: dirPath, CreatedAt: time.Now().UTC()},
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("expected unreadable/non-file discovery secret error")
+	}
+	cfgNoClusterID := Config{Role: "relay", Clusters: map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {Discovery: NamespaceDiscoveryEnabled}}}}}
+	if err := Validate(cfgNoClusterID); err == nil || !strings.Contains(err.Error(), "discovery_secret_current") {
+		t.Fatalf("expected strict missing discovery secret error without cluster id, got %v", err)
+	}
+}
+
+func TestConfigRoundTripWithDiscoverySecretRefs(t *testing.T) {
+	dir := t.TempDir()
+	secretPath := filepath.Join(dir, "current.secret")
+	previousPath := filepath.Join(dir, "previous.secret")
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prev, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, prev, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Config{Role: "relay", Clusters: map[string]Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]Namespace{"default": {
+		Discovery:               NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent:  &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_current", File: secretPath, CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)},
+		DiscoverySecretPrevious: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)},
+	}}}}}
+	path := filepath.Join(dir, "config.yaml")
+	if err := WriteFile(path, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := loaded.Clusters["home"].Namespaces["default"]
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretPrevious == nil {
+		t.Fatalf("discovery secret refs missing after roundtrip: %#v", ns)
+	}
+	if ns.DiscoverySecretCurrent.File != secretPath || ns.DiscoverySecretPrevious.File != previousPath {
+		t.Fatalf("unexpected roundtrip refs: %#v", ns)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, secret) || bytes.Contains(raw, prev) {
+		t.Fatal("config roundtrip persisted raw discovery secret bytes")
 	}
 }
 

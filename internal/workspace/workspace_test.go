@@ -1,6 +1,8 @@
 package workspace
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +27,18 @@ func TestParseRef(t *testing.T) {
 	if ref.Kind != "cluster" || ref.Name != "home" {
 		t.Fatalf("ref=%#v", ref)
 	}
+	secretType, clusterName, namespaceName, err := ParseSecretRef("secret/namespace-discovery/home/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secretType != cfgpkg.SecretTypeNamespaceDiscovery || clusterName != "home" || namespaceName != "default" {
+		t.Fatalf("secret ref=%q %q %q", secretType, clusterName, namespaceName)
+	}
+	for _, bad := range []string{"bad", "secret/foo/home/default", "secret/namespace-discovery", "secret/namespace-discovery/home", "secret/namespace-discovery/home/default/extra"} {
+		if _, _, _, err := ParseSecretRef(bad); err == nil {
+			t.Fatalf("expected error for invalid secret ref %q", bad)
+		}
+	}
 	if _, err := ParseRef("bad"); err == nil {
 		t.Fatal("expected error for invalid ref")
 	}
@@ -48,6 +62,14 @@ func TestResolveScope(t *testing.T) {
 }
 
 func TestListDescribeAndUseLocalResources(t *testing.T) {
+	secretPath := filepath.Join(t.TempDir(), "default.secret")
+	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
 	cfg := cfgpkg.Config{
 		CurrentOverlay:   "public",
 		CurrentCluster:   "home",
@@ -62,7 +84,7 @@ func TestListDescribeAndUseLocalResources(t *testing.T) {
 				AuthorityPublicKey: "ssh-ed25519 AAAATEST home",
 				Capabilities:       []string{"list", "publish"},
 				Namespaces: map[string]cfgpkg.Namespace{
-					"default":       {Discovery: cfgpkg.NamespaceDiscoveryEnabled, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember},
+					"default":       {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_test", File: secretPath, CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)}, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember},
 					"observability": {Discovery: cfgpkg.NamespaceDiscoveryDisabled, ConnectPolicy: cfgpkg.ConnectPolicyPublic},
 				},
 			},
@@ -113,6 +135,23 @@ func TestListDescribeAndUseLocalResources(t *testing.T) {
 	if !namespaceDesc.CurrentCluster || !namespaceDesc.CurrentNamespace || namespaceDesc.CurrentOverlay != "public" || namespaceDesc.Discovery != cfgpkg.NamespaceDiscoveryEnabled || namespaceDesc.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember || namespaceDesc.PublicDefault {
 		t.Fatalf("namespaceDesc=%#v", namespaceDesc)
 	}
+	if namespaceDesc.DiscoverySecretCurrent == nil || namespaceDesc.DiscoverySecretCurrent.KeyID == "" || namespaceDesc.DiscoverySecretCurrent.File == "" || namespaceDesc.DiscoverySecretCurrent.Fingerprint == "" {
+		t.Fatalf("namespaceDesc discovery secret=%#v", namespaceDesc.DiscoverySecretCurrent)
+	}
+	secrets, err := ws.ListSecrets(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets) != 1 || secrets[0].Status != "current" || secrets[0].FileStatus != "ok" {
+		t.Fatalf("secrets=%#v", secrets)
+	}
+	secretDesc, err := ws.DescribeSecret(path, "secret/namespace-discovery/home/default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secretDesc.Type != cfgpkg.SecretTypeNamespaceDiscovery || secretDesc.Cluster != "home" || secretDesc.Namespace != "default" || secretDesc.Current == nil || secretDesc.Current.Fingerprint == "" {
+		t.Fatalf("secretDesc=%#v", secretDesc)
+	}
 
 	updated, err := ws.Use(path, Ref{Kind: "overlay", Name: "staging"})
 	if err != nil {
@@ -151,6 +190,15 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if ns := storedCluster.Namespaces["default"]; ns.Discovery != cfgpkg.NamespaceDiscoveryEnabled || ns.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember {
 		t.Fatalf("default namespace policy=%#v", ns)
+	} else {
+		if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretCurrent.KeyID == "" || ns.DiscoverySecretCurrent.File == "" {
+			t.Fatalf("default namespace discovery secret missing: %#v", ns)
+		}
+		if info, err := os.Stat(ns.DiscoverySecretCurrent.File); err != nil {
+			t.Fatalf("default namespace discovery secret file missing: %v", err)
+		} else if info.Mode().Perm() != 0o600 {
+			t.Fatalf("default namespace discovery secret permissions = %04o", info.Mode().Perm())
+		}
 	}
 	ns, err := ws.CreateNamespace(path, "observability")
 	if err != nil {
@@ -172,6 +220,14 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if storedNamespace.Discovery != cfgpkg.NamespaceDiscoveryEnabled || storedNamespace.ConnectPolicy != cfgpkg.ConnectPolicyNamespaceMember {
 		t.Fatalf("stored namespace policy=%#v", storedNamespace)
+	}
+	if storedNamespace.DiscoverySecretCurrent == nil || storedNamespace.DiscoverySecretCurrent.KeyID == "" || storedNamespace.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("stored namespace discovery secret missing: %#v", storedNamespace)
+	}
+	if info, err := os.Stat(storedNamespace.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("namespace discovery secret file missing: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("namespace discovery secret permissions = %04o", info.Mode().Perm())
 	}
 }
 
@@ -232,6 +288,164 @@ func TestResolveMembershipCapabilityFileRequiresRuntimeEvidence(t *testing.T) {
 	if _, err := ws.ResolveMembershipCapabilityFile(path, cfg.Clusters["home"], "home", "default", "seed"); err == nil || !strings.Contains(err.Error(), "no membership capability file configured") {
 		t.Fatalf("err=%v", err)
 	}
+}
+
+func TestRotateNamespaceDiscoverySecret(t *testing.T) {
+	path := writeTestConfig(t, cfgpkg.Config{})
+	ws := Open(FSStore{})
+	if _, err := ws.CreateCluster(path, "home"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldCurrent := before.Clusters["home"].Namespaces["default"].DiscoverySecretCurrent
+	if oldCurrent == nil {
+		t.Fatal("missing current secret before rotation")
+	}
+	oldCurrentBytes, err := os.ReadFile(oldCurrent.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := ws.RotateNamespaceDiscoverySecret(path, "secret/namespace-discovery/home/default", 2*time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotated.Current == nil || rotated.Previous == nil {
+		t.Fatalf("rotation result missing refs: %#v", rotated)
+	}
+	after, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := after.Clusters["home"].Namespaces["default"]
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretPrevious == nil {
+		t.Fatalf("rotation state missing refs: %#v", ns)
+	}
+	if ns.DiscoverySecretCurrent.KeyID == oldCurrent.KeyID {
+		t.Fatal("expected new current key id after rotation")
+	}
+	if ns.DiscoverySecretPrevious.KeyID != oldCurrent.KeyID {
+		t.Fatalf("previous key id = %q want %q", ns.DiscoverySecretPrevious.KeyID, oldCurrent.KeyID)
+	}
+	if ns.DiscoverySecretPrevious.ExpiresAt.IsZero() || time.Until(ns.DiscoverySecretPrevious.ExpiresAt) <= time.Hour {
+		t.Fatalf("unexpected previous expiry: %v", ns.DiscoverySecretPrevious.ExpiresAt)
+	}
+	rotatedPreviousBytes, err := os.ReadFile(ns.DiscoverySecretPrevious.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rotatedPreviousBytes) != string(oldCurrentBytes) {
+		t.Fatal("previous secret bytes do not match old current bytes")
+	}
+	rotatedCurrentBytes, err := os.ReadFile(ns.DiscoverySecretCurrent.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rotatedCurrentBytes) == string(oldCurrentBytes) {
+		t.Fatal("new current secret bytes should differ from old current bytes")
+	}
+	runtime := after.DiscoveryRuntime()
+	if runtime.Context == nil || runtime.PreviousContext == nil {
+		t.Fatalf("expected current and previous runtime contexts after rotation: %#v", runtime)
+	}
+	if runtime.Context.KeyID != ns.DiscoverySecretCurrent.KeyID || runtime.PreviousContext.KeyID != ns.DiscoverySecretPrevious.KeyID {
+		t.Fatalf("unexpected runtime key ids: %#v", runtime)
+	}
+}
+
+func TestListSecretsCleansUpExpiredPreviousDiscoverySecret(t *testing.T) {
+	path := writeTestConfig(t, cfgpkg.Config{})
+	ws := Open(FSStore{})
+	if _, err := ws.CreateCluster(path, "home"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	previousPath := filepath.Join(t.TempDir(), "expired-previous.secret")
+	previousSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, previousSecret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ns.DiscoverySecretPrevious = &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Now().Add(-2 * time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Minute).UTC()}
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := ws.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ws.ListSecrets(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Status != "current" {
+		t.Fatalf("expected only current secret after cleanup, got %#v", items)
+	}
+	cfg, err = ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Clusters["home"].Namespaces["default"].DiscoverySecretPrevious != nil {
+		t.Fatalf("expected expired previous secret metadata to be cleared, got %#v", cfg.Clusters["home"].Namespaces["default"].DiscoverySecretPrevious)
+	}
+	if _, err := os.Stat(previousPath); !os.IsNotExist(err) {
+		t.Fatalf("expected expired previous secret file to be removed, got err=%v", err)
+	}
+}
+
+func TestRotateNamespaceDiscoverySecretRequiresCurrentAndAuthority(t *testing.T) {
+	path := writeTestConfig(t, cfgpkg.Config{})
+	ws := Open(FSStore{})
+	if _, err := ws.CreateCluster(path, "home"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	ns.DiscoverySecretCurrent = nil
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := ws.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.RotateNamespaceDiscoverySecret(path, "secret/namespace-discovery/home/default", time.Hour); err == nil || !strings.Contains(err.Error(), "missing discovery_secret_current") {
+		t.Fatalf("expected missing current secret error, got %v", err)
+	}
+	cfg, err = ws.LoadConfigOrError(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster = cfg.Clusters["home"]
+	cluster.AuthorityPrivateKeyFile = ""
+	ns = cluster.Namespaces["default"]
+	ns.DiscoverySecretCurrent = mustSecretRef(t, path, "home", "default")
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := ws.SaveConfig(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.RotateNamespaceDiscoverySecret(path, "secret/namespace-discovery/home/default", time.Hour); err == nil || !strings.Contains(err.Error(), "rotation requires local cluster authority material") {
+		t.Fatalf("expected missing authority material error, got %v", err)
+	}
+}
+
+func mustSecretRef(t *testing.T, configPath, cluster, namespace string) *cfgpkg.ManagedSecretRef {
+	t.Helper()
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.Clusters[cluster].Namespaces[namespace].DiscoverySecretCurrent
 }
 
 func TestLoadConfigOrErrorMissing(t *testing.T) {

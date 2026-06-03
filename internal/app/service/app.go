@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -36,9 +37,12 @@ type Config struct {
 	Autorelay, HolePunching                                                                                        bool
 	HeartbeatInterval, BootstrapRetryInterval                                                                      time.Duration
 	DiscoveryTopic                                                                                                 string
+	DiscoveryPreviousTopic                                                                                         string
 	DiscoveryMode                                                                                                  string
 	DiscoveryClusterID                                                                                             string
 	DiscoveryNamespaceID                                                                                           string
+	DiscoveryContext                                                                                               *discovery.NamespaceDiscoveryContext
+	DiscoveryPreviousContext                                                                                       *discovery.NamespaceDiscoveryContext
 	AuthorityPublicKey                                                                                             string
 	AuthorityPrivateKeyFile                                                                                        string
 	ClusterName                                                                                                    string
@@ -65,6 +69,7 @@ type App struct {
 	grantEndpointEnabled    bool
 	health                  *http.Server
 	cache                   *discovery.Cache
+	subscriber              *discovery.PubSubSubscriber
 	stopSubscriber          chan struct{}
 	relayInfos              []peer.AddrInfo
 	announcementTTL         time.Duration
@@ -119,17 +124,26 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		log.Printf("libp2p private network enabled")
 	}
 	mode := discovery.Mode(cfg.DiscoveryMode)
-	if mode != discovery.ModeNamespaceV2 {
+	if cfg.DiscoveryEnabled && mode != discovery.ModeNamespaceV3 {
 		_ = h.Close()
-		return nil, fmt.Errorf("cluster/namespace discovery is required; legacy swarm discovery has been removed")
+		return nil, fmt.Errorf("discovery-enabled namespaces require discovery mode %q", discovery.ModeNamespaceV3)
 	}
-	var connectAuth *p2p.ConnectProofValidation
-	if mode == discovery.ModeNamespaceV2 {
-		authorityPub, err := discovery.ParseAuthorityPublicKey(cfg.AuthorityPublicKey)
+	var authorityPub ed25519.PublicKey
+	if strings.TrimSpace(cfg.AuthorityPublicKey) == "" {
+		if cfg.DiscoveryEnabled {
+			_ = h.Close()
+			return nil, fmt.Errorf("authority public key is required for discovery-enabled namespace runtime")
+		}
+	} else {
+		parsedAuthority, err := discovery.ParseAuthorityPublicKey(cfg.AuthorityPublicKey)
 		if err != nil {
 			_ = h.Close()
 			return nil, fmt.Errorf("parse authority public key: %w", err)
 		}
+		authorityPub = parsedAuthority
+	}
+	var connectAuth *p2p.ConnectProofValidation
+	if len(authorityPub) > 0 && strings.TrimSpace(cfg.DiscoveryClusterID) != "" && strings.TrimSpace(cfg.DiscoveryNamespaceID) != "" {
 		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), ServicePeerID: h.ID().String(), Replay: p2p.NewConnectProofReplayCache(1024)}
 	}
 	if cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
@@ -150,6 +164,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	var pub *discovery.Publisher
 	var cache *discovery.Cache
+	var subscriber *discovery.PubSubSubscriber
 	var stopSubscriber chan struct{}
 	if cfg.DiscoveryEnabled {
 		gs, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
@@ -157,20 +172,29 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 			_ = h.Close()
 			return nil, err
 		}
-		topicName := cfg.DiscoveryTopic
-		if topicName == "" {
-			topicName = discovery.DiscoveryTopic
+		if cfg.DiscoveryContext == nil {
+			_ = h.Close()
+			return nil, fmt.Errorf("missing discovery context for namespace %s/%s", cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
 		}
-		topic, err := gs.Join(topicName)
+		topic, err := gs.Join(cfg.DiscoveryTopic)
 		if err != nil {
 			_ = h.Close()
 			return nil, err
 		}
 		cache = discovery.NewCache(30*time.Second, time.Second)
-		subscriber := discovery.NewPubSubSubscriber(topic, cache)
-		if mode == discovery.ModeNamespaceV2 {
-			subscriber = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
+		topics := []*pubsub.Topic{topic}
+		contexts := []discovery.NamespaceDiscoveryContext{*cfg.DiscoveryContext}
+		if cfg.DiscoveryPreviousTopic != "" && cfg.DiscoveryPreviousContext != nil {
+			previousTopic, err := gs.Join(cfg.DiscoveryPreviousTopic)
+			if err != nil {
+				_ = h.Close()
+				return nil, err
+			}
+			topics = append(topics, previousTopic)
+			contexts = append(contexts, *cfg.DiscoveryPreviousContext)
 		}
+		subscriber = discovery.NewPubSubSubscriberV3(topics, cache, contexts)
+		subscriber.SetAuthorityPublicKey(authorityPub)
 		if pubKey := h.Peerstore().PubKey(h.ID()); pubKey != nil {
 			subscriber.AddPublicKey(h.ID(), pubKey)
 		}
@@ -191,6 +215,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		host:                    h,
 		publisher:               pub,
 		cache:                   cache,
+		subscriber:              subscriber,
 		stopSubscriber:          stopSubscriber,
 		relayInfos:              relays,
 		announcementTTL:         computeAnnouncementTTL(cfg.HeartbeatInterval),
@@ -237,11 +262,11 @@ func (a *App) Start(ctx context.Context) error {
 		}()
 	}
 	go a.maintainRelayReservations(ctx)
-	if a.cfg.DiscoveryEnabled && a.discoveryMode == discovery.ModeNamespaceV2 {
-		if !a.publishCurrentAnnouncementV2(ctx) {
+	if a.cfg.DiscoveryEnabled && a.discoveryMode == discovery.ModeNamespaceV3 {
+		if !a.publishCurrentAnnouncementV3(ctx) {
 			log.Printf("initial announcement deferred: publish lease unavailable or relay reservation not ready yet")
 		}
-		go a.runAnnouncementLoopV2(ctx)
+		go a.runAnnouncementLoopV3(ctx)
 	} else if a.cfg.DiscoveryEnabled {
 		if !a.hb.PublishNow(ctx) {
 			log.Printf("initial announcement deferred: relay reservation not ready yet")
@@ -347,13 +372,13 @@ func (a *App) currentAnnouncement() (discovery.Announcement, bool) {
 	return ann, true
 }
 
-func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.AnnouncementV2Payload, bool) {
-	if a.discoveryMode != discovery.ModeNamespaceV2 {
-		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
+func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.AnnouncementV3Payload, bool) {
+	if a.discoveryMode != discovery.ModeNamespaceV3 || a.cfg.DiscoveryContext == nil {
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
 	}
 	addrs := expandUnspecifiedListenAddrs(p2p.PeerAddrs(a.host), a.cfg.Listen, a.host.ID())
 	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) && !a.hasRelayReservation() {
-		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
 	}
 	if a.requireRelayReadyAnn {
 		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
@@ -362,46 +387,47 @@ func (a *App) currentAnnouncementV2() (discovery.AnnouncementV2, discovery.Annou
 	if a.grantEndpointEnabled {
 		grantService = advertisedGrantServiceEndpoint(addrs)
 	}
-	payload := discovery.AnnouncementV2Payload{ServiceName: a.cfg.ServiceName, ServiceKind: a.cfg.ServiceKind, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, Capabilities: protocol.SupportedCapabilities(), RegisteredAt: time.Now().UTC()}
+	payload := discovery.AnnouncementV3Payload{ClusterID: a.discoveryClusterID(), NamespaceID: a.discoveryNamespaceID(), ServiceName: a.cfg.ServiceName, ServiceKind: a.cfg.ServiceKind, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, Capabilities: protocol.SupportedCapabilities(), RegisteredAt: time.Now().UTC()}
 	if capBytes, err := a.loadMembershipCapabilityBytes(); err == nil && len(capBytes) > 0 {
 		payload.MembershipCapability = capBytes
 	}
 	leaseBytes, lease, err := a.loadPublishLeaseBytes()
 	if err != nil || len(leaseBytes) == 0 {
-		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
 	}
 	payload.PublishLease = leaseBytes
 	payload.ServicePublicKey = lease.ServicePublicKey
 	if claimBytes, err := json.Marshal(lease.ServiceClaim); err == nil {
 		payload.ServiceClaim = claimBytes
 	}
-	ann, err := discovery.NewAnnouncementV2(a.discoveryClusterID(), a.discoveryNamespaceID(), a.host.ID(), a.announcementTTL, payload)
+	ann, err := discovery.NewAnnouncementV3(*a.cfg.DiscoveryContext, a.host.ID(), a.announcementTTL, payload)
 	if err != nil {
-		return discovery.AnnouncementV2{}, discovery.AnnouncementV2Payload{}, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
 	}
 	return ann, payload, true
 }
 
-func (a *App) publishCurrentAnnouncementV2(ctx context.Context) bool {
+func (a *App) publishCurrentAnnouncementV3(ctx context.Context) bool {
 	if a.publisher == nil {
 		return false
 	}
-	ann, payload, ok := a.currentAnnouncementV2()
+	ann, payload, ok := a.currentAnnouncementV3()
 	if !ok {
 		return false
 	}
-	if err := a.publisher.PublishV2(ctx, ann); err != nil {
+	if err := a.publisher.PublishV3(ctx, ann); err != nil {
 		log.Printf("heartbeat immediate publish failed: %v", err)
 		return false
 	}
+	a.cacheCurrentAnnouncementV3(payload, ann.TTL)
 	if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
 		log.Printf("heartbeat relay sync failed: %v", err)
 	}
-	log.Printf("heartbeat published discovery v2 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
+	log.Printf("heartbeat published discovery v3 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
 	return true
 }
 
-func (a *App) runAnnouncementLoopV2(ctx context.Context) {
+func (a *App) runAnnouncementLoopV3(ctx context.Context) {
 	ticker := time.NewTicker(a.cfg.HeartbeatInterval)
 	defer ticker.Stop()
 	log.Printf("heartbeat loop started (interval=%s)", a.cfg.HeartbeatInterval)
@@ -411,23 +437,35 @@ func (a *App) runAnnouncementLoopV2(ctx context.Context) {
 			log.Println("heartbeat loop: context cancelled, stopping")
 			return
 		case <-ticker.C:
-			ann, payload, ok := a.currentAnnouncementV2()
+			ann, payload, ok := a.currentAnnouncementV3()
 			if !ok {
 				log.Printf("heartbeat skipped: publish lease unavailable or expired; service remains running but is not advertised")
 				continue
 			}
-			if err := a.publisher.PublishV2(ctx, ann); err != nil {
+			if err := a.publisher.PublishV3(ctx, ann); err != nil {
 				log.Printf("heartbeat publish failed: %v", err)
-			} else if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
-				log.Printf("heartbeat relay sync failed: %v", err)
 			} else {
-				log.Printf("heartbeat published discovery v2 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
+				a.cacheCurrentAnnouncementV3(payload, ann.TTL)
+				if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
+					log.Printf("heartbeat relay sync failed: %v", err)
+				} else {
+					log.Printf("heartbeat published discovery v3 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
+				}
 			}
 		}
 	}
 }
 
-func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.AnnouncementV2Payload) error {
+func (a *App) cacheCurrentAnnouncementV3(payload discovery.AnnouncementV3Payload, ttl time.Duration) {
+	if a.cache == nil {
+		return
+	}
+	if err := a.cache.AddV2(a.host.ID(), payload.ServiceID, payload.ServiceName, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), append([]string(nil), payload.Addresses...), append([]string(nil), payload.Capabilities...), ttl); err != nil {
+		log.Printf("heartbeat local cache update failed: %v", err)
+	}
+}
+
+func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.AnnouncementV3Payload) error {
 	peers := append([]string(nil), a.cfg.BootstrapPeers...)
 	peers = append(peers, a.cfg.RelayPeers...)
 	seen := make(map[string]struct{}, len(peers))
@@ -647,8 +685,8 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 		if !a.cfg.DiscoveryEnabled {
 			return
 		}
-		if a.discoveryMode == discovery.ModeNamespaceV2 {
-			if !a.publishCurrentAnnouncementV2(ctx) {
+		if a.discoveryMode == discovery.ModeNamespaceV3 {
+			if !a.publishCurrentAnnouncementV3(ctx) {
 				log.Printf("relay-ready publish skipped: announcement not ready")
 			}
 			return

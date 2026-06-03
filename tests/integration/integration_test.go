@@ -350,6 +350,16 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 		return err
 	}
 
+	discoverySecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		return err
+	}
+	discoverySecretPath := filepath.Join(cfgDir, "clusters", "home", "namespaces", namespace, "discovery-current.secret")
+	if err := os.WriteFile(discoverySecretPath, discoverySecret, 0o600); err != nil {
+		return err
+	}
+	discoverySecretRef := &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_integration_" + namespace, File: filepath.Join("/home/nonroot/.config/tubo", "clusters", "home", "namespaces", namespace, "discovery-current.secret"), CreatedAt: time.Now().UTC()}
+
 	serviceOwnerPub, serviceOwnerPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return err
@@ -456,6 +466,9 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 			MembershipCapabilityFile: clusterMembershipCapContainerPath,
 			Namespaces: map[string]cfgpkg.Namespace{
 				namespace: {
+					Discovery:                cfgpkg.NamespaceDiscoveryEnabled,
+					ConnectPolicy:            cfgpkg.ConnectPolicyNamespaceMember,
+					DiscoverySecretCurrent:   discoverySecretRef,
 					MembershipCapabilityFile: namespaceMembershipCapContainerPath,
 					Services: map[string]cfgpkg.NamespaceService{
 						serviceName: {
@@ -493,6 +506,9 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 			MembershipCapabilityFile: clusterMembershipCapContainerPath,
 			Namespaces: map[string]cfgpkg.Namespace{
 				namespace: {
+					Discovery:                cfgpkg.NamespaceDiscoveryEnabled,
+					ConnectPolicy:            cfgpkg.ConnectPolicyNamespaceMember,
+					DiscoverySecretCurrent:   discoverySecretRef,
 					MembershipCapabilityFile: namespaceMembershipCapContainerPath,
 					Services: map[string]cfgpkg.NamespaceService{
 						serviceName: {
@@ -524,6 +540,12 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 		if err := os.Chmod(path, 0o644); err != nil {
 			return err
 		}
+	}
+	if err := os.Chmod(discoverySecretPath, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chown(discoverySecretPath, 65532, 65532); err != nil {
+		return err
 	}
 	return nil
 }

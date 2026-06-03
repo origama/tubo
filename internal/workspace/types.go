@@ -58,15 +58,40 @@ type ClusterNamespaceDescription struct {
 	Current bool
 }
 
+type SecretDescription struct {
+	Type            string `json:"type"`
+	Cluster         string `json:"cluster,omitempty"`
+	Namespace       string `json:"namespace,omitempty"`
+	Status          string `json:"status,omitempty"`
+	KeyID           string `json:"key_id,omitempty"`
+	File            string `json:"file,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
+	ExpiresAt       string `json:"expires_at,omitempty"`
+	Fingerprint     string `json:"fingerprint,omitempty"`
+	FileStatus      string `json:"file_status,omitempty"`
+	PermissionState string `json:"permission_state,omitempty"`
+	Diagnostic      string `json:"diagnostic,omitempty"`
+}
+
+type SecretScopeDescription struct {
+	Type      string             `json:"type"`
+	Cluster   string             `json:"cluster"`
+	Namespace string             `json:"namespace"`
+	Current   *SecretDescription `json:"current,omitempty"`
+	Previous  *SecretDescription `json:"previous,omitempty"`
+}
+
 type NamespaceDescription struct {
-	Name             string
-	Cluster          string
-	CurrentCluster   bool
-	CurrentNamespace bool
-	CurrentOverlay   string
-	Discovery        cfgpkg.NamespaceDiscovery
-	ConnectPolicy    cfgpkg.ConnectPolicy
-	PublicDefault    bool
+	Name                    string
+	Cluster                 string
+	CurrentCluster          bool
+	CurrentNamespace        bool
+	CurrentOverlay          string
+	Discovery               cfgpkg.NamespaceDiscovery
+	ConnectPolicy           cfgpkg.ConnectPolicy
+	PublicDefault           bool
+	DiscoverySecretCurrent  *SecretDescription
+	DiscoverySecretPrevious *SecretDescription
 }
 
 type NamespaceList struct {

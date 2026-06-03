@@ -20,6 +20,7 @@ Project work, planning, implementation scope, and acceptance criteria are tracke
 - [`reference/cli.md`](./reference/cli.md)
 - [`reference/PROTOCOL.md`](./reference/PROTOCOL.md)
 - [`reference/SECURITY.md`](./reference/SECURITY.md)
+- [`reference/discovery-v3-threat-model.md`](./reference/discovery-v3-threat-model.md)
 - [`reference/security-model-0.7.md`](./reference/security-model-0.7.md)
 - [`reference/VERSIONING.md`](./reference/VERSIONING.md)
 

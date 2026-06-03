@@ -19,6 +19,7 @@ import (
 	"time"
 
 	capability "github.com/origama/tubo/internal/capability"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -1030,7 +1031,18 @@ func writeLocalResourceConfig(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	yaml := `role: service
+	secretPath := filepath.Join(configHome, "tubo", "clusters", "home", "namespaces", "default", "discovery-current.secret")
+	if err := os.MkdirAll(filepath.Dir(secretPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	yaml := fmt.Sprintf(`role: service
 current_overlay: public
 current_cluster: home
 current_namespace: default
@@ -1058,8 +1070,17 @@ clusters:
     capabilities:
       - discovery
     namespaces:
-      default: {}
-      lab: {}
+      default:
+        discovery: enabled
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: nsdk_fixture
+          file: %q
+          created_at: 2026-06-02T10:00:00Z
+        connect_policy: namespace_members
+      lab:
+        discovery: disabled
+        connect_policy: invite_only
   ops:
     cluster_id: ops-cluster
     authority_public_key: ops-pub
@@ -1076,7 +1097,7 @@ network:
 service:
   name: api
   target: http://127.0.0.1:9000
-`
+`, secretPath)
 	if err := os.WriteFile(configPath, []byte(yaml), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1121,6 +1142,24 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 		}
 	}
 
+	out, err = capture(func() error { return run([]string{"get", "secrets", "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var secrets struct {
+		Count int          `json:"count"`
+		Items []secretView `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(out), &secrets); err != nil {
+		t.Fatalf("secret json parse: %v\nout=%s", err, out)
+	}
+	if secrets.Count != 1 || len(secrets.Items) != 1 || secrets.Items[0].Type != cfgpkg.SecretTypeNamespaceDiscovery || secrets.Items[0].Fingerprint == "" || secrets.Items[0].FileStatus != "ok" {
+		t.Fatalf("unexpected secrets payload: %#v", secrets)
+	}
+	if strings.Contains(out, "PRIVATE KEY") || strings.Contains(out, "tubo-invite-v1.") {
+		t.Fatalf("get secrets json leaked sensitive material: %s", out)
+	}
+
 	out, err = capture(func() error { return run([]string{"describe", "overlay/public"}) })
 	if err != nil {
 		t.Fatal(err)
@@ -1145,9 +1184,19 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public", "Discovery: enabled", "Connect policy: namespace_members"} {
+	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public", "Discovery: enabled", "Connect policy: namespace_members", "Current discovery secret:", "Fingerprint:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe namespace output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error { return run([]string{"describe", "secret/namespace-discovery/home/default"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Type: namespace-discovery", "Cluster: home", "Namespace: default", "Current discovery secret:", "Status: current", "File status: ok", "Fingerprint:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe secret output missing %q: %s", want, out)
 		}
 	}
 
@@ -1219,6 +1268,197 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	for _, want := range []string{"prod", "*", "ops"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("get namespaces after use output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestLocalSecretCommandsReportPreviousAndMissingFiles(t *testing.T) {
+	configPath := writeLocalResourceConfig(t)
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousPath := filepath.Join(t.TempDir(), "previous.secret")
+	previousSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, previousSecret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	ns.DiscoverySecretCurrent.File = filepath.Join(t.TempDir(), "missing.secret")
+	ns.DiscoverySecretPrevious = &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)}
+	cluster := cfg.Clusters["home"]
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := capture(func() error { return run([]string{"get", "secrets", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"current", "previous", "missing", "ok"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("get secrets output missing %q: %s", want, out)
+		}
+	}
+
+	out, err = capture(func() error {
+		return run([]string{"describe", "secret/namespace-discovery/home/default", "--config", configPath})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Current discovery secret:", "File status: missing", "Previous discovery secret:", "Status: previous", "File status: ok", "Diagnostic:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe secret output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestLocalRotateSecretCommand(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := cfg.Clusters["home"].Namespaces["default"].DiscoverySecretCurrent
+	beforeBytes, err := os.ReadFile(before.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"rotate", "secret/namespace-discovery/home/default", "--config", configPath, "--grace", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"rotated namespace discovery secret for home/default", "grace: 2h0m0s", "Current discovery secret:", "Previous discovery secret:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("rotate output missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, base64.RawURLEncoding.EncodeToString(beforeBytes)) {
+		t.Fatalf("rotate output leaked raw secret bytes: %s", out)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretPrevious == nil {
+		t.Fatalf("rotation missing refs: %#v", ns)
+	}
+	if ns.DiscoverySecretCurrent.KeyID == before.KeyID || ns.DiscoverySecretPrevious.KeyID != before.KeyID {
+		t.Fatalf("unexpected rotated key ids: current=%#v previous=%#v before=%#v", ns.DiscoverySecretCurrent, ns.DiscoverySecretPrevious, before)
+	}
+	payloadOut, err := capture(func() error { return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "1h"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractClusterInviteToken(t, payloadOut)
+	payload, err := parseAndVerifyClusterInviteToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Discovery == nil || payload.Discovery.KeyID != ns.DiscoverySecretCurrent.KeyID {
+		t.Fatalf("share after rotation did not use new current discovery key: %#v", payload.Discovery)
+	}
+	if payload.Discovery.KeyID == before.KeyID {
+		t.Fatal("share after rotation still used old current key id")
+	}
+}
+
+func TestLocalSecretCommandsCleanupExpiredPrevious(t *testing.T) {
+	configPath := writeLocalResourceConfig(t)
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousPath := filepath.Join(t.TempDir(), "expired-previous.secret")
+	previousSecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(previousPath, previousSecret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	ns.DiscoverySecretPrevious = &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Now().Add(-time.Minute).UTC()}
+	cluster := cfg.Clusters["home"]
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return run([]string{"get", "secrets", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "nsdk_previous") || strings.Contains(out, "expired") {
+		t.Fatalf("expected expired previous secret to be cleaned up from get secrets output, got: %s", out)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Clusters["home"].Namespaces["default"].DiscoverySecretPrevious != nil {
+		t.Fatalf("expected expired previous secret metadata to be cleared, got %#v", cfg.Clusters["home"].Namespaces["default"].DiscoverySecretPrevious)
+	}
+	if _, err := os.Stat(previousPath); !os.IsNotExist(err) {
+		t.Fatalf("expected expired previous secret file to be removed, got err=%v", err)
+	}
+	out, err = capture(func() error {
+		return run([]string{"describe", "secret/namespace-discovery/home/default", "--config", configPath})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Previous discovery secret:\n  - none") {
+		t.Fatalf("expected describe secret to show cleaned previous state, got: %s", out)
+	}
+}
+
+func TestLocalRotateSecretCommandRejectsMissingCurrent(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	ns.DiscoverySecretCurrent = nil
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error {
+		return run([]string{"rotate", "secret/namespace-discovery/home/default", "--config", configPath, "--grace", "1h"})
+	}); err == nil || !strings.Contains(err.Error(), "missing discovery_secret_current") {
+		t.Fatalf("expected missing current secret error, got %v", err)
+	}
+}
+
+func TestLocalSecretCommandsRejectUnsupportedPaths(t *testing.T) {
+	configPath := writeLocalResourceConfig(t)
+	for _, args := range [][]string{
+		{"describe", "secret/foo/home/default", "--config", configPath},
+		{"describe", "secret/namespace-discovery", "--config", configPath},
+		{"describe", "secret/namespace-discovery/home", "--config", configPath},
+		{"describe", "secret/namespace-discovery/home/default/extra", "--config", configPath},
+	} {
+		if _, err := capture(func() error { return run(args) }); err == nil || !strings.Contains(err.Error(), "unsupported secret resource") {
+			t.Fatalf("expected unsupported secret resource error for %v, got %v", args, err)
 		}
 	}
 }
@@ -1406,7 +1646,7 @@ func tamperTokenPayload(t *testing.T, token, prefix string, oldBytes, newBytes [
 	return prefix + base64.RawURLEncoding.EncodeToString(payloadBytes) + "." + parts[1]
 }
 
-func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNamespace string) {
+func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantNamespace string) {
 	t.Helper()
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
@@ -1429,11 +1669,23 @@ func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantToken, wantNa
 		t.Fatalf("membership grant missing: %#v", cluster)
 	}
 	grant := cluster.MembershipGrant
-	if grant.InviteToken != wantToken || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
+	if grant.InviteToken != "" || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
 		t.Fatalf("unexpected membership grant: %#v", grant)
 	}
 	if !stringSliceEqualSet(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
 		t.Fatalf("unexpected membership grant permissions: %#v", grant.Permissions)
+	}
+	ns := cluster.Namespaces[wantNamespace]
+	if ns.Discovery != cfgpkg.NamespaceDiscoveryEnabled {
+		t.Fatalf("joined namespace discovery = %q", ns.Discovery)
+	}
+	if ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretCurrent.KeyID == "" || ns.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("joined namespace discovery secret missing: %#v", ns)
+	}
+	if info, err := os.Stat(ns.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("joined namespace discovery secret file missing: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("joined namespace discovery secret permissions = %04o", info.Mode().Perm())
 	}
 }
 
@@ -1459,6 +1711,13 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 		t.Fatalf("share output missing join command: %s", out)
 	}
 	token := extractClusterInviteToken(t, out)
+	payload, err := parseAndVerifyClusterInviteToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Discovery == nil || payload.Discovery.Type != cfgpkg.SecretTypeNamespaceDiscovery || payload.Discovery.KeyID == "" || payload.Discovery.Secret == "" {
+		t.Fatalf("cluster invite missing discovery entry: %#v", payload.Discovery)
+	}
 
 	joinHome := filepath.Join(t.TempDir(), "join-home")
 	t.Setenv("XDG_CONFIG_HOME", joinHome)
@@ -1469,14 +1728,28 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	if !strings.Contains(out, "joined cluster \"home\"") {
 		t.Fatalf("unexpected invite join output: %s", out)
 	}
-	assertJoinedClusterInviteConfig(t, filepath.Join(joinHome, "tubo", "config.yaml"), token, "observability")
+	if strings.Contains(out, payload.Discovery.Secret) || strings.Contains(out, payload.Discovery.KeyID) {
+		t.Fatalf("join output leaked discovery entry metadata/material: %s", out)
+	}
+	joinedConfigPath := filepath.Join(joinHome, "tubo", "config.yaml")
+	assertJoinedClusterInviteConfig(t, joinedConfigPath, "observability")
+	joinedConfigRaw, err := os.ReadFile(joinedConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(joinedConfigRaw, []byte(token)) {
+		t.Fatal("joined config persisted full cluster invite token")
+	}
+	if bytes.Contains(joinedConfigRaw, []byte(payload.Discovery.Secret)) {
+		t.Fatal("joined config persisted raw discovery entry value")
+	}
 
 	joinPositional := filepath.Join(t.TempDir(), "join-positional")
 	t.Setenv("XDG_CONFIG_HOME", joinPositional)
 	if _, err := capture(func() error { return run([]string{"join", token}) }); err != nil {
 		t.Fatal(err)
 	}
-	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), token, "observability")
+	assertJoinedClusterInviteConfig(t, filepath.Join(joinPositional, "tubo", "config.yaml"), "observability")
 }
 
 func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
@@ -1517,15 +1790,29 @@ func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
 		t.Fatalf("expected clean stderr for cluster join json, got: %q", stderr)
 	}
 	var joinResult struct {
-		ConfigPath  string `json:"config_path"`
-		ClusterName string `json:"cluster_name"`
-		Namespace   string `json:"namespace"`
+		ConfigPath  string                        `json:"config_path"`
+		ClusterName string                        `json:"cluster_name"`
+		Namespace   string                        `json:"namespace"`
+		Grant       cfgpkg.ClusterMembershipGrant `json:"grant"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &joinResult); err != nil {
 		t.Fatalf("cluster join stdout is not valid json: %v\n%s", err, stdout)
 	}
 	if joinResult.ClusterName != "home" || joinResult.ConfigPath == "" {
 		t.Fatalf("unexpected cluster join json: %#v", joinResult)
+	}
+	if joinResult.Grant.InviteToken != "" {
+		t.Fatalf("join json leaked invite token: %#v", joinResult.Grant)
+	}
+	if strings.Contains(stdout, shareResult.Token) {
+		t.Fatal("join json leaked full cluster invite token")
+	}
+	payload, err := parseAndVerifyClusterInviteToken(shareResult.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.Discovery != nil && strings.Contains(stdout, payload.Discovery.Secret) {
+		t.Fatal("join json leaked raw discovery entry value")
 	}
 }
 
@@ -1667,6 +1954,31 @@ func TestClusterInviteReuseRejectedLocally(t *testing.T) {
 	}
 }
 
+func TestClusterInvitationShareFailsWithoutNamespaceDiscoveryEntry(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	ns := cluster.Namespaces["default"]
+	ns.DiscoverySecretCurrent = nil
+	cluster.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "2h"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing discovery_secret_current") {
+		t.Fatalf("expected missing discovery entry error, got %v", err)
+	}
+}
+
 func TestGrantRequesterInviteRequiresGrantPeer(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -1696,6 +2008,7 @@ func TestClusterInviteGrantAuthorizesNamespaceQueries(t *testing.T) {
 			"home": {
 				ClusterID:          "cluster-123",
 				AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))),
+				Namespaces:         map[string]cfgpkg.Namespace{"pinamespace": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "pinamespace")}},
 				MembershipGrant: &cfgpkg.ClusterMembershipGrant{
 					InviteToken:        "tubo-invite-v1.test",
 					InviteVersion:      clusterInviteVersion,
@@ -1755,7 +2068,11 @@ func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	expiredPayload := clusterInvitePayload{Version: clusterInviteVersion, Kind: clusterInviteKind, JTI: "expired-jti", ClusterName: "home", ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, Namespace: "default", Grant: grant, IssuedAt: time.Now().Add(-2 * time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Hour).UTC()}
+	secretBytes, err := cfgpkg.ReadNamespaceDiscoverySecretFile(cluster.Namespaces["default"].DiscoverySecretCurrent.File)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredPayload := clusterInvitePayload{Version: clusterInviteVersion, Kind: clusterInviteKind, JTI: "expired-jti", ClusterName: "home", ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, Namespace: "default", Discovery: &clusterinvite.NamespaceDiscoveryEntry{Version: "v1", Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: cluster.Namespaces["default"].DiscoverySecretCurrent.KeyID, Secret: base64.RawURLEncoding.EncodeToString(secretBytes), CreatedAt: cluster.Namespaces["default"].DiscoverySecretCurrent.CreatedAt}, Grant: grant, IssuedAt: time.Now().Add(-2 * time.Hour).UTC(), ExpiresAt: time.Now().Add(-time.Hour).UTC()}
 	expiredPayloadBytes, err := json.Marshal(expiredPayload)
 	if err != nil {
 		t.Fatal(err)
@@ -3695,6 +4012,9 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if strings.Contains(out, "PRIVATE KEY") {
 		t.Fatalf("create output leaked private key material: %s", out)
 	}
+	if !strings.Contains(out, "default namespace discovery fingerprint:") {
+		t.Fatalf("cluster create output missing discovery secret metadata: %s", out)
+	}
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -3711,6 +4031,11 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if cfg.CurrentCluster != "home" || cfg.CurrentNamespace != "default" {
 		t.Fatalf("unexpected current context: %#v", cfg)
+	}
+	if ns := cluster.Namespaces["default"]; ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretCurrent.KeyID == "" || ns.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("default namespace discovery secret missing: %#v", ns)
+	} else if _, err := os.Stat(ns.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("default namespace discovery secret file missing: %v", err)
 	}
 	if _, err := os.Stat(cluster.AuthorityPrivateKeyFile); err != nil {
 		t.Fatalf("private key file missing: %v", err)
@@ -3743,7 +4068,7 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "created namespace \"observability\"") {
+	if !strings.Contains(out, "created namespace \"observability\"") || !strings.Contains(out, "discovery fingerprint:") {
 		t.Fatalf("unexpected namespace create output: %s", out)
 	}
 	cfg, err = cfgpkg.LoadFile(configPath)
@@ -3759,6 +4084,12 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 	if observabilityNamespace.MembershipCapabilityFile == "" {
 		t.Fatalf("namespace membership capability not created: %#v", observabilityNamespace)
+	}
+	if observabilityNamespace.DiscoverySecretCurrent == nil || observabilityNamespace.DiscoverySecretCurrent.KeyID == "" || observabilityNamespace.DiscoverySecretCurrent.File == "" {
+		t.Fatalf("namespace discovery secret not created: %#v", observabilityNamespace)
+	}
+	if _, err := os.Stat(observabilityNamespace.DiscoverySecretCurrent.File); err != nil {
+		t.Fatalf("namespace discovery secret file missing: %v", err)
 	}
 	observabilityCapBytes, err := os.ReadFile(observabilityNamespace.MembershipCapabilityFile)
 	if err != nil {
@@ -4014,7 +4345,7 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
 		Edge:             cfgpkg.Edge{AdminListen: "127.0.0.1:1"},
-		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath}},
+		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}},
 	}
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
@@ -4083,7 +4414,7 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
 		Edge:             cfgpkg.Edge{AdminListen: "127.0.0.1:1"},
-		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath}},
+		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}},
 	}
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
@@ -4166,7 +4497,7 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
 		Clusters: map[string]cfgpkg.Cluster{
-			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath},
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
 		},
 	}
 	return cfg, serviceScope{Cluster: "home", Namespace: "observability"}, serviceIDA, serviceIDB
@@ -4248,7 +4579,7 @@ func TestDiscoverServiceExactFallsBackToDisplayNameWhenServiceIDMissing(t *testi
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
 		Clusters: map[string]cfgpkg.Cluster{
-			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath},
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
 		},
 	}
 	result, service, err := discoverServiceExactWithConfig(cfg, 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"}, "myapi", "service-fallback")
@@ -4442,8 +4773,8 @@ func TestResolveAuthorizedServiceScopes(t *testing.T) {
 				AuthorityPublicKey:       authorityKey,
 				MembershipCapabilityFile: defaultCap,
 				Namespaces: map[string]cfgpkg.Namespace{
-					"default": {MembershipCapabilityFile: defaultCap},
-					"metrics": {MembershipCapabilityFile: metricsCap},
+					"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, clusterID, "default"), MembershipCapabilityFile: defaultCap},
+					"metrics": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, clusterID, "metrics"), MembershipCapabilityFile: metricsCap},
 				},
 			},
 		},
@@ -4467,8 +4798,8 @@ func TestResolveAuthorizedServiceScopes(t *testing.T) {
 		AuthorityPublicKey:       authorityKey,
 		MembershipCapabilityFile: defaultCap,
 		Namespaces: map[string]cfgpkg.Namespace{
-			"default": {MembershipCapabilityFile: defaultCap},
-			"metrics": {},
+			"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, clusterID, "default"), MembershipCapabilityFile: defaultCap},
+			"metrics": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, clusterID, "metrics")},
 		},
 	}
 	if _, err := resolveAuthorizedServiceScopes(cfg, "", "", true); err == nil {
@@ -4477,6 +4808,19 @@ func TestResolveAuthorizedServiceScopes(t *testing.T) {
 	if _, err := resolveAuthorizedServiceScopes(cfgpkg.Config{}, "", "", false); err == nil {
 		t.Fatal("expected cluster discovery requirement error")
 	}
+}
+
+func mustWriteNamespaceDiscoverySecretRef(t *testing.T, clusterID, namespace string) *cfgpkg.ManagedSecretRef {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), fmt.Sprintf("%s-%s.discovery.secret", clusterID, namespace))
+	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: fmt.Sprintf("nsdk_%s_%s", clusterID, namespace), File: path, CreatedAt: time.Now().UTC()}
 }
 
 func mustWriteMembershipCapability(t *testing.T, priv ed25519.PrivateKey, cap capability.MembershipCapability) string {

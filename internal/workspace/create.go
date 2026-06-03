@@ -33,6 +33,9 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 	if err := w.store.MkdirAll(paths.ClusterDir(name), 0700); err != nil {
 		return ClusterView{}, err
 	}
+	if err := w.store.MkdirAll(paths.NamespaceDir(name, "default"), 0700); err != nil {
+		return ClusterView{}, err
+	}
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		return ClusterView{}, err
@@ -66,14 +69,19 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 	if err := writeJSONFile(w.store, capPath, membership); err != nil {
 		return ClusterView{}, err
 	}
+	defaultDiscoverySecret, err := writeNamespaceDiscoverySecret(w.store, paths.NamespaceDiscoveryCurrentSecret(name, "default"))
+	if err != nil {
+		return ClusterView{}, err
+	}
 	cfg.Clusters[name] = cfgpkg.Cluster{
 		ClusterID:                clusterID,
 		AuthorityPublicKey:       pubAuthorized,
 		AuthorityPrivateKeyFile:  privPath,
 		MembershipCapabilityFile: capPath,
 		Namespaces: map[string]cfgpkg.Namespace{"default": {
-			Discovery:     cfgpkg.NamespaceDiscoveryEnabled,
-			ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember,
+			Discovery:              cfgpkg.NamespaceDiscoveryEnabled,
+			DiscoverySecretCurrent: defaultDiscoverySecret,
+			ConnectPolicy:          cfgpkg.ConnectPolicyNamespaceMember,
 		}},
 	}
 	cfg.CurrentCluster = name
@@ -140,7 +148,11 @@ func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, err
 	if err := writeJSONFile(w.store, capPath, membership); err != nil {
 		return NamespaceView{}, err
 	}
-	cluster.Namespaces[name] = cfgpkg.Namespace{MembershipCapabilityFile: capPath, Discovery: cfgpkg.NamespaceDiscoveryEnabled, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember}
+	discoverySecret, err := writeNamespaceDiscoverySecret(w.store, paths.NamespaceDiscoveryCurrentSecret(cfg.CurrentCluster, name))
+	if err != nil {
+		return NamespaceView{}, err
+	}
+	cluster.Namespaces[name] = cfgpkg.Namespace{MembershipCapabilityFile: capPath, Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: discoverySecret, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember}
 	cfg.Clusters[cfg.CurrentCluster] = cluster
 	cfg.CurrentNamespace = name
 	if err := w.SaveConfig(configPath, cfg); err != nil {
@@ -203,6 +215,20 @@ func writeJSONFile(store Store, path string, value any) error {
 	}
 	b = append(b, '\n')
 	return store.WriteFile(path, b, 0600)
+}
+
+func writeNamespaceDiscoverySecret(store Store, path string) (*cfgpkg.ManagedSecretRef, error) {
+	secret, ref, err := cfgpkg.BuildNamespaceDiscoverySecretRef(path, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	if err := store.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return nil, err
+	}
+	if err := store.WriteFile(path, secret, 0600); err != nil {
+		return nil, err
+	}
+	return ref, nil
 }
 
 func clusterIDFromAuthorityKey(publicKey string) string {

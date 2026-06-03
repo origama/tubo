@@ -32,21 +32,24 @@ import (
 
 // Config captures the runtime configuration of the edge gateway.
 type Config struct {
-	HTTPListen             string
-	P2PListen              string
-	Seed                   string
-	AdminListen            string
-	BootstrapPeers         []string
-	RelayPeers             []string
-	BootstrapRetryInterval time.Duration
-	DirectStreamTimeout    time.Duration
-	PrivateKeyFile         string
-	PrivateKeyB64          string
-	AuthorityPublicKey     string
-	DiscoveryTopic         string
-	DiscoveryMode          string
-	DiscoveryClusterID     string
-	DiscoveryNamespaceID   string
+	HTTPListen               string
+	P2PListen                string
+	Seed                     string
+	AdminListen              string
+	BootstrapPeers           []string
+	RelayPeers               []string
+	BootstrapRetryInterval   time.Duration
+	DirectStreamTimeout      time.Duration
+	PrivateKeyFile           string
+	PrivateKeyB64            string
+	AuthorityPublicKey       string
+	DiscoveryTopic           string
+	DiscoveryPreviousTopic   string
+	DiscoveryMode            string
+	DiscoveryClusterID       string
+	DiscoveryNamespaceID     string
+	DiscoveryContext         *discovery.NamespaceDiscoveryContext
+	DiscoveryPreviousContext *discovery.NamespaceDiscoveryContext
 }
 
 // LoadConfigFromEnv loads edge configuration from environment variables.
@@ -118,7 +121,7 @@ const (
 
 // New constructs a new edge runtime.
 func New(ctx context.Context, cfg Config) (*App, error) {
-	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64, cfg.AuthorityPublicKey, cfg.DiscoveryTopic, cfg.DiscoveryMode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID)
+	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64, cfg.AuthorityPublicKey, cfg.DiscoveryTopic, cfg.DiscoveryPreviousTopic, cfg.DiscoveryMode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.DiscoveryContext, cfg.DiscoveryPreviousContext)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +235,7 @@ func adminMux(gw *Gateway) *http.ServeMux {
 	return mux
 }
 
-func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64, authorityPublicKey, discoveryTopic, discoveryMode, discoveryClusterID, discoveryNamespaceID string) (*Gateway, chan struct{}, error) {
+func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64, authorityPublicKey, discoveryTopic, discoveryPreviousTopic, discoveryMode, discoveryClusterID, discoveryNamespaceID string, discoveryContext, discoveryPreviousContext *discovery.NamespaceDiscoveryContext) (*Gateway, chan struct{}, error) {
 	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSK(privateKeyFile, privateKeyB64)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load private network key: %w", err)
@@ -260,11 +263,7 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		return nil, nil, fmt.Errorf("create gossipsub: %w", err)
 	}
 
-	topicName := discoveryTopic
-	if topicName == "" {
-		topicName = discovery.DiscoveryTopic
-	}
-	topic, err := ps.Join(topicName)
+	topic, err := ps.Join(discoveryTopic)
 	if err != nil {
 		_ = h.Close()
 		return nil, nil, fmt.Errorf("join discovery topic: %w", err)
@@ -272,19 +271,27 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 
 	cache := discovery.NewCache(30*time.Second, 1*time.Second)
 	mode := discovery.Mode(discoveryMode)
-	if mode != discovery.ModeNamespaceV2 {
+	if mode != discovery.ModeNamespaceV3 || discoveryContext == nil {
 		_ = h.Close()
-		return nil, nil, fmt.Errorf("cluster/namespace discovery is required; legacy swarm discovery has been removed")
+		return nil, nil, fmt.Errorf("discovery-enabled namespaces require discovery mode %q", discovery.ModeNamespaceV3)
 	}
-	sub := discovery.NewPubSubSubscriber(topic, cache)
-	if mode == discovery.ModeNamespaceV2 {
-		sub = discovery.NewPubSubSubscriberWithMode(topic, cache, mode, discoveryClusterID, discoveryNamespaceID)
-		if authorityPublicKey != "" {
-			if raw, err := discovery.ParseAuthorityPublicKey(authorityPublicKey); err == nil {
-				sub.SetAuthorityPublicKey(raw)
-			} else {
-				return nil, nil, fmt.Errorf("parse authority public key: %w", err)
-			}
+	topics := []*pubsub.Topic{topic}
+	contexts := []discovery.NamespaceDiscoveryContext{*discoveryContext}
+	if discoveryPreviousTopic != "" && discoveryPreviousContext != nil {
+		previousTopic, err := ps.Join(discoveryPreviousTopic)
+		if err != nil {
+			_ = h.Close()
+			return nil, nil, fmt.Errorf("join previous discovery topic: %w", err)
+		}
+		topics = append(topics, previousTopic)
+		contexts = append(contexts, *discoveryPreviousContext)
+	}
+	sub := discovery.NewPubSubSubscriberV3(topics, cache, contexts)
+	if authorityPublicKey != "" {
+		if raw, err := discovery.ParseAuthorityPublicKey(authorityPublicKey); err == nil {
+			sub.SetAuthorityPublicKey(raw)
+		} else {
+			return nil, nil, fmt.Errorf("parse authority public key: %w", err)
 		}
 	}
 

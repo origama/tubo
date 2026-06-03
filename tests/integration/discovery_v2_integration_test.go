@@ -24,7 +24,6 @@ import (
 	"github.com/origama/tubo/internal/app/service"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
-	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
@@ -132,6 +131,7 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	secretRef, _, _ := mustIntegrationDiscoveryRef(t, "cluster-123", namespaceName)
 	cfg := cfgpkg.Config{
 		CurrentCluster:   clusterName,
 		CurrentNamespace: namespaceName,
@@ -140,14 +140,14 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 				ClusterID:                "cluster-123",
 				AuthorityPublicKey:       authorityKey,
 				MembershipCapabilityFile: capPath,
-				Namespaces: map[string]cfgpkg.Namespace{namespaceName: {Services: map[string]cfgpkg.NamespaceService{
+				Namespaces: map[string]cfgpkg.Namespace{namespaceName: {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: secretRef, Services: map[string]cfgpkg.NamespaceService{
 					"myapi": {ServiceID: serviceID, ServiceSeed: serviceSeed, ServiceClaimFile: claimPath, ServicePublishLeaseFile: leasePath},
 				}}},
 			},
 		},
 	}
 	runtime := cfg.DiscoveryRuntime()
-	if runtime.Mode != cfgpkg.DiscoveryModeNamespaceV2 {
+	if runtime.Mode != cfgpkg.DiscoveryModeNamespaceV3 {
 		t.Fatalf("expected cluster-mode discovery runtime, got %#v", runtime)
 	}
 
@@ -158,17 +158,19 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 	serviceHealth := freePort(t)
 
 	edgeApp, err := edge.New(context.Background(), edge.Config{
-		HTTPListen:             fmt.Sprintf("127.0.0.1:%d", edgeHTTP),
-		AdminListen:            fmt.Sprintf("127.0.0.1:%d", edgeAdmin),
-		P2PListen:              fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P),
-		Seed:                   "edge-discovery-v2-seed",
-		BootstrapRetryInterval: 500 * time.Millisecond,
-		DirectStreamTimeout:    250 * time.Millisecond,
-		AuthorityPublicKey:     authorityKey,
-		DiscoveryTopic:         runtime.Topic,
-		DiscoveryMode:          runtime.Mode.String(),
-		DiscoveryClusterID:     runtime.ClusterID,
-		DiscoveryNamespaceID:   runtime.NamespaceID,
+		HTTPListen:               fmt.Sprintf("127.0.0.1:%d", edgeHTTP),
+		AdminListen:              fmt.Sprintf("127.0.0.1:%d", edgeAdmin),
+		P2PListen:                fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P),
+		Seed:                     "edge-discovery-v2-seed",
+		BootstrapRetryInterval:   500 * time.Millisecond,
+		DirectStreamTimeout:      250 * time.Millisecond,
+		AuthorityPublicKey:       authorityKey,
+		DiscoveryTopic:           runtime.Topic,
+		DiscoveryMode:            runtime.Mode.String(),
+		DiscoveryClusterID:       runtime.ClusterID,
+		DiscoveryNamespaceID:     runtime.NamespaceID,
+		DiscoveryContext:         runtime.Context,
+		DiscoveryPreviousContext: runtime.PreviousContext,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,6 +189,8 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 		DiscoveryMode:            runtime.Mode.String(),
 		DiscoveryClusterID:       runtime.ClusterID,
 		DiscoveryNamespaceID:     runtime.NamespaceID,
+		DiscoveryContext:         runtime.Context,
+		DiscoveryPreviousContext: runtime.PreviousContext,
 		AuthorityPublicKey:       authorityKey,
 		MembershipCapabilityFile: capPath,
 		ServiceClaimFile:         claimPath,
@@ -348,7 +352,7 @@ func TestClusterModeDiscoveryV2PublishesReachableGrantEndpoint(t *testing.T) {
 	edgeP2P := freePort(t)
 	serviceP2P := freePort(t)
 	serviceHealth := freePort(t)
-	topic := discovery.NamespaceTopic("cluster-123", namespaceName)
+	_, topic, dctx := mustIntegrationDiscoveryRef(t, "cluster-123", namespaceName)
 
 	edgeApp, err := edge.New(context.Background(), edge.Config{
 		HTTPListen:             fmt.Sprintf("127.0.0.1:%d", edgeHTTP),
@@ -359,9 +363,10 @@ func TestClusterModeDiscoveryV2PublishesReachableGrantEndpoint(t *testing.T) {
 		DirectStreamTimeout:    250 * time.Millisecond,
 		AuthorityPublicKey:     authorityKey,
 		DiscoveryTopic:         topic,
-		DiscoveryMode:          cfgpkg.DiscoveryModeNamespaceV2.String(),
+		DiscoveryMode:          cfgpkg.DiscoveryModeNamespaceV3.String(),
 		DiscoveryClusterID:     "cluster-123",
 		DiscoveryNamespaceID:   namespaceName,
+		DiscoveryContext:       dctx,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -377,9 +382,10 @@ func TestClusterModeDiscoveryV2PublishesReachableGrantEndpoint(t *testing.T) {
 		BootstrapRetryInterval:   500 * time.Millisecond,
 		DiscoveryEnabled:         true,
 		DiscoveryTopic:           topic,
-		DiscoveryMode:            cfgpkg.DiscoveryModeNamespaceV2.String(),
+		DiscoveryMode:            cfgpkg.DiscoveryModeNamespaceV3.String(),
 		DiscoveryClusterID:       "cluster-123",
 		DiscoveryNamespaceID:     namespaceName,
+		DiscoveryContext:         dctx,
 		AuthorityPublicKey:       authorityKey,
 		ConnectPolicy:            string(cfgpkg.ConnectPolicyNamespaceMember),
 		MembershipCapabilityFile: capPath,
@@ -512,6 +518,7 @@ func TestClusterModeDiscoveryV2RejectsServiceWithoutClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	secretRef, _, _ := mustIntegrationDiscoveryRef(t, "cluster-123", namespaceName)
 	cfg := cfgpkg.Config{
 		CurrentCluster:   clusterName,
 		CurrentNamespace: namespaceName,
@@ -519,6 +526,7 @@ func TestClusterModeDiscoveryV2RejectsServiceWithoutClaim(t *testing.T) {
 			ClusterID:                "cluster-123",
 			AuthorityPublicKey:       authorityKey,
 			MembershipCapabilityFile: capPath,
+			Namespaces:               map[string]cfgpkg.Namespace{namespaceName: {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: secretRef}},
 		}},
 	}
 	runtime := cfg.DiscoveryRuntime()
@@ -529,17 +537,19 @@ func TestClusterModeDiscoveryV2RejectsServiceWithoutClaim(t *testing.T) {
 	serviceHealth := freePort(t)
 
 	edgeApp, err := edge.New(context.Background(), edge.Config{
-		HTTPListen:             fmt.Sprintf("127.0.0.1:%d", edgeHTTP),
-		AdminListen:            fmt.Sprintf("127.0.0.1:%d", edgeAdmin),
-		P2PListen:              fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P),
-		Seed:                   "edge-discovery-v2-reject-seed",
-		BootstrapRetryInterval: 500 * time.Millisecond,
-		DirectStreamTimeout:    250 * time.Millisecond,
-		AuthorityPublicKey:     authorityKey,
-		DiscoveryTopic:         runtime.Topic,
-		DiscoveryMode:          runtime.Mode.String(),
-		DiscoveryClusterID:     runtime.ClusterID,
-		DiscoveryNamespaceID:   runtime.NamespaceID,
+		HTTPListen:               fmt.Sprintf("127.0.0.1:%d", edgeHTTP),
+		AdminListen:              fmt.Sprintf("127.0.0.1:%d", edgeAdmin),
+		P2PListen:                fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P),
+		Seed:                     "edge-discovery-v2-reject-seed",
+		BootstrapRetryInterval:   500 * time.Millisecond,
+		DirectStreamTimeout:      250 * time.Millisecond,
+		AuthorityPublicKey:       authorityKey,
+		DiscoveryTopic:           runtime.Topic,
+		DiscoveryMode:            runtime.Mode.String(),
+		DiscoveryClusterID:       runtime.ClusterID,
+		DiscoveryNamespaceID:     runtime.NamespaceID,
+		DiscoveryContext:         runtime.Context,
+		DiscoveryPreviousContext: runtime.PreviousContext,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -557,6 +567,8 @@ func TestClusterModeDiscoveryV2RejectsServiceWithoutClaim(t *testing.T) {
 		DiscoveryMode:            runtime.Mode.String(),
 		DiscoveryClusterID:       runtime.ClusterID,
 		DiscoveryNamespaceID:     runtime.NamespaceID,
+		DiscoveryContext:         runtime.Context,
+		DiscoveryPreviousContext: runtime.PreviousContext,
 		AuthorityPublicKey:       authorityKey,
 		MembershipCapabilityFile: capPath,
 	})
