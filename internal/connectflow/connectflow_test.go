@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -347,7 +348,11 @@ func TestResolveFallsBackToMembershipGrantTokenForDiscoveryConnect(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "join-1", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authSSH))), Namespace: "default", Grant: grant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
+	discoverySecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "join-1", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authSSH))), Namespace: "default", Discovery: &clusterinvite.NamespaceDiscoveryEntry{Version: "v1", Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_join", Secret: base64.RawURLEncoding.EncodeToString(discoverySecret), CreatedAt: time.Now().UTC()}, Grant: grant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
 	if err != nil {
 		t.Fatal(err)
 	}

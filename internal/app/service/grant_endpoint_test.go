@@ -3,6 +3,7 @@ package service
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	capability "github.com/origama/tubo/internal/capability"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
+	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
@@ -54,7 +56,11 @@ func TestServiceGrantEndpointNamespaceMembersPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	viewerToken, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "viewer-jti", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(mustSSHKey(t, authPub)))), Namespace: "default", Grant: viewerGrant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
+	discoverySecret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	viewerToken, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "viewer-jti", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(mustSSHKey(t, authPub)))), Namespace: "default", Discovery: &clusterinvite.NamespaceDiscoveryEntry{Version: "v1", Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_viewer", Secret: base64.RawURLEncoding.EncodeToString(discoverySecret), CreatedAt: time.Now().UTC()}, Grant: viewerGrant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +72,7 @@ func TestServiceGrantEndpointNamespaceMembersPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	memberToken, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "member-jti", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(mustSSHKey(t, authPub)))), Namespace: "default", Grant: memberGrant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
+	memberToken, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.Kind, JTI: "member-jti", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(mustSSHKey(t, authPub)))), Namespace: "default", Discovery: &clusterinvite.NamespaceDiscoveryEntry{Version: "v1", Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_member", Secret: base64.RawURLEncoding.EncodeToString(discoverySecret), CreatedAt: time.Now().UTC()}, Grant: memberGrant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
 	if err != nil {
 		t.Fatal(err)
 	}

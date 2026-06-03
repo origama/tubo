@@ -86,10 +86,28 @@ func BuildNamespaceDiscoverySecretRef(path string, now time.Time) ([]byte, *Mana
 	if err != nil {
 		return nil, nil, err
 	}
-	return secret, &ManagedSecretRef{
+	return BuildNamespaceDiscoverySecretRefFromBytes(path, secret, keyID, now, time.Time{})
+}
+
+func BuildNamespaceDiscoverySecretRefFromBytes(path string, secret []byte, keyID string, createdAt, expiresAt time.Time) ([]byte, *ManagedSecretRef, error) {
+	if len(secret) != NamespaceDiscoverySecretLength {
+		return nil, nil, fmt.Errorf("namespace discovery secret must be %d bytes", NamespaceDiscoverySecretLength)
+	}
+	if strings.TrimSpace(keyID) == "" {
+		return nil, nil, fmt.Errorf("key id is required")
+	}
+	ref := &ManagedSecretRef{
 		Type:      SecretTypeNamespaceDiscovery,
-		KeyID:     keyID,
+		KeyID:     strings.TrimSpace(keyID),
 		File:      strings.TrimSpace(path),
-		CreatedAt: now.UTC(),
-	}, nil
+		CreatedAt: createdAt.UTC(),
+		ExpiresAt: expiresAt.UTC(),
+	}
+	if createdAt.IsZero() {
+		ref.CreatedAt = time.Time{}
+	}
+	if expiresAt.IsZero() {
+		ref.ExpiresAt = time.Time{}
+	}
+	return append([]byte(nil), secret...), ref, nil
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -20,6 +21,7 @@ import (
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	logging "github.com/origama/tubo/internal/logging"
+	workspace "github.com/origama/tubo/internal/workspace"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -134,6 +136,10 @@ func localShareCmd(args []string) error {
 		return err
 	}
 	now := time.Now().UTC()
+	discoveryEntry, err := clusterInviteDiscoveryEntry(cluster, selectedNamespace)
+	if err != nil {
+		return err
+	}
 	payload := clusterInvitePayload{
 		Version:            clusterInviteVersion,
 		Kind:               clusterInviteKind,
@@ -142,6 +148,7 @@ func localShareCmd(args []string) error {
 		ClusterID:          cluster.ClusterID,
 		AuthorityPublicKey: cluster.AuthorityPublicKey,
 		Namespace:          selectedNamespace,
+		Discovery:          discoveryEntry,
 		Grant:              grant,
 		IssuedAt:           now,
 		ExpiresAt:          now.Add(*expires),
@@ -347,6 +354,18 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	if _, nsExists := cluster.Namespaces[payload.Namespace]; !nsExists {
 		cluster.Namespaces[payload.Namespace] = cfgpkg.Namespace{}
 	}
+	installedRef, err := installClusterInviteDiscoveryEntry(configDir, payload.ClusterName, payload.Namespace, payload.Discovery)
+	if err != nil {
+		return err
+	}
+	joinedNamespace := cluster.Namespaces[payload.Namespace]
+	joinedNamespace.Discovery = cfgpkg.NamespaceDiscoveryEnabled
+	if joinedNamespace.ConnectPolicy == "" {
+		joinedNamespace.ConnectPolicy = cfgpkg.ConnectPolicyNamespaceMember
+	}
+	joinedNamespace.DiscoverySecretCurrent = installedRef
+	joinedNamespace.DiscoverySecretPrevious = nil
+	cluster.Namespaces[payload.Namespace] = joinedNamespace
 	cluster.MembershipGrant = &cfgpkg.ClusterMembershipGrant{
 		InviteToken:          token,
 		InviteVersion:        payload.Version,
@@ -539,4 +558,59 @@ func stringSliceEqualSet(have, want []string) bool {
 
 func isClusterInviteToken(token string) bool {
 	return clusterinvite.IsToken(token)
+}
+
+func clusterInviteDiscoveryEntry(cluster cfgpkg.Cluster, namespace string) (*clusterinvite.NamespaceDiscoveryEntry, error) {
+	ns, ok := cluster.Namespaces[namespace]
+	if !ok {
+		return nil, fmt.Errorf("namespace %q not found in cluster", namespace)
+	}
+	if ns.Discovery != cfgpkg.NamespaceDiscoveryEnabled {
+		return nil, fmt.Errorf("namespace %q discovery is not enabled", namespace)
+	}
+	if ns.DiscoverySecretCurrent == nil {
+		return nil, fmt.Errorf("namespace %q is missing discovery_secret_current", namespace)
+	}
+	secretBytes, err := cfgpkg.ReadNamespaceDiscoverySecretFile(ns.DiscoverySecretCurrent.File)
+	if err != nil {
+		return nil, fmt.Errorf("read namespace %q discovery secret: %w", namespace, err)
+	}
+	return &clusterinvite.NamespaceDiscoveryEntry{
+		Version:   "v1",
+		Type:      ns.DiscoverySecretCurrent.Type,
+		KeyID:     ns.DiscoverySecretCurrent.KeyID,
+		Secret:    base64.RawURLEncoding.EncodeToString(secretBytes),
+		CreatedAt: ns.DiscoverySecretCurrent.CreatedAt,
+		ExpiresAt: ns.DiscoverySecretCurrent.ExpiresAt,
+	}, nil
+}
+
+func installClusterInviteDiscoveryEntry(configDir, clusterName, namespace string, entry *clusterinvite.NamespaceDiscoveryEntry) (*cfgpkg.ManagedSecretRef, error) {
+	if entry == nil {
+		return nil, errors.New("cluster invite is missing namespace discovery entry")
+	}
+	if err := clusterinvite.ValidateNamespaceDiscoveryEntry(*entry); err != nil {
+		return nil, err
+	}
+	secretBytes, err := base64.RawURLEncoding.DecodeString(entry.Secret)
+	if err != nil {
+		return nil, err
+	}
+	paths := workspace.Paths{ConfigDir: configDir}
+	secretPath := paths.NamespaceDiscoveryCurrentSecret(clusterName, namespace)
+	secretBytes, ref, err := cfgpkg.BuildNamespaceDiscoverySecretRefFromBytes(secretPath, secretBytes, entry.KeyID, entry.CreatedAt, entry.ExpiresAt)
+	if err != nil {
+		return nil, err
+	}
+	if ref.Type == "" {
+		ref.Type = cfgpkg.SecretTypeNamespaceDiscovery
+	}
+	ref.Type = cfgpkg.SecretTypeNamespaceDiscovery
+	if err := os.MkdirAll(filepath.Dir(secretPath), 0700); err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(secretPath, secretBytes, 0600); err != nil {
+		return nil, err
+	}
+	return ref, nil
 }
