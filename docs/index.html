@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tubo — P2P API Tunnels for Services Behind NAT</title>
-  <meta name="description" content="Publish any local HTTP service into a private libp2p swarm. Connect from anywhere, no port forwarding, no VPN, no cloud proxy required.">
+  <title>Tubo — P2P tunnels for HTTP APIs and raw TCP/TLS services</title>
+  <meta name="description" content="Publish local HTTP APIs or raw TCP/TLS services over private libp2p tunnels with invite tokens, secret-backed namespace discovery, and self-hosted relays.">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -38,12 +38,12 @@
 
 <!-- ===== HERO ===== -->
 <section class="hero">
-  <div class="hero-eyebrow">✦ Private libp2p tunnels · No cloud proxy required</div>
-  <h1>Expose any HTTP service<br><span>through a P2P tunnel</span></h1>
+  <div class="hero-eyebrow">✦ Private libp2p tunnels · HTTP + raw TCP/TLS · No cloud proxy required</div>
+  <h1>Expose local HTTP APIs<br><span>and raw TCP/TLS services</span></h1>
   <p class="hero-sub">
-    Tubo lets you publish local HTTP endpoints into a private libp2p swarm
-    and consume them from anywhere — even behind NAT — with end-to-end encryption,
-    signed discovery, and cryptographic access control.
+    Tubo publishes local services into a private libp2p swarm and lets authorized clients
+    reach them from anywhere — even behind NAT — with end-to-end encryption, invite-based access,
+    and secret-backed namespace discovery for collaborative scopes.
   </p>
   <div class="hero-actions">
     <a href="docs/getting-started.html" class="btn btn-primary">
@@ -81,15 +81,15 @@
     <div class="mermaid-wrap">
       <div class="mermaid">
 flowchart LR
-    Client(["🖥️ Client\nHTTP"])
+    Client(["🖥️ Client\nHTTP or TCP"])
     Connect["tubo connect"]
     Relay(["tubo relay\nbootstrap · circuit v2"])
     Attach["tubo attach"]
-    Origin(["⚙️ Origin Service\nHTTP"])
+    Origin(["⚙️ Origin Service\nHTTP or TCP/TLS"])
 
-    Client -- "HTTP" --> Connect
+    Client -- "HTTP or TCP" --> Connect
     Connect -- "libp2p stream\n🔒 encrypted" --> Attach
-    Attach -- "HTTP" --> Origin
+    Attach -- "HTTP or raw TCP" --> Origin
     Connect -. "NAT traversal\nfallback" .-> Relay
     Relay -. "NAT traversal\nfallback" .-> Attach
 
@@ -113,14 +113,14 @@ flowchart LR
         <div class="step-num">2</div>
         <div class="step-body">
           <h3>Attach your service</h3>
-          <p>Run <code>tubo attach</code> next to any HTTP process. It joins the swarm, signs a service announcement, and starts serving libp2p streams.</p>
+          <p>Run <code>tubo attach</code> next to any HTTP API or raw TCP/TLS service. It joins the swarm, publishes signed service metadata, and starts serving libp2p streams.</p>
         </div>
       </div>
       <div class="flow-step">
         <div class="step-num">3</div>
         <div class="step-body">
           <h3>Connect from anywhere</h3>
-          <p>Run <code>tubo connect</code> on any machine. It discovers the service, opens a tunnel, and exposes a local HTTP port you can use immediately.</p>
+          <p>Run <code>tubo connect</code> on any machine. It redeems an invite or uses namespace discovery, opens a tunnel, and exposes a local HTTP or TCP endpoint immediately.</p>
         </div>
       </div>
       <div class="flow-step">
@@ -158,8 +158,8 @@ flowchart LR
 
       <div class="feature-card">
         <div class="feature-icon" style="background:#faf5ff">🔑</div>
-        <h3>Signed discovery</h3>
-        <p>Service announcements are Ed25519-signed. Clients validate the signature before connecting — no spoofing, no unauthenticated routing.</p>
+        <h3>Secret-backed namespace discovery</h3>
+        <p>Collaborative namespaces use Discovery V3 topics derived from namespace secret material. Overlay reachability alone does not grant service visibility.</p>
       </div>
 
       <div class="feature-card">
@@ -170,8 +170,8 @@ flowchart LR
 
       <div class="feature-card">
         <div class="feature-icon" style="background:#f0fdf4">🎟️</div>
-        <h3>Invite-based access</h3>
-        <p>Share signed invite tokens for one-time service access. Each token is cryptographically bound to the recipient and cannot be reused.</p>
+        <h3>Invite-based and team-based access</h3>
+        <p>Use one-time share invites for direct access or cluster invites for collaborative namespaces with member/viewer roles and scoped connect permissions.</p>
       </div>
 
       <div class="feature-card">
@@ -182,14 +182,14 @@ flowchart LR
 
       <div class="feature-card">
         <div class="feature-icon" style="background:#fdf4ff">⚡</div>
-        <h3>Single binary</h3>
-        <p>One static binary for all roles: <code>relay</code>, <code>attach</code>, <code>connect</code>, <code>gateway</code>. No runtime dependencies, no Docker required.</p>
+        <h3>HTTP and raw TCP/TLS</h3>
+        <p>Publish classic HTTP APIs or raw <code>tcp://...</code> targets. TLS passthrough works end-to-end because Tubo can expose a local raw TCP listener instead of forcing HTTP bridging.</p>
       </div>
 
       <div class="feature-card">
         <div class="feature-icon" style="background:#fff7ed">🔄</div>
-        <h3>Daemonless process model</h3>
-        <p>Long-running commands stay in foreground or detach with <code>-d</code>. Inspect with <code>tubo ps</code>, tail logs with <code>tubo logs</code>, stop with <code>tubo stop</code>.</p>
+        <h3>Managed namespace secret rotation</h3>
+        <p>Rotate namespace discovery entries with a current/previous grace model using <code>tubo rotate secret/namespace-discovery/...</code> and inspect metadata with <code>tubo get secrets</code>.</p>
       </div>
 
       <div class="feature-card">
@@ -224,7 +224,7 @@ flowchart LR
           <button class="copy-code" onclick="copyCode(this)">Copy</button>
           <pre><span class="hl-comment"># — Machine A: publish your local service —</span>
 <span class="hl-prompt">$</span> <span class="hl-cmd">tubo join</span>                     <span class="hl-comment"># join the public Tubo network</span>
-<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-flag">myapi</span> <span class="hl-flag">--port</span> <span class="hl-val">8080</span> <span class="hl-flag">-d</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">http://127.0.0.1:8080</span> <span class="hl-flag">--name</span> <span class="hl-val">myapi</span> <span class="hl-flag">-d</span>
 
 <span class="hl-ok">✓</span> <span class="hl-info">Service published   name=myapi  visibility=unlisted</span>
 <span class="hl-ok">✓</span> <span class="hl-info">Share token         tubo connect --token eyJ...</span>
@@ -252,13 +252,15 @@ flowchart LR
     <span class="hl-flag">--relay</span> <span class="hl-val">/ip4/1.2.3.4/tcp/4001/p2p/12D3...</span> \
     <span class="hl-flag">--swarm-key</span> <span class="hl-val">./swarm.key</span>
 <span class="hl-prompt">$</span> <span class="hl-cmd">tubo create cluster/</span><span class="hl-val">myteam</span>
-<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-flag">myapi</span> <span class="hl-flag">--port</span> <span class="hl-val">8080</span> <span class="hl-flag">-d</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo create namespace/</span><span class="hl-val">team</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">http://127.0.0.1:8080</span> <span class="hl-flag">--name</span> <span class="hl-val">myapi</span> <span class="hl-flag">-d</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo share cluster/</span><span class="hl-val">myteam</span> <span class="hl-flag">--namespace</span> <span class="hl-val">team</span> <span class="hl-flag">--role</span> <span class="hl-val">member</span>
 
-<span class="hl-comment"># — Client host: discover and connect —</span>
+<span class="hl-comment"># — Client host: join, discover, and connect —</span>
 <span class="hl-prompt">$</span> <span class="hl-cmd">tubo join</span> <span class="hl-flag">cluster/myteam</span> <span class="hl-flag">--token</span> <span class="hl-val">&lt;invite&gt;</span>
 <span class="hl-prompt">$</span> <span class="hl-cmd">tubo get services</span>
-  <span class="hl-info">NAME    SERVICE ID   ACCESS</span>
-  <span class="hl-info">myapi   svc_abc123   namespace_members</span>
+  <span class="hl-info">NAME    SERVICE ID   CONNECT POLICY</span>
+  <span class="hl-info">myapi   service-...  namespace_members</span>
 <span class="hl-prompt">$</span> <span class="hl-cmd">tubo connect</span> <span class="hl-val">myapi</span> <span class="hl-flag">--local</span> <span class="hl-val">127.0.0.1:9000</span></pre>
         </div>
       </div>
@@ -268,7 +270,7 @@ flowchart LR
         <div class="code-block" style="border-radius:0 var(--radius-lg) var(--radius-lg)">
           <button class="copy-code" onclick="copyCode(this)">Copy</button>
           <pre><span class="hl-comment"># — On the machine running LM Studio (port 1234) —</span>
-<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">lmstudio</span> <span class="hl-flag">--port</span> <span class="hl-val">1234</span> <span class="hl-flag">-d</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">http://127.0.0.1:1234</span> <span class="hl-flag">--name</span> <span class="hl-val">lmstudio</span> <span class="hl-flag">-d</span>
 
 <span class="hl-ok">✓</span> <span class="hl-info">Service published   name=lmstudio</span>
 <span class="hl-ok">✓</span> <span class="hl-info">Share token         tubo connect --token eyJ...</span>
@@ -282,7 +284,10 @@ flowchart LR
     <span class="hl-flag">-d</span> <span class="hl-str">'{"model":"local-model","messages":[{"role":"user","content":"Hello"}]}'</span>
 
 <span class="hl-comment"># Works with Ollama too</span>
-<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">ollama</span> <span class="hl-flag">--port</span> <span class="hl-val">11434</span> <span class="hl-flag">-d</span></pre>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">http://127.0.0.1:11434</span> <span class="hl-flag">--name</span> <span class="hl-val">ollama</span> <span class="hl-flag">-d</span>
+
+<span class="hl-comment"># And raw TLS/TCP passthrough is first-class too</span>
+<span class="hl-prompt">$</span> <span class="hl-cmd">tubo attach</span> <span class="hl-val">tcp://127.0.0.1:8443</span> <span class="hl-flag">--name</span> <span class="hl-val">tlsdemo</span> <span class="hl-flag">-d</span></pre>
         </div>
       </div>
     </div>
@@ -306,7 +311,7 @@ flowchart LR
       <div class="usecase-card">
         <div class="uc-icon">🤖</div>
         <h3>Share local AI models</h3>
-        <p>Run LM Studio or Ollama on your workstation and give teammates a working API endpoint — no cloud GPU required.</p>
+        <p>Run LM Studio or Ollama on your workstation and give teammates a working API endpoint — no cloud GPU required, and no central proxy in the data path.</p>
         <div class="uc-tags"><span class="uc-tag">LM Studio</span><span class="uc-tag">Ollama</span><span class="uc-tag">OpenAI API</span></div>
       </div>
 
@@ -334,7 +339,7 @@ flowchart LR
       <div class="usecase-card">
         <div class="uc-icon">🏢</div>
         <h3>Private team APIs</h3>
-        <p>Run a cluster with namespace-scoped discovery. Services are only visible to members with the right capability.</p>
+        <p>Run a cluster with secret-backed namespace discovery. Services are only visible to members carrying the right namespace discovery entry and connect permissions.</p>
         <div class="uc-tags"><span class="uc-tag">Clusters</span><span class="uc-tag">Namespaces</span><span class="uc-tag">Team</span></div>
       </div>
 
@@ -446,13 +451,13 @@ flowchart LR
       <a href="docs/getting-started.html" class="doc-card">
         <span class="dc-icon">🚀</span>
         <h3>Getting Started</h3>
-        <p>Install Tubo, join the public network, and publish your first service in under 5 minutes.</p>
+        <p>Install Tubo, join the public network, and publish your first HTTP or TCP/TLS service in minutes.</p>
         <span class="dc-arrow">Read guide →</span>
       </a>
       <a href="docs/concepts.html" class="doc-card">
         <span class="dc-icon">🧠</span>
         <h3>Core Concepts</h3>
-        <p>Understand roles, clusters, namespaces, service identities, and the discovery model.</p>
+        <p>Understand roles, clusters, namespaces, service identities, Discovery V3, and the trust model.</p>
         <span class="dc-arrow">Read guide →</span>
       </a>
       <a href="docs/cli-reference.html" class="doc-card">

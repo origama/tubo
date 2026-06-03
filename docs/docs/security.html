@@ -50,9 +50,9 @@
   <main class="docs-content">
     <h1>Security Model</h1>
     <p class="doc-lead">
-      Tubo's security model is built on three orthogonal layers: transport isolation, service identity,
-      and capability-based access. Understanding what each layer provides — and does <em>not</em> provide —
-      is essential for safe deployment.
+      Tubo's security model is built on transport isolation, secret-backed namespace discovery,
+      stable service identity, and capability-based access. Understanding what each layer provides —
+      and does <em>not</em> provide — is essential for safe deployment.
     </p>
 
     <div class="warning">
@@ -76,23 +76,24 @@
       <li>Anonymity or traffic analysis resistance.</li>
     </ul>
 
-    <h2>Layer 2 — Service identity and publish authorisation</h2>
+    <h2>Layer 2 — Namespace discovery and publish authorisation</h2>
     <p>
-      Every service has a stable <strong>service ID</strong> derived from an Ed25519 owner key.
-      Before a service can publish into a namespace, it must hold a <code>PublishLease</code>
-      signed by the cluster authority.
+      In discovery-enabled collaborative namespaces, overlay reachability alone is not enough to see services.
+      Peers also need the correct namespace discovery entry. Every service has a stable <strong>service ID</strong>
+      derived from an Ed25519 owner key, and before a service can publish into a namespace it must hold a
+      <code>PublishLease</code> signed by the cluster authority.
     </p>
     <p>Discovery subscribers validate:</p>
     <ol>
-      <li>The GossipSub topic matches the expected cluster/namespace-derived topic.</li>
+      <li>The GossipSub topic matches the expected Discovery V3 topic derived from the namespace discovery entry.</li>
       <li>The announcement signature is valid against the service owner key.</li>
       <li>The <code>ServiceClaim</code> is signed by a trusted cluster authority.</li>
       <li>The nonce has not been seen before (bounded replay window).</li>
       <li>The TTL is within the claim's expiry.</li>
     </ol>
     <p>
-      A compromised or rogue peer that has the swarm key but no valid authority-signed claim
-      will have its announcements silently dropped.
+      A compromised or rogue peer that has swarm transport access but lacks valid namespace discovery state
+      or a valid authority-signed publication chain will have its announcements silently dropped.
     </p>
 
     <h2>Layer 3 — Connect authorisation (leases + PoP)</h2>
@@ -116,7 +117,7 @@
     <ul>
       <li>
         <strong>Public trust root</strong> — the public Tubo bundle is verified on install.
-        The public authority key is pinned locally; tokens cannot redefine it.
+        The public authority key is pinned locally; tokens cannot redefine it, and the public bundle does not carry namespace discovery entries.
       </li>
       <li>
         <strong>Private trust root</strong> — for private clusters, the authority keypair is
@@ -129,7 +130,8 @@
     <ul>
       <li><strong>Anonymity:</strong> relay nodes see IP addresses and connection timing.</li>
       <li><strong>Content confidentiality from relay:</strong> while relay does not decrypt stream content, it can correlate connections by timing.</li>
-      <li><strong>Protection against a compromised relay:</strong> a relay under attacker control can drop traffic or perform denial-of-service. It cannot decrypt or forge valid signed leases.</li>
+      <li><strong>Protection against a compromised relay:</strong> a relay under attacker control can drop traffic or perform denial-of-service. It cannot decrypt traffic, forge valid signed leases, or act as a namespace discovery authority by default.</li>
+      <li><strong>Perfect immediate revocation of old discovery state:</strong> namespace discovery rotation uses a current/previous grace model. Peers that still hold a non-expired previous entry may continue to discover publications during the grace window.</li>
       <li><strong>Forward secrecy of old tokens:</strong> revocation is not retroactive for already-established sessions. New streams after revocation are blocked.</li>
       <li><strong>OS-level isolation:</strong> Tubo does not sandbox origin services. If the origin process is compromised, the attacker can serve arbitrary responses.</li>
     </ul>

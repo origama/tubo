@@ -50,8 +50,9 @@
   <main class="docs-content">
     <h1>Access Control</h1>
     <p class="doc-lead">
-      Tubo uses a layered capability model. Publishing a service requires authority approval.
-      Connecting to a service requires a signed lease. Every token is one-time and cryptographically scoped.
+      Tubo uses a layered capability model. Publishing a service requires authority approval,
+      collaborative namespaces require namespace discovery entry state, and connecting to a service
+      requires a signed lease or a valid membership-based grant path.
     </p>
 
     <h2>Overview</h2>
@@ -69,7 +70,7 @@
     </p>
     <div class="code-block" style="margin:12px 0 20px">
       <pre><span style="color:#6b7280"># Alice: publish a service and get a share token</span>
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> myapi <span style="color:#86efac">--port</span> 8080 <span style="color:#86efac">-d</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> http://127.0.0.1:8080 <span style="color:#86efac">--name</span> myapi <span style="color:#86efac">-d</span>
 <span style="color:#86efac">✓ Share token:  tubo connect --token eyJ...</span>
 
 <span style="color:#6b7280"># Bob: connect with the token (no account needed)</span>
@@ -111,7 +112,8 @@
     </div>
     <p>
       Viewer invites (<code>--role viewer</code>) allow discovery but not connect.
-      Members automatically get connect permission.
+      Member joins install the current namespace discovery secret locally, so the member can use
+      <code>tubo get services</code> and <code>tubo connect &lt;name&gt;</code> in that namespace.
     </p>
 
     <h2>Publish Grants</h2>
@@ -134,8 +136,24 @@
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo grants approve</span> gr_abc123 <span style="color:#86efac">--ttl</span> 168h
 
 <span style="color:#6b7280"># Service host: now attach works</span>
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> myapi <span style="color:#86efac">--port</span> 8080 <span style="color:#86efac">-d</span></pre>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> http://127.0.0.1:8080 <span style="color:#86efac">--name</span> myapi <span style="color:#86efac">-d</span></pre>
     </div>
+
+    <h2>Namespace discovery entries and rotation</h2>
+    <p>
+      In collaborative scopes, service visibility is additionally gated by namespace discovery entry state.
+      Operators can inspect and rotate that state locally without printing raw secret bytes:
+    </p>
+    <div class="code-block" style="margin:12px 0 20px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo get secrets</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe secret/</span>namespace-discovery/myteam/default
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo rotate secret/</span>namespace-discovery/myteam/default <span style="color:#86efac">--grace</span> 24h</pre>
+    </div>
+    <p>
+      Rotation uses a managed <code>current</code>/<code>previous</code> model. Publishers emit using only the new
+      current entry. Subscribers accept current plus a non-expired previous entry during the grace window.
+      This is a compatibility window, not perfect immediate per-peer revocation.
+    </p>
 
     <h2>Revocation</h2>
     <div class="code-block" style="margin:12px 0 20px">

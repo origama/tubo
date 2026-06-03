@@ -90,31 +90,34 @@
     <p><strong>Firewall requirements:</strong> TCP 4001 inbound (libp2p), TCP 8092 optional (health check).</p>
 
     <h2>tubo attach</h2>
-    <p>Publish a local HTTP service into the swarm.</p>
+    <p>Publish a local HTTP service or raw TCP/TLS endpoint into the swarm.</p>
     <div class="code-block" style="margin:12px 0 20px">
-      <pre><span style="color:#6b7280"># Short form: name + port</span>
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> lmstudio <span style="color:#86efac">--port</span> 1234 <span style="color:#86efac">-d</span>
+      <pre><span style="color:#6b7280"># HTTP service</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> http://127.0.0.1:1234 <span style="color:#86efac">--name</span> lmstudio <span style="color:#86efac">-d</span>
 
-<span style="color:#6b7280"># Explicit form: full target URL</span>
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> <span style="color:#86efac">--target</span> http://192.168.1.10:1234 <span style="color:#86efac">--name</span> lmstudio <span style="color:#86efac">-d</span></pre>
+<span style="color:#6b7280"># Raw TCP / TLS passthrough</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> tcp://127.0.0.1:8443 <span style="color:#86efac">--name</span> tlsdemo <span style="color:#86efac">-d</span></pre>
     </div>
     <p><strong>Key flags:</strong></p>
     <ul>
-      <li><code>--target &lt;url&gt;</code> — origin HTTP URL to forward to</li>
-      <li><code>--port &lt;n&gt;</code> — shorthand for <code>--target http://127.0.0.1:&lt;n&gt;</code></li>
+      <li><code>--target &lt;url&gt;</code> — origin target URL, for example <code>http://...</code> or <code>tcp://...</code></li>
+      <li><code>--port &lt;n&gt;</code> — legacy shorthand for <code>http://127.0.0.1:&lt;n&gt;</code></li>
       <li><code>--name &lt;name&gt;</code> — display name for the service</li>
       <li><code>--cluster / --namespace</code> — override current cluster/namespace</li>
       <li><code>-d / --detach</code> — detach and run in background</li>
     </ul>
 
     <h2>tubo connect</h2>
-    <p>Open a local HTTP listener that tunnels to a remote service.</p>
+    <p>Open a local HTTP or TCP listener that tunnels to a remote service.</p>
     <div class="code-block" style="margin:12px 0 20px">
       <pre><span style="color:#6b7280"># By name (discovery-enabled namespaces only)</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> myapi <span style="color:#86efac">--local</span> 127.0.0.1:9000
 
 <span style="color:#6b7280"># By invite token (works everywhere, including public/invite-only)</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> <span style="color:#86efac">--token</span> eyJ... <span style="color:#86efac">--local</span> 127.0.0.1:9000
+
+<span style="color:#6b7280"># TCP service invite</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> <span style="color:#86efac">--token</span> eyJ... <span style="color:#86efac">--local</span> 127.0.0.1:9443
 
 <span style="color:#6b7280"># Detached mode</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> <span style="color:#86efac">--token</span> eyJ... <span style="color:#86efac">--local</span> 127.0.0.1:9000 <span style="color:#86efac">-d</span></pre>
@@ -151,8 +154,10 @@
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo get overlays</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo get clusters</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo get namespaces</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo get secrets</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe cluster/</span>myteam
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe namespace/</span>default</pre>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe namespace/</span>default
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe secret/</span>namespace-discovery/myteam/default</pre>
     </div>
 
     <h2>tubo create / use / share</h2>
@@ -167,8 +172,9 @@
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo use namespace/</span>production
 
 <span style="color:#6b7280"># Share access</span>
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo share cluster/</span>myteam <span style="color:#86efac">--role</span> member
-<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo share service/</span>myapi <span style="color:#86efac">--expires</span> 24h</pre>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo share cluster/</span>myteam <span style="color:#86efac">--namespace</span> default <span style="color:#86efac">--role</span> member
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo share service/</span>myapi <span style="color:#86efac">--expires</span> 24h
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo rotate secret/</span>namespace-discovery/myteam/default <span style="color:#86efac">--grace</span> 24h</pre>
     </div>
 
     <h2>tubo ps / logs / stop / rm</h2>
