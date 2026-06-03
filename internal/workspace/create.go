@@ -218,11 +218,7 @@ func writeJSONFile(store Store, path string, value any) error {
 }
 
 func writeNamespaceDiscoverySecret(store Store, path string) (*cfgpkg.ManagedSecretRef, error) {
-	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
-	if err != nil {
-		return nil, err
-	}
-	keyID, err := cfgpkg.GenerateSecretKeyID("nsdk", time.Now().UTC())
+	secret, ref, err := cfgpkg.BuildNamespaceDiscoverySecretRef(path, time.Now().UTC())
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +228,7 @@ func writeNamespaceDiscoverySecret(store Store, path string) (*cfgpkg.ManagedSec
 	if err := store.WriteFile(path, secret, 0600); err != nil {
 		return nil, err
 	}
-	return &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: keyID, File: path, CreatedAt: time.Now().UTC()}, nil
+	return ref, nil
 }
 
 func clusterIDFromAuthorityKey(publicKey string) string {

@@ -76,3 +76,20 @@ func NamespaceDiscoverySecretFingerprint(ref *ManagedSecretRef) (string, error) 
 	}
 	return SecretFingerprint(secret), nil
 }
+
+func BuildNamespaceDiscoverySecretRef(path string, now time.Time) ([]byte, *ManagedSecretRef, error) {
+	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
+	if err != nil {
+		return nil, nil, err
+	}
+	keyID, err := GenerateSecretKeyID("nsdk", now.UTC())
+	if err != nil {
+		return nil, nil, err
+	}
+	return secret, &ManagedSecretRef{
+		Type:      SecretTypeNamespaceDiscovery,
+		KeyID:     keyID,
+		File:      strings.TrimSpace(path),
+		CreatedAt: now.UTC(),
+	}, nil
+}

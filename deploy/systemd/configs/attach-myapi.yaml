@@ -50,6 +50,11 @@ clusters:
     namespaces:
       default:
         discovery: enabled
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: nsdk_replace_me
+          file: /etc/tubo/clusters/mycluster/namespaces/default/discovery-current.secret
+          created_at: 2026-06-02T00:00:00Z
         connect_policy: namespace_members
         services:
           myapi:

@@ -1030,7 +1030,18 @@ func writeLocalResourceConfig(t *testing.T) string {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	yaml := `role: service
+	secretPath := filepath.Join(configHome, "tubo", "clusters", "home", "namespaces", "default", "discovery-current.secret")
+	if err := os.MkdirAll(filepath.Dir(secretPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath, secret, 0600); err != nil {
+		t.Fatal(err)
+	}
+	yaml := fmt.Sprintf(`role: service
 current_overlay: public
 current_cluster: home
 current_namespace: default
@@ -1058,8 +1069,17 @@ clusters:
     capabilities:
       - discovery
     namespaces:
-      default: {}
-      lab: {}
+      default:
+        discovery: enabled
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: nsdk_fixture
+          file: %q
+          created_at: 2026-06-02T10:00:00Z
+        connect_policy: namespace_members
+      lab:
+        discovery: disabled
+        connect_policy: invite_only
   ops:
     cluster_id: ops-cluster
     authority_public_key: ops-pub
@@ -1076,7 +1096,7 @@ network:
 service:
   name: api
   target: http://127.0.0.1:9000
-`
+`, secretPath)
 	if err := os.WriteFile(configPath, []byte(yaml), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1145,7 +1165,7 @@ func TestLocalResourceCommandsListDescribeAndUse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public", "Discovery: enabled", "Connect policy: namespace_members"} {
+	for _, want := range []string{"Cluster: home", "Current namespace: true", "Current overlay: public", "Discovery: enabled", "Connect policy: namespace_members", "Current discovery secret:", "Fingerprint:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe namespace output missing %q: %s", want, out)
 		}
