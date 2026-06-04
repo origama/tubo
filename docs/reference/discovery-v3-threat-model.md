@@ -93,7 +93,7 @@ If a previous entry was already distributed, peers that still have it may contin
 
 Discovery V3 intentionally replaces the earlier namespace-scoped Discovery V2 model.
 
-For `v0.9.0`:
+For `v0.9.1`:
 - Discovery V2 fallback is intentionally broken for discovery-enabled namespace runtime;
 - operators should treat Discovery V3 as the required model for collaborative namespace discovery;
 - mixed expectations such as “some nodes still publish/observe Discovery V2 in the same namespace runtime” are unsupported.

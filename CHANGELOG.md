@@ -21,6 +21,30 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - Protocol compatibility change: none
 - Operator action required: none
 
+## [v0.9.1] - 2026-06-04
+
+Patch release for private collaborative namespaces where `join cluster/... --token ...` previously installed enough state for Discovery V3 listing but not enough reusable signed proof for `connect_policy: namespace_members` lease authorization.
+
+### Added
+- Cluster invites now embed a separate signed `cluster-membership-grant` token that carries reusable membership proof without bundling namespace discovery secret material.
+- `join cluster/... --token ...` now installs that reusable membership grant into a local `0600` token file and persists only the safe `membership_grant.invite_token_file` reference plus metadata in `config.yaml`.
+- End-to-end coverage now explicitly exercises the member invite flow through join, by-name discovery, and successful by-name connect in a Discovery V3 collaborative namespace.
+
+### Changed
+- `connect` now loads reusable membership proof from either the legacy inline `membership_grant.invite_token` field or the new file-backed `membership_grant.invite_token_file` path.
+- Service-scoped grant endpoints now accept the membership-only token kind for `namespace_members` connect-lease authorization while still enforcing signed authority scope and `connect` permission.
+- Canonical CLI docs now explain that cluster-invite join installs both discovery secret material and a separate safe reusable membership-grant token file.
+
+### Fixed
+- Fixed the `v0.9.0` regression where a node that joined a private cluster via cluster invite could discover services in a discovery-enabled namespace but could not obtain a connect lease for `connect_policy: namespace_members` without a separate service share invite.
+- Fixed the config/install gap so join no longer requires persisting the full cluster invite token to make collaborative by-name connect work.
+
+### Compatibility
+- Product version: v0.9.1
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: update service/publisher and client binaries together if you use cluster-invite join plus `namespace_members` connect, because the attached service’s embedded grant endpoint must understand the new `cluster-membership-grant` token kind
+
 ## [v0.9.0] - 2026-06-03
 
 Secret-backed namespace discovery release with Discovery V3 runtime, namespace invite install flows, current/previous secret rotation, metadata-only secret management CLI, and aligned end-to-end/documentation coverage.
