@@ -434,7 +434,11 @@ relay:
   enable_autonat_service: true
   enable_discovery_pubsub: true
   force_reachability_public: true
+  # 0 means no relay byte cap; positive values cap cumulative bytes per relayed circuit connection.
+  limit_data_bytes: 0
 ```
+
+`relay.limit_data_bytes` is a circuit relay v2 connection cap, not an application-request cap. Small values can reset long-running raw TCP tunnels because multiple TCP tunnel streams may share the same relayed libp2p connection.
 
 ## Bridge config
 

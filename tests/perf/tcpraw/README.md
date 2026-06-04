@@ -7,7 +7,7 @@ It provisions:
 - one direct attach/client pair on a shared Docker network;
 - one forced-relayed attach/client pair on isolated Docker networks;
 - `iperf3` servers behind `tubo attach tcp://...`;
-- `iperf3` clients behind `tubo connect --token ... --local ...`.
+- `iperf3` clients behind by-name `tubo connect ... --local ...` after cluster invite join.
 
 ## Commands
 
@@ -35,6 +35,8 @@ Useful shorter local run:
 ```bash
 ./tests/perf/tcpraw/run.sh --duration 10
 ```
+
+Note: relayed raw TCP runs depend on the relay byte cap. `relay.limit_data_bytes: 0` means no byte cap; positive values cap cumulative bytes for the whole relayed circuit connection, not each TCP stream.
 
 ## Artifacts
 

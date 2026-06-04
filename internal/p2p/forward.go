@@ -65,11 +65,12 @@ func tcpTargetAddress(localTarget string) (string, error) {
 	return u.Host, nil
 }
 
-func closeWriteIfPossible(v any) {
+func closeWriteIfPossible(v any) error {
 	type closeWriter interface{ CloseWrite() error }
 	if cw, ok := v.(closeWriter); ok {
-		_ = cw.CloseWrite()
+		return cw.CloseWrite()
 	}
+	return nil
 }
 
 func ProxyTCPStream(left net.Conn, right network.Stream) (int64, int64, error) {
@@ -78,11 +79,13 @@ func ProxyTCPStream(left net.Conn, right network.Stream) (int64, int64, error) {
 	go func() {
 		var err error
 		sent, err = io.Copy(right, left)
-		closeWriteIfPossible(right)
+		closeErr := closeWriteIfPossible(right)
+		log.Printf("tcp proxy left->right done left=%T right=%T bytes=%d copy_err=%v close_write_err=%v", left, right, sent, err, closeErr)
 		errCh <- err
 	}()
 	received, recvErr := io.Copy(left, right)
-	closeWriteIfPossible(left)
+	closeErr := closeWriteIfPossible(left)
+	log.Printf("tcp proxy right->left done left=%T right=%T bytes=%d copy_err=%v close_write_err=%v", left, right, received, recvErr, closeErr)
 	sendErr := <-errCh
 	if recvErr != nil && !errors.Is(recvErr, net.ErrClosed) {
 		return sent, received, recvErr

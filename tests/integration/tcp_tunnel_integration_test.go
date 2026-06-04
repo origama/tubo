@@ -10,6 +10,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,6 +158,162 @@ func TestTCPServiceEchoLargeAndConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
+}
+
+func TestTCPServiceControlHalfCloseSurvivesConcurrentData(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	var acceptSeq atomic.Int32
+	serverErr := make(chan error, 2)
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			seq := acceptSeq.Add(1)
+			go func(c net.Conn, seq int32) {
+				defer c.Close()
+				switch seq {
+				case 1:
+					payload, err := io.ReadAll(c)
+					if err != nil {
+						serverErr <- fmt.Errorf("control read: %w", err)
+						return
+					}
+					if len(payload) != 166 {
+						serverErr <- fmt.Errorf("control payload len=%d want 166", len(payload))
+						return
+					}
+					if _, err := c.Write([]byte("ACK\n")); err != nil {
+						serverErr <- fmt.Errorf("control ack write: %w", err)
+						return
+					}
+				case 2:
+					payload, err := io.ReadAll(c)
+					if err != nil {
+						serverErr <- fmt.Errorf("data read: %w", err)
+						return
+					}
+					if len(payload) != 8*1024*1024 {
+						serverErr <- fmt.Errorf("data payload len=%d want %d", len(payload), 8*1024*1024)
+						return
+					}
+				default:
+					serverErr <- fmt.Errorf("unexpected extra connection %d", seq)
+				}
+			}(conn, seq)
+		}
+	}()
+
+	authPub, authPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authAuthorized, err := ssh.NewPublicKey(authPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authKeyText := string(ssh.MarshalAuthorizedKey(authAuthorized))
+	clusterID := "cluster-halfclose"
+	namespaceID := "default"
+	serviceID := "svc-halfclose"
+
+	serviceApp, err := serviceapp.New(ctx, serviceapp.Config{
+		Listen:               "/ip4/127.0.0.1/tcp/0",
+		Seed:                 "service-halfclose-seed",
+		ServiceName:          "halfclose",
+		ServiceKind:          "tcp",
+		ServiceID:            serviceID,
+		Target:               "tcp://" + ln.Addr().String(),
+		DiscoveryMode:        discovery.ModeNamespaceV2.String(),
+		DiscoveryClusterID:   clusterID,
+		DiscoveryNamespaceID: namespaceID,
+		AuthorityPublicKey:   authKeyText,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceApp.Host().Close()
+	serviceAddr := p2p.PeerAddrs(serviceApp.Host())[0]
+
+	grant, err := capability.SignConnectCapability(capability.ConnectCapability{
+		ClusterID:   clusterID,
+		NamespaceID: namespaceID,
+		ServiceID:   serviceID,
+		Permissions: []string{capability.PermissionConnect},
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := bridgeapp.New(ctx, bridgeapp.Config{
+		Listen:       "127.0.0.1:0",
+		Seed:         "bridge-halfclose-seed",
+		P2PListen:    "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:  serviceAddr,
+		ServiceKind:  "tcp",
+		Autorelay:    false,
+		HolePunching: false,
+		ConnectGrant: &grant,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = app.Start(ctx) }()
+	bridgeAddr := waitForTCPBridgeAddr(t, app)
+
+	controlConn, err := net.DialTimeout("tcp", bridgeAddr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controlConn.Close()
+	controlPayload := bytes.Repeat([]byte("c"), 166)
+	if _, err := controlConn.Write(controlPayload); err != nil {
+		t.Fatal(err)
+	}
+	if tcpConn, ok := controlConn.(*net.TCPConn); ok {
+		_ = tcpConn.CloseWrite()
+	}
+
+	_ = controlConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	got, err := io.ReadAll(controlConn)
+	if err != nil {
+		t.Fatalf("control read: %v", err)
+	}
+	if string(got) != "ACK\n" {
+		t.Fatalf("control response = %q, want %q", string(got), "ACK\n")
+	}
+
+	dataConn, err := net.DialTimeout("tcp", bridgeAddr, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataPayload := bytes.Repeat([]byte("d"), 8*1024*1024)
+	if _, err := dataConn.Write(dataPayload); err != nil {
+		dataConn.Close()
+		t.Fatal(err)
+	}
+	if tcpConn, ok := dataConn.(*net.TCPConn); ok {
+		_ = tcpConn.CloseWrite()
+	}
+	_, _ = io.Copy(io.Discard, dataConn)
+	_ = dataConn.Close()
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+	}
 }
 
 func waitForTCPBridgeAddr(t *testing.T, app interface{ ListenAddr() string }) string {

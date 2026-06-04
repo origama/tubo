@@ -109,6 +109,7 @@ ENABLE_AUTONAT_SERVICE=true \
 ENABLE_DISCOVERY_PUBSUB=true \
 FORCE_REACHABILITY_PUBLIC=true \
 PRINT_RUN_COMMANDS=true \
+RELAY_LIMIT_DATA_BYTES=0 \
 LIBP2P_PRIVATE_NETWORK_KEY=/etc/p2p/swarm.key \
 go run ./cmd/tubo relay
 ```
@@ -126,6 +127,8 @@ RELAY_PUBLIC_ADDR=/ip4/<RELAY_PUBLIC_IP>/tcp/4001
 ```
 
 If `RELAY_PUBLIC_ADDR` does not include `/p2p/<PEER_ID>`, the relay automatically adds its own PeerID in the suggested commands.
+
+`RELAY_LIMIT_DATA_BYTES=0` means no byte cap on the relayed circuit connection. Positive values cap cumulative bytes for the whole circuit, so small values can reset long raw TCP/TLS tunnels before an application request finishes.
 
 Minimum firewall ports on the relay:
 

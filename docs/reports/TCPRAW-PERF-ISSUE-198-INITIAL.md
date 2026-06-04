@@ -41,6 +41,27 @@ The new Docker harness can now:
 - reverse: **fails** with `control socket has closed unexpectedly`
 - parallel: **fails** with `control socket has closed unexpectedly`
 
+## Tracking snapshot for future comparisons
+
+Latest validate snapshot used as the current tracking baseline for issue #198:
+- command: `./tests/perf/tcpraw/run.sh --validate`
+- duration: `5s`
+- run timestamp: `2026-06-04T16:28:06Z`
+
+| Scenario | Sender Mbit/s | Receiver Mbit/s | vs Docker baseline | Relative throughput | Slowdown |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Docker baseline direct | 16139.44 | 16136.77 | baseline | 100.00% | 1.00x |
+| Tubo direct reverse (`-R`) | 1335.69 | 1318.57 | -91.72% sender / -91.83% receiver | 8.28% sender / 8.17% receiver | 12.08x sender / 12.24x receiver |
+| Tubo direct parallel (`-P 4`) | 1244.63 | 1183.70 | -92.29% sender / -92.66% receiver | 7.71% sender / 7.34% receiver | 12.97x sender / 13.63x receiver |
+| Tubo relayed forward | 0.00 | 0.00 | failed | n/a | n/a |
+| Tubo relayed reverse (`-R`) | 0.00 | 0.00 | failed | n/a | n/a |
+| Tubo relayed parallel (`-P 4`) | 0.00 | 0.00 | failed | n/a | n/a |
+
+Notes:
+- only successful runs are normalized against the Docker baseline;
+- current usable throughput comparisons are limited to the working direct `-R` and direct `-P 4` cases;
+- direct forward and all relayed cases still fail with `control socket has closed unexpectedly`, so they are not yet suitable for before/after throughput claims.
+
 ## Current hypothesis
 
 The first strong signal is no longer just “throughput is asymmetric”.
@@ -74,9 +95,49 @@ During the failing direct validation, the harness captured:
 
 That means the harness is already useful even before optimization work: it can repeatedly surface the same TCP raw behavior in a controlled environment.
 
+## Root cause found
+
+The relayed failures were caused by Tubo's relay config default:
+
+- `relay.limit_data_bytes` defaulted to **16 MiB** in `internal/config.Defaults("relay")`;
+- libp2p circuit relay v2 applies that data limit to the **whole relayed connection**, not to each application TCP stream;
+- `tubo connect` reuses the relayed libp2p connection and opens multiple raw TCP tunnel streams on it;
+- once cumulative traffic on that circuit crossed about 16 MiB, the relay reset the relayed connection, which reset both iperf3 control/data streams and surfaced as `control socket has closed unexpectedly`.
+
+This explains the observed pattern:
+- 8 MiB single-stream relayed transfer succeeded;
+- the next transfer failed near another ~8 MiB because the shared circuit reached ~16 MiB total;
+- larger single-stream and dual-socket runs failed at variable byte counts depending on prior traffic on the same circuit.
+
+## Fix applied
+
+Relay byte-cap semantics now treat `limit_data_bytes: 0` as no data byte cap:
+
+- `Defaults("relay")` now uses `limit_data_bytes: 0`;
+- `internal/app/relay` maps `LimitDataBytes <= 0` to an unlimited data sentinel while preserving the duration limit;
+- explicit positive `RELAY_LIMIT_DATA_BYTES` / config values still install a finite circuit relay data cap.
+
+## Fixed validation snapshot
+
+After the fix, the same Docker validation command completes direct and relayed `iperf3` runs:
+
+- command: `./tests/perf/tcpraw/run.sh --validate`
+- duration: `5s`
+- run timestamp: `2026-06-04T20:09:10Z`
+
+| Scenario | Path | Sender Mbit/s | Receiver Mbit/s | Error |
+| --- | --- | ---: | ---: | --- |
+| Tubo direct forward | direct | 305.44 | 293.81 | - |
+| Tubo direct reverse (`-R`) | direct | 325.63 | 309.52 | - |
+| Tubo direct parallel (`-P 4`) | direct | 372.63 | 312.64 | - |
+| Tubo relayed forward | relayed | 329.11 | 314.23 | - |
+| Tubo relayed reverse (`-R`) | relayed | 320.19 | 308.60 | - |
+| Tubo relayed parallel (`-P 4`) | relayed | 367.76 | 317.10 | - |
+
 ## Next recommended step
 
-Before attempting throughput tuning (`io.CopyBuffer`, buffer pooling, etc.), the next iteration should focus on:
-- making `iperf3` forward and relayed runs complete reliably;
-- then re-running the same matrix with `10s` and `30s` durations;
-- only after that, comparing before/after throughput for any transport-path optimization.
+With the reset bug fixed, the next iteration can separate reliability from throughput tuning:
+
+- run longer `10s` and `30s` validation windows;
+- compare CPU profiles and copy-path costs on direct vs relayed;
+- only then test transport optimizations such as copy buffer sizing, pooling, or stream concurrency changes.

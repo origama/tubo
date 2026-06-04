@@ -40,3 +40,47 @@ func TestRelayDiscoveryQueryServesCachedServices(t *testing.T) {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
 }
+
+func TestRelayLimitFromConfigTreatsZeroDataAsUnlimited(t *testing.T) {
+	limit := relayLimitFromConfig(5*time.Minute, 0)
+	if limit == nil {
+		t.Fatal("expected duration-limited relay limit")
+	}
+	if limit.Duration != 5*time.Minute {
+		t.Fatalf("duration = %s", limit.Duration)
+	}
+	if limit.Data != relayUnlimitedDataBytes {
+		t.Fatalf("data = %d, want unlimited sentinel %d", limit.Data, relayUnlimitedDataBytes)
+	}
+}
+
+func TestRelayLimitFromConfigCanDisableAllLimits(t *testing.T) {
+	if limit := relayLimitFromConfig(0, 0); limit != nil {
+		t.Fatalf("limit = %#v, want nil", limit)
+	}
+}
+
+func TestLoadConfigFromEnvDefaultsToUnlimitedData(t *testing.T) {
+	cfg, err := LoadConfigFromEnv(func(string) string { return "" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LimitDataBytes != 0 {
+		t.Fatalf("LimitDataBytes = %d, want 0/unlimited", cfg.LimitDataBytes)
+	}
+}
+
+func TestLoadConfigFromEnvAcceptsExplicitDataLimit(t *testing.T) {
+	cfg, err := LoadConfigFromEnv(func(key string) string {
+		if key == "RELAY_LIMIT_DATA_BYTES" {
+			return "12345"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LimitDataBytes != 12345 {
+		t.Fatalf("LimitDataBytes = %d", cfg.LimitDataBytes)
+	}
+}
