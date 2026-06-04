@@ -134,10 +134,31 @@ After the fix, the same Docker validation command completes direct and relayed `
 | Tubo relayed reverse (`-R`) | relayed | 320.19 | 308.60 | - |
 | Tubo relayed parallel (`-P 4`) | relayed | 367.76 | 317.10 | - |
 
-## Next recommended step
+## Post-fix run ledger
 
-With the reset bug fixed, the next iteration can separate reliability from throughput tuning:
+The following post-fix runs are the current comparison set for issue `#198`.
 
-- run longer `10s` and `30s` validation windows;
-- compare CPU profiles and copy-path costs on direct vs relayed;
+| Timestamp | Command | Baseline receiver | Direct forward | Direct reverse | Direct P4 | Relayed forward | Relayed reverse | Relayed P4 | Artifacts |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `2026-06-04T20:09:10Z` | `./tests/perf/tcpraw/run.sh --validate` | 16720.64 | 293.81 | 309.52 | 312.64 | 314.23 | 308.60 | 317.10 | summarized in report / issue |
+| `2026-06-04T20:35:31Z` | `./tests/perf/tcpraw/run.sh --validate` | 18016.30 | 328.12 | 305.09 | 320.94 | 326.22 | 325.63 | 312.09 | summarized in issue |
+| `2026-06-04T20:40:30Z` | `./tests/perf/tcpraw/run.sh --duration 10` | 17914.21 | 301.60 | 313.08 | 292.15 | 316.32 | 330.26 | 307.07 | `tests/perf/tcpraw/results/runs/20260604-204030/` |
+| `2026-06-04T20:44:44Z` | `./tests/perf/tcpraw/run.sh --duration 30` | 17678.93 | 309.55 | 310.41 | 294.65 | 320.03 | 324.34 | 285.48 | `tests/perf/tcpraw/results/runs/20260604-204444/` |
+
+## Longer-run observations
+
+Across the current post-fix runs:
+
+- reliability is stable: direct and relayed forward/reverse/P4 all complete;
+- receiver throughput is consistently in the **~285–330 Mbit/s** band for both direct and relayed paths in this Docker harness;
+- relayed throughput is no longer obviously worse than direct, and in some reruns it is slightly better;
+- `-P 4` does **not** currently produce a clear throughput gain and can be slightly worse on the receiver side in longer runs;
+- longer runs mainly increase retransmit counts rather than improving steady-state throughput.
+
+## Updated next recommended step
+
+With reliability fixed and a small run ledger in place, the next iteration should focus on throughput analysis:
+
+- compare CPU samples from the saved `10s` and `30s` artifact directories;
+- profile bridge/service copy-path costs during a `30s` run;
 - only then test transport optimizations such as copy buffer sizing, pooling, or stream concurrency changes.
