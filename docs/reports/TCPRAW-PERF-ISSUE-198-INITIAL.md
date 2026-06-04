@@ -138,26 +138,35 @@ After the fix, the same Docker validation command completes direct and relayed `
 
 The following post-fix runs are the current comparison set for issue `#198`.
 
-| Timestamp | Command | Baseline receiver | Direct forward | Direct reverse | Direct P4 | Relayed forward | Relayed reverse | Relayed P4 | Artifacts |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| `2026-06-04T20:09:10Z` | `./tests/perf/tcpraw/run.sh --validate` | 16720.64 | 293.81 | 309.52 | 312.64 | 314.23 | 308.60 | 317.10 | summarized in report / issue |
-| `2026-06-04T20:35:31Z` | `./tests/perf/tcpraw/run.sh --validate` | 18016.30 | 328.12 | 305.09 | 320.94 | 326.22 | 325.63 | 312.09 | summarized in issue |
-| `2026-06-04T20:40:30Z` | `./tests/perf/tcpraw/run.sh --duration 10` | 17914.21 | 301.60 | 313.08 | 292.15 | 316.32 | 330.26 | 307.07 | `tests/perf/tcpraw/results/runs/20260604-204030/` |
-| `2026-06-04T20:44:44Z` | `./tests/perf/tcpraw/run.sh --duration 30` | 17678.93 | 309.55 | 310.41 | 294.65 | 320.03 | 324.34 | 285.48 | `tests/perf/tcpraw/results/runs/20260604-204444/` |
+| Timestamp | Command | Baseline receiver | Direct forward | Direct reverse | Direct P4 | Relayed forward | Relayed reverse | Relayed P4 | Direct data plane | Artifacts |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
+| `2026-06-04T20:09:10Z` | `./tests/perf/tcpraw/run.sh --validate` | 16720.64 | 293.81 | 309.52 | 312.64 | 314.23 | 308.60 | 317.10 | contaminated by relay | summarized in report / issue |
+| `2026-06-04T20:35:31Z` | `./tests/perf/tcpraw/run.sh --validate` | 18016.30 | 328.12 | 305.09 | 320.94 | 326.22 | 325.63 | 312.09 | contaminated by relay | summarized in issue |
+| `2026-06-04T20:40:30Z` | `./tests/perf/tcpraw/run.sh --duration 10` | 17914.21 | 301.60 | 313.08 | 292.15 | 316.32 | 330.26 | 307.07 | contaminated by relay | `tests/perf/tcpraw/results/runs/20260604-204030/` |
+| `2026-06-04T20:44:44Z` | `./tests/perf/tcpraw/run.sh --duration 30` | 17678.93 | 309.55 | 310.41 | 294.65 | 320.03 | 324.34 | 285.48 | contaminated by relay | `tests/perf/tcpraw/results/runs/20260604-204444/` |
+| `2026-06-04T21:36:18Z` | `./tests/perf/tcpraw/run.sh --validate` | 17409.78 | 1032.98 | 1189.07 | 1125.30 | 312.40 | 296.48 | 290.75 | relay-free | `tests/perf/tcpraw/results/runs/20260604-213618/` |
+| `2026-06-04T21:38:50Z` | `./tests/perf/tcpraw/run.sh --duration 10` | 17959.83 | 1067.91 | 1049.62 | 1069.74 | 313.01 | 310.74 | 311.97 | relay-free | `tests/perf/tcpraw/results/runs/20260604-213850/` |
+| `2026-06-04T21:43:07Z` | `./tests/perf/tcpraw/run.sh --duration 30` | 17395.76 | 1112.56 | 1121.06 | 1137.34 | 305.98 | 321.45 | 302.31 | relay-free | `tests/perf/tcpraw/results/runs/20260604-214307/` |
 
 ## Longer-run observations
 
-Across the current post-fix runs:
+After forcing direct candidates to use libp2p `WithForceDirectDial`, the benchmark now separates true direct data-plane traffic from relayed traffic:
 
 - reliability is stable: direct and relayed forward/reverse/P4 all complete;
-- receiver throughput is consistently in the **~285–330 Mbit/s** band for both direct and relayed paths in this Docker harness;
-- relayed throughput is no longer obviously worse than direct, and in some reruns it is slightly better;
-- `-P 4` does **not** currently produce a clear throughput gain and can be slightly worse on the receiver side in longer runs;
-- longer runs mainly increase retransmit counts rather than improving steady-state throughput.
+- true direct receiver throughput is now consistently around **~1.05–1.14 Gbit/s** in this Docker harness;
+- relayed receiver throughput remains around **~0.30–0.32 Gbit/s**;
+- the relayed path is therefore roughly **3.4x–3.7x slower** than the true direct path in these post-fix runs;
+- `-P 4` still does not produce a large gain over single-stream direct in this environment.
+
+The direct-data-plane proof in the `20260604-214307` run:
+
+- service logs show a direct inbound connection from the client container (`/ip4/172.20.0.3/tcp/...`);
+- relay CPU during `direct-forward` was near idle (`~0.03%` average), while attach/client each used roughly half a CPU;
+- relayed-forward kept the relay around `~40%` CPU.
 
 ## Targeted profiling snapshot
 
-I also captured host-side `perf` profiles for `30s` forward runs in both modes:
+I also captured host-side `perf` profiles before the force-direct fix for `30s` forward runs in both modes:
 
 - direct forward profile: `tests/perf/tcpraw/results/profiles/20260604-205011-direct-forward/`
 - relayed forward profile: `tests/perf/tcpraw/results/profiles/20260604-205136-relayed-forward/`
@@ -176,13 +185,10 @@ A second very important finding came out of the same profiling pass:
 
 - in the profiled `direct forward` run, the service-side inbound peer still arrived over `/p2p-circuit/`;
 - the relay container still consumed roughly the same CPU as in the explicit relayed case and moved gigabytes of traffic;
-- so the current Docker harness `path: direct` result is still at least partially **data-plane contaminated by relay traversal**.
+- so the old Docker harness `path: direct` result was at least partially **data-plane contaminated by relay traversal**.
 
-That means current direct-vs-relayed throughput comparisons are useful for stability tracking, but they are **not yet a clean isolation of true direct transport cost**.
+The bridge now forces direct dials/streams for direct service candidates, so future profiles should be collected against the relay-free runs above.
 
 ## Updated next recommended step
 
-With reliability fixed and the first targeted profiles captured, the next iteration should focus on throughput analysis in two stages:
-
-1. make the benchmark prove a genuinely relay-free direct data path before comparing direct vs relayed costs;
-2. then profile again and only after that test transport optimizations such as copy buffer sizing, pooling, or stream concurrency changes.
+With reliability fixed and the benchmark now proving a relay-free direct data plane, the next iteration should profile the cleaned-up `direct-forward` path and compare it to the explicit `relayed-forward` path. Only after that should we test transport optimizations such as copy buffer sizing, pooling, or stream concurrency changes.
