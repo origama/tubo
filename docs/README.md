@@ -35,6 +35,7 @@ Project work, planning, implementation scope, and acceptance criteria are tracke
 ### Reports
 
 - [`reports/FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md`](./reports/FAILURE_CAMPAIGN_TWO_HOST_2026-04-29.md)
+- [`reports/TCPRAW-PERF-ISSUE-198-INITIAL.md`](./reports/TCPRAW-PERF-ISSUE-198-INITIAL.md)
 
 ### Comparisons
 

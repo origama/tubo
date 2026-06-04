@@ -173,6 +173,29 @@ Covered scenarios:
 
 The script also uses protocol debug/admin endpoints when available to save operational compatibility evidence.
 
+## TCP raw throughput benchmark (Docker)
+
+Docker-based raw TCP throughput benchmark for `service_kind=tcp` with both explicit direct and explicit relayed paths.
+
+Harness:
+
+- `tests/perf/tcpraw/`
+
+Commands:
+
+```bash
+./tests/perf/tcpraw/run.sh
+./tests/perf/tcpraw/run.sh --validate
+./tests/perf/tcpraw/run.sh --duration 10
+```
+
+Artifacts are written under:
+
+- `tests/perf/tcpraw/results/`
+- `tests/perf/tcpraw/results/runs/<timestamp>/`
+
+The harness records the selected Tubo path (`direct` or `relayed`) from `tubo connect`, collects `iperf3 --json` output for forward / reverse / parallel runs, and saves attach/connect/relay logs plus lightweight container CPU samples.
+
 ## Persistent performance benchmark on Linode/Terraform
 
 Uses the multi-region testbed created by Terraform, keeps remote processes active for the duration of the benchmark, and saves comparable historical results in:

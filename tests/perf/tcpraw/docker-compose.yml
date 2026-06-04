@@ -1,0 +1,75 @@
+services:
+  relay:
+    build:
+      context: ${TUBO_REPO_ROOT}
+      dockerfile: tests/perf/tcpraw/Dockerfile
+    command:
+      - sh
+      - -lc
+      - >-
+        exec /work/bin/tubo relay
+        --listen /ip4/0.0.0.0/tcp/4001
+        --seed relay-perf-seed
+        --swarm-key /work/swarm.key
+    environment:
+      RELAY_HEALTH_LISTEN: "0.0.0.0:8092"
+      ENABLE_RELAY_SERVICE: "true"
+      ENABLE_AUTONAT_SERVICE: "true"
+      ENABLE_DISCOVERY_PUBSUB: "true"
+      FORCE_REACHABILITY_PUBLIC: "true"
+    volumes:
+      - ${TUBO_PERF_WORKDIR}:/work
+    networks:
+      - direct-shared
+      - attach-private
+      - client-private
+
+  attach-direct:
+    build:
+      context: ${TUBO_REPO_ROOT}
+      dockerfile: tests/perf/tcpraw/Dockerfile
+    command: ["sh", "-lc", "sleep infinity"]
+    volumes:
+      - ${TUBO_PERF_WORKDIR}:/work
+    networks:
+      - direct-shared
+
+  client-direct:
+    build:
+      context: ${TUBO_REPO_ROOT}
+      dockerfile: tests/perf/tcpraw/Dockerfile
+    command: ["sh", "-lc", "sleep infinity"]
+    volumes:
+      - ${TUBO_PERF_WORKDIR}:/work
+    networks:
+      - direct-shared
+
+  attach-relayed:
+    build:
+      context: ${TUBO_REPO_ROOT}
+      dockerfile: tests/perf/tcpraw/Dockerfile
+    command: ["sh", "-lc", "sleep infinity"]
+    volumes:
+      - ${TUBO_PERF_WORKDIR}:/work
+    networks:
+      - attach-private
+
+  client-relayed:
+    build:
+      context: ${TUBO_REPO_ROOT}
+      dockerfile: tests/perf/tcpraw/Dockerfile
+    command: ["sh", "-lc", "sleep infinity"]
+    volumes:
+      - ${TUBO_PERF_WORKDIR}:/work
+    networks:
+      - client-private
+
+networks:
+  direct-shared:
+    driver: bridge
+  attach-private:
+    driver: bridge
+    internal: true
+  client-private:
+    driver: bridge
+    internal: true
