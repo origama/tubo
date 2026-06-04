@@ -155,10 +155,34 @@ Across the current post-fix runs:
 - `-P 4` does **not** currently produce a clear throughput gain and can be slightly worse on the receiver side in longer runs;
 - longer runs mainly increase retransmit counts rather than improving steady-state throughput.
 
+## Targeted profiling snapshot
+
+I also captured host-side `perf` profiles for `30s` forward runs in both modes:
+
+- direct forward profile: `tests/perf/tcpraw/results/profiles/20260604-205011-direct-forward/`
+- relayed forward profile: `tests/perf/tcpraw/results/profiles/20260604-205136-relayed-forward/`
+
+Main findings:
+
+- the dominant hot path is **not** `ProxyTCPStream(...)` itself;
+- the largest user-space cost is consistently in libp2p transport security / private-swarm plumbing:
+  - `golang.org/x/crypto/salsa20/salsa.salsa2020XORKeyStream`
+  - `go-libp2p ... pnet.(*pskConn).Read/Write`
+  - `go-yamux/v5.(*Session).recvLoop/sendLoop`
+  - TLS AES-GCM encrypt/decrypt helpers
+- `runtime.memmove` is present but much smaller than the transport crypto/mux layers in these samples.
+
+A second very important finding came out of the same profiling pass:
+
+- in the profiled `direct forward` run, the service-side inbound peer still arrived over `/p2p-circuit/`;
+- the relay container still consumed roughly the same CPU as in the explicit relayed case and moved gigabytes of traffic;
+- so the current Docker harness `path: direct` result is still at least partially **data-plane contaminated by relay traversal**.
+
+That means current direct-vs-relayed throughput comparisons are useful for stability tracking, but they are **not yet a clean isolation of true direct transport cost**.
+
 ## Updated next recommended step
 
-With reliability fixed and a small run ledger in place, the next iteration should focus on throughput analysis:
+With reliability fixed and the first targeted profiles captured, the next iteration should focus on throughput analysis in two stages:
 
-- compare CPU samples from the saved `10s` and `30s` artifact directories;
-- profile bridge/service copy-path costs during a `30s` run;
-- only then test transport optimizations such as copy buffer sizing, pooling, or stream concurrency changes.
+1. make the benchmark prove a genuinely relay-free direct data path before comparing direct vs relayed costs;
+2. then profile again and only after that test transport optimizations such as copy buffer sizing, pooling, or stream concurrency changes.
