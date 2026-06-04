@@ -1669,8 +1669,13 @@ func assertJoinedClusterInviteConfig(t *testing.T, configPath, wantNamespace str
 		t.Fatalf("membership grant missing: %#v", cluster)
 	}
 	grant := cluster.MembershipGrant
-	if grant.InviteToken != "" || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
+	if grant.InviteToken != "" || grant.InviteTokenFile == "" || grant.ClusterName != "home" || grant.ClusterID != cluster.ClusterID || grant.Namespace != wantNamespace || grant.Role != "member" || grant.InviteVersion != clusterInviteVersion {
 		t.Fatalf("unexpected membership grant: %#v", grant)
+	}
+	if info, err := os.Stat(grant.InviteTokenFile); err != nil {
+		t.Fatalf("joined membership grant token file missing: %v", err)
+	} else if info.Mode().Perm() != 0o600 {
+		t.Fatalf("joined membership grant token permissions = %04o", info.Mode().Perm())
 	}
 	if !stringSliceEqualSet(grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
 		t.Fatalf("unexpected membership grant permissions: %#v", grant.Permissions)
@@ -1718,6 +1723,16 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	if payload.Discovery == nil || payload.Discovery.Type != cfgpkg.SecretTypeNamespaceDiscovery || payload.Discovery.KeyID == "" || payload.Discovery.Secret == "" {
 		t.Fatalf("cluster invite missing discovery entry: %#v", payload.Discovery)
 	}
+	if strings.TrimSpace(payload.MembershipToken) == "" {
+		t.Fatal("cluster invite missing embedded membership token")
+	}
+	membershipPayload, err := clusterinvite.ParseAndVerifyMembershipGrantToken(payload.MembershipToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if membershipPayload.Discovery != nil {
+		t.Fatalf("membership token must not carry discovery entry: %#v", membershipPayload.Discovery)
+	}
 
 	joinHome := filepath.Join(t.TempDir(), "join-home")
 	t.Setenv("XDG_CONFIG_HOME", joinHome)
@@ -1742,6 +1757,29 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	}
 	if bytes.Contains(joinedConfigRaw, []byte(payload.Discovery.Secret)) {
 		t.Fatal("joined config persisted raw discovery entry value")
+	}
+	joinedCfg, err := cfgpkg.LoadFile(joinedConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipTokenPath := joinedCfg.Clusters["home"].MembershipGrant.InviteTokenFile
+	membershipTokenBytes, err := os.ReadFile(membershipTokenPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipToken := strings.TrimSpace(string(membershipTokenBytes))
+	if membershipToken == token {
+		t.Fatal("joined membership token file persisted the full cluster invite token")
+	}
+	installedMembershipPayload, err := clusterinvite.ParseAndVerifyMembershipGrantToken(membershipToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if installedMembershipPayload.Discovery != nil {
+		t.Fatalf("installed membership token leaked discovery entry: %#v", installedMembershipPayload.Discovery)
+	}
+	if strings.Contains(membershipToken, payload.Discovery.Secret) {
+		t.Fatal("installed membership token leaked raw discovery secret")
 	}
 
 	joinPositional := filepath.Join(t.TempDir(), "join-positional")
@@ -1837,7 +1875,7 @@ func TestViewerClusterInvitationShareJoinAllowsListButNotConnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	grant := joined.Clusters["home"].MembershipGrant
-	if grant == nil || grant.Role != clusterInviteViewerRole {
+	if grant == nil || grant.Role != clusterInviteViewerRole || grant.InviteTokenFile == "" {
 		t.Fatalf("unexpected viewer grant: %#v", grant)
 	}
 	if !clusterMembershipGrantAuthorizesNamespace(joined.Clusters["home"], "home", "default") {
@@ -1903,7 +1941,7 @@ func TestGrantRequesterClusterInvitationShareJoinAndRequest(t *testing.T) {
 		t.Fatal("grant-requester invite leaked authority private key path")
 	}
 	grant := joinedCluster.MembershipGrant
-	if grant == nil || grant.Role != clusterInviteGrantRequesterRole || grant.InviteID != payload.JTI || grant.GrantServiceProtocol != grantspkg.ProtocolID || len(grant.GrantServicePeers) != 1 || grant.GrantServicePeers[0] != grantPeer {
+	if grant == nil || grant.Role != clusterInviteGrantRequesterRole || grant.InviteTokenFile == "" || grant.InviteID != payload.JTI || grant.GrantServiceProtocol != grantspkg.ProtocolID || len(grant.GrantServicePeers) != 1 || grant.GrantServicePeers[0] != grantPeer {
 		t.Fatalf("joined grant metadata missing: %#v", grant)
 	}
 	if clusterMembershipGrantAuthorizesNamespace(joinedCluster, "home", "default") {

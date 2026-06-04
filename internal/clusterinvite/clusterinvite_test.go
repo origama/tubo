@@ -113,3 +113,42 @@ func TestValidatePayloadRejectsMissingDiscoveryEntry(t *testing.T) {
 		t.Fatalf("expected missing discovery entry error, got %v", err)
 	}
 }
+
+func TestMembershipGrantPayloadFromInviteDropsDiscovery(t *testing.T) {
+	priv := testInviteAuthority(t)
+	invite := testInvitePayload(t, priv)
+	membership, err := MembershipGrantPayloadFromInvite(invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if membership.Kind != MembershipGrantKind {
+		t.Fatalf("membership kind = %q", membership.Kind)
+	}
+	if membership.Discovery != nil {
+		t.Fatalf("membership payload leaked discovery entry: %#v", membership.Discovery)
+	}
+	token, err := SignToken(membership, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := ParseAndVerifyMembershipGrantToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Discovery != nil {
+		t.Fatalf("parsed membership payload leaked discovery entry: %#v", parsed.Discovery)
+	}
+}
+
+func TestValidateMembershipGrantRejectsDiscoveryEntry(t *testing.T) {
+	priv := testInviteAuthority(t)
+	invite := testInvitePayload(t, priv)
+	membership, err := MembershipGrantPayloadFromInvite(invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership.Discovery = invite.Discovery
+	if err := ValidateMembershipGrantPayload(membership); err == nil || !strings.Contains(err.Error(), "must not contain namespace discovery entry") {
+		t.Fatalf("expected membership discovery rejection, got %v", err)
+	}
+}

@@ -173,6 +173,15 @@ func localShareCmd(args []string) error {
 	if len(grantPeers) > 0 {
 		payload.GrantService = clusterInviteGrantService{Protocol: grantspkg.ProtocolID, Peers: grantPeers}
 	}
+	membershipPayload, err := clusterinvite.MembershipGrantPayloadFromInvite(payload)
+	if err != nil {
+		return err
+	}
+	membershipToken, err := signClusterInviteToken(membershipPayload, privKey)
+	if err != nil {
+		return err
+	}
+	payload.MembershipToken = membershipToken
 	token, err := signClusterInviteToken(payload, privKey)
 	if err != nil {
 		return err
@@ -361,6 +370,10 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	if err != nil {
 		return err
 	}
+	membershipTokenFile, err := installClusterInviteMembershipToken(configDir, payload)
+	if err != nil {
+		return err
+	}
 	joinedNamespace := cluster.Namespaces[payload.Namespace]
 	joinedNamespace.Discovery = cfgpkg.NamespaceDiscoveryEnabled
 	if joinedNamespace.ConnectPolicy == "" {
@@ -371,6 +384,7 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	cluster.Namespaces[payload.Namespace] = joinedNamespace
 	_ = token
 	grant := clusterMembershipGrantMetadata(payload)
+	grant.InviteTokenFile = membershipTokenFile
 	cluster.MembershipGrant = &grant
 	joined.Clusters[payload.ClusterName] = cluster
 	// Bug fix: do not unconditionally overwrite the current cluster/namespace.
@@ -523,7 +537,7 @@ func signClusterInviteToken(payload clusterInvitePayload, priv ed25519.PrivateKe
 }
 
 func parseAndVerifyClusterInviteToken(token string) (clusterInvitePayload, error) {
-	return clusterinvite.ParseAndVerifyToken(token)
+	return clusterinvite.ParseAndVerifyClusterInviteToken(token)
 }
 
 func validateClusterInviteGrant(payload clusterInvitePayload) error {
@@ -604,4 +618,29 @@ func installClusterInviteDiscoveryEntry(configDir, clusterName, namespace string
 		return nil, err
 	}
 	return ref, nil
+}
+
+func installClusterInviteMembershipToken(configDir string, payload clusterInvitePayload) (string, error) {
+	if strings.TrimSpace(payload.MembershipToken) == "" {
+		return "", nil
+	}
+	membershipPayload, err := clusterinvite.ParseAndVerifyMembershipGrantToken(payload.MembershipToken)
+	if err != nil {
+		return "", err
+	}
+	if membershipPayload.ClusterName != payload.ClusterName || membershipPayload.ClusterID != payload.ClusterID || membershipPayload.Namespace != payload.Namespace {
+		return "", errors.New("cluster invite membership token does not match outer cluster scope")
+	}
+	if membershipPayload.AuthorityPublicKey != payload.AuthorityPublicKey || membershipPayload.Grant.Role != payload.Grant.Role || !stringSliceEqualSet(membershipPayload.Grant.Permissions, payload.Grant.Permissions) || membershipPayload.GrantService.Protocol != payload.GrantService.Protocol || !stringSliceEqualSet(membershipPayload.GrantService.Peers, payload.GrantService.Peers) || !membershipPayload.IssuedAt.Equal(payload.IssuedAt) || !membershipPayload.ExpiresAt.Equal(payload.ExpiresAt) {
+		return "", errors.New("cluster invite membership token does not match outer invite grant metadata")
+	}
+	paths := workspace.Paths{ConfigDir: configDir}
+	tokenPath := filepath.Join(paths.NamespaceDir(payload.ClusterName, payload.Namespace), "membership-grant.token")
+	if err := os.MkdirAll(filepath.Dir(tokenPath), 0700); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(tokenPath, []byte(payload.MembershipToken+"\n"), 0600); err != nil {
+		return "", err
+	}
+	return tokenPath, nil
 }

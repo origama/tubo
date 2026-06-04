@@ -80,6 +80,14 @@ func TestServiceGrantEndpointNamespaceMembersPolicy(t *testing.T) {
 	if resp.Type != grantspkg.TypeConnectGranted {
 		t.Fatalf("expected member grant approval, got %#v", resp)
 	}
+	membershipOnlyToken, err := clusterinvite.SignToken(clusterinvite.Payload{Version: clusterinvite.Version, Kind: clusterinvite.MembershipGrantKind, JTI: "member-jti-file", ClusterName: "home", ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(mustSSHKey(t, authPub)))), Namespace: "default", Grant: memberGrant, IssuedAt: time.Now().UTC(), ExpiresAt: time.Now().Add(time.Hour).UTC()}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp = endpoint.handleMessage(grantspkg.Message{Type: grantspkg.TypeConnectRequest, Version: grantspkg.VersionV1, RequestID: "req-5b", ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ClientPublicKey: testAuthorizedClientKey(t), MembershipGrantToken: membershipOnlyToken}, requester)
+	if resp.Type != grantspkg.TypeConnectGranted {
+		t.Fatalf("expected membership-only grant approval, got %#v", resp)
+	}
 	if _, err := endpoint.revocations.RevokeInvite("member-jti", "test"); err != nil {
 		t.Fatal(err)
 	}

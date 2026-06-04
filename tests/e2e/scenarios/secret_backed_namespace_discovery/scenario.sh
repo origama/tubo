@@ -108,6 +108,11 @@ for i in $(seq 1 60); do
 done
 assert_file_contains "$E2E_ARTIFACTS_DIR/bob-member-services.out" "$SERVICE_NAME" 'member invite should discover the Discovery V3 service'
 
+exec_actor_bg bob sh -lc "cd /work && exec tubo connect ${SERVICE_NAME} --config ${member_cfg} --local 127.0.0.1:19090 > /work/logs/bob-member-connect.out 2>&1"
+wait_http_ok_in_actor bob http://127.0.0.1:19090/healthz 90 || fail "bob member connect bridge did not become healthy"
+exec_actor bob sh -lc "curl -fsS http://127.0.0.1:19090/v1/dummy?from=bob-member" > "$E2E_ARTIFACTS_DIR/bob-member-connect-response.json"
+assert_file_contains "$E2E_ARTIFACTS_DIR/bob-member-connect-response.json" 'bob-member' 'member invite should connect by name through the local bridge'
+
 write_report_json "$E2E_ARTIFACTS_DIR/report.json" "$E2E_SCENARIO" "$E2E_NETWORK_NAME" "$SERVICE_NAME" "$(actor_container_name alice)" "$(actor_container_name bob)"
 
-echo "[e2e] PASS: secret-backed namespace discovery member join/discover flow works end-to-end"
+echo "[e2e] PASS: secret-backed namespace discovery member join/discover/connect flow works end-to-end"
