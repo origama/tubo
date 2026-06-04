@@ -189,6 +189,27 @@ A second very important finding came out of the same profiling pass:
 
 The bridge now forces direct dials/streams for direct service candidates, so future profiles should be collected against the relay-free runs above.
 
+## Clean force-direct profiling snapshot
+
+I captured a second `perf` profiling pass after the force-direct fix:
+
+- direct forward profile: `tests/perf/tcpraw/results/profiles/20260604-214643-direct-forward/`
+- relayed forward profile: `tests/perf/tcpraw/results/profiles/20260604-214754-relayed-forward/`
+
+Important caveat: these `perf record` runs perturb throughput heavily, so their `iperf3` numbers are **not** used as throughput benchmarks. They are used only for hotspot attribution.
+
+The clean profiles confirm the earlier hotspot shape:
+
+- direct data-plane proof remains valid: service logs show both the prior grant/relay connection and a separate direct inbound data connection from the client container;
+- relayed data-plane proof remains valid: service logs show only `/p2p-circuit/` for the client data path;
+- the largest sampled user-space hotspot remains private-swarm encryption and libp2p mux/security plumbing:
+  - `salsa2020XORKeyStream` through `pnet.(*pskConn).Read/Write`;
+  - `yamux.(*Session).recvLoop/sendLoop`;
+  - TLS AES-GCM helpers;
+- `ProxyTCPStream(...)` / `io.copyBuffer` appears only as a smaller secondary cost in these samples.
+
+This points the next optimization investigation toward transport/security/mux overhead first, not toward a simple copy-buffer-only fix.
+
 ## Updated next recommended step
 
 With reliability fixed and the benchmark now proving a relay-free direct data plane, the next iteration should profile the cleaned-up `direct-forward` path and compare it to the explicit `relayed-forward` path. Only after that should we test transport optimizations such as copy buffer sizing, pooling, or stream concurrency changes.
