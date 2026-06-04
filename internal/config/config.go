@@ -109,6 +109,7 @@ type Cluster struct {
 
 type ClusterMembershipGrant struct {
 	InviteToken          string    `yaml:"invite_token,omitempty" json:"invite_token,omitempty"`
+	InviteTokenFile      string    `yaml:"invite_token_file,omitempty" json:"invite_token_file,omitempty"`
 	InviteVersion        string    `yaml:"invite_version,omitempty" json:"invite_version,omitempty"`
 	InviteID             string    `yaml:"invite_id,omitempty" json:"invite_id,omitempty"`
 	ClusterName          string    `yaml:"cluster_name,omitempty" json:"cluster_name,omitempty"`

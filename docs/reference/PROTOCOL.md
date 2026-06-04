@@ -9,7 +9,7 @@ Backward-compatible legacy stream protocol still accepted:
 
 The wire protocol uses binary framing with varint length prefixes for efficient HTTP and raw TCP-over-libp2p tunneling. It replaces the legacy JSON-based protocol to fix critical issues such as multi-value header truncation, no streaming support, and excessive overhead. HTTP remains frame-based; raw TCP is capability-gated and switches to byte streaming after an explicit tunnel-open handshake.
 
-This document covers the data-plane stream protocol. Collaborative ambient service discovery is a separate control-plane concern and now uses secret-backed Discovery V3 namespace topics, with no Discovery V2 fallback for discovery-enabled namespace runtime in `v0.9.0`.
+This document covers the data-plane stream protocol. Collaborative ambient service discovery is a separate control-plane concern and now uses secret-backed Discovery V3 namespace topics, with no Discovery V2 fallback for discovery-enabled namespace runtime in `v0.9.1`.
 
 ## Frame Format
 

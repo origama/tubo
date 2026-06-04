@@ -19,6 +19,7 @@ import (
 const (
 	TokenPrefix            = "tubo-invite-v1."
 	Kind                   = "cluster-invite"
+	MembershipGrantKind    = "cluster-membership-grant"
 	Version                = "v1"
 	RoleMember             = "member"
 	RoleViewer             = "viewer"
@@ -54,6 +55,7 @@ type Payload struct {
 	AuthorityPublicKey string                   `json:"authority_public_key"`
 	Namespace          string                   `json:"namespace"`
 	Discovery          *NamespaceDiscoveryEntry `json:"discovery,omitempty"`
+	MembershipToken    string                   `json:"membership_token,omitempty"`
 	Grant              Grant                    `json:"grant"`
 	GrantService       GrantService             `json:"grant_service,omitempty"`
 	IssuedAt           time.Time                `json:"issued_at"`
@@ -74,7 +76,7 @@ func GrantForRole(role string) (Grant, error) {
 }
 
 func SignToken(payload Payload, priv ed25519.PrivateKey) (string, error) {
-	if err := ValidatePayload(payload); err != nil {
+	if err := validateSignedPayload(payload); err != nil {
 		return "", err
 	}
 	payloadBytes, err := json.Marshal(payload)
@@ -86,6 +88,18 @@ func SignToken(payload Payload, priv ed25519.PrivateKey) (string, error) {
 }
 
 func ParseAndVerifyToken(token string) (Payload, error) {
+	return parseAndVerifyToken(token, validateSignedPayload)
+}
+
+func ParseAndVerifyClusterInviteToken(token string) (Payload, error) {
+	return parseAndVerifyToken(token, ValidatePayload)
+}
+
+func ParseAndVerifyMembershipGrantToken(token string) (Payload, error) {
+	return parseAndVerifyToken(token, ValidateMembershipGrantPayload)
+}
+
+func parseAndVerifyToken(token string, validate func(Payload) error) (Payload, error) {
 	if !IsToken(token) {
 		return Payload{}, fmt.Errorf("invalid cluster invite token")
 	}
@@ -106,7 +120,7 @@ func ParseAndVerifyToken(token string) (Payload, error) {
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return Payload{}, fmt.Errorf("decode cluster invite payload json: %w", err)
 	}
-	if err := ValidatePayload(payload); err != nil {
+	if err := validate(payload); err != nil {
 		return Payload{}, err
 	}
 	pubKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(payload.AuthorityPublicKey))
@@ -128,14 +142,8 @@ func ParseAndVerifyToken(token string) (Payload, error) {
 }
 
 func ValidatePayload(payload Payload) error {
-	if payload.Version != Version {
-		return fmt.Errorf("unsupported cluster invite version %q", payload.Version)
-	}
-	if payload.Kind != Kind {
-		return fmt.Errorf("unsupported cluster invite kind %q", payload.Kind)
-	}
-	if payload.ClusterName == "" || payload.ClusterID == "" || payload.AuthorityPublicKey == "" || payload.Namespace == "" || payload.JTI == "" {
-		return errors.New("cluster invite is missing required fields")
+	if err := validateCommonPayload(payload, Kind); err != nil {
+		return err
 	}
 	if payload.Discovery == nil {
 		return errors.New("cluster invite is missing namespace discovery entry")
@@ -143,27 +151,82 @@ func ValidatePayload(payload Payload) error {
 	if err := ValidateNamespaceDiscoveryEntry(*payload.Discovery); err != nil {
 		return fmt.Errorf("cluster invite discovery: %w", err)
 	}
+	return validateGrant(payload, "cluster invite")
+}
+
+func ValidateMembershipGrantPayload(payload Payload) error {
+	if err := validateCommonPayload(payload, MembershipGrantKind); err != nil {
+		return err
+	}
+	if payload.Discovery != nil {
+		return errors.New("cluster membership grant must not contain namespace discovery entry")
+	}
+	if strings.TrimSpace(payload.MembershipToken) != "" {
+		return errors.New("cluster membership grant must not contain nested membership token")
+	}
+	return validateGrant(payload, "cluster membership grant")
+}
+
+func MembershipGrantPayloadFromInvite(invite Payload) (Payload, error) {
+	if err := ValidatePayload(invite); err != nil {
+		return Payload{}, err
+	}
+	payload := invite
+	payload.Kind = MembershipGrantKind
+	payload.Discovery = nil
+	payload.MembershipToken = ""
+	if err := ValidateMembershipGrantPayload(payload); err != nil {
+		return Payload{}, err
+	}
+	return payload, nil
+}
+
+func validateSignedPayload(payload Payload) error {
+	switch payload.Kind {
+	case Kind:
+		return ValidatePayload(payload)
+	case MembershipGrantKind:
+		return ValidateMembershipGrantPayload(payload)
+	default:
+		return fmt.Errorf("unsupported cluster invite kind %q", payload.Kind)
+	}
+}
+
+func validateCommonPayload(payload Payload, kind string) error {
+	if payload.Version != Version {
+		return fmt.Errorf("unsupported cluster invite version %q", payload.Version)
+	}
+	if payload.Kind != kind {
+		return fmt.Errorf("unsupported cluster invite kind %q", payload.Kind)
+	}
+	if payload.ClusterName == "" || payload.ClusterID == "" || payload.AuthorityPublicKey == "" || payload.Namespace == "" || payload.JTI == "" {
+		return errors.New("cluster invite is missing required fields")
+	}
 	if time.Now().UTC().After(payload.ExpiresAt.UTC()) {
 		return errors.New("cluster invite expired")
 	}
 	if !payload.IssuedAt.IsZero() && payload.ExpiresAt.Before(payload.IssuedAt) {
 		return errors.New("cluster invite expires before it was issued")
 	}
+	return nil
+}
+
+func validateGrant(payload Payload, label string) error {
 	switch payload.Grant.Role {
 	case RoleMember:
 		if !stringSliceEqualSet(payload.Grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
-			return errors.New("cluster invite member grant has invalid permissions")
+			return fmt.Errorf("%s member grant has invalid permissions", label)
 		}
 	case RoleViewer:
 		if !stringSliceEqualSet(payload.Grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList}) {
-			return errors.New("cluster invite viewer grant has invalid permissions")
+			return fmt.Errorf("%s viewer grant has invalid permissions", label)
 		}
 	case RoleGrantRequester:
 		if !stringSliceEqualSet(payload.Grant.Permissions, []string{GrantRequestPermission}) {
-			return errors.New("cluster invite grant-requester has invalid permissions")
+			return fmt.Errorf("%s grant-requester has invalid permissions", label)
 		}
 		if payload.GrantService.Protocol != grantspkg.ProtocolID || len(payload.GrantService.Peers) == 0 {
-			return errors.New("cluster invite grant-requester is missing grant service metadata")
+			return fmt.Errorf("%s grant-requester is missing grant service metadata", label)
 		}
 		for _, peer := range payload.GrantService.Peers {
 			if !strings.Contains(peer, "/p2p/") {
@@ -171,7 +234,7 @@ func ValidatePayload(payload Payload) error {
 			}
 		}
 	default:
-		return errors.New("cluster invite is missing grant role")
+		return fmt.Errorf("%s is missing grant role", label)
 	}
 	return nil
 }

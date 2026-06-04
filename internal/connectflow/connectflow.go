@@ -373,11 +373,11 @@ func loadConnectMembership(cfg cfgpkg.Config, scope catalog.Scope) (*capability.
 	if membership != nil && containsConnectPermission(membership.Permissions) {
 		return membership, "", nil
 	}
-	if grant := cluster.MembershipGrant; grant != nil && strings.TrimSpace(grant.InviteToken) != "" {
-		if payload, err := clusterinvite.ParseAndVerifyToken(grant.InviteToken); err == nil {
-			if payload.ClusterName == scope.Cluster && payload.ClusterID == cluster.ClusterID && payload.Namespace == scope.Namespace {
-				return nil, grant.InviteToken, nil
-			}
+	if grant := cluster.MembershipGrant; grant != nil {
+		if token, err := loadConnectMembershipGrantToken(*grant, scope, cluster.ClusterID); err == nil {
+			return nil, token, nil
+		} else if membership == nil {
+			capErr = err
 		}
 	}
 	if membership != nil {
@@ -407,6 +407,35 @@ func loadConnectMembershipCapability(cfg cfgpkg.Config, scope catalog.Scope) (*c
 		return nil, err
 	}
 	return &membership, nil
+}
+
+func loadConnectMembershipGrantToken(grant cfgpkg.ClusterMembershipGrant, scope catalog.Scope, clusterID string) (string, error) {
+	candidates := make([]string, 0, 2)
+	if strings.TrimSpace(grant.InviteToken) != "" {
+		candidates = append(candidates, strings.TrimSpace(grant.InviteToken))
+	}
+	if strings.TrimSpace(grant.InviteTokenFile) != "" {
+		b, err := os.ReadFile(strings.TrimSpace(grant.InviteTokenFile))
+		if err != nil {
+			return "", err
+		}
+		if token := strings.TrimSpace(string(b)); token != "" {
+			candidates = append(candidates, token)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("no membership grant token configured for %s/%s", scope.Cluster, scope.Namespace)
+	}
+	for _, token := range candidates {
+		payload, err := clusterinvite.ParseAndVerifyToken(token)
+		if err != nil {
+			continue
+		}
+		if payload.ClusterName == scope.Cluster && payload.ClusterID == clusterID && payload.Namespace == scope.Namespace {
+			return token, nil
+		}
+	}
+	return "", fmt.Errorf("no usable membership grant token configured for %s/%s", scope.Cluster, scope.Namespace)
 }
 
 func containsConnectPermission(perms []string) bool {
