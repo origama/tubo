@@ -1305,10 +1305,10 @@ func printDetachedSummary(commandName string, state detachedProcessState) {
 }
 
 func processTTLColumn(item processView) string {
-	if _, rem := formatProcessExpiry(item.ConnectAccessExpiresAt); rem != "" {
+	if _, rem := formatProcessExpiry(item.ConnectRefreshExpiresAt); rem != "" {
 		return rem
 	}
-	if _, rem := formatProcessExpiry(item.ConnectRefreshExpiresAt); rem != "" {
+	if _, rem := formatProcessExpiry(item.ConnectAccessExpiresAt); rem != "" {
 		return rem
 	}
 	return "-"
@@ -1316,7 +1316,7 @@ func processTTLColumn(item processView) string {
 
 func printProcessesTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tCOMMAND\tSERVICE ID\tSCOPE\tSTATUS\tTTL\tPID\tLOCAL\tTARGET")
+	fmt.Fprintln(w, "NAME\tCOMMAND\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tTTL\tPID\tLOCAL\tTARGET")
 	for _, item := range items {
 		local := item.Local
 		if local == "" {
@@ -1330,7 +1330,11 @@ func printProcessesTable(items []processView) {
 		if item.Cluster != "" || item.Namespace != "" {
 			scope = item.Cluster + "/" + item.Namespace
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.Command, displayServiceID(item.ServiceID), scope, item.Status, processTTLColumn(item), item.PID, local, target)
+		path := item.Path
+		if path == "" {
+			path = "-"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.Command, displayServiceID(item.ServiceID), scope, item.Status, path, processTTLColumn(item), item.PID, local, target)
 	}
 	_ = w.Flush()
 }
@@ -1377,6 +1381,9 @@ func printProcessDescription(state detachedProcessState, status string) {
 	if state.Target != "" {
 		fmt.Printf("Target: %s\n", state.Target)
 	}
+	if state.Path != "" {
+		fmt.Printf("Path: %s\n", state.Path)
+	}
 	if len(state.CommandLine) > 0 {
 		fmt.Printf("Command line: %s\n", strings.Join(state.CommandLine, " "))
 	}
@@ -1402,6 +1409,13 @@ func printProcessDescription(state detachedProcessState, status string) {
 	}
 	if state.LastTunnelError != "" {
 		fmt.Printf("Last tunnel error: %s\n", state.LastTunnelError)
+	}
+	if state.LastRefreshError != "" {
+		fmt.Printf("Last refresh error: %s\n", state.LastRefreshError)
+	}
+	if ts, rem := formatProcessExpiry(state.NextRefreshRetryAt); ts != "" {
+		fmt.Printf("Next refresh retry at: %s\n", ts)
+		fmt.Printf("Next refresh retry in: %s\n", rem)
 	}
 }
 
@@ -1555,6 +1569,7 @@ func connectCmd(args []string) error {
 		Namespace: scopeNamespace,
 		Local:     localAddr,
 		Target:    connectDetachedTarget(req, result.ServiceName, result.ServiceID),
+		Path:      result.Path,
 		LogFile:   "",
 		StateFile: filepath.Join(processStateDir(), name+".json"),
 		PIDFile:   filepath.Join(processRunDir(), name+".pid"),
@@ -1571,6 +1586,7 @@ func connectCmd(args []string) error {
 			}
 		}
 	}()
+	state.Path = result.Path
 	result.App.SetStatusReporter(func(runtime bridge.RuntimeStatus) {
 		if err := updateProcessRuntimeState(state.StateFile, runtime); err != nil {
 			logging.Warnf("connect runtime status update failed: %v\n", err)

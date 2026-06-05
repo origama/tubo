@@ -689,6 +689,7 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 		StateFile:               filepath.Join(processStateDir(), "connect-lms-1234.json"),
 		Source:                  "foreground",
 		CommandLine:             cmdline,
+		Path:                    "direct",
 		RuntimeStatus:           "degraded",
 		DegradedReason:          "connect refresh lease expired",
 		ConnectAccessExpiresAt:  time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
@@ -701,7 +702,7 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Runtime reason: connect refresh lease expired", "Connect access expires in:", "Connect refresh expires in: expired"} {
+	for _, want := range []string{"Path: direct", "Runtime reason: connect refresh lease expired", "Connect access expires in:", "Connect refresh expires in: expired"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
@@ -714,6 +715,7 @@ func TestPrintProcessesTableIncludesTTLColumn(t *testing.T) {
 			Name:                   "connect-lms-1234",
 			Command:                "connect",
 			Status:                 "degraded",
+			Path:                   "relayed",
 			PID:                    1234,
 			ConnectAccessExpiresAt: time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339),
 			Local:                  "127.0.0.1:1234",
@@ -724,7 +726,7 @@ func TestPrintProcessesTableIncludesTTLColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"TTL", "connect-lms-1234", "degraded"} {
+	for _, want := range []string{"PATH", "TTL", "connect-lms-1234", "degraded"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("process table missing %q: %s", want, out)
 		}

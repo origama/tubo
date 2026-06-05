@@ -28,6 +28,7 @@ type State struct {
 	Namespace               string   `json:"namespace,omitempty"`
 	Local                   string   `json:"local,omitempty"`
 	Target                  string   `json:"target,omitempty"`
+	Path                    string   `json:"path,omitempty"`
 	PID                     int      `json:"pid"`
 	StartedAt               string   `json:"started_at"`
 	LogFile                 string   `json:"log_file"`
@@ -44,6 +45,8 @@ type State struct {
 	LastTunnelError         string   `json:"last_tunnel_error,omitempty"`
 	LastTunnelErrorAt       string   `json:"last_tunnel_error_at,omitempty"`
 	LastTunnelHealthyAt     string   `json:"last_tunnel_healthy_at,omitempty"`
+	LastRefreshError        string   `json:"last_refresh_error,omitempty"`
+	NextRefreshRetryAt      string   `json:"next_refresh_retry_at,omitempty"`
 }
 
 type DetachedSpec struct {
@@ -65,6 +68,7 @@ type View struct {
 	Namespace               string   `json:"namespace,omitempty"`
 	Local                   string   `json:"local,omitempty"`
 	Target                  string   `json:"target,omitempty"`
+	Path                    string   `json:"path,omitempty"`
 	LogFile                 string   `json:"log_file"`
 	StateFile               string   `json:"state_file"`
 	PIDFile                 string   `json:"pid_file"`
@@ -617,6 +621,7 @@ func viewFromState(state State, status, confidence string) View {
 		Namespace:               state.Namespace,
 		Local:                   state.Local,
 		Target:                  state.Target,
+		Path:                    state.Path,
 		LogFile:                 state.LogFile,
 		StateFile:               state.StateFile,
 		PIDFile:                 state.PIDFile,

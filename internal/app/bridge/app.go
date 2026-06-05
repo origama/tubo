@@ -49,6 +49,7 @@ type RuntimeStatus struct {
 	Status                  string
 	Reason                  string
 	ServiceKind             string
+	Path                    string
 	ConnectAccessExpiresAt  *time.Time
 	ConnectAccessExpiresIn  string
 	ConnectRefreshExpiresAt *time.Time
@@ -56,6 +57,8 @@ type RuntimeStatus struct {
 	LastTunnelError         string
 	LastTunnelErrorAt       *time.Time
 	LastTunnelHealthyAt     *time.Time
+	LastRefreshError        string
+	NextRefreshRetryAt      *time.Time
 }
 
 type App struct {
@@ -68,6 +71,10 @@ type App struct {
 	stateMu              sync.RWMutex
 	connectMu            sync.Mutex
 	connectLease         *grantspkg.ConnectAccessLease
+	refreshingLease      bool
+	refreshDone          chan struct{}
+	lastRefreshError     string
+	nextRefreshRetryAt   time.Time
 	healthMu             sync.RWMutex
 	lastTunnelError      string
 	lastTunnelErrorAt    time.Time
@@ -130,6 +137,18 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectLease = &lease
 		log.Printf("bridge connect access lease enabled cluster=%s namespace=%s service=%s expires_at=%s", lease.ClusterID, lease.NamespaceID, lease.ServiceID, lease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
+	if cfg.ConnectGrant != nil {
+		log.Printf("bridge legacy connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)
+	}
+	c, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if !serviceAddrUsesRelay(cfg.ServiceAddr) {
+		c = network.WithForceDirectDial(c, "bridge selected direct service candidate")
+	}
+	if err := h.Connect(c, si); err != nil {
+		_ = h.Close()
+		return nil, fmt.Errorf("connect service peer: %w", err)
+	}
 	if cfg.ConnectInviteToken != "" && cfg.ConnectRefreshLease == nil {
 		if len(cfg.ConnectGrantPeers) == 0 {
 			_ = h.Close()
@@ -156,19 +175,9 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectLease = &artifacts.AccessLease
 		log.Printf("bridge discovery connect lease acquired cluster=%s namespace=%s service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ClusterID, artifacts.AccessLease.NamespaceID, artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
-	if cfg.ConnectGrant != nil {
-		log.Printf("bridge legacy connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)
-	}
-	c, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if !serviceAddrUsesRelay(cfg.ServiceAddr) {
-		c = network.WithForceDirectDial(c, "bridge selected direct service candidate")
-	}
-	if err := h.Connect(c, si); err != nil {
-		_ = h.Close()
-		return nil, fmt.Errorf("connect service peer: %w", err)
-	}
-	return &App{cfg: cfg, host: h, service: si, connectLease: connectLease}, nil
+	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease}
+	app.reportStatus()
+	return app, nil
 }
 
 func serviceAddrUsesRelay(addr string) bool {
@@ -194,6 +203,9 @@ func (a *App) Start(ctx context.Context) error {
 	a.listener = ln
 	a.listenAddr = listenAddr
 	a.stateMu.Unlock()
+	if a.cfg.ConnectRefreshLease != nil {
+		go a.startConnectLeaseRenewal(ctx)
+	}
 	if a.cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
 		go a.serveTCP(ctx, ln)
 		<-ctx.Done()
@@ -263,6 +275,9 @@ func (a *App) handleTCPConn(conn net.Conn) {
 }
 
 const bridgeSelfHealTimeout = 2 * time.Second
+const connectRefreshMinUsefulLifetime = 5 * time.Second
+const connectRefreshFailureCooldown = 5 * time.Second
+const connectRefreshMinExtension = time.Second
 
 func (a *App) establishTCPTunnel(localAddr string) (network.Stream, error) {
 	var lastErr error
@@ -375,6 +390,7 @@ type statusSnapshot struct {
 	Status                  string     `json:"status"`
 	Reason                  string     `json:"reason,omitempty"`
 	ServiceKind             string     `json:"service_kind,omitempty"`
+	Path                    string     `json:"path,omitempty"`
 	ConnectAccessExpiresAt  *time.Time `json:"connect_access_expires_at,omitempty"`
 	ConnectAccessExpiresIn  string     `json:"connect_access_expires_in,omitempty"`
 	ConnectRefreshExpiresAt *time.Time `json:"connect_refresh_expires_at,omitempty"`
@@ -382,6 +398,31 @@ type statusSnapshot struct {
 	LastTunnelError         string     `json:"last_tunnel_error,omitempty"`
 	LastTunnelErrorAt       *time.Time `json:"last_tunnel_error_at,omitempty"`
 	LastTunnelHealthyAt     *time.Time `json:"last_tunnel_healthy_at,omitempty"`
+}
+
+func (a *App) currentPath() string {
+	if a.host == nil {
+		return ""
+	}
+	conns := a.host.Network().ConnsToPeer(a.service.ID)
+	hasRelay := false
+	for _, conn := range conns {
+		if strings.Contains(conn.RemoteMultiaddr().String(), "/p2p-circuit") {
+			hasRelay = true
+			continue
+		}
+		return "direct"
+	}
+	if hasRelay {
+		return "relayed"
+	}
+	if serviceAddrUsesRelay(a.cfg.ServiceAddr) {
+		return "relayed"
+	}
+	if a.cfg.ServiceAddr != "" {
+		return "direct"
+	}
+	return ""
 }
 
 func formatRemaining(until time.Time, now time.Time) string {
@@ -397,7 +438,7 @@ func formatRemaining(until time.Time, now time.Time) string {
 
 func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 	ok, msg := a.tunnelHealth()
-	snap := statusSnapshot{Status: "running", ServiceKind: a.cfg.ServiceKind}
+	snap := statusSnapshot{Status: "running", ServiceKind: a.cfg.ServiceKind, Path: a.currentPath()}
 	if !ok {
 		snap.Status = "degraded"
 		snap.Reason = msg
@@ -426,16 +467,110 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 		t := a.cfg.ConnectRefreshLease.ExpiresAt.UTC()
 		snap.ConnectRefreshExpiresAt = &t
 		snap.ConnectRefreshExpiresIn = formatRemaining(t, now)
+		if !now.Before(t) {
+			snap.Status = "degraded"
+			snap.Reason = "connect refresh lease expired; ask the service owner for a fresh token/invite"
+		} else if time.Until(t) <= connectRefreshMinUsefulLifetime && snap.Reason == "" {
+			snap.Status = "degraded"
+			snap.Reason = "connect refresh lease is near expiry; ask the service owner for a fresh token/invite"
+		}
+	} else if a.connectLease != nil {
+		if !now.Before(a.connectLease.ExpiresAt.UTC()) {
+			snap.Status = "degraded"
+			snap.Reason = "connect access lease expired; ask the service owner for a fresh token/invite"
+		}
+	}
+	if a.lastRefreshError != "" && snap.Reason == "" {
+		snap.Status = "degraded"
+		snap.Reason = a.lastRefreshError
 	}
 	return snap
 }
 
+func connectLeaseRenewBefore(lease grantspkg.ConnectAccessLease) time.Duration {
+	if lease.ExpiresAt.IsZero() {
+		return time.Second
+	}
+	ttl := lease.ExpiresAt.UTC().Sub(lease.IssuedAt.UTC())
+	renewBefore := ttl / 3
+	if renewBefore < time.Second {
+		renewBefore = time.Second
+	}
+	if renewBefore > 5*time.Minute {
+		renewBefore = 5 * time.Minute
+	}
+	return renewBefore
+}
+
+func (a *App) startConnectLeaseRenewal(ctx context.Context) {
+	for {
+		a.connectMu.Lock()
+		refresh := a.cfg.ConnectRefreshLease
+		lease := a.connectLease
+		nextRetry := a.nextRefreshRetryAt
+		a.connectMu.Unlock()
+		if refresh == nil {
+			return
+		}
+		now := time.Now().UTC()
+		if !now.Before(refresh.ExpiresAt.UTC()) {
+			err := fmt.Errorf("connect refresh lease expired; ask the service owner for a fresh token/invite")
+			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
+			a.markTunnelDegraded(err)
+			return
+		}
+		if nextRetry.After(now) {
+			wait := time.Until(nextRetry)
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		var wait time.Duration
+		if lease == nil || connectAccessLeaseNeedsRefresh(*lease, now) {
+			wait = 0
+		} else {
+			renewBefore := connectLeaseRenewBefore(*lease)
+			wait = time.Until(lease.ExpiresAt.UTC().Add(-renewBefore))
+		}
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		_, err := a.ensureConnectAccessLease(refreshCtx)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			a.markTunnelDegraded(err)
+			log.Printf("bridge connect lease renewal failed: %v", err)
+			continue
+		}
+	}
+}
+
 func (a *App) CurrentRuntimeStatus() RuntimeStatus {
 	snap := a.statusSnapshot(time.Now().UTC())
+	a.connectMu.Lock()
+	lastRefreshError := a.lastRefreshError
+	nextRefreshRetryAt := a.nextRefreshRetryAt
+	a.connectMu.Unlock()
 	return RuntimeStatus{
 		Status:                  snap.Status,
 		Reason:                  snap.Reason,
 		ServiceKind:             snap.ServiceKind,
+		Path:                    snap.Path,
 		ConnectAccessExpiresAt:  snap.ConnectAccessExpiresAt,
 		ConnectAccessExpiresIn:  snap.ConnectAccessExpiresIn,
 		ConnectRefreshExpiresAt: snap.ConnectRefreshExpiresAt,
@@ -443,6 +578,14 @@ func (a *App) CurrentRuntimeStatus() RuntimeStatus {
 		LastTunnelError:         snap.LastTunnelError,
 		LastTunnelErrorAt:       snap.LastTunnelErrorAt,
 		LastTunnelHealthyAt:     snap.LastTunnelHealthyAt,
+		LastRefreshError:        lastRefreshError,
+		NextRefreshRetryAt: func() *time.Time {
+			if nextRefreshRetryAt.IsZero() {
+				return nil
+			}
+			t := nextRefreshRetryAt.UTC()
+			return &t
+		}(),
 	}
 }
 
@@ -600,31 +743,112 @@ func (a *App) connectProof() (*protocol.ConnectProof, error) {
 }
 
 func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAccessLease, error) {
+	for {
+		now := time.Now().UTC()
+		a.connectMu.Lock()
+		if a.connectLease != nil && !connectAccessLeaseNeedsRefresh(*a.connectLease, now) {
+			lease := *a.connectLease
+			a.connectMu.Unlock()
+			return lease, nil
+		}
+		if a.cfg.ConnectRefreshLease == nil {
+			if a.connectLease == nil || !now.Before(a.connectLease.ExpiresAt.UTC()) {
+				a.connectMu.Unlock()
+				return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect access lease expired; ask the service owner for a fresh token/invite")
+			}
+			lease := *a.connectLease
+			a.connectMu.Unlock()
+			return lease, nil
+		}
+		refresh := *a.cfg.ConnectRefreshLease
+		if !now.Before(refresh.ExpiresAt.UTC()) {
+			err := fmt.Errorf("connect refresh lease expired; ask the service owner for a fresh token/invite")
+			a.connectMu.Unlock()
+			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
+			return grantspkg.ConnectAccessLease{}, err
+		}
+		if remaining := time.Until(refresh.ExpiresAt.UTC()); remaining <= connectRefreshMinUsefulLifetime {
+			err := fmt.Errorf("connect refresh lease is near expiry; ask the service owner for a fresh token/invite")
+			a.connectMu.Unlock()
+			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
+			return grantspkg.ConnectAccessLease{}, err
+		}
+		if !a.nextRefreshRetryAt.IsZero() && now.Before(a.nextRefreshRetryAt) {
+			errText := strings.TrimSpace(a.lastRefreshError)
+			if errText == "" {
+				errText = "connect lease refresh cooling down; retry later"
+			}
+			a.connectMu.Unlock()
+			return grantspkg.ConnectAccessLease{}, fmt.Errorf("%s", errText)
+		}
+		if a.refreshingLease {
+			done := a.refreshDone
+			a.connectMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return grantspkg.ConnectAccessLease{}, ctx.Err()
+			case <-done:
+			}
+			continue
+		}
+		prevExpiry := time.Time{}
+		if a.connectLease != nil {
+			prevExpiry = a.connectLease.ExpiresAt.UTC()
+		}
+		refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		a.refreshingLease = true
+		a.refreshDone = make(chan struct{})
+		a.connectMu.Unlock()
+		access, err := a.refreshConnectAccessLease(refreshCtx, refresh)
+		cancel()
+		a.connectMu.Lock()
+		done := a.refreshDone
+		a.refreshingLease = false
+		a.refreshDone = nil
+		if done != nil {
+			close(done)
+		}
+		if err != nil {
+			a.connectMu.Unlock()
+			wrapped := fmt.Errorf("refresh connect access lease: %w", err)
+			a.recordRefreshFailure(wrapped, time.Now().UTC().Add(connectRefreshFailureCooldown))
+			return grantspkg.ConnectAccessLease{}, wrapped
+		}
+		if !connectRefreshResultUseful(prevExpiry, access.ExpiresAt.UTC(), time.Now().UTC()) {
+			a.connectMu.Unlock()
+			err := fmt.Errorf("connect refresh lease is near expiry; ask the service owner for a fresh token/invite")
+			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
+			return grantspkg.ConnectAccessLease{}, err
+		}
+		a.connectLease = &access
+		a.cfg.ConnectAccessLease = &access
+		a.lastRefreshError = ""
+		a.nextRefreshRetryAt = time.Time{}
+		a.connectMu.Unlock()
+		log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
+		a.reportStatus()
+		return access, nil
+	}
+}
+
+func connectRefreshResultUseful(previousExpiry, newExpiry, now time.Time) bool {
+	if newExpiry.IsZero() || !now.Before(newExpiry) {
+		return false
+	}
+	if previousExpiry.IsZero() {
+		return true
+	}
+	return newExpiry.After(previousExpiry.Add(connectRefreshMinExtension))
+}
+
+func (a *App) recordRefreshFailure(err error, retryAt time.Time) {
+	if err == nil {
+		return
+	}
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
-	if a.connectLease != nil && !connectAccessLeaseNeedsRefresh(*a.connectLease, time.Now().UTC()) {
-		return *a.connectLease, nil
-	}
-	if a.cfg.ConnectRefreshLease == nil {
-		if a.connectLease == nil || !time.Now().UTC().Before(a.connectLease.ExpiresAt.UTC()) {
-			return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect access lease expired; ask the service owner for a fresh token/invite")
-		}
-		return *a.connectLease, nil
-	}
-	if !time.Now().UTC().Before(a.cfg.ConnectRefreshLease.ExpiresAt.UTC()) {
-		return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect refresh lease expired; ask the service owner for a fresh token/invite")
-	}
-	refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	access, err := a.refreshConnectAccessLease(refreshCtx, *a.cfg.ConnectRefreshLease)
-	if err != nil {
-		return grantspkg.ConnectAccessLease{}, fmt.Errorf("refresh connect access lease: %w", err)
-	}
-	a.connectLease = &access
-	a.cfg.ConnectAccessLease = &access
-	log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
-	a.reportStatus()
-	return access, nil
+	a.lastRefreshError = err.Error()
+	a.nextRefreshRetryAt = retryAt.UTC()
 }
 
 func (a *App) refreshConnectAccessLease(ctx context.Context, refresh grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
@@ -727,14 +951,7 @@ func connectAccessLeaseNeedsRefresh(lease grantspkg.ConnectAccessLease, now time
 	if lease.ExpiresAt.IsZero() || !now.Before(lease.ExpiresAt.UTC()) {
 		return true
 	}
-	ttl := lease.ExpiresAt.UTC().Sub(lease.IssuedAt.UTC())
-	renewBefore := ttl / 3
-	if renewBefore < time.Second {
-		renewBefore = time.Second
-	}
-	if renewBefore > 5*time.Minute {
-		renewBefore = 5 * time.Minute
-	}
+	renewBefore := connectLeaseRenewBefore(lease)
 	return !now.Add(renewBefore).Before(lease.ExpiresAt.UTC())
 }
 
