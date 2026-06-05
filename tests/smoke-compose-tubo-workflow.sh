@@ -579,6 +579,11 @@ chmod 600 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secre
 if ! chown 65532:65532 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"; then
   sudo chown 65532:65532 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
 fi
+if [[ ! -r "$host_tenant_a_discovery_secret_file" || ! -r "$host_tenant_b_discovery_secret_file" ]]; then
+  if command -v setfacl >/dev/null 2>&1; then
+    sudo setfacl -m "u:$(id -u):r" "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
+  fi
+fi
 
 if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
   echo "[smoke-tubo-workflow] forcing image rebuild"
