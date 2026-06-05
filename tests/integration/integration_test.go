@@ -546,14 +546,8 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 	if err := os.Chmod(discoverySecretPath, 0o600); err != nil {
 		return err
 	}
-	if err := os.Chown(discoverySecretPath, 65532, 65532); err != nil {
-		if errors.Is(err, os.ErrPermission) || errors.Is(err, syscall.EPERM) {
-			if chmodErr := os.Chmod(discoverySecretPath, 0o644); chmodErr != nil {
-				return chmodErr
-			}
-		} else {
-			return err
-		}
+	if err := os.Chown(discoverySecretPath, 65532, 65532); err != nil && !errors.Is(err, os.ErrPermission) && !errors.Is(err, syscall.EPERM) {
+		return err
 	}
 	return nil
 }

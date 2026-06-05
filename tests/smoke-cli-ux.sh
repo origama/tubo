@@ -398,7 +398,7 @@ echo "[smoke-cli-ux] validating foreground relay registration"
 assert_contains 'stopped process/relay-default' "$WORK_DIR/stop-detached-relay.out"
 fg_relay_port="$(free_port)"
 fg_relay_health_port="$(free_port)"
-INVOCATION_ID="cli-ux-systemd-relay" \
+TUBO_PROCESS_SOURCE="systemd" \
 RELAY_HEALTH_LISTEN="127.0.0.1:$fg_relay_health_port" \
   "$BIN" relay \
   --seed cli-ux-foreground-relay-seed \

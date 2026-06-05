@@ -577,7 +577,7 @@ find "$config_dir" -type f -exec chmod 644 {} +
 chmod 644 "$host_authority_key_file" "$host_tenant_a_cluster_cap_file" "$host_tenant_a_namespace_cap_file" "$host_tenant_b_cluster_cap_file" "$host_tenant_b_namespace_cap_file" "$host_service_a_owner_key_file" "$host_service_a_claim_file" "$host_service_b_owner_key_file" "$host_service_b_claim_file" "$host_swarm_key_file"
 chmod 600 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
 if ! chown 65532:65532 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"; then
-  chmod 644 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
+  sudo chown 65532:65532 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
 fi
 
 if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
