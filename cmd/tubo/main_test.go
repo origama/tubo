@@ -667,6 +667,70 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	}
 }
 
+func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmdline, ok := processCommandLine(os.Getpid())
+	if !ok || len(cmdline) == 0 {
+		t.Fatal("expected current process cmdline")
+	}
+	state := detachedProcessState{
+		ID:                      "process/connect-lms-1234",
+		Kind:                    "process",
+		Command:                 "connect",
+		Name:                    "connect-lms-1234",
+		PID:                     os.Getpid(),
+		PIDFile:                 filepath.Join(processRunDir(), "connect-lms-1234.pid"),
+		StateFile:               filepath.Join(processStateDir(), "connect-lms-1234.json"),
+		Source:                  "foreground",
+		CommandLine:             cmdline,
+		RuntimeStatus:           "degraded",
+		DegradedReason:          "connect refresh lease expired",
+		ConnectAccessExpiresAt:  time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
+		ConnectRefreshExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+	}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return describeCmd([]string{state.ID}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Runtime reason: connect refresh lease expired", "Connect access expires in:", "Connect refresh expires in: expired"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestPrintProcessesTableIncludesTTLColumn(t *testing.T) {
+	out, err := capture(func() error {
+		printProcessesTable([]processView{{
+			Name:                   "connect-lms-1234",
+			Command:                "connect",
+			Status:                 "degraded",
+			PID:                    1234,
+			ConnectAccessExpiresAt: time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339),
+			Local:                  "127.0.0.1:1234",
+			Target:                 "lms",
+		}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"TTL", "connect-lms-1234", "degraded"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("process table missing %q: %s", want, out)
+		}
+	}
+}
+
 func TestLogsCmdShowsSystemdHintWhenNoLogFile(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {

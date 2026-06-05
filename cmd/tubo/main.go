@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	bridge "github.com/origama/tubo/internal/app/bridge"
 	attachauth "github.com/origama/tubo/internal/attachauth"
 	catalog "github.com/origama/tubo/internal/catalog"
 	cfgpkg "github.com/origama/tubo/internal/config"
@@ -517,7 +518,8 @@ Path selection:
   - loopback/unspecified direct addresses are skipped from remote clients
   - relayed addresses are used as fallback
   - hole punching is enabled when relay metadata is available
-  - an initial relayed path may later upgrade to a direct libp2p connection`)
+  - an initial relayed path may later upgrade to a direct libp2p connection
+  - for raw TCP services, connect may do one short inline self-heal attempt before failing a new local connection when pre-stream setup breaks`)
 	case "get":
 		fmt.Println(`Usage:
   tubo get services [--json]
@@ -1302,9 +1304,19 @@ func printDetachedSummary(commandName string, state detachedProcessState) {
 	logging.Resultf("logs: %s\n", state.LogFile)
 }
 
+func processTTLColumn(item processView) string {
+	if _, rem := formatProcessExpiry(item.ConnectAccessExpiresAt); rem != "" {
+		return rem
+	}
+	if _, rem := formatProcessExpiry(item.ConnectRefreshExpiresAt); rem != "" {
+		return rem
+	}
+	return "-"
+}
+
 func printProcessesTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tCOMMAND\tSERVICE ID\tSCOPE\tSTATUS\tPID\tLOCAL\tTARGET")
+	fmt.Fprintln(w, "NAME\tCOMMAND\tSERVICE ID\tSCOPE\tSTATUS\tTTL\tPID\tLOCAL\tTARGET")
 	for _, item := range items {
 		local := item.Local
 		if local == "" {
@@ -1318,9 +1330,24 @@ func printProcessesTable(items []processView) {
 		if item.Cluster != "" || item.Namespace != "" {
 			scope = item.Cluster + "/" + item.Namespace
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.Command, displayServiceID(item.ServiceID), scope, item.Status, item.PID, local, target)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.Command, displayServiceID(item.ServiceID), scope, item.Status, processTTLColumn(item), item.PID, local, target)
 	}
 	_ = w.Flush()
+}
+
+func formatProcessExpiry(raw string) (string, string) {
+	if strings.TrimSpace(raw) == "" {
+		return "", ""
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return raw, "unknown"
+	}
+	remaining := ts.Sub(time.Now().UTC())
+	if remaining <= 0 {
+		return ts.UTC().Format(time.RFC3339), "expired"
+	}
+	return ts.UTC().Format(time.RFC3339), remaining.Round(time.Second).String()
 }
 
 func printProcessDescription(state detachedProcessState, status string) {
@@ -1358,6 +1385,23 @@ func printProcessDescription(state detachedProcessState, status string) {
 	fmt.Printf("PID file: %s\n", state.PIDFile)
 	if state.StatusURL != "" {
 		fmt.Printf("Status URL: %s\n", state.StatusURL)
+	}
+	if state.RuntimeStatus != "" && state.RuntimeStatus != status {
+		fmt.Printf("Runtime health: %s\n", state.RuntimeStatus)
+	}
+	if state.DegradedReason != "" {
+		fmt.Printf("Runtime reason: %s\n", state.DegradedReason)
+	}
+	if ts, rem := formatProcessExpiry(state.ConnectAccessExpiresAt); ts != "" {
+		fmt.Printf("Connect access expires at: %s\n", ts)
+		fmt.Printf("Connect access expires in: %s\n", rem)
+	}
+	if ts, rem := formatProcessExpiry(state.ConnectRefreshExpiresAt); ts != "" {
+		fmt.Printf("Connect refresh expires at: %s\n", ts)
+		fmt.Printf("Connect refresh expires in: %s\n", rem)
+	}
+	if state.LastTunnelError != "" {
+		fmt.Printf("Last tunnel error: %s\n", state.LastTunnelError)
 	}
 }
 
@@ -1527,7 +1571,11 @@ func connectCmd(args []string) error {
 			}
 		}
 	}()
-	_ = state
+	result.App.SetStatusReporter(func(runtime bridge.RuntimeStatus) {
+		if err := updateProcessRuntimeState(state.StateFile, runtime); err != nil {
+			logging.Warnf("connect runtime status update failed: %v\n", err)
+		}
+	})
 	output := fromConnectWorkflowResult(result)
 	if req.JSONOut {
 		if err := printJSON(output); err != nil {

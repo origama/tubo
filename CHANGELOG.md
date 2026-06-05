@@ -10,10 +10,10 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - None.
 
 ### Changed
-- None.
+- Detached raw TCP `connect` now performs one bounded inline self-heal attempt when pre-stream setup fails (for example stale path before stream open/handshake), while still failing fast once application bytes have already started flowing.
 
 ### Fixed
-- None.
+- Detached raw TCP `connect` no longer always requires a manual restart to recover from some stale direct-path failures before a new stream starts.
 
 ### Compatibility
 - Product version: pending next release

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -44,16 +45,37 @@ type Config struct {
 	ConnectLeaseRefresher                                                                              ConnectLeaseRefresher
 	ServiceKind                                                                                        string
 }
+type RuntimeStatus struct {
+	Status                  string
+	Reason                  string
+	ServiceKind             string
+	ConnectAccessExpiresAt  *time.Time
+	ConnectAccessExpiresIn  string
+	ConnectRefreshExpiresAt *time.Time
+	ConnectRefreshExpiresIn string
+	LastTunnelError         string
+	LastTunnelErrorAt       *time.Time
+	LastTunnelHealthyAt     *time.Time
+}
+
 type App struct {
-	cfg          Config
-	host         host.Host
-	service      peer.AddrInfo
-	server       *http.Server
-	listener     net.Listener
-	listenAddr   string
-	stateMu      sync.RWMutex
-	connectMu    sync.Mutex
-	connectLease *grantspkg.ConnectAccessLease
+	cfg                  Config
+	host                 host.Host
+	service              peer.AddrInfo
+	server               *http.Server
+	listener             net.Listener
+	listenAddr           string
+	stateMu              sync.RWMutex
+	connectMu            sync.Mutex
+	connectLease         *grantspkg.ConnectAccessLease
+	healthMu             sync.RWMutex
+	lastTunnelError      string
+	lastTunnelErrorAt    time.Time
+	lastTunnelHealthyAt  time.Time
+	statusReporter       func(RuntimeStatus)
+	openTunnelStream     func(context.Context) (network.Stream, error)
+	startClientTCPTunnel func(network.Stream, string, *protocol.ConnectProof) error
+	reconnectServiceFn   func(context.Context) error
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -224,33 +246,233 @@ func (a *App) serveTCP(ctx context.Context, ln net.Listener) {
 func (a *App) handleTCPConn(conn net.Conn) {
 	defer conn.Close()
 	start := time.Now()
-	streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tcp tunnel stream")
-	s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.ProtocolID)
+	s, err := a.establishTCPTunnel(conn.RemoteAddr().String())
 	if err != nil {
-		log.Printf("bridge tcp open stream local=%s err=%v", conn.RemoteAddr(), err)
+		a.markTunnelDegraded(err)
+		log.Printf("bridge tcp establish tunnel local=%s err=%v", conn.RemoteAddr(), err)
 		return
 	}
 	defer s.Close()
-	proof, err := a.connectProof()
-	if err != nil {
-		log.Printf("bridge tcp connect proof local=%s err=%v", conn.RemoteAddr(), err)
-		return
-	}
-	if err := p2p.StartClientTCPTunnel(s, "bridge", proof); err != nil {
-		log.Printf("bridge tcp start tunnel local=%s err=%v", conn.RemoteAddr(), err)
-		return
-	}
 	sent, received, err := p2p.ProxyTCPStream(conn, s)
 	if err != nil {
+		a.markTunnelDegraded(err)
 		log.Printf("bridge tcp proxy closed local=%s bytes_in=%d bytes_out=%d err=%v duration=%s", conn.RemoteAddr(), received, sent, err, time.Since(start))
 		return
 	}
 	log.Printf("bridge tcp proxy completed local=%s bytes_in=%d bytes_out=%d duration=%s", conn.RemoteAddr(), received, sent, time.Since(start))
 }
 
+const bridgeSelfHealTimeout = 2 * time.Second
+
+func (a *App) establishTCPTunnel(localAddr string) (network.Stream, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tcp tunnel stream")
+		s, err := a.openServiceTunnelStream(streamCtx)
+		if err == nil {
+			proof, proofErr := a.connectProof()
+			if proofErr != nil {
+				a.markTunnelDegraded(proofErr)
+				_ = s.Close()
+				return nil, fmt.Errorf("connect proof: %w", proofErr)
+			}
+			if startErr := a.startTCPTunnelStream(s, proof); startErr == nil {
+				a.markTunnelHealthy()
+				if attempt > 1 {
+					log.Printf("bridge tcp self-heal recovered local=%s", localAddr)
+				}
+				return s, nil
+			}
+			_ = s.Close()
+			lastErr = fmt.Errorf("start tunnel: %w", startErr)
+		} else {
+			lastErr = fmt.Errorf("open stream: %w", err)
+		}
+		if attempt == 1 {
+			if healErr := a.selfHealServicePath(localAddr, lastErr); healErr != nil {
+				return nil, fmt.Errorf("%v; self-heal failed: %w", lastErr, healErr)
+			}
+		}
+	}
+	a.markTunnelDegraded(lastErr)
+	return nil, lastErr
+}
+
+func (a *App) markTunnelHealthy() {
+	a.healthMu.Lock()
+	a.lastTunnelHealthyAt = time.Now()
+	a.lastTunnelError = ""
+	a.lastTunnelErrorAt = time.Time{}
+	a.healthMu.Unlock()
+	a.reportStatus()
+}
+
+func (a *App) markTunnelDegraded(err error) {
+	if err == nil {
+		return
+	}
+	a.healthMu.Lock()
+	a.lastTunnelError = err.Error()
+	a.lastTunnelErrorAt = time.Now()
+	a.healthMu.Unlock()
+	a.reportStatus()
+}
+
+func (a *App) tunnelHealth() (bool, string) {
+	a.healthMu.RLock()
+	defer a.healthMu.RUnlock()
+	if a.lastTunnelError == "" {
+		return true, "ok"
+	}
+	if !a.lastTunnelHealthyAt.IsZero() && a.lastTunnelHealthyAt.After(a.lastTunnelErrorAt) {
+		return true, "ok"
+	}
+	return false, fmt.Sprintf("degraded: %s", a.lastTunnelError)
+}
+
+func (a *App) openServiceTunnelStream(ctx context.Context) (network.Stream, error) {
+	if a.openTunnelStream != nil {
+		return a.openTunnelStream(ctx)
+	}
+	return a.host.NewStream(ctx, a.service.ID, p2p.ProtocolID)
+}
+
+func (a *App) startTCPTunnelStream(s network.Stream, proof *protocol.ConnectProof) error {
+	if a.startClientTCPTunnel != nil {
+		return a.startClientTCPTunnel(s, "bridge", proof)
+	}
+	return p2p.StartClientTCPTunnel(s, "bridge", proof)
+}
+
+func (a *App) selfHealServicePath(localAddr string, cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), bridgeSelfHealTimeout)
+	defer cancel()
+	log.Printf("bridge tcp self-heal local=%s cause=%v", localAddr, cause)
+	if a.reconnectServiceFn != nil {
+		return a.reconnectServiceFn(ctx)
+	}
+	return a.reconnectService(ctx)
+}
+
+func (a *App) reconnectService(ctx context.Context) error {
+	if a.host == nil {
+		return fmt.Errorf("bridge host unavailable")
+	}
+	_ = a.host.Network().ClosePeer(a.service.ID)
+	connectCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tcp self-heal reconnect")
+	if deadline, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		connectCtx, cancel = context.WithDeadline(connectCtx, deadline)
+		defer cancel()
+	}
+	if err := a.host.Connect(connectCtx, a.service); err != nil {
+		return fmt.Errorf("reconnect service peer: %w", err)
+	}
+	return nil
+}
+
+type statusSnapshot struct {
+	Status                  string     `json:"status"`
+	Reason                  string     `json:"reason,omitempty"`
+	ServiceKind             string     `json:"service_kind,omitempty"`
+	ConnectAccessExpiresAt  *time.Time `json:"connect_access_expires_at,omitempty"`
+	ConnectAccessExpiresIn  string     `json:"connect_access_expires_in,omitempty"`
+	ConnectRefreshExpiresAt *time.Time `json:"connect_refresh_expires_at,omitempty"`
+	ConnectRefreshExpiresIn string     `json:"connect_refresh_expires_in,omitempty"`
+	LastTunnelError         string     `json:"last_tunnel_error,omitempty"`
+	LastTunnelErrorAt       *time.Time `json:"last_tunnel_error_at,omitempty"`
+	LastTunnelHealthyAt     *time.Time `json:"last_tunnel_healthy_at,omitempty"`
+}
+
+func formatRemaining(until time.Time, now time.Time) string {
+	if until.IsZero() {
+		return ""
+	}
+	d := until.Sub(now)
+	if d <= 0 {
+		return "expired"
+	}
+	return d.Round(time.Second).String()
+}
+
+func (a *App) statusSnapshot(now time.Time) statusSnapshot {
+	ok, msg := a.tunnelHealth()
+	snap := statusSnapshot{Status: "running", ServiceKind: a.cfg.ServiceKind}
+	if !ok {
+		snap.Status = "degraded"
+		snap.Reason = msg
+	}
+	a.healthMu.RLock()
+	if a.lastTunnelError != "" {
+		snap.LastTunnelError = a.lastTunnelError
+	}
+	if !a.lastTunnelErrorAt.IsZero() {
+		t := a.lastTunnelErrorAt
+		snap.LastTunnelErrorAt = &t
+	}
+	if !a.lastTunnelHealthyAt.IsZero() {
+		t := a.lastTunnelHealthyAt
+		snap.LastTunnelHealthyAt = &t
+	}
+	a.healthMu.RUnlock()
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	if a.connectLease != nil {
+		t := a.connectLease.ExpiresAt.UTC()
+		snap.ConnectAccessExpiresAt = &t
+		snap.ConnectAccessExpiresIn = formatRemaining(t, now)
+	}
+	if a.cfg.ConnectRefreshLease != nil {
+		t := a.cfg.ConnectRefreshLease.ExpiresAt.UTC()
+		snap.ConnectRefreshExpiresAt = &t
+		snap.ConnectRefreshExpiresIn = formatRemaining(t, now)
+	}
+	return snap
+}
+
+func (a *App) CurrentRuntimeStatus() RuntimeStatus {
+	snap := a.statusSnapshot(time.Now().UTC())
+	return RuntimeStatus{
+		Status:                  snap.Status,
+		Reason:                  snap.Reason,
+		ServiceKind:             snap.ServiceKind,
+		ConnectAccessExpiresAt:  snap.ConnectAccessExpiresAt,
+		ConnectAccessExpiresIn:  snap.ConnectAccessExpiresIn,
+		ConnectRefreshExpiresAt: snap.ConnectRefreshExpiresAt,
+		ConnectRefreshExpiresIn: snap.ConnectRefreshExpiresIn,
+		LastTunnelError:         snap.LastTunnelError,
+		LastTunnelErrorAt:       snap.LastTunnelErrorAt,
+		LastTunnelHealthyAt:     snap.LastTunnelHealthyAt,
+	}
+}
+
+func (a *App) SetStatusReporter(report func(RuntimeStatus)) {
+	a.statusReporter = report
+	a.reportStatus()
+}
+
+func (a *App) reportStatus() {
+	if a.statusReporter != nil {
+		a.statusReporter(a.CurrentRuntimeStatus())
+	}
+}
+
 func (a *App) mux() *http.ServeMux {
 	m := http.NewServeMux()
-	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
+	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		snap := a.statusSnapshot(time.Now().UTC())
+		if snap.Status == "running" {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(snap.Reason))
+	})
+	m.HandleFunc("/statusz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(a.statusSnapshot(time.Now().UTC()))
+	})
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tunnel stream")
 		s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.SupportedProtocolIDs()...)
@@ -401,6 +623,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 	a.connectLease = &access
 	a.cfg.ConnectAccessLease = &access
 	log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
+	a.reportStatus()
 	return access, nil
 }
 
