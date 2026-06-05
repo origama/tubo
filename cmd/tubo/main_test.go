@@ -857,7 +857,7 @@ func TestJoinJSONAndCheck(t *testing.T) {
 }
 
 func TestJoinRejectsInvalidInput(t *testing.T) {
-	if _, err := capture(func() error { return run([]string{"join"}) }); err == nil {
+	if _, err := capture(func() error { return run([]string{"join", "overlay/manual"}) }); err == nil {
 		t.Fatal("expected missing relay/key error")
 	}
 	configDir := filepath.Join(t.TempDir(), "config")
