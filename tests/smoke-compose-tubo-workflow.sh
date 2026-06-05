@@ -53,6 +53,9 @@ wait_http_ok() {
     fi
     sleep 1
   done
+  echo "[smoke-tubo-workflow] timeout waiting for $url"
+  $COMPOSE ps || true
+  $COMPOSE logs --tail=100 || true
   return 1
 }
 
