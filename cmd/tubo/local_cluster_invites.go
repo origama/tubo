@@ -540,10 +540,6 @@ func parseAndVerifyClusterInviteToken(token string) (clusterInvitePayload, error
 	return clusterinvite.ParseAndVerifyClusterInviteToken(token)
 }
 
-func validateClusterInviteGrant(payload clusterInvitePayload) error {
-	return clusterinvite.ValidatePayload(payload)
-}
-
 func stringSliceEqualSet(have, want []string) bool {
 	if len(have) != len(want) {
 		return false

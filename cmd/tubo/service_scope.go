@@ -17,9 +17,7 @@ func parseServiceRef(ref string) (string, error) {
 	if ref == "" {
 		return "", errors.New("service name is required")
 	}
-	if strings.HasPrefix(ref, "service/") {
-		ref = strings.TrimPrefix(ref, "service/")
-	}
+	ref = strings.TrimPrefix(ref, "service/")
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return "", errors.New("service name is required")
@@ -28,22 +26,6 @@ func parseServiceRef(ref string) (string, error) {
 		return "", fmt.Errorf("unsupported service reference %q", ref)
 	}
 	return ref, nil
-}
-
-func applyServiceScope(service serviceResource, scope serviceScope) serviceResource {
-	service.Cluster = scope.Cluster
-	service.Namespace = scope.Namespace
-	return service
-}
-
-func applyServiceScopeToResources(items []serviceResource, scope serviceScope) []serviceResource {
-	if len(items) == 0 {
-		return items
-	}
-	for i := range items {
-		items[i] = applyServiceScope(items[i], scope)
-	}
-	return items
 }
 
 func serviceScopePtr(scope serviceScope) *serviceScope {

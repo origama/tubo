@@ -666,14 +666,6 @@ func (s *integrationStack) services() ([]serviceSummary, error) {
 	return payload.Items, nil
 }
 
-func (s *integrationStack) servicesCount() (int, error) {
-	services, err := s.services()
-	if err != nil {
-		return 0, err
-	}
-	return len(services), nil
-}
-
 func (s *integrationStack) routes() ([]route, error) {
 	resp, err := http.Get("http://127.0.0.1:8444/routes")
 	if err != nil {
@@ -686,23 +678,6 @@ func (s *integrationStack) routes() ([]route, error) {
 		return nil, err
 	}
 	return payload, nil
-}
-
-func (s *integrationStack) logs(service string) (string, error) {
-	return s.compose("logs", service, "--no-color")
-}
-
-func (s *integrationStack) serviceDebugPeer() (string, error) {
-	resp, err := http.Get("http://127.0.0.1:8091/debug/peer")
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	buf := new(bytes.Buffer)
-	if _, err := buf.ReadFrom(resp.Body); err != nil {
-		return "", err
-	}
-	return buf.String(), nil
 }
 
 func edgeRequest(t *testing.T, method, path, host string, headers map[string]string, body []byte, timeout time.Duration) (int, []byte) {
@@ -738,31 +713,6 @@ func edgeRequestRaw(method, path, host string, headers map[string]string, body [
 		return 0, nil, err
 	}
 	return resp.StatusCode, respBody.Bytes(), nil
-}
-
-func validateDummyResponse(requestPath string, body []byte, expectedMethod string, expectedBody []byte) error {
-	var resp dummyResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return fmt.Errorf("unmarshal response: %w body=%s", err, body)
-	}
-	if resp.Method != expectedMethod {
-		return fmt.Errorf("unexpected method: got %q want %q", resp.Method, expectedMethod)
-	}
-	if resp.Path != "/v1/dummy" {
-		return fmt.Errorf("unexpected path: got %q", resp.Path)
-	}
-	expectedQuery := ""
-	if parts := strings.SplitN(requestPath, "?", 2); len(parts) == 2 {
-		expectedQuery = parts[1]
-	}
-	if resp.RawQuery != expectedQuery {
-		return fmt.Errorf("unexpected raw query: got %q want %q", resp.RawQuery, expectedQuery)
-	}
-	expectedBodyB64 := base64.StdEncoding.EncodeToString(expectedBody)
-	if resp.BodyB64 != expectedBodyB64 {
-		return fmt.Errorf("unexpected body_b64 len: got=%d want=%d", len(resp.BodyB64), len(expectedBodyB64))
-	}
-	return nil
 }
 
 func httpOK(url string) bool {

@@ -298,10 +298,7 @@ func rewriteAttachArgs(args []string) ([]string, error) {
 		}
 		return args, nil
 	}
-	first := args[0]
-	if strings.HasPrefix(first, "service/") {
-		first = strings.TrimPrefix(first, "service/")
-	}
+	first := strings.TrimPrefix(args[0], "service/")
 	if isServiceTargetURL(first) {
 		if hasPort {
 			return nil, errors.New("attach cannot combine a positional URL target with --port")
@@ -2116,13 +2113,6 @@ func printJSON(v any) error {
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
-}
-
-func hostPortForHTTP(addr string) string {
-	if strings.HasPrefix(addr, ":") {
-		return "127.0.0.1" + addr
-	}
-	return addr
 }
 
 func newSwarmKeyData() ([]byte, error) {

@@ -139,7 +139,11 @@ func grantsRequestCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		resp, err = grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServiceKind: string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, ServicePeerID: servicePeerID.String(), ServiceAddresses: serviceEndpointAddrsForTokens(cfg, servicePeerID.String()), RequestNonce: leaseReq.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedTTLSeconds: int64(ttl.Seconds())})
+		submitResp, submitErr := grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServiceKind: string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, ServicePeerID: servicePeerID.String(), ServiceAddresses: serviceEndpointAddrsForTokens(cfg, servicePeerID.String()), RequestNonce: leaseReq.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedTTLSeconds: int64(ttl.Seconds())})
+		if submitErr != nil {
+			return submitErr
+		}
+		resp = submitResp
 	}
 	if err != nil {
 		return err

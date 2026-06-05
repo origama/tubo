@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -777,7 +778,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 				errText = "connect lease refresh cooling down; retry later"
 			}
 			a.connectMu.Unlock()
-			return grantspkg.ConnectAccessLease{}, fmt.Errorf("%s", errText)
+			return grantspkg.ConnectAccessLease{}, errors.New(errText)
 		}
 		if a.refreshingLease {
 			done := a.refreshDone

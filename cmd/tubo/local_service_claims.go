@@ -55,31 +55,6 @@ func serviceIdentityFor(clusterID, namespaceID, serviceName string) (string, str
 	return serviceID, serviceSeed
 }
 
-func serviceIDFor(clusterID, namespaceID, serviceName string) string {
-	serviceID, _ := serviceIdentityFor(clusterID, namespaceID, serviceName)
-	return serviceID
-}
-
-func generateServiceSeed() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return "service-" + hex.EncodeToString(buf), nil
-}
-
-func serviceClaimPath(configPath, clusterName, namespaceName, serviceName string) string {
-	return workspace.DerivePaths(configPath).ServiceClaim(clusterName, namespaceName, serviceName)
-}
-
-func servicePublishLeasePath(configPath, clusterName, namespaceName, serviceName string) string {
-	return workspace.DerivePaths(configPath).ServicePublishLease(clusterName, namespaceName, serviceName)
-}
-
-func serviceOwnerKeyPath(configPath, clusterName, namespaceName, serviceName string) string {
-	return workspace.DerivePaths(configPath).ServiceOwnerKey(clusterName, namespaceName, serviceName)
-}
-
 func ensureAttachServiceIdentity(configPath string, cfg cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
 	return localWorkspace().EnsureAttachServiceIdentity(configPath, cfg)
 }
@@ -237,7 +212,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 		if err != nil {
 			return cfg, svc, "", err
 		}
-		resp, err = grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{
+		submitResp, submitErr := grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{
 			Type:                  grantspkg.TypeSubmit,
 			Version:               grantspkg.VersionV1,
 			ClusterID:             cluster.ClusterID,
@@ -253,6 +228,10 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 			RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
 			RequestedTTLSeconds:   int64(attachPublishLeaseTTL().Seconds()),
 		})
+		if submitErr != nil {
+			return cfg, svc, "", submitErr
+		}
+		resp = submitResp
 	}
 	if err != nil {
 		return cfg, svc, "", err
