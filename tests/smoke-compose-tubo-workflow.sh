@@ -197,7 +197,7 @@ echo "[smoke-tubo-workflow] building local tubo binary"
 go build -o "$TUBO_BIN" ./cmd/tubo
 
 config_dir="generated/tubo-workflow/tubo"
-container_root="/home/nonroot/.config/tubo"
+container_root="/config/tubo"
 config_path="${config_dir}/config.yaml"
 rm -rf generated/tubo-workflow
 mkdir -p "$config_dir"
