@@ -437,26 +437,6 @@ func TestBridgeLeaseRenewalRefreshesAccessLeaseProactively(t *testing.T) {
 	t.Fatal("expected proactive access lease refresh")
 }
 
-func TestServiceStreamContextForcesDirectForDirectAddress(t *testing.T) {
-	ctx := serviceStreamContext("/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWService", "test")
-	if force, _ := network.GetForceDirectDial(ctx); !force {
-		t.Fatal("expected direct candidate stream context to force direct dial")
-	}
-	if allowLimited, _ := network.GetAllowLimitedConn(ctx); allowLimited {
-		t.Fatal("direct candidate stream context must not allow limited relay connections")
-	}
-}
-
-func TestServiceStreamContextAllowsLimitedForRelayAddress(t *testing.T) {
-	ctx := serviceStreamContext("/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWService", "test")
-	if allowLimited, _ := network.GetAllowLimitedConn(ctx); !allowLimited {
-		t.Fatal("expected relayed candidate stream context to allow limited relay connections")
-	}
-	if force, _ := network.GetForceDirectDial(ctx); force {
-		t.Fatal("relayed candidate stream context must not force direct dial")
-	}
-}
-
 type stubNetworkStream struct{}
 
 func (stubNetworkStream) Read([]byte) (int, error)                     { return 0, io.EOF }

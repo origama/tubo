@@ -142,9 +142,6 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if !serviceAddrUsesRelay(cfg.ServiceAddr) {
-		c = network.WithForceDirectDial(c, "bridge selected direct service candidate")
-	}
 	if err := h.Connect(c, si); err != nil {
 		_ = h.Close()
 		return nil, fmt.Errorf("connect service peer: %w", err)
@@ -282,7 +279,7 @@ const connectRefreshMinExtension = time.Second
 func (a *App) establishTCPTunnel(localAddr string) (network.Stream, error) {
 	var lastErr error
 	for attempt := 1; attempt <= 2; attempt++ {
-		streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tcp tunnel stream")
+		streamCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp tunnel stream")
 		s, err := a.openServiceTunnelStream(streamCtx)
 		if err == nil {
 			proof, proofErr := a.connectProof()
@@ -374,7 +371,7 @@ func (a *App) reconnectService(ctx context.Context) error {
 		return fmt.Errorf("bridge host unavailable")
 	}
 	_ = a.host.Network().ClosePeer(a.service.ID)
-	connectCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tcp self-heal reconnect")
+	connectCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp self-heal reconnect")
 	if deadline, ok := ctx.Deadline(); ok {
 		var cancel context.CancelFunc
 		connectCtx, cancel = context.WithDeadline(connectCtx, deadline)
@@ -416,7 +413,7 @@ func (a *App) currentPath() string {
 	if hasRelay {
 		return "relayed"
 	}
-	if serviceAddrUsesRelay(a.cfg.ServiceAddr) {
+	if strings.Contains(a.cfg.ServiceAddr, "/p2p-circuit") {
 		return "relayed"
 	}
 	if a.cfg.ServiceAddr != "" {
