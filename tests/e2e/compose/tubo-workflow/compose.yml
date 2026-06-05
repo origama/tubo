@@ -2,6 +2,9 @@ services:
   tubo-relay:
     image: tubo:dev
     user: "${TUBO_SMOKE_UID:-65532}:${TUBO_SMOKE_GID:-65532}"
+    environment:
+      HOME: /home/nonroot
+      XDG_CONFIG_HOME: /home/nonroot/.config
     build:
       context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
@@ -25,6 +28,9 @@ services:
   tubo-edge:
     image: tubo:dev
     user: "${TUBO_SMOKE_UID:-65532}:${TUBO_SMOKE_GID:-65532}"
+    environment:
+      HOME: /home/nonroot
+      XDG_CONFIG_HOME: /home/nonroot/.config
     build:
       context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
@@ -39,6 +45,9 @@ services:
   tubo-service-a:
     image: tubo:dev
     user: "${TUBO_SMOKE_UID:-65532}:${TUBO_SMOKE_GID:-65532}"
+    environment:
+      HOME: /home/nonroot
+      XDG_CONFIG_HOME: /home/nonroot/.config
     build:
       context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
@@ -56,6 +65,9 @@ services:
   tubo-service-b:
     image: tubo:dev
     user: "${TUBO_SMOKE_UID:-65532}:${TUBO_SMOKE_GID:-65532}"
+    environment:
+      HOME: /home/nonroot
+      XDG_CONFIG_HOME: /home/nonroot/.config
     build:
       context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
