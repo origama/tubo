@@ -19,6 +19,7 @@ The new Docker harness can now:
 - run Tubo raw TCP via `tubo attach` + `tubo connect`;
 - record the selected Tubo path from `tubo connect` output;
 - force a `relayed` selection by advertising only loopback direct addresses on the relayed publisher;
+- validate the direct data plane from attach logs, not just from `tubo connect path: direct`;
 - collect `iperf3 --json`, attach/connect logs, relay logs, and lightweight container CPU samples.
 
 ## Initial observed results
@@ -142,11 +143,11 @@ The following post-fix runs are the current comparison set for issue `#198`.
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |
 | `2026-06-04T20:09:10Z` | `./tests/perf/tcpraw/run.sh --validate` | 16720.64 | 293.81 | 309.52 | 312.64 | 314.23 | 308.60 | 317.10 | contaminated by relay | summarized in report / issue |
 | `2026-06-04T20:35:31Z` | `./tests/perf/tcpraw/run.sh --validate` | 18016.30 | 328.12 | 305.09 | 320.94 | 326.22 | 325.63 | 312.09 | contaminated by relay | summarized in issue |
-| `2026-06-04T20:40:30Z` | `./tests/perf/tcpraw/run.sh --duration 10` | 17914.21 | 301.60 | 313.08 | 292.15 | 316.32 | 330.26 | 307.07 | contaminated by relay | `tests/perf/tcpraw/results/runs/20260604-204030/` |
-| `2026-06-04T20:44:44Z` | `./tests/perf/tcpraw/run.sh --duration 30` | 17678.93 | 309.55 | 310.41 | 294.65 | 320.03 | 324.34 | 285.48 | contaminated by relay | `tests/perf/tcpraw/results/runs/20260604-204444/` |
-| `2026-06-04T21:36:18Z` | `./tests/perf/tcpraw/run.sh --validate` | 17409.78 | 1032.98 | 1189.07 | 1125.30 | 312.40 | 296.48 | 290.75 | relay-free | `tests/perf/tcpraw/results/runs/20260604-213618/` |
-| `2026-06-04T21:38:50Z` | `./tests/perf/tcpraw/run.sh --duration 10` | 17959.83 | 1067.91 | 1049.62 | 1069.74 | 313.01 | 310.74 | 311.97 | relay-free | `tests/perf/tcpraw/results/runs/20260604-213850/` |
-| `2026-06-04T21:43:07Z` | `./tests/perf/tcpraw/run.sh --duration 30` | 17395.76 | 1112.56 | 1121.06 | 1137.34 | 305.98 | 321.45 | 302.31 | relay-free | `tests/perf/tcpraw/results/runs/20260604-214307/` |
+| `2026-06-04T20:40:30Z` | `./tests/perf/tcpraw/run.sh --duration 10` | 17914.21 | 301.60 | 313.08 | 292.15 | 316.32 | 330.26 | 307.07 | contaminated by relay | local ignored run dir |
+| `2026-06-04T20:44:44Z` | `./tests/perf/tcpraw/run.sh --duration 30` | 17678.93 | 309.55 | 310.41 | 294.65 | 320.03 | 324.34 | 285.48 | contaminated by relay | local ignored run dir |
+| `2026-06-04T21:36:18Z` | `./tests/perf/tcpraw/run.sh --validate` | 17409.78 | 1032.98 | 1189.07 | 1125.30 | 312.40 | 296.48 | 290.75 | relay-free | local ignored run dir |
+| `2026-06-04T21:38:50Z` | `./tests/perf/tcpraw/run.sh --duration 10` | 17959.83 | 1067.91 | 1049.62 | 1069.74 | 313.01 | 310.74 | 311.97 | relay-free | local ignored run dir |
+| `2026-06-04T21:43:07Z` | `./tests/perf/tcpraw/run.sh --duration 30` | 17395.76 | 1112.56 | 1121.06 | 1137.34 | 305.98 | 321.45 | 302.31 | relay-free | local ignored run dir |
 
 ## Longer-run observations
 
@@ -158,7 +159,7 @@ After forcing direct candidates to use libp2p `WithForceDirectDial`, the benchma
 - the relayed path is therefore roughly **3.4x–3.7x slower** than the true direct path in these post-fix runs;
 - `-P 4` still does not produce a large gain over single-stream direct in this environment.
 
-The direct-data-plane proof in the `20260604-214307` run:
+The direct-data-plane proof in the `20260604-214307` run, now enforced by `./tests/perf/tcpraw/run.sh --validate`:
 
 - service logs show a direct inbound connection from the client container (`/ip4/172.20.0.3/tcp/...`);
 - relay CPU during `direct-forward` was near idle (`~0.03%` average), while attach/client each used roughly half a CPU;
@@ -209,6 +210,10 @@ The clean profiles confirm the earlier hotspot shape:
 - `ProxyTCPStream(...)` / `io.copyBuffer` appears only as a smaller secondary cost in these samples.
 
 This points the next optimization investigation toward transport/security/mux overhead first, not toward a simple copy-buffer-only fix.
+
+## Artifact policy
+
+Benchmark outputs under `tests/perf/tcpraw/results/` are generated locally and now intentionally git-ignored. The repository keeps only the harness, docs, and report; raw JSON/log/profile/invite outputs stay out of version control.
 
 ## Updated next recommended step
 

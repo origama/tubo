@@ -30,6 +30,10 @@ Lightweight validation mode:
 ./tests/perf/tcpraw/run.sh --validate
 ```
 
+Validation now checks both control-plane selection and data-plane reality:
+- direct mode must log `path: direct` and show a non-`/p2p-circuit` inbound service connection in the attach log;
+- relayed mode must log `path: relayed` and show only `/p2p-circuit` inbound service connections in the attach log.
+
 Useful shorter local run:
 
 ```bash
@@ -47,6 +51,8 @@ Latest artifacts are written to:
 Timestamped copies are also saved under:
 
 - `tests/perf/tcpraw/results/runs/<timestamp>/`
+
+These artifacts are intentionally git-ignored. Keep the harness and markdown/report files under version control; do not commit generated JSON, logs, invites, profiles, or timestamped run directories.
 
 Expected files include:
 

@@ -60,10 +60,13 @@ func TestRelayLimitFromConfigCanDisableAllLimits(t *testing.T) {
 	}
 }
 
-func TestLoadConfigFromEnvDefaultsToUnlimitedData(t *testing.T) {
+func TestLoadConfigFromEnvDefaultsMatchRelayConfigDefaults(t *testing.T) {
 	cfg, err := LoadConfigFromEnv(func(string) string { return "" })
 	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.BufferSize != 65536 {
+		t.Fatalf("BufferSize = %d, want 65536", cfg.BufferSize)
 	}
 	if cfg.LimitDataBytes != 0 {
 		t.Fatalf("LimitDataBytes = %d, want 0/unlimited", cfg.LimitDataBytes)

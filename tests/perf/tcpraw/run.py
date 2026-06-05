@@ -299,6 +299,46 @@ def wait_connect_path(service, log_rel_path, expected_path, local_port):
     return wait_until(f"connect path {expected_path}", 90, check_log)
 
 
+def inbound_remote_addrs(attach_log):
+    addrs = []
+    for line in attach_log.splitlines():
+        marker = "direction=Inbound remote_addr="
+        if marker not in line:
+            continue
+        addrs.append(line.split(marker, 1)[1].strip())
+    return addrs
+
+
+def validate_data_plane(mode, connect_log, attach_log):
+    expected_path = SCENARIOS[mode]["expect_path"]
+    if f"path: {expected_path}" not in connect_log:
+        raise RuntimeError(f"{mode}: missing connect path {expected_path}")
+    inbound = inbound_remote_addrs(attach_log)
+    if not inbound:
+        raise RuntimeError(f"{mode}: no inbound service connection found in attach log")
+    relayed = [addr for addr in inbound if "/p2p-circuit" in addr]
+    direct = [addr for addr in inbound if "/p2p-circuit" not in addr]
+    if mode == "direct":
+        if not direct:
+            raise RuntimeError(f"{mode}: direct data plane validation failed; inbound attach connections were relayed only: {inbound}")
+        return {
+            "path": expected_path,
+            "direct_data_plane": True,
+            "direct_inbound_remote_addrs": direct,
+            "relayed_inbound_remote_addrs": relayed,
+        }
+    if not relayed:
+        raise RuntimeError(f"{mode}: relayed data plane validation failed; missing /p2p-circuit inbound attach connection")
+    if direct:
+        raise RuntimeError(f"{mode}: relayed data plane validation failed; saw direct inbound attach connection(s): {direct}")
+    return {
+        "path": expected_path,
+        "direct_data_plane": False,
+        "direct_inbound_remote_addrs": direct,
+        "relayed_inbound_remote_addrs": relayed,
+    }
+
+
 def run_iperf(service, command, out_path, cpu_label, cpu_services, max_seconds=90):
     stop = threading.Event()
     sampler = start_cpu_sampler(cpu_label, cpu_services, stop, RESULTS_DIR / f"cpu-{cpu_label}.jsonl")
@@ -359,6 +399,7 @@ def run_mode(mode, duration, parallel):
     write_text(RESULTS_DIR / f"{mode}-attach.log", attach_full_log)
     client_full_log = exec_out(meta["client_service"], f"cat {connect_log}", check=False)
     write_text(RESULTS_DIR / f"{mode}-connect.log", client_full_log)
+    summaries["validation"] = validate_data_plane(mode, client_full_log, attach_full_log)
     return summaries
 
 
@@ -392,6 +433,13 @@ def summarize_markdown(duration, parallel, baseline, direct, relayed, validate):
     for key, label in (("forward", "forward"), ("reverse", "reverse"), ("p4", f"parallel P{parallel}")):
         item = relayed[key]
         lines.append(f"| {label} | relayed | {mbps(item['sender_bps'])} | {mbps(item['receiver_bps'])} | {item['retransmits']} | {short_error(item['error'])} |")
+    lines.append("")
+    lines.append("## Data-plane validation")
+    lines.append("")
+    lines.append("| Scenario | `tubo connect` path | Attach inbound path proof | Result |")
+    lines.append("| --- | --- | --- | --- |")
+    lines.append(f"| direct | {direct['validation']['path']} | non-`/p2p-circuit` inbound attach connection present | PASS |")
+    lines.append(f"| relayed | {relayed['validation']['path']} | only `/p2p-circuit` inbound attach connection(s) present | PASS |")
     lines.append("")
     lines.append("## Initial hypothesis")
     lines.append("")

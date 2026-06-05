@@ -71,3 +71,4 @@ override.tf.json
 __pycache__/
 *.pyc
 tests/perf/results/*/.tmp-running/
+tests/perf/tcpraw/results/

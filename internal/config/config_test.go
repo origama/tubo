@@ -452,8 +452,11 @@ func TestValidateRequired(t *testing.T) {
 	}
 }
 
-func TestRelayDefaultsDoNotCapRelayedDataBytes(t *testing.T) {
+func TestRelayDefaultsMatchEnvRelayDefaults(t *testing.T) {
 	c := Defaults("relay")
+	if c.Relay.BufferSize != 65536 {
+		t.Fatalf("relay buffer_size = %d, want 65536", c.Relay.BufferSize)
+	}
 	if c.Relay.LimitDataBytes != 0 {
 		t.Fatalf("relay limit_data_bytes = %d, want 0/unlimited", c.Relay.LimitDataBytes)
 	}

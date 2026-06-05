@@ -476,7 +476,7 @@ func Defaults(role string) Config {
 		c.Relay.MaxReservationsPerIP = 16
 		c.Relay.MaxReservationsPerASN = 64
 		c.Relay.MaxCircuitsPerPeer = 64
-		c.Relay.BufferSize = 4096
+		c.Relay.BufferSize = 65536
 		c.Relay.ReservationTTL = Duration(time.Hour)
 		c.Relay.LimitDuration = Duration(5 * time.Minute)
 		// 0 means no byte cap. Circuit relay v2 applies this limit to the
