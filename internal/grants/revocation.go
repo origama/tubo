@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
 	"time"
 )
 
@@ -239,13 +238,4 @@ func (s *RevocationState) ensureMaps() {
 	if s.RevokedPublish == nil {
 		s.RevokedPublish = map[string]RevocationRecord{}
 	}
-}
-
-func sortedRevocationKeys[M ~map[string]V, V any](m M) []string {
-	keys := make([]string, 0, len(m))
-	for key := range m {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }

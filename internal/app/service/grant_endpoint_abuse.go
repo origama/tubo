@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -70,7 +71,7 @@ func (c *grantEndpointAbuseController) Allow(requester peer.ID) error {
 	defer c.mu.Unlock()
 	c.pruneLocked(now)
 	if until, ok := c.denyUntil[requester]; ok && now.Before(until) {
-		return fmt.Errorf(grantEndpointInvalidReasonToken)
+		return errors.New(grantEndpointInvalidReasonToken)
 	}
 	if len(c.peerReqs[requester]) >= c.perPeerBurst {
 		return fmt.Errorf("grant endpoint rate limit exceeded for peer; retry later")

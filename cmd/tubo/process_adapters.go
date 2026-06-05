@@ -70,10 +70,6 @@ func loadProcessState(ref string) (detachedProcessState, string, error) {
 	return processes.LoadState(defaultTuboDataDir(), ref, processSystemAdapter{})
 }
 
-func processStateStatus(state detachedProcessState) string {
-	return processes.Status(state, processSystemAdapter{})
-}
-
 func printLogTail(path string, lines int) error {
 	items, err := processes.ReadLogTail(path, lines)
 	if err != nil {

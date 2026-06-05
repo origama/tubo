@@ -352,26 +352,6 @@ func mergeRelayCircuitAddrs(base []string, relayInfos []peer.AddrInfo, self peer
 	return out
 }
 
-func (a *App) currentAnnouncement() (discovery.Announcement, bool) {
-	addrs := expandUnspecifiedListenAddrs(p2p.PeerAddrs(a.host), a.cfg.Listen, a.host.ID())
-	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) && !a.hasRelayReservation() {
-		return discovery.Announcement{}, false
-	}
-	if a.requireRelayReadyAnn {
-		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
-	}
-	ann := discovery.Announcement{
-		ServiceName: a.cfg.ServiceName,
-		PeerID:      a.host.ID(),
-		Addresses:   addrs,
-		TTL:         a.announcementTTL,
-	}
-	if a.cache != nil {
-		_ = a.cache.Add(ann.PeerID, ann.ServiceName, ann.Addresses, ann.TTL)
-	}
-	return ann, true
-}
-
 func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.AnnouncementV3Payload, bool) {
 	if a.discoveryMode != discovery.ModeNamespaceV3 || a.cfg.DiscoveryContext == nil {
 		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
@@ -519,13 +499,6 @@ func (a *App) loadPublishLeaseBytes() ([]byte, grantspkg.PublishLease, error) {
 		return nil, grantspkg.PublishLease{}, err
 	}
 	return b, lease, nil
-}
-
-func (a *App) loadServiceClaimBytes() ([]byte, error) {
-	if a.serviceClaimFile == "" {
-		return nil, nil
-	}
-	return os.ReadFile(a.serviceClaimFile)
 }
 
 func (a *App) discoveryClusterID() string {

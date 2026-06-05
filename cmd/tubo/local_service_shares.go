@@ -376,10 +376,6 @@ func signServiceShareToken(payload serviceSharePayload, priv ed25519.PrivateKey)
 	return grantspkg.SignServiceShareToken(payload, priv)
 }
 
-func isServiceShareToken(token string) bool {
-	return grantspkg.IsServiceShareToken(token)
-}
-
 func shareInviteRegistryPath(configDir string) string {
 	return filepath.Join(configDir, shareInviteRegistryFileName)
 }

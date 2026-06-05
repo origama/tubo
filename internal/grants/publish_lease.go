@@ -142,9 +142,7 @@ func BuildPublishLeaseArtifactsWithEpoch(priv ed25519.PrivateKey, req PublishLea
 		ServiceClaim:               claim,
 		ServiceOwnerSignature:      append([]byte(nil), req.ServiceOwnerSignature...),
 	}
-	if serviceName != "" {
-		// serviceName is intentionally not part of the binding; kept for compatibility only.
-	}
+	_ = serviceName // intentionally not part of the binding; kept for compatibility only.
 	payload, err := canonicalPublishLease(lease)
 	if err != nil {
 		return PublishLeaseArtifacts{}, err

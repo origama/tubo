@@ -133,10 +133,7 @@ func TestSecretBackedDiscoveryObserveServicesHandlesMismatchAndRotation(t *testi
 	}()
 	waitUntil(t, 20*time.Second, func() bool { return httpOK(fmt.Sprintf("http://127.0.0.1:%d/healthz", serviceHealth)) }, "secret-backed service health")
 
-	bootstrapPeers := []string{}
-	for _, addr := range p2p.PeerAddrs(serviceApp.Host()) {
-		bootstrapPeers = append(bootstrapPeers, addr)
-	}
+	bootstrapPeers := append([]string(nil), p2p.PeerAddrs(serviceApp.Host())...)
 
 	observe := func(cfg cfgpkg.Config) ([]catalog.Service, error) {
 		return catalog.ObserveServices(cfg, 5*time.Second, nil)
