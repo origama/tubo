@@ -18,25 +18,35 @@ import (
 )
 
 type State struct {
-	ID               string   `json:"id"`
-	Kind             string   `json:"kind"`
-	Command          string   `json:"command"`
-	Name             string   `json:"name"`
-	Service          string   `json:"service,omitempty"`
-	ServiceID        string   `json:"service_id,omitempty"`
-	Cluster          string   `json:"cluster,omitempty"`
-	Namespace        string   `json:"namespace,omitempty"`
-	Local            string   `json:"local,omitempty"`
-	Target           string   `json:"target,omitempty"`
-	PID              int      `json:"pid"`
-	StartedAt        string   `json:"started_at"`
-	LogFile          string   `json:"log_file"`
-	StateFile        string   `json:"state_file"`
-	PIDFile          string   `json:"pid_file"`
-	StatusURL        string   `json:"status_url,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	CommandLine      []string `json:"command_line,omitempty"`
-	StatusConfidence string   `json:"status_confidence,omitempty"`
+	ID                      string   `json:"id"`
+	Kind                    string   `json:"kind"`
+	Command                 string   `json:"command"`
+	Name                    string   `json:"name"`
+	Service                 string   `json:"service,omitempty"`
+	ServiceID               string   `json:"service_id,omitempty"`
+	Cluster                 string   `json:"cluster,omitempty"`
+	Namespace               string   `json:"namespace,omitempty"`
+	Local                   string   `json:"local,omitempty"`
+	Target                  string   `json:"target,omitempty"`
+	Path                    string   `json:"path,omitempty"`
+	PID                     int      `json:"pid"`
+	StartedAt               string   `json:"started_at"`
+	LogFile                 string   `json:"log_file"`
+	StateFile               string   `json:"state_file"`
+	PIDFile                 string   `json:"pid_file"`
+	StatusURL               string   `json:"status_url,omitempty"`
+	Source                  string   `json:"source,omitempty"`
+	CommandLine             []string `json:"command_line,omitempty"`
+	StatusConfidence        string   `json:"status_confidence,omitempty"`
+	RuntimeStatus           string   `json:"runtime_status,omitempty"`
+	DegradedReason          string   `json:"degraded_reason,omitempty"`
+	ConnectAccessExpiresAt  string   `json:"connect_access_expires_at,omitempty"`
+	ConnectRefreshExpiresAt string   `json:"connect_refresh_expires_at,omitempty"`
+	LastTunnelError         string   `json:"last_tunnel_error,omitempty"`
+	LastTunnelErrorAt       string   `json:"last_tunnel_error_at,omitempty"`
+	LastTunnelHealthyAt     string   `json:"last_tunnel_healthy_at,omitempty"`
+	LastRefreshError        string   `json:"last_refresh_error,omitempty"`
+	NextRefreshRetryAt      string   `json:"next_refresh_retry_at,omitempty"`
 }
 
 type DetachedSpec struct {
@@ -46,25 +56,28 @@ type DetachedSpec struct {
 }
 
 type View struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	Command          string   `json:"command"`
-	Status           string   `json:"status"`
-	StatusConfidence string   `json:"status_confidence,omitempty"`
-	PID              int      `json:"pid"`
-	Service          string   `json:"service,omitempty"`
-	ServiceID        string   `json:"service_id,omitempty"`
-	Cluster          string   `json:"cluster,omitempty"`
-	Namespace        string   `json:"namespace,omitempty"`
-	Local            string   `json:"local,omitempty"`
-	Target           string   `json:"target,omitempty"`
-	LogFile          string   `json:"log_file"`
-	StateFile        string   `json:"state_file"`
-	PIDFile          string   `json:"pid_file"`
-	StatusURL        string   `json:"status_url,omitempty"`
-	StartedAt        string   `json:"started_at,omitempty"`
-	Source           string   `json:"source,omitempty"`
-	CommandLine      []string `json:"command_line,omitempty"`
+	ID                      string   `json:"id"`
+	Name                    string   `json:"name"`
+	Command                 string   `json:"command"`
+	Status                  string   `json:"status"`
+	StatusConfidence        string   `json:"status_confidence,omitempty"`
+	PID                     int      `json:"pid"`
+	Service                 string   `json:"service,omitempty"`
+	ServiceID               string   `json:"service_id,omitempty"`
+	Cluster                 string   `json:"cluster,omitempty"`
+	Namespace               string   `json:"namespace,omitempty"`
+	Local                   string   `json:"local,omitempty"`
+	Target                  string   `json:"target,omitempty"`
+	Path                    string   `json:"path,omitempty"`
+	LogFile                 string   `json:"log_file"`
+	StateFile               string   `json:"state_file"`
+	PIDFile                 string   `json:"pid_file"`
+	StatusURL               string   `json:"status_url,omitempty"`
+	StartedAt               string   `json:"started_at,omitempty"`
+	Source                  string   `json:"source,omitempty"`
+	CommandLine             []string `json:"command_line,omitempty"`
+	ConnectAccessExpiresAt  string   `json:"connect_access_expires_at,omitempty"`
+	ConnectRefreshExpiresAt string   `json:"connect_refresh_expires_at,omitempty"`
 }
 
 type System interface {
@@ -221,6 +234,8 @@ func RegisterCurrentProcess(dataRoot string, state State, system System) (State,
 	return state, cleanup, nil
 }
 
+const processHealthProbeTimeout = 200 * time.Millisecond
+
 func ListViews(dataRoot string, includeAll bool, system System) ([]View, error) {
 	states, err := listStates(dataRoot)
 	if err != nil {
@@ -229,7 +244,7 @@ func ListViews(dataRoot string, includeAll bool, system System) ([]View, error) 
 	items := make([]View, 0, len(states))
 	for _, state := range states {
 		status, confidence := StatusDetails(state, system)
-		if !includeAll && status != "running" {
+		if !includeAll && status == "stale" {
 			continue
 		}
 		items = append(items, viewFromState(state, status, confidence))
@@ -261,6 +276,8 @@ func StatusDetails(state State, system System) (string, string) {
 	if _, err := os.Stat(state.PIDFile); err != nil {
 		return "stale", "pid-file-missing"
 	}
+	baseStatus := "running"
+	baseConfidence := "pid"
 	if system != nil && !system.PIDRunning(state.PID) {
 		return "stale", "pid-not-running"
 	}
@@ -269,16 +286,39 @@ func StatusDetails(state State, system System) (string, string) {
 			if !commandLinesMatch(state.CommandLine, actual) {
 				return "stale", "cmdline-mismatch"
 			}
-			return "running", "pid+cmdline"
+			baseConfidence = "pid+cmdline"
+		} else {
+			baseConfidence = "pid"
 		}
+	} else if system == nil && len(state.CommandLine) > 0 {
+		baseConfidence = "cmdline-unverified"
 	}
-	if system != nil {
-		return "running", "pid"
+	if state.RuntimeStatus == "degraded" {
+		return "degraded", baseConfidence + "+runtime"
 	}
-	if len(state.CommandLine) > 0 {
-		return "running", "cmdline-unverified"
+	if status, confidence, ok := healthStatus(state.StatusURL, baseConfidence); ok {
+		return status, confidence
 	}
-	return "running", "pid"
+	return baseStatus, baseConfidence
+}
+
+func healthStatus(url, baseConfidence string) (string, string, bool) {
+	if strings.TrimSpace(url) == "" {
+		return "", "", false
+	}
+	client := &http.Client{Timeout: processHealthProbeTimeout}
+	resp, err := client.Get(url)
+	if err != nil {
+		return "", "", false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return "running", baseConfidence + "+healthz", true
+	}
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		return "degraded", baseConfidence + "+healthz-degraded", true
+	}
+	return "", "", false
 }
 
 func Status(state State, system System) string {
@@ -383,6 +423,23 @@ func RemoveStale(dataRoot string, system System) (int, error) {
 		removed++
 	}
 	return removed, nil
+}
+
+func UpdateState(path string, mutate func(*State)) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var state State
+	if err := json.Unmarshal(b, &state); err != nil {
+		return err
+	}
+	mutate(&state)
+	updated, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, updated, 0o600)
 }
 
 func SummaryLogTail(path string, max int) string {
@@ -552,25 +609,28 @@ func confidenceLabel(state State, cmdlineAvailable bool) string {
 
 func viewFromState(state State, status, confidence string) View {
 	return View{
-		ID:               state.ID,
-		Name:             state.Name,
-		Command:          state.Command,
-		Status:           status,
-		StatusConfidence: confidence,
-		PID:              state.PID,
-		Service:          state.Service,
-		ServiceID:        state.ServiceID,
-		Cluster:          state.Cluster,
-		Namespace:        state.Namespace,
-		Local:            state.Local,
-		Target:           state.Target,
-		LogFile:          state.LogFile,
-		StateFile:        state.StateFile,
-		PIDFile:          state.PIDFile,
-		StatusURL:        state.StatusURL,
-		StartedAt:        state.StartedAt,
-		Source:           state.Source,
-		CommandLine:      append([]string(nil), state.CommandLine...),
+		ID:                      state.ID,
+		Name:                    state.Name,
+		Command:                 state.Command,
+		Status:                  status,
+		StatusConfidence:        confidence,
+		PID:                     state.PID,
+		Service:                 state.Service,
+		ServiceID:               state.ServiceID,
+		Cluster:                 state.Cluster,
+		Namespace:               state.Namespace,
+		Local:                   state.Local,
+		Target:                  state.Target,
+		Path:                    state.Path,
+		LogFile:                 state.LogFile,
+		StateFile:               state.StateFile,
+		PIDFile:                 state.PIDFile,
+		StatusURL:               state.StatusURL,
+		StartedAt:               state.StartedAt,
+		Source:                  state.Source,
+		CommandLine:             append([]string(nil), state.CommandLine...),
+		ConnectAccessExpiresAt:  state.ConnectAccessExpiresAt,
+		ConnectRefreshExpiresAt: state.ConnectRefreshExpiresAt,
 	}
 }
 

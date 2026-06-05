@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
+	"io"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -11,8 +12,10 @@ import (
 
 	hostpkg "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	coreprotocol "github.com/libp2p/go-libp2p/core/protocol"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
+	iprotocol "github.com/origama/tubo/internal/protocol"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -45,6 +48,49 @@ func TestBridgeRefreshesConnectAccessLeaseBeforeExpiry(t *testing.T) {
 	}
 	if atomic.LoadInt32(&refreshes) == 0 {
 		t.Fatal("expected access lease refresh")
+	}
+}
+
+func TestBridgeDoesNotRefreshWhenRefreshLeaseNearExpiry(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-refresh-near-expiry-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	clientKey := bridgeHostAuthorizedKey(t, h)
+	refresh, err := grantspkg.SignConnectRefreshLease(grantspkg.ConnectRefreshLease{
+		JTI:             "cr_near_expiry",
+		SessionID:       "cs_near_expiry",
+		ClusterID:       "cluster-123",
+		NamespaceID:     "default",
+		ServiceID:       "svc-123",
+		ClientPublicKey: clientKey,
+		Permissions:     []string{"connect"},
+		IssuedAt:        time.Now().UTC().Add(-time.Minute),
+		ExpiresAt:       time.Now().UTC().Add(connectRefreshMinUsefulLifetime / 2),
+	}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, err := grantspkg.RefreshConnectAccessLease(authPriv, refresh, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshes int32
+	app := &App{host: h, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		atomic.AddInt32(&refreshes, 1)
+		return grantspkg.ConnectAccessLease{}, nil
+	}}, connectLease: &access}
+	_, err = app.ensureConnectAccessLease(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "near expiry") {
+		t.Fatalf("expected near expiry error, got %v", err)
+	}
+	if got := atomic.LoadInt32(&refreshes); got != 0 {
+		t.Fatalf("refresh calls = %d, want 0", got)
 	}
 }
 
@@ -186,26 +232,229 @@ func TestBridgeInviteConnectRequiresGrantServiceMetadata(t *testing.T) {
 	}
 }
 
-func TestServiceStreamContextForcesDirectForDirectAddress(t *testing.T) {
-	ctx := serviceStreamContext("/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWService", "test")
-	if force, _ := network.GetForceDirectDial(ctx); !force {
-		t.Fatal("expected direct candidate stream context to force direct dial")
+func TestBridgeEstablishTCPTunnelSelfHealsOnOpenStreamFailure(t *testing.T) {
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-self-heal-open", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if allowLimited, _ := network.GetAllowLimitedConn(ctx); allowLimited {
-		t.Fatal("direct candidate stream context must not allow limited relay connections")
+	defer h.Close()
+	var opens int32
+	var heals int32
+	app := &App{
+		host: h,
+		openTunnelStream: func(context.Context) (network.Stream, error) {
+			if atomic.AddInt32(&opens, 1) == 1 {
+				return nil, io.EOF
+			}
+			return stubNetworkStream{}, nil
+		},
+		startClientTCPTunnel: func(network.Stream, string, *iprotocol.ConnectProof) error { return nil },
+		reconnectServiceFn:   func(context.Context) error { atomic.AddInt32(&heals, 1); return nil },
+	}
+	stream, err := app.establishTCPTunnel("127.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("establish tunnel: %v", err)
+	}
+	if stream == nil {
+		t.Fatal("expected stream")
+	}
+	_ = stream.Close()
+	if got := atomic.LoadInt32(&opens); got != 2 {
+		t.Fatalf("open attempts = %d, want 2", got)
+	}
+	if got := atomic.LoadInt32(&heals); got != 1 {
+		t.Fatalf("self-heal attempts = %d, want 1", got)
 	}
 }
 
-func TestServiceStreamContextAllowsLimitedForRelayAddress(t *testing.T) {
-	ctx := serviceStreamContext("/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWService", "test")
-	if allowLimited, _ := network.GetAllowLimitedConn(ctx); !allowLimited {
-		t.Fatal("expected relayed candidate stream context to allow limited relay connections")
+func TestBridgeEstablishTCPTunnelSelfHealsOnStartFailure(t *testing.T) {
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-self-heal-start", nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if force, _ := network.GetForceDirectDial(ctx); force {
-		t.Fatal("relayed candidate stream context must not force direct dial")
+	defer h.Close()
+	var starts int32
+	var heals int32
+	app := &App{
+		host:             h,
+		openTunnelStream: func(context.Context) (network.Stream, error) { return stubNetworkStream{}, nil },
+		startClientTCPTunnel: func(network.Stream, string, *iprotocol.ConnectProof) error {
+			if atomic.AddInt32(&starts, 1) == 1 {
+				return io.ErrUnexpectedEOF
+			}
+			return nil
+		},
+		reconnectServiceFn: func(context.Context) error { atomic.AddInt32(&heals, 1); return nil },
+	}
+	stream, err := app.establishTCPTunnel("127.0.0.1:1234")
+	if err != nil {
+		t.Fatalf("establish tunnel: %v", err)
+	}
+	if stream == nil {
+		t.Fatal("expected stream")
+	}
+	_ = stream.Close()
+	if got := atomic.LoadInt32(&starts); got != 2 {
+		t.Fatalf("start attempts = %d, want 2", got)
+	}
+	if got := atomic.LoadInt32(&heals); got != 1 {
+		t.Fatalf("self-heal attempts = %d, want 1", got)
 	}
 }
 
+func TestBridgeTunnelHealthTracksDegradedAndHealthy(t *testing.T) {
+	app := &App{}
+	if ok, _ := app.tunnelHealth(); !ok {
+		t.Fatal("expected initial health to be ok")
+	}
+	app.markTunnelDegraded(io.EOF)
+	if ok, msg := app.tunnelHealth(); ok || !strings.Contains(msg, "EOF") {
+		t.Fatalf("expected degraded health, got ok=%t msg=%q", ok, msg)
+	}
+	app.markTunnelHealthy()
+	if ok, _ := app.tunnelHealth(); !ok {
+		t.Fatal("expected health to recover after success")
+	}
+}
+
+func TestBridgeStatusSnapshotDegradesWhenRefreshLeaseExpires(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp", ConnectRefreshLease: &grantspkg.ConnectRefreshLease{ExpiresAt: time.Now().UTC().Add(-time.Minute)}}}
+	snap := app.statusSnapshot(time.Now().UTC())
+	if snap.Status != "degraded" {
+		t.Fatalf("status = %q", snap.Status)
+	}
+	if !strings.Contains(snap.Reason, "refresh lease expired") {
+		t.Fatalf("reason = %q", snap.Reason)
+	}
+}
+
+func TestBridgeStatusSnapshotDegradesWhenRefreshLeaseNearExpiry(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp", ConnectRefreshLease: &grantspkg.ConnectRefreshLease{ExpiresAt: time.Now().UTC().Add(connectRefreshMinUsefulLifetime / 2)}}}
+	snap := app.statusSnapshot(time.Now().UTC())
+	if snap.Status != "degraded" {
+		t.Fatalf("status = %q", snap.Status)
+	}
+	if !strings.Contains(snap.Reason, "near expiry") {
+		t.Fatalf("reason = %q", snap.Reason)
+	}
+}
+
+func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-refresh-noop-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	clientKey := bridgeHostAuthorizedKey(t, h)
+	refresh, err := grantspkg.SignConnectRefreshLease(grantspkg.ConnectRefreshLease{
+		JTI:             "cr_noop",
+		SessionID:       "cs_noop",
+		ClusterID:       "cluster-123",
+		NamespaceID:     "default",
+		ServiceID:       "svc-123",
+		ClientPublicKey: clientKey,
+		Permissions:     []string{"connect"},
+		IssuedAt:        time.Now().UTC().Add(-time.Minute),
+		ExpiresAt:       time.Now().UTC().Add(time.Minute),
+	}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, err := grantspkg.RefreshConnectAccessLease(authPriv, refresh, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access.ExpiresAt = time.Now().UTC().Add(800 * time.Millisecond)
+	access.IssuedAt = time.Now().UTC().Add(-800 * time.Millisecond)
+	var refreshes int32
+	app := &App{host: h, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		atomic.AddInt32(&refreshes, 1)
+		return grantspkg.ConnectAccessLease{ExpiresAt: time.Now().UTC().Add(connectRefreshMinExtension / 2), IssuedAt: time.Now().UTC()}, nil
+	}}, connectLease: &access}
+	_, err = app.ensureConnectAccessLease(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "near expiry") {
+		t.Fatalf("expected stable near expiry error, got %v", err)
+	}
+	_, err = app.ensureConnectAccessLease(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "near expiry") {
+		t.Fatalf("expected stable retry error, got %v", err)
+	}
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+}
+
+func TestBridgeLeaseRenewalRefreshesAccessLeaseProactively(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-renew-proactive-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	clientKey := bridgeHostAuthorizedKey(t, h)
+	refresh, err := grantspkg.SignConnectRefreshLease(grantspkg.ConnectRefreshLease{
+		JTI:             "cr-proactive",
+		SessionID:       "cs-proactive",
+		ClusterID:       "cluster-123",
+		NamespaceID:     "default",
+		ServiceID:       "svc-123",
+		ClientPublicKey: clientKey,
+		Permissions:     []string{"connect"},
+		IssuedAt:        time.Now().UTC().Add(-time.Second),
+		ExpiresAt:       time.Now().UTC().Add(time.Minute),
+	}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access, err := grantspkg.RefreshConnectAccessLease(authPriv, refresh, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	access.ExpiresAt = time.Now().UTC().Add(1200 * time.Millisecond)
+	access.IssuedAt = time.Now().UTC().Add(-1200 * time.Millisecond)
+	var refreshes int32
+	app := &App{host: h, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(ctx context.Context, got grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		atomic.AddInt32(&refreshes, 1)
+		return grantspkg.RefreshConnectAccessLease(authPriv, got, time.Minute)
+	}}, connectLease: &access}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go app.startConnectLeaseRenewal(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&refreshes) > 0 {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("expected proactive access lease refresh")
+}
+
+type stubNetworkStream struct{}
+
+func (stubNetworkStream) Read([]byte) (int, error)                     { return 0, io.EOF }
+func (stubNetworkStream) Write(p []byte) (int, error)                  { return len(p), nil }
+func (stubNetworkStream) Close() error                                 { return nil }
+func (stubNetworkStream) CloseWrite() error                            { return nil }
+func (stubNetworkStream) CloseRead() error                             { return nil }
+func (stubNetworkStream) Reset() error                                 { return nil }
+func (stubNetworkStream) ResetWithError(network.StreamErrorCode) error { return nil }
+func (stubNetworkStream) SetDeadline(time.Time) error                  { return nil }
+func (stubNetworkStream) SetReadDeadline(time.Time) error              { return nil }
+func (stubNetworkStream) SetWriteDeadline(time.Time) error             { return nil }
+func (stubNetworkStream) ID() string                                   { return "stub" }
+func (stubNetworkStream) Protocol() coreprotocol.ID                    { return p2p.ProtocolID }
+func (stubNetworkStream) SetProtocol(coreprotocol.ID) error            { return nil }
+func (stubNetworkStream) Stat() network.Stats                          { return network.Stats{} }
+func (stubNetworkStream) Conn() network.Conn                           { return nil }
+func (stubNetworkStream) Scope() network.StreamScope                   { return nil }
 func bridgeHostAuthorizedKey(t *testing.T, h hostpkg.Host) string {
 	t.Helper()
 	pub := h.Peerstore().PubKey(h.ID())

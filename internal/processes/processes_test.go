@@ -3,6 +3,8 @@ package processes
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -174,6 +176,39 @@ func TestListViewsAndLoadState(t *testing.T) {
 	}
 	if _, status, err := LoadState(root, "attach-myapi", system); err != nil || status != "running" {
 		t.Fatalf("LoadState running err=%v status=%q", err, status)
+	}
+}
+
+func TestStatusDetailsUsesHealthEndpointForDegradedProcess(t *testing.T) {
+	root := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("degraded"))
+	}))
+	defer server.Close()
+	state := State{
+		ID:          "process/connect-lms-1234",
+		Kind:        "process",
+		Command:     "connect",
+		Name:        "connect-lms-1234",
+		PID:         os.Getpid(),
+		PIDFile:     filepath.Join(RunDir(root), "connect-lms-1234.pid"),
+		StateFile:   filepath.Join(StateDir(root), "connect-lms-1234.json"),
+		LogFile:     filepath.Join(LogDir(root), "connect-lms-1234.log"),
+		CommandLine: []string{"/bin/tubo", "connect", "lms", "--local", "127.0.0.1:1234"},
+		StatusURL:   server.URL,
+	}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600)
+	system := &stubSystem{running: map[int]bool{state.PID: true}, cmdlines: map[int][]string{state.PID: state.CommandLine}}
+	status, confidence := StatusDetails(state, system)
+	if status != "degraded" || confidence != "pid+cmdline+healthz-degraded" {
+		t.Fatalf("expected degraded/pid+cmdline+healthz-degraded, got %s/%s", status, confidence)
 	}
 }
 

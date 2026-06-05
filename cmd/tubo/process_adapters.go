@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	bridgeapp "github.com/origama/tubo/internal/app/bridge"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	processes "github.com/origama/tubo/internal/processes"
 )
@@ -94,6 +95,44 @@ func stopProcess(ref string, force bool) (detachedProcessState, error) {
 
 func removeStaleProcesses() (int, error) {
 	return processes.RemoveStale(defaultTuboDataDir(), processSystemAdapter{})
+}
+
+func updateProcessRuntimeState(stateFile string, runtime bridgeapp.RuntimeStatus) error {
+	if strings.TrimSpace(stateFile) == "" {
+		return nil
+	}
+	return processes.UpdateState(stateFile, func(state *detachedProcessState) {
+		state.RuntimeStatus = runtime.Status
+		state.DegradedReason = runtime.Reason
+		state.Path = runtime.Path
+		if runtime.ConnectAccessExpiresAt != nil {
+			state.ConnectAccessExpiresAt = runtime.ConnectAccessExpiresAt.UTC().Format(time.RFC3339)
+		} else {
+			state.ConnectAccessExpiresAt = ""
+		}
+		if runtime.ConnectRefreshExpiresAt != nil {
+			state.ConnectRefreshExpiresAt = runtime.ConnectRefreshExpiresAt.UTC().Format(time.RFC3339)
+		} else {
+			state.ConnectRefreshExpiresAt = ""
+		}
+		state.LastTunnelError = runtime.LastTunnelError
+		state.LastRefreshError = runtime.LastRefreshError
+		if runtime.NextRefreshRetryAt != nil {
+			state.NextRefreshRetryAt = runtime.NextRefreshRetryAt.UTC().Format(time.RFC3339)
+		} else {
+			state.NextRefreshRetryAt = ""
+		}
+		if runtime.LastTunnelErrorAt != nil {
+			state.LastTunnelErrorAt = runtime.LastTunnelErrorAt.UTC().Format(time.RFC3339)
+		} else {
+			state.LastTunnelErrorAt = ""
+		}
+		if runtime.LastTunnelHealthyAt != nil {
+			state.LastTunnelHealthyAt = runtime.LastTunnelHealthyAt.UTC().Format(time.RFC3339)
+		} else {
+			state.LastTunnelHealthyAt = ""
+		}
+	})
 }
 
 func sanitizeProcessName(s string) string {

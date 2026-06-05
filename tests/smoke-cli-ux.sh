@@ -302,6 +302,8 @@ wait_process_registered "connect-lmstudio-$connect_port"
 "$BIN" describe "process/connect-lmstudio-$connect_port" >"$WORK_DIR/describe-connect-process.out"
 assert_contains 'Command: connect' "$WORK_DIR/describe-connect-process.out"
 assert_contains 'Source: foreground' "$WORK_DIR/describe-connect-process.out"
+assert_contains 'Connect access expires in:' "$WORK_DIR/describe-connect-process.out"
+assert_contains 'Connect refresh expires in:' "$WORK_DIR/describe-connect-process.out"
 connect_body="$WORK_DIR/connect-body.json"
 connect_code="$(curl -sS -o "$connect_body" -w '%{http_code}' -X POST -d 'hello-connect' "http://127.0.0.1:$connect_port/v1/dummy?from=connect")"
 if [[ "$connect_code" != "200" ]]; then

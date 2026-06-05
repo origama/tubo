@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -44,16 +45,44 @@ type Config struct {
 	ConnectLeaseRefresher                                                                              ConnectLeaseRefresher
 	ServiceKind                                                                                        string
 }
+type RuntimeStatus struct {
+	Status                  string
+	Reason                  string
+	ServiceKind             string
+	Path                    string
+	ConnectAccessExpiresAt  *time.Time
+	ConnectAccessExpiresIn  string
+	ConnectRefreshExpiresAt *time.Time
+	ConnectRefreshExpiresIn string
+	LastTunnelError         string
+	LastTunnelErrorAt       *time.Time
+	LastTunnelHealthyAt     *time.Time
+	LastRefreshError        string
+	NextRefreshRetryAt      *time.Time
+}
+
 type App struct {
-	cfg          Config
-	host         host.Host
-	service      peer.AddrInfo
-	server       *http.Server
-	listener     net.Listener
-	listenAddr   string
-	stateMu      sync.RWMutex
-	connectMu    sync.Mutex
-	connectLease *grantspkg.ConnectAccessLease
+	cfg                  Config
+	host                 host.Host
+	service              peer.AddrInfo
+	server               *http.Server
+	listener             net.Listener
+	listenAddr           string
+	stateMu              sync.RWMutex
+	connectMu            sync.Mutex
+	connectLease         *grantspkg.ConnectAccessLease
+	refreshingLease      bool
+	refreshDone          chan struct{}
+	lastRefreshError     string
+	nextRefreshRetryAt   time.Time
+	healthMu             sync.RWMutex
+	lastTunnelError      string
+	lastTunnelErrorAt    time.Time
+	lastTunnelHealthyAt  time.Time
+	statusReporter       func(RuntimeStatus)
+	openTunnelStream     func(context.Context) (network.Stream, error)
+	startClientTCPTunnel func(network.Stream, string, *protocol.ConnectProof) error
+	reconnectServiceFn   func(context.Context) error
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -108,6 +137,15 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectLease = &lease
 		log.Printf("bridge connect access lease enabled cluster=%s namespace=%s service=%s expires_at=%s", lease.ClusterID, lease.NamespaceID, lease.ServiceID, lease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
+	if cfg.ConnectGrant != nil {
+		log.Printf("bridge legacy connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)
+	}
+	c, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := h.Connect(c, si); err != nil {
+		_ = h.Close()
+		return nil, fmt.Errorf("connect service peer: %w", err)
+	}
 	if cfg.ConnectInviteToken != "" && cfg.ConnectRefreshLease == nil {
 		if len(cfg.ConnectGrantPeers) == 0 {
 			_ = h.Close()
@@ -134,19 +172,9 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectLease = &artifacts.AccessLease
 		log.Printf("bridge discovery connect lease acquired cluster=%s namespace=%s service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ClusterID, artifacts.AccessLease.NamespaceID, artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
-	if cfg.ConnectGrant != nil {
-		log.Printf("bridge legacy connect grants enabled cluster=%s namespace=%s service=%s", cfg.ConnectGrant.ClusterID, cfg.ConnectGrant.NamespaceID, cfg.ConnectGrant.ServiceID)
-	}
-	c, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	if !serviceAddrUsesRelay(cfg.ServiceAddr) {
-		c = network.WithForceDirectDial(c, "bridge selected direct service candidate")
-	}
-	if err := h.Connect(c, si); err != nil {
-		_ = h.Close()
-		return nil, fmt.Errorf("connect service peer: %w", err)
-	}
-	return &App{cfg: cfg, host: h, service: si, connectLease: connectLease}, nil
+	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease}
+	app.reportStatus()
+	return app, nil
 }
 
 func serviceAddrUsesRelay(addr string) bool {
@@ -172,6 +200,9 @@ func (a *App) Start(ctx context.Context) error {
 	a.listener = ln
 	a.listenAddr = listenAddr
 	a.stateMu.Unlock()
+	if a.cfg.ConnectRefreshLease != nil {
+		go a.startConnectLeaseRenewal(ctx)
+	}
 	if a.cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
 		go a.serveTCP(ctx, ln)
 		<-ctx.Done()
@@ -224,33 +255,365 @@ func (a *App) serveTCP(ctx context.Context, ln net.Listener) {
 func (a *App) handleTCPConn(conn net.Conn) {
 	defer conn.Close()
 	start := time.Now()
-	streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tcp tunnel stream")
-	s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.ProtocolID)
+	s, err := a.establishTCPTunnel(conn.RemoteAddr().String())
 	if err != nil {
-		log.Printf("bridge tcp open stream local=%s err=%v", conn.RemoteAddr(), err)
+		a.markTunnelDegraded(err)
+		log.Printf("bridge tcp establish tunnel local=%s err=%v", conn.RemoteAddr(), err)
 		return
 	}
 	defer s.Close()
-	proof, err := a.connectProof()
-	if err != nil {
-		log.Printf("bridge tcp connect proof local=%s err=%v", conn.RemoteAddr(), err)
-		return
-	}
-	if err := p2p.StartClientTCPTunnel(s, "bridge", proof); err != nil {
-		log.Printf("bridge tcp start tunnel local=%s err=%v", conn.RemoteAddr(), err)
-		return
-	}
 	sent, received, err := p2p.ProxyTCPStream(conn, s)
 	if err != nil {
+		a.markTunnelDegraded(err)
 		log.Printf("bridge tcp proxy closed local=%s bytes_in=%d bytes_out=%d err=%v duration=%s", conn.RemoteAddr(), received, sent, err, time.Since(start))
 		return
 	}
 	log.Printf("bridge tcp proxy completed local=%s bytes_in=%d bytes_out=%d duration=%s", conn.RemoteAddr(), received, sent, time.Since(start))
 }
 
+const bridgeSelfHealTimeout = 2 * time.Second
+const connectRefreshMinUsefulLifetime = 5 * time.Second
+const connectRefreshFailureCooldown = 5 * time.Second
+const connectRefreshMinExtension = time.Second
+
+func (a *App) establishTCPTunnel(localAddr string) (network.Stream, error) {
+	var lastErr error
+	for attempt := 1; attempt <= 2; attempt++ {
+		streamCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp tunnel stream")
+		s, err := a.openServiceTunnelStream(streamCtx)
+		if err == nil {
+			proof, proofErr := a.connectProof()
+			if proofErr != nil {
+				a.markTunnelDegraded(proofErr)
+				_ = s.Close()
+				return nil, fmt.Errorf("connect proof: %w", proofErr)
+			}
+			if startErr := a.startTCPTunnelStream(s, proof); startErr == nil {
+				a.markTunnelHealthy()
+				if attempt > 1 {
+					log.Printf("bridge tcp self-heal recovered local=%s", localAddr)
+				}
+				return s, nil
+			} else {
+				_ = s.Close()
+				lastErr = fmt.Errorf("start tunnel: %w", startErr)
+			}
+		} else {
+			lastErr = fmt.Errorf("open stream: %w", err)
+		}
+		if attempt == 1 {
+			if healErr := a.selfHealServicePath(localAddr, lastErr); healErr != nil {
+				return nil, fmt.Errorf("%v; self-heal failed: %w", lastErr, healErr)
+			}
+		}
+	}
+	a.markTunnelDegraded(lastErr)
+	return nil, lastErr
+}
+
+func (a *App) markTunnelHealthy() {
+	a.healthMu.Lock()
+	a.lastTunnelHealthyAt = time.Now()
+	a.lastTunnelError = ""
+	a.lastTunnelErrorAt = time.Time{}
+	a.healthMu.Unlock()
+	a.reportStatus()
+}
+
+func (a *App) markTunnelDegraded(err error) {
+	if err == nil {
+		return
+	}
+	a.healthMu.Lock()
+	a.lastTunnelError = err.Error()
+	a.lastTunnelErrorAt = time.Now()
+	a.healthMu.Unlock()
+	a.reportStatus()
+}
+
+func (a *App) tunnelHealth() (bool, string) {
+	a.healthMu.RLock()
+	defer a.healthMu.RUnlock()
+	if a.lastTunnelError == "" {
+		return true, "ok"
+	}
+	if !a.lastTunnelHealthyAt.IsZero() && a.lastTunnelHealthyAt.After(a.lastTunnelErrorAt) {
+		return true, "ok"
+	}
+	return false, fmt.Sprintf("degraded: %s", a.lastTunnelError)
+}
+
+func (a *App) openServiceTunnelStream(ctx context.Context) (network.Stream, error) {
+	if a.openTunnelStream != nil {
+		return a.openTunnelStream(ctx)
+	}
+	return a.host.NewStream(ctx, a.service.ID, p2p.ProtocolID)
+}
+
+func (a *App) startTCPTunnelStream(s network.Stream, proof *protocol.ConnectProof) error {
+	if a.startClientTCPTunnel != nil {
+		return a.startClientTCPTunnel(s, "bridge", proof)
+	}
+	return p2p.StartClientTCPTunnel(s, "bridge", proof)
+}
+
+func (a *App) selfHealServicePath(localAddr string, cause error) error {
+	ctx, cancel := context.WithTimeout(context.Background(), bridgeSelfHealTimeout)
+	defer cancel()
+	log.Printf("bridge tcp self-heal local=%s cause=%v", localAddr, cause)
+	if a.reconnectServiceFn != nil {
+		return a.reconnectServiceFn(ctx)
+	}
+	return a.reconnectService(ctx)
+}
+
+func (a *App) reconnectService(ctx context.Context) error {
+	if a.host == nil {
+		return fmt.Errorf("bridge host unavailable")
+	}
+	_ = a.host.Network().ClosePeer(a.service.ID)
+	connectCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp self-heal reconnect")
+	if deadline, ok := ctx.Deadline(); ok {
+		var cancel context.CancelFunc
+		connectCtx, cancel = context.WithDeadline(connectCtx, deadline)
+		defer cancel()
+	}
+	if err := a.host.Connect(connectCtx, a.service); err != nil {
+		return fmt.Errorf("reconnect service peer: %w", err)
+	}
+	return nil
+}
+
+type statusSnapshot struct {
+	Status                  string     `json:"status"`
+	Reason                  string     `json:"reason,omitempty"`
+	ServiceKind             string     `json:"service_kind,omitempty"`
+	Path                    string     `json:"path,omitempty"`
+	ConnectAccessExpiresAt  *time.Time `json:"connect_access_expires_at,omitempty"`
+	ConnectAccessExpiresIn  string     `json:"connect_access_expires_in,omitempty"`
+	ConnectRefreshExpiresAt *time.Time `json:"connect_refresh_expires_at,omitempty"`
+	ConnectRefreshExpiresIn string     `json:"connect_refresh_expires_in,omitempty"`
+	LastTunnelError         string     `json:"last_tunnel_error,omitempty"`
+	LastTunnelErrorAt       *time.Time `json:"last_tunnel_error_at,omitempty"`
+	LastTunnelHealthyAt     *time.Time `json:"last_tunnel_healthy_at,omitempty"`
+}
+
+func (a *App) currentPath() string {
+	if a.host == nil {
+		return ""
+	}
+	conns := a.host.Network().ConnsToPeer(a.service.ID)
+	hasRelay := false
+	for _, conn := range conns {
+		if strings.Contains(conn.RemoteMultiaddr().String(), "/p2p-circuit") {
+			hasRelay = true
+			continue
+		}
+		return "direct"
+	}
+	if hasRelay {
+		return "relayed"
+	}
+	if strings.Contains(a.cfg.ServiceAddr, "/p2p-circuit") {
+		return "relayed"
+	}
+	if a.cfg.ServiceAddr != "" {
+		return "direct"
+	}
+	return ""
+}
+
+func formatRemaining(until time.Time, now time.Time) string {
+	if until.IsZero() {
+		return ""
+	}
+	d := until.Sub(now)
+	if d <= 0 {
+		return "expired"
+	}
+	return d.Round(time.Second).String()
+}
+
+func (a *App) statusSnapshot(now time.Time) statusSnapshot {
+	ok, msg := a.tunnelHealth()
+	snap := statusSnapshot{Status: "running", ServiceKind: a.cfg.ServiceKind, Path: a.currentPath()}
+	if !ok {
+		snap.Status = "degraded"
+		snap.Reason = msg
+	}
+	a.healthMu.RLock()
+	if a.lastTunnelError != "" {
+		snap.LastTunnelError = a.lastTunnelError
+	}
+	if !a.lastTunnelErrorAt.IsZero() {
+		t := a.lastTunnelErrorAt
+		snap.LastTunnelErrorAt = &t
+	}
+	if !a.lastTunnelHealthyAt.IsZero() {
+		t := a.lastTunnelHealthyAt
+		snap.LastTunnelHealthyAt = &t
+	}
+	a.healthMu.RUnlock()
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	if a.connectLease != nil {
+		t := a.connectLease.ExpiresAt.UTC()
+		snap.ConnectAccessExpiresAt = &t
+		snap.ConnectAccessExpiresIn = formatRemaining(t, now)
+	}
+	if a.cfg.ConnectRefreshLease != nil {
+		t := a.cfg.ConnectRefreshLease.ExpiresAt.UTC()
+		snap.ConnectRefreshExpiresAt = &t
+		snap.ConnectRefreshExpiresIn = formatRemaining(t, now)
+		if !now.Before(t) {
+			snap.Status = "degraded"
+			snap.Reason = "connect refresh lease expired; ask the service owner for a fresh token/invite"
+		} else if time.Until(t) <= connectRefreshMinUsefulLifetime && snap.Reason == "" {
+			snap.Status = "degraded"
+			snap.Reason = "connect refresh lease is near expiry; ask the service owner for a fresh token/invite"
+		}
+	} else if a.connectLease != nil {
+		if !now.Before(a.connectLease.ExpiresAt.UTC()) {
+			snap.Status = "degraded"
+			snap.Reason = "connect access lease expired; ask the service owner for a fresh token/invite"
+		}
+	}
+	if a.lastRefreshError != "" && snap.Reason == "" {
+		snap.Status = "degraded"
+		snap.Reason = a.lastRefreshError
+	}
+	return snap
+}
+
+func connectLeaseRenewBefore(lease grantspkg.ConnectAccessLease) time.Duration {
+	if lease.ExpiresAt.IsZero() {
+		return time.Second
+	}
+	ttl := lease.ExpiresAt.UTC().Sub(lease.IssuedAt.UTC())
+	renewBefore := ttl / 3
+	if renewBefore < time.Second {
+		renewBefore = time.Second
+	}
+	if renewBefore > 5*time.Minute {
+		renewBefore = 5 * time.Minute
+	}
+	return renewBefore
+}
+
+func (a *App) startConnectLeaseRenewal(ctx context.Context) {
+	for {
+		a.connectMu.Lock()
+		refresh := a.cfg.ConnectRefreshLease
+		lease := a.connectLease
+		nextRetry := a.nextRefreshRetryAt
+		a.connectMu.Unlock()
+		if refresh == nil {
+			return
+		}
+		now := time.Now().UTC()
+		if !now.Before(refresh.ExpiresAt.UTC()) {
+			err := fmt.Errorf("connect refresh lease expired; ask the service owner for a fresh token/invite")
+			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
+			a.markTunnelDegraded(err)
+			return
+		}
+		if nextRetry.After(now) {
+			wait := time.Until(nextRetry)
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		var wait time.Duration
+		if lease == nil || connectAccessLeaseNeedsRefresh(*lease, now) {
+			wait = 0
+		} else {
+			renewBefore := connectLeaseRenewBefore(*lease)
+			wait = time.Until(lease.ExpiresAt.UTC().Add(-renewBefore))
+		}
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		_, err := a.ensureConnectAccessLease(refreshCtx)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			a.markTunnelDegraded(err)
+			log.Printf("bridge connect lease renewal failed: %v", err)
+			continue
+		}
+	}
+}
+
+func (a *App) CurrentRuntimeStatus() RuntimeStatus {
+	snap := a.statusSnapshot(time.Now().UTC())
+	a.connectMu.Lock()
+	lastRefreshError := a.lastRefreshError
+	nextRefreshRetryAt := a.nextRefreshRetryAt
+	a.connectMu.Unlock()
+	return RuntimeStatus{
+		Status:                  snap.Status,
+		Reason:                  snap.Reason,
+		ServiceKind:             snap.ServiceKind,
+		Path:                    snap.Path,
+		ConnectAccessExpiresAt:  snap.ConnectAccessExpiresAt,
+		ConnectAccessExpiresIn:  snap.ConnectAccessExpiresIn,
+		ConnectRefreshExpiresAt: snap.ConnectRefreshExpiresAt,
+		ConnectRefreshExpiresIn: snap.ConnectRefreshExpiresIn,
+		LastTunnelError:         snap.LastTunnelError,
+		LastTunnelErrorAt:       snap.LastTunnelErrorAt,
+		LastTunnelHealthyAt:     snap.LastTunnelHealthyAt,
+		LastRefreshError:        lastRefreshError,
+		NextRefreshRetryAt: func() *time.Time {
+			if nextRefreshRetryAt.IsZero() {
+				return nil
+			}
+			t := nextRefreshRetryAt.UTC()
+			return &t
+		}(),
+	}
+}
+
+func (a *App) SetStatusReporter(report func(RuntimeStatus)) {
+	a.statusReporter = report
+	a.reportStatus()
+}
+
+func (a *App) reportStatus() {
+	if a.statusReporter != nil {
+		a.statusReporter(a.CurrentRuntimeStatus())
+	}
+}
+
 func (a *App) mux() *http.ServeMux {
 	m := http.NewServeMux()
-	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
+	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		snap := a.statusSnapshot(time.Now().UTC())
+		if snap.Status == "running" {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte("ok"))
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(snap.Reason))
+	})
+	m.HandleFunc("/statusz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(a.statusSnapshot(time.Now().UTC()))
+	})
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tunnel stream")
 		s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.SupportedProtocolIDs()...)
@@ -378,30 +741,112 @@ func (a *App) connectProof() (*protocol.ConnectProof, error) {
 }
 
 func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAccessLease, error) {
+	for {
+		now := time.Now().UTC()
+		a.connectMu.Lock()
+		if a.connectLease != nil && !connectAccessLeaseNeedsRefresh(*a.connectLease, now) {
+			lease := *a.connectLease
+			a.connectMu.Unlock()
+			return lease, nil
+		}
+		if a.cfg.ConnectRefreshLease == nil {
+			if a.connectLease == nil || !now.Before(a.connectLease.ExpiresAt.UTC()) {
+				a.connectMu.Unlock()
+				return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect access lease expired; ask the service owner for a fresh token/invite")
+			}
+			lease := *a.connectLease
+			a.connectMu.Unlock()
+			return lease, nil
+		}
+		refresh := *a.cfg.ConnectRefreshLease
+		if !now.Before(refresh.ExpiresAt.UTC()) {
+			err := fmt.Errorf("connect refresh lease expired; ask the service owner for a fresh token/invite")
+			a.connectMu.Unlock()
+			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
+			return grantspkg.ConnectAccessLease{}, err
+		}
+		if remaining := time.Until(refresh.ExpiresAt.UTC()); remaining <= connectRefreshMinUsefulLifetime {
+			err := fmt.Errorf("connect refresh lease is near expiry; ask the service owner for a fresh token/invite")
+			a.connectMu.Unlock()
+			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
+			return grantspkg.ConnectAccessLease{}, err
+		}
+		if !a.nextRefreshRetryAt.IsZero() && now.Before(a.nextRefreshRetryAt) {
+			errText := strings.TrimSpace(a.lastRefreshError)
+			if errText == "" {
+				errText = "connect lease refresh cooling down; retry later"
+			}
+			a.connectMu.Unlock()
+			return grantspkg.ConnectAccessLease{}, fmt.Errorf("%s", errText)
+		}
+		if a.refreshingLease {
+			done := a.refreshDone
+			a.connectMu.Unlock()
+			select {
+			case <-ctx.Done():
+				return grantspkg.ConnectAccessLease{}, ctx.Err()
+			case <-done:
+			}
+			continue
+		}
+		prevExpiry := time.Time{}
+		if a.connectLease != nil {
+			prevExpiry = a.connectLease.ExpiresAt.UTC()
+		}
+		refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		a.refreshingLease = true
+		a.refreshDone = make(chan struct{})
+		a.connectMu.Unlock()
+		access, err := a.refreshConnectAccessLease(refreshCtx, refresh)
+		cancel()
+		a.connectMu.Lock()
+		done := a.refreshDone
+		a.refreshingLease = false
+		a.refreshDone = nil
+		if done != nil {
+			close(done)
+		}
+		if err != nil {
+			a.connectMu.Unlock()
+			wrapped := fmt.Errorf("refresh connect access lease: %w", err)
+			a.recordRefreshFailure(wrapped, time.Now().UTC().Add(connectRefreshFailureCooldown))
+			return grantspkg.ConnectAccessLease{}, wrapped
+		}
+		if !connectRefreshResultUseful(prevExpiry, access.ExpiresAt.UTC(), time.Now().UTC()) {
+			a.connectMu.Unlock()
+			err := fmt.Errorf("connect refresh lease is near expiry; ask the service owner for a fresh token/invite")
+			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
+			return grantspkg.ConnectAccessLease{}, err
+		}
+		a.connectLease = &access
+		a.cfg.ConnectAccessLease = &access
+		a.lastRefreshError = ""
+		a.nextRefreshRetryAt = time.Time{}
+		a.connectMu.Unlock()
+		log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
+		a.reportStatus()
+		return access, nil
+	}
+}
+
+func connectRefreshResultUseful(previousExpiry, newExpiry, now time.Time) bool {
+	if newExpiry.IsZero() || !now.Before(newExpiry) {
+		return false
+	}
+	if previousExpiry.IsZero() {
+		return true
+	}
+	return newExpiry.After(previousExpiry.Add(connectRefreshMinExtension))
+}
+
+func (a *App) recordRefreshFailure(err error, retryAt time.Time) {
+	if err == nil {
+		return
+	}
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
-	if a.connectLease != nil && !connectAccessLeaseNeedsRefresh(*a.connectLease, time.Now().UTC()) {
-		return *a.connectLease, nil
-	}
-	if a.cfg.ConnectRefreshLease == nil {
-		if a.connectLease == nil || !time.Now().UTC().Before(a.connectLease.ExpiresAt.UTC()) {
-			return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect access lease expired; ask the service owner for a fresh token/invite")
-		}
-		return *a.connectLease, nil
-	}
-	if !time.Now().UTC().Before(a.cfg.ConnectRefreshLease.ExpiresAt.UTC()) {
-		return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect refresh lease expired; ask the service owner for a fresh token/invite")
-	}
-	refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	access, err := a.refreshConnectAccessLease(refreshCtx, *a.cfg.ConnectRefreshLease)
-	if err != nil {
-		return grantspkg.ConnectAccessLease{}, fmt.Errorf("refresh connect access lease: %w", err)
-	}
-	a.connectLease = &access
-	a.cfg.ConnectAccessLease = &access
-	log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
-	return access, nil
+	a.lastRefreshError = err.Error()
+	a.nextRefreshRetryAt = retryAt.UTC()
 }
 
 func (a *App) refreshConnectAccessLease(ctx context.Context, refresh grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
@@ -504,14 +949,7 @@ func connectAccessLeaseNeedsRefresh(lease grantspkg.ConnectAccessLease, now time
 	if lease.ExpiresAt.IsZero() || !now.Before(lease.ExpiresAt.UTC()) {
 		return true
 	}
-	ttl := lease.ExpiresAt.UTC().Sub(lease.IssuedAt.UTC())
-	renewBefore := ttl / 3
-	if renewBefore < time.Second {
-		renewBefore = time.Second
-	}
-	if renewBefore > 5*time.Minute {
-		renewBefore = 5 * time.Minute
-	}
+	renewBefore := connectLeaseRenewBefore(lease)
 	return !now.Add(renewBefore).Before(lease.ExpiresAt.UTC())
 }
 

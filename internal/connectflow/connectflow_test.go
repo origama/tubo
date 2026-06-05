@@ -67,6 +67,41 @@ func (s stubDeps) NewBridge(ctx context.Context, cfg bridge.Config) (*bridge.App
 	return s.newBridge(ctx, cfg)
 }
 
+func TestConnectBridgeDoesNotReacquireLeaseForFailedCandidates(t *testing.T) {
+	service := catalog.Service{
+		Name:             "svc",
+		ServiceID:        "svc-1",
+		DirectAddresses:  []string{"/ip4/10.0.0.1/tcp/4101/p2p/peer-a", "/ip4/10.0.0.2/tcp/4101/p2p/peer-a"},
+		RelayedAddresses: []string{"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/peer-a"},
+	}
+	base := bridge.Config{ConnectAccessLease: &grantspkg.ConnectAccessLease{ServiceID: "svc-1"}, ConnectRefreshLease: &grantspkg.ConnectRefreshLease{ServiceID: "svc-1"}}
+	var seen []bridge.Config
+	app, err := func() (*bridge.App, error) {
+		_, _, _, app, err := ConnectBridge(context.Background(), func(_ context.Context, cfg bridge.Config) (*bridge.App, error) {
+			seen = append(seen, cfg)
+			if len(seen) == 1 {
+				return nil, errors.New("direct failed")
+			}
+			return &bridge.App{}, nil
+		}, base, service)
+		return app, err
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app == nil {
+		t.Fatal("expected app")
+	}
+	if len(seen) != 2 {
+		t.Fatalf("attempts = %d", len(seen))
+	}
+	for i, cfg := range seen {
+		if cfg.ConnectAccessLease == nil || cfg.ConnectRefreshLease == nil {
+			t.Fatalf("attempt %d lost connect lease reuse: %#v", i, cfg)
+		}
+	}
+}
+
 func TestResolveFallsBackToExactLookupAndBuildsBridge(t *testing.T) {
 	scope := catalog.Scope{Cluster: "cluster-a", Namespace: "default"}
 	cfg := cfgpkg.Config{}

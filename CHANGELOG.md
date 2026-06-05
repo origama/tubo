@@ -10,10 +10,12 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - None.
 
 ### Changed
-- None.
+- Detached raw TCP `connect` now performs one bounded inline self-heal attempt when pre-stream setup fails (for example stale path before stream open/handshake), while still failing fast once application bytes have already started flowing.
+- Detached `connect` now renews its access lease proactively before expiry when a refresh lease is available, and process visibility now exposes degraded runtime state plus remaining lease lifetime.
 
 ### Fixed
-- None.
+- Detached raw TCP `connect` no longer always requires a manual restart to recover from some stale direct-path failures before a new stream starts.
+- `tubo ps` / `describe process/...` no longer misleadingly treat an expired short-lived access lease as the primary tunnel TTL when a longer-lived refresh lease still governs recoverability.
 
 ### Compatibility
 - Product version: pending next release
