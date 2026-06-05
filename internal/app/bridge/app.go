@@ -294,9 +294,10 @@ func (a *App) establishTCPTunnel(localAddr string) (network.Stream, error) {
 					log.Printf("bridge tcp self-heal recovered local=%s", localAddr)
 				}
 				return s, nil
+			} else {
+				_ = s.Close()
+				lastErr = fmt.Errorf("start tunnel: %w", startErr)
 			}
-			_ = s.Close()
-			lastErr = fmt.Errorf("start tunnel: %w", startErr)
 		} else {
 			lastErr = fmt.Errorf("open stream: %w", err)
 		}
