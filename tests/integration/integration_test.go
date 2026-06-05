@@ -10,12 +10,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -544,7 +546,7 @@ func prepareIntegrationComposeConfig(repoRoot string) error {
 	if err := os.Chmod(discoverySecretPath, 0o600); err != nil {
 		return err
 	}
-	if err := os.Chown(discoverySecretPath, 65532, 65532); err != nil {
+	if err := os.Chown(discoverySecretPath, 65532, 65532); err != nil && !errors.Is(err, os.ErrPermission) && !errors.Is(err, syscall.EPERM) {
 		return err
 	}
 	return nil

@@ -51,10 +51,8 @@ func registerCurrentProcess(state detachedProcessState) (detachedProcessState, f
 }
 
 func runtimeProcessSource() string {
-	for _, key := range []string{"INVOCATION_ID", "JOURNAL_STREAM", "NOTIFY_SOCKET"} {
-		if strings.TrimSpace(os.Getenv(key)) != "" {
-			return "systemd"
-		}
+	if source := strings.TrimSpace(os.Getenv("TUBO_PROCESS_SOURCE")); source != "" {
+		return source
 	}
 	return "foreground"
 }

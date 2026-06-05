@@ -1,12 +1,17 @@
 services:
   tubo-relay:
     image: tubo:dev
+    user: "${TUBO_SMOKE_UID:-65532}:${TUBO_SMOKE_GID:-65532}"
+    environment:
+      HOME: /config
+      XDG_CONFIG_HOME: /config
+      XDG_DATA_HOME: /tmp
     build:
       context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
-    command: ["relay", "--config", "/home/nonroot/.config/tubo/relay.yaml"]
+    command: ["relay", "--config", "/config/tubo/relay.yaml"]
     volumes:
-      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/config/tubo:ro
     ports:
       - "4002:4002"
       - "8092:8092"
@@ -23,12 +28,17 @@ services:
 
   tubo-edge:
     image: tubo:dev
+    user: "${TUBO_SMOKE_UID:-65532}:${TUBO_SMOKE_GID:-65532}"
+    environment:
+      HOME: /config
+      XDG_CONFIG_HOME: /config
+      XDG_DATA_HOME: /tmp
     build:
       context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
-    command: ["gateway", "--config", "/home/nonroot/.config/tubo/edge.yaml"]
+    command: ["gateway", "--config", "/config/tubo/edge.yaml"]
     volumes:
-      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/config/tubo:ro
     ports:
       - "8443:8443"
       - "8444:8444"
@@ -36,6 +46,11 @@ services:
 
   tubo-service-a:
     image: tubo:dev
+    user: "${TUBO_SMOKE_UID:-65532}:${TUBO_SMOKE_GID:-65532}"
+    environment:
+      HOME: /config
+      XDG_CONFIG_HOME: /config
+      XDG_DATA_HOME: /tmp
     build:
       context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
@@ -43,15 +58,20 @@ services:
       - tubo-dummy-api-server
       - tubo-edge
       - tubo-relay
-    command: ["attach", "--config", "/home/nonroot/.config/tubo/service-tenant-a.yaml"]
+    command: ["attach", "--config", "/config/tubo/service-tenant-a.yaml"]
     volumes:
-      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/config/tubo:ro
     ports:
       - "8091:8091"
       - "40123:40123"
 
   tubo-service-b:
     image: tubo:dev
+    user: "${TUBO_SMOKE_UID:-65532}:${TUBO_SMOKE_GID:-65532}"
+    environment:
+      HOME: /config
+      XDG_CONFIG_HOME: /config
+      XDG_DATA_HOME: /tmp
     build:
       context: ${TUBO_REPO_ROOT}
       dockerfile: deploy/Dockerfile.tubo
@@ -59,9 +79,9 @@ services:
       - tubo-dummy-api-server
       - tubo-edge
       - tubo-relay
-    command: ["attach", "--config", "/home/nonroot/.config/tubo/service-tenant-b.yaml"]
+    command: ["attach", "--config", "/config/tubo/service-tenant-b.yaml"]
     volumes:
-      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/home/nonroot/.config/tubo:ro
+      - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/config/tubo:ro
     ports:
       - "8093:8093"
       - "40124:40124"

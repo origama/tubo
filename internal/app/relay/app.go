@@ -32,8 +32,28 @@ type App struct {
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
-	return Config{Listen: first(g("P2P_LISTEN"), "/ip4/0.0.0.0/tcp/4001"), Seed: first(g("NODE_SEED"), "public-relay-seed"), HealthListen: first(g("RELAY_HEALTH_LISTEN"), "127.0.0.1:8092"), PublicAddr: g("RELAY_PUBLIC_ADDR"), PrivateKeyFile: g("LIBP2P_PRIVATE_NETWORK_KEY"), PrivateKeyB64: g("LIBP2P_PRIVATE_NETWORK_KEY_B64"), EnableRelayService: bo(g("ENABLE_RELAY_SERVICE"), true), EnableAutoNATService: bo(g("ENABLE_AUTONAT_SERVICE"), true), EnableDiscoveryPubSub: bo(g("ENABLE_DISCOVERY_PUBSUB"), true), ForceReachabilityPublic: bo(g("FORCE_REACHABILITY_PUBLIC"), true), PrintRunCommands: bo(g("PRINT_RUN_COMMANDS"), true), MaxReservations: in(g("RELAY_MAX_RESERVATIONS"), 256), MaxReservationsPerIP: in(g("RELAY_MAX_RESERVATIONS_PER_IP"), 16), MaxReservationsPerASN: in(g("RELAY_MAX_RESERVATIONS_PER_ASN"), 64), MaxCircuitsPerPeer: in(g("RELAY_MAX_CIRCUITS"), 64), BufferSize: in(g("RELAY_BUFFER_SIZE"), 65536), ReservationTTL: du(g("RELAY_RESERVATION_TTL"), time.Hour), LimitDuration: du(g("RELAY_LIMIT_DURATION"), 5*time.Minute), LimitDataBytes: int64(in(g("RELAY_LIMIT_DATA_BYTES"), 256<<20))}, nil
+	return Config{Listen: first(g("P2P_LISTEN"), "/ip4/0.0.0.0/tcp/4001"), Seed: first(g("NODE_SEED"), "public-relay-seed"), HealthListen: first(g("RELAY_HEALTH_LISTEN"), "127.0.0.1:8092"), PublicAddr: g("RELAY_PUBLIC_ADDR"), PrivateKeyFile: g("LIBP2P_PRIVATE_NETWORK_KEY"), PrivateKeyB64: g("LIBP2P_PRIVATE_NETWORK_KEY_B64"), EnableRelayService: bo(g("ENABLE_RELAY_SERVICE"), true), EnableAutoNATService: bo(g("ENABLE_AUTONAT_SERVICE"), true), EnableDiscoveryPubSub: bo(g("ENABLE_DISCOVERY_PUBSUB"), true), ForceReachabilityPublic: bo(g("FORCE_REACHABILITY_PUBLIC"), true), PrintRunCommands: bo(g("PRINT_RUN_COMMANDS"), true), MaxReservations: in(g("RELAY_MAX_RESERVATIONS"), 256), MaxReservationsPerIP: in(g("RELAY_MAX_RESERVATIONS_PER_IP"), 16), MaxReservationsPerASN: in(g("RELAY_MAX_RESERVATIONS_PER_ASN"), 64), MaxCircuitsPerPeer: in(g("RELAY_MAX_CIRCUITS"), 64), BufferSize: in(g("RELAY_BUFFER_SIZE"), 65536), ReservationTTL: du(g("RELAY_RESERVATION_TTL"), time.Hour), LimitDuration: du(g("RELAY_LIMIT_DURATION"), 5*time.Minute), LimitDataBytes: int64(in(g("RELAY_LIMIT_DATA_BYTES"), 0))}, nil
 }
+
+const relayUnlimitedDataBytes = int64(1<<63 - 1)
+
+func relayLimitFromConfig(duration time.Duration, dataBytes int64) *relayv2.RelayLimit {
+	if duration <= 0 && dataBytes <= 0 {
+		return nil
+	}
+	if dataBytes <= 0 {
+		dataBytes = relayUnlimitedDataBytes
+	}
+	return &relayv2.RelayLimit{Duration: duration, Data: dataBytes}
+}
+
+func relayLimitDataLabel(dataBytes int64) string {
+	if dataBytes <= 0 || dataBytes == relayUnlimitedDataBytes {
+		return "unlimited"
+	}
+	return fmt.Sprintf("%d", dataBytes)
+}
+
 func New(ctx context.Context, cfg Config) (*App, error) {
 	psk, using, err := p2p.LoadPrivateNetworkPSK(cfg.PrivateKeyFile, cfg.PrivateKeyB64)
 	if err != nil {
@@ -54,7 +74,8 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		r.MaxCircuits = cfg.MaxCircuitsPerPeer
 		r.BufferSize = cfg.BufferSize
 		r.ReservationTTL = cfg.ReservationTTL
-		r.Limit = &relayv2.RelayLimit{Duration: cfg.LimitDuration, Data: cfg.LimitDataBytes}
+		r.Limit = relayLimitFromConfig(cfg.LimitDuration, cfg.LimitDataBytes)
+		log.Printf("relay circuit limits duration=%s data_bytes=%s max_circuits_per_peer=%d buffer_size=%d", cfg.LimitDuration, relayLimitDataLabel(cfg.LimitDataBytes), cfg.MaxCircuitsPerPeer, cfg.BufferSize)
 		opts = append(opts, libp2p.EnableRelayService(relayv2.WithResources(r)))
 	}
 	if cfg.EnableAutoNATService {

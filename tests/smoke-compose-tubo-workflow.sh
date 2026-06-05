@@ -8,6 +8,13 @@ COMPOSE="${COMPOSE_CMD:-docker compose} -f tests/e2e/compose/tubo-workflow/compo
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 export TUBO_REPO_ROOT="$ROOT_DIR"
+if [[ "$(id -u)" -eq 0 ]]; then
+  export TUBO_SMOKE_UID="${TUBO_SMOKE_UID:-65532}"
+  export TUBO_SMOKE_GID="${TUBO_SMOKE_GID:-65532}"
+else
+  export TUBO_SMOKE_UID="${TUBO_SMOKE_UID:-$(id -u)}"
+  export TUBO_SMOKE_GID="${TUBO_SMOKE_GID:-$(id -g)}"
+fi
 
 BIN_DIR="$(mktemp -d "${ROOT_DIR}/.tmp-smoke-workflow-bin.XXXXXX")"
 TUBO_BIN="$BIN_DIR/tubo"
@@ -46,6 +53,9 @@ wait_http_ok() {
     fi
     sleep 1
   done
+  echo "[smoke-tubo-workflow] timeout waiting for $url"
+  $COMPOSE ps || true
+  $COMPOSE logs --tail=100 || true
   return 1
 }
 
@@ -187,7 +197,7 @@ echo "[smoke-tubo-workflow] building local tubo binary"
 go build -o "$TUBO_BIN" ./cmd/tubo
 
 config_dir="generated/tubo-workflow/tubo"
-container_root="/home/nonroot/.config/tubo"
+container_root="/config/tubo"
 config_path="${config_dir}/config.yaml"
 rm -rf generated/tubo-workflow
 mkdir -p "$config_dir"
@@ -576,7 +586,11 @@ find "$config_dir" -type d -exec chmod 755 {} +
 find "$config_dir" -type f -exec chmod 644 {} +
 chmod 644 "$host_authority_key_file" "$host_tenant_a_cluster_cap_file" "$host_tenant_a_namespace_cap_file" "$host_tenant_b_cluster_cap_file" "$host_tenant_b_namespace_cap_file" "$host_service_a_owner_key_file" "$host_service_a_claim_file" "$host_service_b_owner_key_file" "$host_service_b_claim_file" "$host_swarm_key_file"
 chmod 600 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
-chown 65532:65532 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
+if [[ "$TUBO_SMOKE_UID:$TUBO_SMOKE_GID" != "$(id -u):$(id -g)" ]]; then
+  if ! chown "$TUBO_SMOKE_UID:$TUBO_SMOKE_GID" "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"; then
+    sudo chown "$TUBO_SMOKE_UID:$TUBO_SMOKE_GID" "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
+  fi
+fi
 
 if [[ "${SMOKE_FORCE_BUILD:-0}" == "1" ]]; then
   echo "[smoke-tubo-workflow] forcing image rebuild"

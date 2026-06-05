@@ -139,11 +139,26 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+	if !serviceAddrUsesRelay(cfg.ServiceAddr) {
+		c = network.WithForceDirectDial(c, "bridge selected direct service candidate")
+	}
 	if err := h.Connect(c, si); err != nil {
 		_ = h.Close()
 		return nil, fmt.Errorf("connect service peer: %w", err)
 	}
 	return &App{cfg: cfg, host: h, service: si, connectLease: connectLease}, nil
+}
+
+func serviceAddrUsesRelay(addr string) bool {
+	return strings.Contains(addr, "/p2p-circuit")
+}
+
+func serviceStreamContext(serviceAddr, reason string) context.Context {
+	ctx := context.Background()
+	if serviceAddrUsesRelay(serviceAddr) {
+		return network.WithAllowLimitedConn(ctx, reason)
+	}
+	return network.WithForceDirectDial(ctx, reason)
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
@@ -208,32 +223,36 @@ func (a *App) serveTCP(ctx context.Context, ln net.Listener) {
 
 func (a *App) handleTCPConn(conn net.Conn) {
 	defer conn.Close()
-	streamCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp tunnel stream")
+	start := time.Now()
+	streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tcp tunnel stream")
 	s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.ProtocolID)
 	if err != nil {
-		log.Printf("bridge tcp open stream: %v", err)
+		log.Printf("bridge tcp open stream local=%s err=%v", conn.RemoteAddr(), err)
 		return
 	}
 	defer s.Close()
 	proof, err := a.connectProof()
 	if err != nil {
-		log.Printf("bridge tcp connect proof: %v", err)
+		log.Printf("bridge tcp connect proof local=%s err=%v", conn.RemoteAddr(), err)
 		return
 	}
 	if err := p2p.StartClientTCPTunnel(s, "bridge", proof); err != nil {
-		log.Printf("bridge tcp start tunnel: %v", err)
+		log.Printf("bridge tcp start tunnel local=%s err=%v", conn.RemoteAddr(), err)
 		return
 	}
-	if _, _, err := p2p.ProxyTCPStream(conn, s); err != nil {
-		log.Printf("bridge tcp proxy: %v", err)
+	sent, received, err := p2p.ProxyTCPStream(conn, s)
+	if err != nil {
+		log.Printf("bridge tcp proxy closed local=%s bytes_in=%d bytes_out=%d err=%v duration=%s", conn.RemoteAddr(), received, sent, err, time.Since(start))
+		return
 	}
+	log.Printf("bridge tcp proxy completed local=%s bytes_in=%d bytes_out=%d duration=%s", conn.RemoteAddr(), received, sent, time.Since(start))
 }
 
 func (a *App) mux() *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		streamCtx := network.WithAllowLimitedConn(context.Background(), "bridge tunnel stream")
+		streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tunnel stream")
 		s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.SupportedProtocolIDs()...)
 		if err != nil {
 			http.Error(w, err.Error(), 502)

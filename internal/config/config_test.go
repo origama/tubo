@@ -451,6 +451,17 @@ func TestValidateRequired(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestRelayDefaultsMatchEnvRelayDefaults(t *testing.T) {
+	c := Defaults("relay")
+	if c.Relay.BufferSize != 65536 {
+		t.Fatalf("relay buffer_size = %d, want 65536", c.Relay.BufferSize)
+	}
+	if c.Relay.LimitDataBytes != 0 {
+		t.Fatalf("relay limit_data_bytes = %d, want 0/unlimited", c.Relay.LimitDataBytes)
+	}
+}
+
 func TestMaskSecrets(t *testing.T) {
 	c := Defaults("service")
 	c.Network.PrivateKeyB64 = "secret"
