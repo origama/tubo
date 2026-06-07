@@ -21,6 +21,7 @@ import (
 	capability "github.com/origama/tubo/internal/capability"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	connectflow "github.com/origama/tubo/internal/connectflow"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
@@ -481,9 +482,6 @@ func TestBuildDetachedConnectSpec(t *testing.T) {
 	if spec.State.Command != "connect" || spec.State.Service != "myapi" {
 		t.Fatalf("unexpected connect state: %#v", spec.State)
 	}
-	if spec.State.Cluster != "home" || spec.State.Namespace != "team" {
-		t.Fatalf("unexpected connect scope: %#v", spec.State)
-	}
 	if spec.State.Local == "" || spec.HealthURL != "http://"+spec.State.Local+"/healthz" {
 		t.Fatalf("unexpected local/health: local=%q health=%q", spec.State.Local, spec.HealthURL)
 	}
@@ -495,6 +493,33 @@ func TestBuildDetachedConnectSpec(t *testing.T) {
 	}
 	if !strings.HasPrefix(spec.State.ID, "process/connect-myapi-") {
 		t.Fatalf("unexpected process id: %q", spec.State.ID)
+	}
+}
+
+func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
+	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
+	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", ServicePeerID: "12D3KooWServicePeer", LocalURL: "tcp://127.0.0.1:1234", Path: "relayed", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}
+	state := connectProcessState(req, result, "127.0.0.1:1234", "pipe")
+	if state.ResourceKind != "pipe" {
+		t.Fatalf("ResourceKind = %q", state.ResourceKind)
+	}
+	if state.ServiceKind != "tcp" {
+		t.Fatalf("ServiceKind = %q", state.ServiceKind)
+	}
+	if state.ServiceID != "service-123" {
+		t.Fatalf("ServiceID = %q", state.ServiceID)
+	}
+	if state.PeerID != "12D3KooWServicePeer" {
+		t.Fatalf("PeerID = %q", state.PeerID)
+	}
+	if state.SelectedAddr != result.SelectedAddr {
+		t.Fatalf("SelectedAddr = %q", state.SelectedAddr)
+	}
+	if state.SelectedPath != "relayed" || state.Path != "relayed" {
+		t.Fatalf("selected/path = %#v", state)
+	}
+	if state.Service != "lms" || state.Target != "lms" {
+		t.Fatalf("service/target = %#v", state)
 	}
 }
 

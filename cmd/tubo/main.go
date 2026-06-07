@@ -1595,35 +1595,10 @@ func connectCmd(args []string) error {
 		return err
 	}
 	localAddr := strings.TrimPrefix(strings.TrimPrefix(result.LocalURL, "http://"), "https://")
-	scopeCluster := ""
-	scopeNamespace := ""
-	if result.Scope != nil {
-		scopeCluster = result.Scope.Cluster
-		scopeNamespace = result.Scope.Namespace
-	}
-	name := detachedConnectProcessName(result.ServiceName, localAddr)
-	state := detachedProcessState{
-		ID:           "process/" + name,
-		Kind:         "process",
-		ResourceKind: "pipe",
-		Command:      "connect",
-		Name:         name,
-		Service:      result.ServiceName,
-		ServiceKind:  result.ServiceKind,
-		ServiceID:    result.ServiceID,
-		PeerID:       result.ServicePeerID,
-		Cluster:      scopeCluster,
-		Namespace:    scopeNamespace,
-		Local:        localAddr,
-		Target:       connectDetachedTarget(req, result.ServiceName, result.ServiceID),
-		Path:         result.Path,
-		SelectedAddr: result.SelectedAddr,
-		SelectedPath: result.Path,
-		LogFile:      "",
-		StateFile:    filepath.Join(processStateDir(), name+".json"),
-		PIDFile:      filepath.Join(processRunDir(), name+".pid"),
-		StatusURL:    "http://" + connectStatusHostPort(localAddr) + "/healthz",
-	}
+	state := connectProcessState(req, result, localAddr, "pipe")
+	state.LogFile = ""
+	state.StateFile = filepath.Join(processStateDir(), state.Name+".json")
+	state.PIDFile = filepath.Join(processRunDir(), state.Name+".pid")
 	state, cleanup, err := registerCurrentProcess(state)
 	if err != nil {
 		return err
