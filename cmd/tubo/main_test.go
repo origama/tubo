@@ -496,6 +496,31 @@ func TestBuildDetachedConnectSpec(t *testing.T) {
 	}
 }
 
+func TestBuildDetachedConnectSpecFailsBeforeResolveWhenStateExists(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "team", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"team": {}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	name := detachedConnectProcessName("myapi", "127.0.0.1:1234")
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processStateDir(), name+".json"), []byte(`{"id":"process/`+name+`"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"service/myapi", "--config", configPath, "--local", "127.0.0.1:1234"}
+	req, err := parseConnectCLIArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = buildDetachedConnectSpec(req, args)
+	if err == nil || !strings.Contains(err.Error(), "detached process state already exists") {
+		t.Fatalf("expected early state-exists error, got %v", err)
+	}
+}
+
 func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
 	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
 	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", ServicePeerID: "12D3KooWServicePeer", LocalURL: "tcp://127.0.0.1:1234", Path: "relayed", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}
