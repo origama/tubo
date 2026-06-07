@@ -297,6 +297,35 @@ func TestRemoveStaleCollapsesLegacyConnectAliases(t *testing.T) {
 	}
 }
 
+func TestStopAllowsDegradedProcess(t *testing.T) {
+	root := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	system := &stubSystem{running: map[int]bool{4321: true}, cmdlines: map[int][]string{4321: {"/bin/tubo", "relay"}}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := State{ID: "process/relay-default", Kind: "process", Command: "relay", Name: "relay-default", PID: 4321, PIDFile: filepath.Join(RunDir(root), "relay-default.pid"), StateFile: filepath.Join(StateDir(root), "relay-default.json"), LogFile: filepath.Join(LogDir(root), "relay-default.log"), StatusURL: server.URL}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0o600)
+	stopped, err := Stop(root, state.ID, system, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.ID != state.ID {
+		t.Fatalf("stopped.ID = %q", stopped.ID)
+	}
+	if system.PIDRunning(state.PID) {
+		t.Fatal("expected degraded process to stop")
+	}
+}
+
 func TestStop(t *testing.T) {
 	root := t.TempDir()
 	system := &stubSystem{running: map[int]bool{4321: true}, cmdlines: map[int][]string{4321: {"/bin/tubo", "relay"}}}

@@ -1508,7 +1508,7 @@ func stopCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if status != "running" {
+	if status != "running" && status != "degraded" {
 		return fmt.Errorf("process %s is not running", preview.ID)
 	}
 	if preview.Source != "" && preview.Source != "tubo-detached" {

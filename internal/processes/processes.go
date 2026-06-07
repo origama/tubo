@@ -395,7 +395,7 @@ func Stop(dataRoot, ref string, system System, force bool) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	if status != "running" {
+	if status != "running" && status != "degraded" {
 		return State{}, fmt.Errorf("process %s is not running", state.ID)
 	}
 	if err := system.TerminatePID(state.PID); err != nil {
