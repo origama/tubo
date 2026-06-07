@@ -1594,8 +1594,7 @@ func connectCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	localAddr := strings.TrimPrefix(strings.TrimPrefix(result.LocalURL, "http://"), "https://")
-	state := connectProcessState(req, result, localAddr, "pipe")
+	state := connectProcessState(req, result, result.LocalURL, "pipe")
 	state.LogFile = ""
 	state.StateFile = filepath.Join(processStateDir(), state.Name+".json")
 	state.PIDFile = filepath.Join(processRunDir(), state.Name+".pid")

@@ -18,6 +18,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - Detached raw TCP `connect` no longer always requires a manual restart to recover from some stale direct-path failures before a new stream starts.
 - `connect` now re-resolves pinned `service_id` metadata on stream/setup self-heal and can rebind to the newly verified peer/address instead of staying stuck on the original endpoint.
 - `connect --token` no longer treats the service peer address from `service_endpoint` as a fallback grant endpoint; it now requires either a local authority key for minting or an explicit `grant_service` path and fails clearly when neither exists.
+- `rm --stale` now collapses legacy/new aliases for the same stale connect runtime, so repeated cleanup is idempotent.
 - `tubo ps` / `describe process/...` no longer misleadingly treat an expired short-lived access lease as the primary tunnel TTL when a longer-lived refresh lease still governs recoverability.
 - `describe process/...` and `inspect process/... --json` now expose service/pipe runtime binding details such as service kind, peer id, selected address, and selected path when available.
 

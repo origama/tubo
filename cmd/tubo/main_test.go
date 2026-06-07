@@ -496,6 +496,18 @@ func TestBuildDetachedConnectSpec(t *testing.T) {
 	}
 }
 
+func TestConnectForegroundUsesNormalizedLocalForProcessState(t *testing.T) {
+	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
+	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", LocalURL: "tcp://127.0.0.1:1234", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/peer", Path: "relayed"}
+	state := connectProcessState(req, result, result.LocalURL, "pipe")
+	if strings.Contains(state.Name, "tcp-127-0-0-1") {
+		t.Fatalf("foreground process name should not include scheme prefix: %#v", state)
+	}
+	if state.Name != "connect-lms-1234" {
+		t.Fatalf("foreground process name = %q", state.Name)
+	}
+}
+
 func TestBuildDetachedConnectSpecFailsBeforeResolveWhenStateExists(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -524,7 +536,7 @@ func TestBuildDetachedConnectSpecFailsBeforeResolveWhenStateExists(t *testing.T)
 func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
 	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
 	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", ServicePeerID: "12D3KooWServicePeer", LocalURL: "tcp://127.0.0.1:1234", Path: "relayed", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}
-	state := connectProcessState(req, result, "127.0.0.1:1234", "pipe")
+	state := connectProcessState(req, result, result.LocalURL, "pipe")
 	if state.ResourceKind != "pipe" {
 		t.Fatalf("ResourceKind = %q", state.ResourceKind)
 	}
@@ -615,6 +627,45 @@ func TestLogsCmdAndRmStale(t *testing.T) {
 	}
 	if _, err := os.Stat(state.StateFile); !os.IsNotExist(err) {
 		t.Fatalf("expected state file removed, stat err=%v", err)
+	}
+}
+
+func TestRmCmdCollapsesLegacyConnectAliases(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processLogDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	current := detachedProcessState{ID: "process/connect-lms-1234", Kind: "process", Command: "connect", Name: "connect-lms-1234", PID: 999999, PIDFile: filepath.Join(processRunDir(), "connect-lms-1234.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-1234.json"), LogFile: filepath.Join(processLogDir(), "connect-lms-1234.log"), Service: "lms", Local: "127.0.0.1:1234"}
+	legacy := detachedProcessState{ID: "process/connect-lms-tcp-127-0-0-1-1234", Kind: "process", Command: "connect", Name: "connect-lms-tcp-127-0-0-1-1234", PID: 999998, PIDFile: filepath.Join(processRunDir(), "connect-lms-tcp-127-0-0-1-1234.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-tcp-127-0-0-1-1234.json"), LogFile: filepath.Join(processLogDir(), "connect-lms-tcp-127-0-0-1-1234.log"), Service: "lms", Local: "tcp://127.0.0.1:1234"}
+	for _, st := range []detachedProcessState{current, legacy} {
+		b, _ := json.Marshal(st)
+		_ = os.WriteFile(st.StateFile, b, 0600)
+	}
+	out, err := capture(func() error { return rmCmd([]string{"--stale"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "removed 1 stale process artifacts") {
+		t.Fatalf("unexpected rm output: %s", out)
+	}
+	if _, err := os.Stat(current.StateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected current state removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(legacy.StateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy state removed, stat err=%v", err)
+	}
+	out, err = capture(func() error { return rmCmd([]string{"--stale"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "removed 0 stale process artifacts") {
+		t.Fatalf("unexpected second rm output: %s", out)
 	}
 }
 
