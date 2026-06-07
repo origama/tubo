@@ -131,6 +131,21 @@ func updateProcessRuntimeState(stateFile string, runtime bridgeapp.RuntimeStatus
 	})
 }
 
+func updateProcessConnectState(stateFile string, result connectResult) error {
+	if strings.TrimSpace(stateFile) == "" {
+		return nil
+	}
+	return processes.UpdateState(stateFile, func(state *detachedProcessState) {
+		state.ResourceKind = "pipe"
+		state.ServiceKind = result.ServiceKind
+		state.ServiceID = result.ServiceID
+		state.PeerID = result.SelectedPeerID
+		state.Path = result.Path
+		state.SelectedAddr = result.Selected
+		state.SelectedPath = result.Path
+	})
+}
+
 func sanitizeProcessName(s string) string {
 	if s == "" {
 		return "default"

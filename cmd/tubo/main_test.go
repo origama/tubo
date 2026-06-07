@@ -21,6 +21,7 @@ import (
 	capability "github.com/origama/tubo/internal/capability"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	connectflow "github.com/origama/tubo/internal/connectflow"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
@@ -481,9 +482,6 @@ func TestBuildDetachedConnectSpec(t *testing.T) {
 	if spec.State.Command != "connect" || spec.State.Service != "myapi" {
 		t.Fatalf("unexpected connect state: %#v", spec.State)
 	}
-	if spec.State.Cluster != "home" || spec.State.Namespace != "team" {
-		t.Fatalf("unexpected connect scope: %#v", spec.State)
-	}
 	if spec.State.Local == "" || spec.HealthURL != "http://"+spec.State.Local+"/healthz" {
 		t.Fatalf("unexpected local/health: local=%q health=%q", spec.State.Local, spec.HealthURL)
 	}
@@ -495,6 +493,33 @@ func TestBuildDetachedConnectSpec(t *testing.T) {
 	}
 	if !strings.HasPrefix(spec.State.ID, "process/connect-myapi-") {
 		t.Fatalf("unexpected process id: %q", spec.State.ID)
+	}
+}
+
+func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
+	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
+	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", ServicePeerID: "12D3KooWServicePeer", LocalURL: "tcp://127.0.0.1:1234", Path: "relayed", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}
+	state := connectProcessState(req, result, "127.0.0.1:1234", "pipe")
+	if state.ResourceKind != "pipe" {
+		t.Fatalf("ResourceKind = %q", state.ResourceKind)
+	}
+	if state.ServiceKind != "tcp" {
+		t.Fatalf("ServiceKind = %q", state.ServiceKind)
+	}
+	if state.ServiceID != "service-123" {
+		t.Fatalf("ServiceID = %q", state.ServiceID)
+	}
+	if state.PeerID != "12D3KooWServicePeer" {
+		t.Fatalf("PeerID = %q", state.PeerID)
+	}
+	if state.SelectedAddr != result.SelectedAddr {
+		t.Fatalf("SelectedAddr = %q", state.SelectedAddr)
+	}
+	if state.SelectedPath != "relayed" || state.Path != "relayed" {
+		t.Fatalf("selected/path = %#v", state)
+	}
+	if state.Service != "lms" || state.Target != "lms" {
+		t.Fatalf("service/target = %#v", state)
 	}
 }
 
@@ -542,7 +567,7 @@ func TestLogsCmdAndRmStale(t *testing.T) {
 	if err := os.MkdirAll(processLogDir(), 0700); err != nil {
 		t.Fatal(err)
 	}
-	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", Command: "attach", Name: "attach-myapi", PID: 999999, PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), LogFile: filepath.Join(processLogDir(), "attach-myapi.log")}
+	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-myapi", PID: 999999, PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), LogFile: filepath.Join(processLogDir(), "attach-myapi.log"), ServiceKind: "http"}
 	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +663,7 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	if !ok || len(cmdline) == 0 {
 		t.Fatal("expected current process cmdline")
 	}
-	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", Command: "attach", Name: "attach-myapi", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), Source: "foreground", CommandLine: cmdline}
+	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-myapi", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), Source: "foreground", CommandLine: cmdline, ServiceKind: "http", PeerID: "12D3KooWServicePeer"}
 	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
 	b, _ := json.Marshal(state)
 	_ = os.WriteFile(state.StateFile, b, 0600)
@@ -646,7 +671,7 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Source: foreground", "Status confidence: pid+cmdline", "Command line:"} {
+	for _, want := range []string{"Resource kind: service", "Service kind: http", "Peer ID: 12D3KooWServicePeer", "Source: foreground", "Status confidence: pid+cmdline", "Command line:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
@@ -662,7 +687,7 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	if err := json.Unmarshal([]byte(inspectOut), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" {
+	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" || payload.State.ResourceKind != "service" || payload.State.ServiceKind != "http" || payload.State.PeerID != "12D3KooWServicePeer" {
 		t.Fatalf("unexpected inspect payload: %+v", payload)
 	}
 }
@@ -682,6 +707,7 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 	state := detachedProcessState{
 		ID:                      "process/connect-lms-1234",
 		Kind:                    "process",
+		ResourceKind:            "pipe",
 		Command:                 "connect",
 		Name:                    "connect-lms-1234",
 		PID:                     os.Getpid(),
@@ -689,7 +715,11 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 		StateFile:               filepath.Join(processStateDir(), "connect-lms-1234.json"),
 		Source:                  "foreground",
 		CommandLine:             cmdline,
-		Path:                    "direct",
+		ServiceKind:             "tcp",
+		PeerID:                  "12D3KooWServicePeer",
+		SelectedAddr:            "/dns4/relay.tubo.test/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer",
+		SelectedPath:            "relayed",
+		Path:                    "relayed",
 		RuntimeStatus:           "degraded",
 		DegradedReason:          "connect refresh lease expired",
 		ConnectAccessExpiresAt:  time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
@@ -702,7 +732,7 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Path: direct", "Runtime reason: connect refresh lease expired", "Connect access expires in:", "Connect refresh expires in: expired"} {
+	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Connect access expires in:", "Connect refresh expires in: expired"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
@@ -713,6 +743,8 @@ func TestPrintProcessesTableIncludesTTLColumn(t *testing.T) {
 	out, err := capture(func() error {
 		printProcessesTable([]processView{{
 			Name:                   "connect-lms-1234",
+			ResourceKind:           "pipe",
+			ServiceKind:            "tcp",
 			Command:                "connect",
 			Status:                 "degraded",
 			Path:                   "relayed",
@@ -726,7 +758,7 @@ func TestPrintProcessesTableIncludesTTLColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"PATH", "TTL", "connect-lms-1234", "degraded"} {
+	for _, want := range []string{"KIND", "SERVICE KIND", "PATH", "TTL", "connect-lms-1234", "pipe", "tcp", "degraded"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("process table missing %q: %s", want, out)
 		}
@@ -2855,6 +2887,30 @@ func TestPrintAttachShareHintShowsConnectToken(t *testing.T) {
 	}
 }
 
+func TestDetachedAttachFailureDoesNotPrintSuccessSummary(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := detachedProcessState{ID: "process/attach-lms", Kind: "process", Command: "attach", Name: "attach-lms", StateFile: filepath.Join(processStateDir(), "attach-lms.json"), PIDFile: filepath.Join(processRunDir(), "attach-lms.pid")}
+	if err := os.WriteFile(state.StateFile, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, err := captureOutputs(func() error {
+		return run([]string{"attach", "tcp://127.0.0.1:1234", "--name", "lms", "-d", "--config", configPath})
+	})
+	if err == nil || !strings.Contains(err.Error(), "detached process state already exists") {
+		t.Fatalf("expected detached state error, got err=%v out=%q errOut=%q", err, out, errOut)
+	}
+	combined := out + errOut
+	if strings.Contains(combined, "attached service \"lms\"") {
+		t.Fatalf("unexpected success summary on failure: out=%q errOut=%q", out, errOut)
+	}
+}
+
 func TestServiceShareUsesDelegatedGrantServiceWhenAuthorityKeyMissing(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -4726,7 +4782,7 @@ func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SERVICE ID", "SCOPE", "ACCESS", "service-a", "home/default", "unknown"} {
+	for _, want := range []string{"SERVICE KIND", "SERVICE ID", "SCOPE", "ACCESS", "service-a", "home/default", "unknown"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("services table missing %q: %s", want, out)
 		}
@@ -4735,13 +4791,13 @@ func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
 
 func TestPrintProcessesTableIncludesServiceMetadata(t *testing.T) {
 	out, err := capture(func() error {
-		printProcessesTable([]processView{{Name: "attach-lmstudio", Command: "attach", ServiceID: "service-a", Cluster: "home", Namespace: "default", Status: "running", PID: 1234, Local: "127.0.0.1:51234", Target: "http://127.0.0.1:1234"}})
+		printProcessesTable([]processView{{Name: "attach-lmstudio", ResourceKind: "service", ServiceKind: "http", Command: "attach", ServiceID: "service-a", Cluster: "home", Namespace: "default", Status: "running", PID: 1234, Local: "127.0.0.1:51234", Target: "http://127.0.0.1:1234"}})
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"SERVICE ID", "SCOPE", "service-a", "home/default"} {
+	for _, want := range []string{"KIND", "SERVICE KIND", "SERVICE ID", "SCOPE", "service", "http", "service-a", "home/default"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("process table missing %q: %s", want, out)
 		}

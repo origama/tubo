@@ -20,15 +20,20 @@ import (
 type State struct {
 	ID                      string   `json:"id"`
 	Kind                    string   `json:"kind"`
+	ResourceKind            string   `json:"resource_kind,omitempty"`
 	Command                 string   `json:"command"`
 	Name                    string   `json:"name"`
 	Service                 string   `json:"service,omitempty"`
+	ServiceKind             string   `json:"service_kind,omitempty"`
 	ServiceID               string   `json:"service_id,omitempty"`
+	PeerID                  string   `json:"peer_id,omitempty"`
 	Cluster                 string   `json:"cluster,omitempty"`
 	Namespace               string   `json:"namespace,omitempty"`
 	Local                   string   `json:"local,omitempty"`
 	Target                  string   `json:"target,omitempty"`
 	Path                    string   `json:"path,omitempty"`
+	SelectedAddr            string   `json:"selected_addr,omitempty"`
+	SelectedPath            string   `json:"selected_path,omitempty"`
 	PID                     int      `json:"pid"`
 	StartedAt               string   `json:"started_at"`
 	LogFile                 string   `json:"log_file"`
@@ -62,13 +67,18 @@ type View struct {
 	Status                  string   `json:"status"`
 	StatusConfidence        string   `json:"status_confidence,omitempty"`
 	PID                     int      `json:"pid"`
+	ResourceKind            string   `json:"resource_kind,omitempty"`
 	Service                 string   `json:"service,omitempty"`
+	ServiceKind             string   `json:"service_kind,omitempty"`
 	ServiceID               string   `json:"service_id,omitempty"`
+	PeerID                  string   `json:"peer_id,omitempty"`
 	Cluster                 string   `json:"cluster,omitempty"`
 	Namespace               string   `json:"namespace,omitempty"`
 	Local                   string   `json:"local,omitempty"`
 	Target                  string   `json:"target,omitempty"`
 	Path                    string   `json:"path,omitempty"`
+	SelectedAddr            string   `json:"selected_addr,omitempty"`
+	SelectedPath            string   `json:"selected_path,omitempty"`
 	LogFile                 string   `json:"log_file"`
 	StateFile               string   `json:"state_file"`
 	PIDFile                 string   `json:"pid_file"`
@@ -125,19 +135,20 @@ func BuildSpec(commandName string, cfg cfgpkg.Config, args []string, dataRoot st
 	}
 	return DetachedSpec{
 		State: State{
-			ID:        "process/" + name,
-			Kind:      "process",
-			Command:   commandName,
-			Name:      name,
-			Service:   serviceName,
-			Cluster:   cfg.CurrentCluster,
-			Namespace: cfg.CurrentNamespace,
-			Local:     local,
-			Target:    target,
-			LogFile:   logPath,
-			StateFile: statePath,
-			PIDFile:   pidPath,
-			StatusURL: statusURL,
+			ID:           "process/" + name,
+			Kind:         "process",
+			ResourceKind: resourceKindForCommand(commandName),
+			Command:      commandName,
+			Name:         name,
+			Service:      serviceName,
+			Cluster:      cfg.CurrentCluster,
+			Namespace:    cfg.CurrentNamespace,
+			Local:        local,
+			Target:       target,
+			LogFile:      logPath,
+			StateFile:    statePath,
+			PIDFile:      pidPath,
+			StatusURL:    statusURL,
 		},
 		ChildArgs: append([]string{commandName}, args...),
 		HealthURL: statusURL,
@@ -615,13 +626,18 @@ func viewFromState(state State, status, confidence string) View {
 		Status:                  status,
 		StatusConfidence:        confidence,
 		PID:                     state.PID,
+		ResourceKind:            state.ResourceKind,
 		Service:                 state.Service,
+		ServiceKind:             state.ServiceKind,
 		ServiceID:               state.ServiceID,
+		PeerID:                  state.PeerID,
 		Cluster:                 state.Cluster,
 		Namespace:               state.Namespace,
 		Local:                   state.Local,
 		Target:                  state.Target,
 		Path:                    state.Path,
+		SelectedAddr:            state.SelectedAddr,
+		SelectedPath:            state.SelectedPath,
 		LogFile:                 state.LogFile,
 		StateFile:               state.StateFile,
 		PIDFile:                 state.PIDFile,
@@ -667,4 +683,15 @@ func hostPortForHTTP(addr string) string {
 		return "127.0.0.1" + addr
 	}
 	return addr
+}
+
+func resourceKindForCommand(command string) string {
+	switch command {
+	case "attach":
+		return "service"
+	case "connect":
+		return "pipe"
+	default:
+		return "process"
+	}
 }

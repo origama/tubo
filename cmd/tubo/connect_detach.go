@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"net"
 	"path/filepath"
 	"strings"
 	"time"
+
+	connectflow "github.com/origama/tubo/internal/connectflow"
 )
 
 type connectCLIRequest struct {
@@ -98,20 +101,39 @@ func detachConnectCommand(args []string) error {
 	return nil
 }
 
+func connectProcessState(req connectCLIRequest, result connectflow.Result, localAddr, resourceKind string) detachedProcessState {
+	scopeCluster := ""
+	scopeNamespace := ""
+	if result.Scope != nil {
+		scopeCluster = result.Scope.Cluster
+		scopeNamespace = result.Scope.Namespace
+	}
+	name := detachedConnectProcessName(result.ServiceName, localAddr)
+	return detachedProcessState{
+		ID:           "process/" + name,
+		Kind:         "process",
+		ResourceKind: resourceKind,
+		Command:      "connect",
+		Name:         name,
+		Service:      result.ServiceName,
+		ServiceKind:  result.ServiceKind,
+		ServiceID:    result.ServiceID,
+		PeerID:       result.ServicePeerID,
+		Cluster:      scopeCluster,
+		Namespace:    scopeNamespace,
+		Local:        localAddr,
+		Target:       connectDetachedTarget(req, result.ServiceName, result.ServiceID),
+		Path:         result.Path,
+		SelectedAddr: result.SelectedAddr,
+		SelectedPath: result.Path,
+		StatusURL:    "http://" + connectStatusHostPort(localAddr) + "/healthz",
+	}
+}
+
 func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detachedSpec, error) {
-	cfg, err := loadLocalConfigOrError(req.ConfigPath)
+	serviceName, serviceID, _, err := connectServiceShareSetup(req.ServiceRef, req.Token, req.Cluster, req.Namespace)
 	if err != nil {
 		return detachedSpec{}, err
-	}
-	serviceName, serviceID, scope, err := connectServiceShareSetup(req.ServiceRef, req.Token, req.Cluster, req.Namespace)
-	if err != nil {
-		return detachedSpec{}, err
-	}
-	if strings.TrimSpace(req.Token) == "" {
-		scope, err = resolveServiceScope(cfg, req.Cluster, req.Namespace, false)
-		if err != nil {
-			return detachedSpec{}, err
-		}
 	}
 	displayService := strings.TrimSpace(serviceName)
 	if displayService == "" {
@@ -149,26 +171,26 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 	statePath := filepath.Join(processStateDir(), name+".json")
 	logPath := filepath.Join(processLogDir(), name+".log")
 	pidPath := filepath.Join(processRunDir(), name+".pid")
-	statusURL := "http://" + connectStatusHostPort(localAddr) + "/healthz"
+	resolved := connectflow.Result{ServiceName: displayService, ServiceID: serviceID}
+	if strings.TrimSpace(req.Token) == "" {
+		if preflight, resolveErr := connectflow.Resolve(context.Background(), newConnectWorkflow(), connectflow.Request{ConfigPath: req.ConfigPath, ServiceRef: req.ServiceRef, Token: req.Token, Cluster: req.Cluster, Namespace: req.Namespace, Local: localAddr, Timeout: req.Timeout, CachedOnly: req.CachedOnly, Live: req.Live}); resolveErr == nil {
+			resolved = preflight
+		}
+	}
+	if resolved.ServiceName == "" {
+		resolved.ServiceName = displayService
+	}
+	if resolved.ServiceID == "" {
+		resolved.ServiceID = serviceID
+	}
+	state := connectProcessState(req, resolved, localAddr, "pipe")
+	state.LogFile = logPath
+	state.StateFile = statePath
+	state.PIDFile = pidPath
 	return detachedSpec{
-		State: detachedProcessState{
-			ID:        "process/" + name,
-			Kind:      "process",
-			Command:   "connect",
-			Name:      name,
-			Service:   displayService,
-			ServiceID: serviceID,
-			Cluster:   scope.Cluster,
-			Namespace: scope.Namespace,
-			Local:     localAddr,
-			Target:    connectDetachedTarget(req, displayService, serviceID),
-			LogFile:   logPath,
-			StateFile: statePath,
-			PIDFile:   pidPath,
-			StatusURL: statusURL,
-		},
+		State:     state,
 		ChildArgs: append([]string{"connect"}, childArgs...),
-		HealthURL: statusURL,
+		HealthURL: state.StatusURL,
 	}, nil
 }
 

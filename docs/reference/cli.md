@@ -300,8 +300,10 @@ tubo stop process/connect-lmstudio-51234
 tubo rm --stale
 ```
 
-`ps` / `get processes` refer to local processes registered on this machine. The table also shows `SERVICE ID` and `SCOPE` when a process publishes a service.
+`ps` / `get processes` refer to local processes registered on this machine. The table now also shows `KIND` and `SERVICE KIND`; `SERVICE ID` and `SCOPE` remain visible when a process publishes or targets a service.
 `get services`, instead, refers to discovery resources advertised in the swarm. The table and JSON report `SERVICE ID`, `SCOPE`, and now also `ACCESS`/`connect_policy` when the service publishes connection metadata; the `grant_service` field is propagated in JSON when present, so duplicate display names stay separated and future collaborative flows can also see the associated grant endpoint. `get service/<service_id>`, `describe service/<service_id>`, and `inspect service/<service_id>` perform exact lookup. When the local config contains `current_cluster` / `current_namespace`, these values are reported in the command’s resolved scope; you can override them with `--cluster`, `-n/--namespace`, and, for lists only, `-A/--all-namespaces`. In cluster mode, the query and list are allowed only if the namespace membership capability allows it; `-A` requires a capability for each namespace or a broad capability with namespace `*`.
+
+`describe process/...` and `inspect process/... --json` expose the process runtime state for local registrations. `attach` rows now include the service kind and resolved service/peer identity; `connect` rows also expose the selected peer/address/path alongside degraded runtime state and remaining lease lifetime, so you can tell whether a tunnel is direct or relayed.
 
 ## Resource discovery
 
