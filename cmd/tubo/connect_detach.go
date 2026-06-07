@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -102,6 +103,7 @@ func detachConnectCommand(args []string) error {
 }
 
 func connectProcessState(req connectCLIRequest, result connectflow.Result, localAddr, resourceKind string) detachedProcessState {
+	localAddr = normalizeConnectProcessLocal(localAddr)
 	scopeCluster := ""
 	scopeNamespace := ""
 	if result.Scope != nil {
@@ -109,6 +111,10 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 		scopeNamespace = result.Scope.Namespace
 	}
 	name := detachedConnectProcessName(result.ServiceName, localAddr)
+	statusURL := ""
+	if !strings.EqualFold(strings.TrimSpace(result.ServiceKind), "tcp") {
+		statusURL = "http://" + connectStatusHostPort(localAddr) + "/healthz"
+	}
 	return detachedProcessState{
 		ID:           "process/" + name,
 		Kind:         "process",
@@ -126,7 +132,7 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 		Path:         result.Path,
 		SelectedAddr: result.SelectedAddr,
 		SelectedPath: result.Path,
-		StatusURL:    "http://" + connectStatusHostPort(localAddr) + "/healthz",
+		StatusURL:    statusURL,
 	}
 }
 
@@ -171,10 +177,27 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 	statePath := filepath.Join(processStateDir(), name+".json")
 	logPath := filepath.Join(processLogDir(), name+".log")
 	pidPath := filepath.Join(processRunDir(), name+".pid")
+	for _, path := range []string{statePath, pidPath} {
+		if _, statErr := os.Stat(path); statErr == nil {
+			return detachedSpec{}, errors.New("detached process state already exists for process/" + name)
+		} else if !os.IsNotExist(statErr) {
+			return detachedSpec{}, statErr
+		}
+	}
 	resolved := connectflow.Result{ServiceName: displayService, ServiceID: serviceID}
 	if strings.TrimSpace(req.Token) == "" {
 		if preflight, resolveErr := connectflow.Resolve(context.Background(), newConnectWorkflow(), connectflow.Request{ConfigPath: req.ConfigPath, ServiceRef: req.ServiceRef, Token: req.Token, Cluster: req.Cluster, Namespace: req.Namespace, Local: localAddr, Timeout: req.Timeout, CachedOnly: req.CachedOnly, Live: req.Live}); resolveErr == nil {
 			resolved = preflight
+		}
+	} else if tokenInfo, parseErr := parseAndVerifyServiceShareToken(req.Token); parseErr == nil {
+		resolved.ServiceKind = tokenInfo.ServiceKind
+	}
+	if resolved.ServiceName == "" {
+		resolved.ServiceName = displayService
+	}
+	if strings.TrimSpace(req.Token) != "" {
+		if tokenInfo, parseErr := parseAndVerifyServiceShareToken(req.Token); parseErr == nil {
+			resolved.ServiceKind = tokenInfo.ServiceKind
 		}
 	}
 	if resolved.ServiceName == "" {
@@ -196,6 +219,7 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 
 func detachedConnectProcessName(service, local string) string {
 	name := "connect-" + sanitizeProcessName(service)
+	local = normalizeConnectProcessLocal(local)
 	if _, port, err := net.SplitHostPort(local); err == nil && strings.TrimSpace(port) != "" {
 		return name + "-" + sanitizeProcessName(port)
 	}
@@ -211,6 +235,17 @@ func connectStatusHostPort(local string) string {
 		return "127.0.0.1" + local
 	}
 	return local
+}
+
+func normalizeConnectProcessLocal(localURL string) string {
+	localURL = strings.TrimSpace(localURL)
+	for _, prefix := range []string{"tcp://", "http://", "https://"} {
+		if strings.HasPrefix(localURL, prefix) {
+			localURL = strings.TrimPrefix(localURL, prefix)
+			break
+		}
+	}
+	return localURL
 }
 
 func connectDetachedTarget(req connectCLIRequest, displayService, serviceID string) string {

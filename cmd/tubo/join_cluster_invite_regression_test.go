@@ -180,3 +180,38 @@ func TestJoinClusterInviteSetsContextWhenEmpty(t *testing.T) {
 		t.Fatalf("expected CurrentCluster=clusterB on fresh config, got %q", cfgAfter.CurrentCluster)
 	}
 }
+
+// TestJoinClusterInviteSwitchesNamespaceWhenClusterAlreadySelected verifies
+// that re-joining the same cluster follows the invited namespace.
+func TestJoinClusterInviteSwitchesNamespaceWhenClusterAlreadySelected(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error {
+		return run([]string{"create", "cluster/clusterA", "--config", configPath})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error {
+		return run([]string{"create", "namespace/collab", "--config", configPath})
+	}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "cluster/clusterA", "--config", configPath, "--namespace", "collab", "--expires", "1h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractClusterInviteToken(t, out)
+	if _, err := capture(func() error {
+		return run([]string{"join", "cluster/clusterA", "--token", token, "--config-dir", filepath.Dir(configPath), "--force"})
+	}); err != nil {
+		t.Fatalf("re-join clusterA/collab failed: %v", err)
+	}
+	cfgAfter, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfgAfter.CurrentCluster != "clusterA" || cfgAfter.CurrentNamespace != "collab" {
+		t.Fatalf("expected current scope clusterA/collab, got %q/%q", cfgAfter.CurrentCluster, cfgAfter.CurrentNamespace)
+	}
+}

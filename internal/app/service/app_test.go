@@ -404,6 +404,40 @@ func TestNewSkipsDiscoveryPublisherForUnlistedMode(t *testing.T) {
 	}
 }
 
+func TestServiceGrantEndpointIsReachableWithoutDiscovery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "service-unlisted-grant-seed", ServiceName: "myapi", ServiceID: "svc-123", Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: false, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH)))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	client, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-unlisted-grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	info, err := p2p.AddrInfoFromString(p2p.PeerAddrs(app.host)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := grantspkg.Query(ctx, client, info, grantspkg.Message{Type: grantspkg.TypePoll, Version: grantspkg.VersionV1, RequestID: "reachability-check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Type != grantspkg.TypeDenied || !strings.Contains(resp.Reason, "attached-service grant endpoint") {
+		t.Fatalf("unexpected grant response: %#v", resp)
+	}
+}
+
 func TestPublishCurrentAnnouncementV3SkipsWithoutPublisher(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

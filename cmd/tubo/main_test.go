@@ -496,10 +496,94 @@ func TestBuildDetachedConnectSpec(t *testing.T) {
 	}
 }
 
+func TestBuildDetachedConnectSpecUsesTokenServiceKindForTCP(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "team",
+		Overlays:         map[string]cfgpkg.Overlay{"manual": {}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {Namespaces: map[string]cfgpkg.Namespace{"team": {}}},
+		},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildServiceShareArtifacts(priv, "home", "cluster-123", "team", "myapi", "service-123", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := artifacts.Payload
+	payload.ServiceKind = "tcp"
+	payload.ServiceEndpoint = grantspkg.ServiceEndpoint{PeerID: "12D3KooWServicePeer", Addresses: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}}
+	token, err := grantspkg.SignServiceShareToken(payload, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--token", token, "--config", configPath, "--timeout", "3s"}
+	req, err := parseConnectCLIArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := buildDetachedConnectSpec(req, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.State.ServiceKind != "tcp" {
+		t.Fatalf("ServiceKind = %q", spec.State.ServiceKind)
+	}
+	if spec.State.StatusURL != "" || spec.HealthURL != "" {
+		t.Fatalf("expected tcp token connect to omit health url, got state=%q health=%q", spec.State.StatusURL, spec.HealthURL)
+	}
+}
+
+func TestConnectForegroundUsesNormalizedLocalForProcessState(t *testing.T) {
+	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
+	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", LocalURL: "tcp://127.0.0.1:1234", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/peer", Path: "relayed"}
+	state := connectProcessState(req, result, result.LocalURL, "pipe")
+	if strings.Contains(state.Name, "tcp-127-0-0-1") {
+		t.Fatalf("foreground process name should not include scheme prefix: %#v", state)
+	}
+	if state.Name != "connect-lms-1234" {
+		t.Fatalf("foreground process name = %q", state.Name)
+	}
+}
+
+func TestBuildDetachedConnectSpecFailsBeforeResolveWhenStateExists(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "team", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"team": {}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	name := detachedConnectProcessName("myapi", "127.0.0.1:1234")
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processStateDir(), name+".json"), []byte(`{"id":"process/`+name+`"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"service/myapi", "--config", configPath, "--local", "127.0.0.1:1234"}
+	req, err := parseConnectCLIArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = buildDetachedConnectSpec(req, args)
+	if err == nil || !strings.Contains(err.Error(), "detached process state already exists") {
+		t.Fatalf("expected early state-exists error, got %v", err)
+	}
+}
+
 func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
 	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
 	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", ServicePeerID: "12D3KooWServicePeer", LocalURL: "tcp://127.0.0.1:1234", Path: "relayed", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}
-	state := connectProcessState(req, result, "127.0.0.1:1234", "pipe")
+	state := connectProcessState(req, result, result.LocalURL, "pipe")
 	if state.ResourceKind != "pipe" {
 		t.Fatalf("ResourceKind = %q", state.ResourceKind)
 	}
@@ -593,6 +677,45 @@ func TestLogsCmdAndRmStale(t *testing.T) {
 	}
 }
 
+func TestRmCmdCollapsesLegacyConnectAliases(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processLogDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	current := detachedProcessState{ID: "process/connect-lms-1234", Kind: "process", Command: "connect", Name: "connect-lms-1234", PID: 999999, PIDFile: filepath.Join(processRunDir(), "connect-lms-1234.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-1234.json"), LogFile: filepath.Join(processLogDir(), "connect-lms-1234.log"), Service: "lms", Local: "127.0.0.1:1234"}
+	legacy := detachedProcessState{ID: "process/connect-lms-tcp-127-0-0-1-1234", Kind: "process", Command: "connect", Name: "connect-lms-tcp-127-0-0-1-1234", PID: 999998, PIDFile: filepath.Join(processRunDir(), "connect-lms-tcp-127-0-0-1-1234.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-tcp-127-0-0-1-1234.json"), LogFile: filepath.Join(processLogDir(), "connect-lms-tcp-127-0-0-1-1234.log"), Service: "lms", Local: "tcp://127.0.0.1:1234"}
+	for _, st := range []detachedProcessState{current, legacy} {
+		b, _ := json.Marshal(st)
+		_ = os.WriteFile(st.StateFile, b, 0600)
+	}
+	out, err := capture(func() error { return rmCmd([]string{"--stale"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "removed 1 stale process artifacts") {
+		t.Fatalf("unexpected rm output: %s", out)
+	}
+	if _, err := os.Stat(current.StateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected current state removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(legacy.StateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy state removed, stat err=%v", err)
+	}
+	out, err = capture(func() error { return rmCmd([]string{"--stale"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "removed 0 stale process artifacts") {
+		t.Fatalf("unexpected second rm output: %s", out)
+	}
+}
+
 func TestStopCmd(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
@@ -619,6 +742,39 @@ func TestStopCmd(t *testing.T) {
 	}
 	if pidRunning(state.PID) {
 		t.Fatal("expected process to stop")
+	}
+}
+
+func TestStopCmdAllowsDegradedProcess(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	state := detachedProcessState{ID: "process/relay-default", Kind: "process", Command: "relay", Name: "relay-default", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "relay-default.pid"), StateFile: filepath.Join(processStateDir(), "relay-default.json"), LogFile: filepath.Join(processLogDir(), "relay-default.log"), StatusURL: server.URL}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return stopCmd([]string{state.ID}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped "+state.ID) {
+		t.Fatalf("unexpected stop output: %s", out)
+	}
+	if pidRunning(state.PID) {
+		t.Fatal("expected degraded process to stop")
 	}
 }
 

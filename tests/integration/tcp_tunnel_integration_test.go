@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	bridgeapp "github.com/origama/tubo/internal/app/bridge"
 	serviceapp "github.com/origama/tubo/internal/app/service"
 	capability "github.com/origama/tubo/internal/capability"
@@ -313,6 +314,170 @@ func TestTCPServiceControlHalfCloseSurvivesConcurrentData(t *testing.T) {
 			t.Fatal(err)
 		}
 	default:
+	}
+}
+
+func TestTCPBridgeRebindsPinnedServiceAfterRestart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	upstream1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream1.Close()
+	go serveTCPPrefix(upstream1, []byte("first:"))
+
+	upstream2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream2.Close()
+	go serveTCPPrefix(upstream2, []byte("second:"))
+
+	authPub, authPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authAuthorized, err := ssh.NewPublicKey(authPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authKeyText := string(ssh.MarshalAuthorizedKey(authAuthorized))
+	clusterID := "cluster-rebind"
+	namespaceID := "default"
+	serviceID := "svc-rebind"
+
+	serviceHealth1 := freePort(t)
+	serviceCtx1, service1Cancel := context.WithCancel(ctx)
+	defer service1Cancel()
+	service1, err := serviceapp.New(serviceCtx1, serviceapp.Config{
+		Listen:                 "/ip4/127.0.0.1/tcp/0",
+		Seed:                   "bridge-rebind-service-1",
+		ServiceName:            "rebind",
+		ServiceKind:            "tcp",
+		ServiceID:              serviceID,
+		Target:                 "tcp://" + upstream1.Addr().String(),
+		HealthListen:           fmt.Sprintf("127.0.0.1:%d", serviceHealth1),
+		HeartbeatInterval:      500 * time.Millisecond,
+		BootstrapRetryInterval: 500 * time.Millisecond,
+		DiscoveryMode:          discovery.ModeNamespaceV2.String(),
+		DiscoveryClusterID:     clusterID,
+		DiscoveryNamespaceID:   namespaceID,
+		AuthorityPublicKey:     authKeyText,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service1.Host().Close()
+	go func() { _ = service1.Start(serviceCtx1) }()
+	waitUntil(t, 15*time.Second, func() bool { return httpOK(fmt.Sprintf("http://127.0.0.1:%d/healthz", serviceHealth1)) }, "service1 health")
+
+	grant, err := capability.SignConnectCapability(capability.ConnectCapability{
+		ClusterID:   clusterID,
+		NamespaceID: namespaceID,
+		ServiceID:   serviceID,
+		Permissions: []string{capability.PermissionConnect},
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	currentServiceAddr := p2p.PeerAddrs(service1.Host())[0]
+	currentServicePath := "direct"
+	resolver := func(context.Context) (peer.AddrInfo, string, string, error) {
+		addrInfo, err := p2p.AddrInfoFromString(currentServiceAddr)
+		if err != nil {
+			return peer.AddrInfo{}, "", "", err
+		}
+		return addrInfo, currentServiceAddr, currentServicePath, nil
+	}
+
+	bridgeApp, err := bridgeapp.New(ctx, bridgeapp.Config{
+		Listen:                "127.0.0.1:0",
+		Seed:                  "bridge-rebind-seed",
+		P2PListen:             "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:           currentServiceAddr,
+		ServiceKind:           "tcp",
+		ConnectGrant:          &grant,
+		ConnectServiceID:      serviceID,
+		ConnectRebindResolver: resolver,
+		SelectedAddr:          currentServiceAddr,
+		SelectedPath:          currentServicePath,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = bridgeApp.Start(ctx) }()
+	bridgeAddr := waitForTCPBridgeAddr(t, bridgeApp)
+
+	roundTrip := func(payload, wantPrefix string) {
+		t.Helper()
+		conn, err := net.DialTimeout("tcp", bridgeAddr, 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		if _, err := conn.Write([]byte(payload)); err != nil {
+			t.Fatal(err)
+		}
+		if tcpConn, ok := conn.(*net.TCPConn); ok {
+			_ = tcpConn.CloseWrite()
+		}
+		got, err := io.ReadAll(conn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []byte(wantPrefix + payload)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("payload mismatch: got %q want %q", string(got), string(want))
+		}
+	}
+
+	roundTrip("one", "first:")
+
+	service1Cancel()
+	serviceHealth2 := freePort(t)
+	serviceCtx2, service2Cancel := context.WithCancel(ctx)
+	defer service2Cancel()
+	service2, err := serviceapp.New(serviceCtx2, serviceapp.Config{
+		Listen:                 "/ip4/127.0.0.1/tcp/0",
+		Seed:                   "bridge-rebind-service-2",
+		ServiceName:            "rebind",
+		ServiceKind:            "tcp",
+		ServiceID:              serviceID,
+		Target:                 "tcp://" + upstream2.Addr().String(),
+		HealthListen:           fmt.Sprintf("127.0.0.1:%d", serviceHealth2),
+		HeartbeatInterval:      500 * time.Millisecond,
+		BootstrapRetryInterval: 500 * time.Millisecond,
+		DiscoveryMode:          discovery.ModeNamespaceV2.String(),
+		DiscoveryClusterID:     clusterID,
+		DiscoveryNamespaceID:   namespaceID,
+		AuthorityPublicKey:     authKeyText,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service2.Host().Close()
+	go func() { _ = service2.Start(serviceCtx2) }()
+	waitUntil(t, 15*time.Second, func() bool { return httpOK(fmt.Sprintf("http://127.0.0.1:%d/healthz", serviceHealth2)) }, "service2 health")
+	currentServiceAddr = p2p.PeerAddrs(service2.Host())[0]
+
+	roundTrip("two", "second:")
+}
+
+func serveTCPPrefix(ln net.Listener, prefix []byte) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			payload, _ := io.ReadAll(c)
+			_, _ = c.Write(append(prefix, payload...))
+		}(conn)
 	}
 }
 

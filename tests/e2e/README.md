@@ -10,6 +10,7 @@ Available scenarios:
 - `public_duplicate_display_names`
 - `public_one_time_share_invite`
 - `public_stolen_access_token_rejected`
+- `public_connect_rebind_pinned_service`
 
 Usage:
 

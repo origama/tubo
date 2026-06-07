@@ -10,6 +10,7 @@ import (
 	relay "github.com/origama/tubo/internal/app/relay"
 	service "github.com/origama/tubo/internal/app/service"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/discovery"
 )
 
 type Runner interface {
@@ -74,12 +75,25 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		}
 		policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
 		discoveryEnabled := policy.Discovery != cfgpkg.NamespaceDiscoveryDisabled
-		runtime := cfgpkg.DiscoveryRuntime{}
+		discoveryClusterID := cfg.Clusters[cfg.CurrentCluster].ClusterID
+		discoveryNamespaceID := scope.Namespace
+		discoveryTopic := ""
+		discoveryMode := ""
+		discoveryContext := (*discovery.NamespaceDiscoveryContext)(nil)
+		discoveryPreviousTopic := ""
+		discoveryPreviousContext := (*discovery.NamespaceDiscoveryContext)(nil)
 		if discoveryEnabled {
-			runtime, err = cfg.RequireDiscoveryRuntime()
+			runtime, err := cfg.RequireDiscoveryRuntime()
 			if err != nil {
 				return err
 			}
+			discoveryClusterID = runtime.ClusterID
+			discoveryNamespaceID = runtime.NamespaceID
+			discoveryTopic = runtime.Topic
+			discoveryMode = runtime.Mode.String()
+			discoveryContext = runtime.Context
+			discoveryPreviousTopic = runtime.PreviousTopic
+			discoveryPreviousContext = runtime.PreviousContext
 		}
 		authz, err := deps.ResolveAttachAuthorization(configPath, cfg)
 		if err != nil {
@@ -108,13 +122,13 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 			ForceReachability:        cfg.Network.ForceReachability,
 			HeartbeatInterval:        cfg.HeartbeatInterval.Duration(),
 			BootstrapRetryInterval:   5 * time.Second,
-			DiscoveryTopic:           runtime.Topic,
-			DiscoveryPreviousTopic:   runtime.PreviousTopic,
-			DiscoveryMode:            runtime.Mode.String(),
-			DiscoveryClusterID:       runtime.ClusterID,
-			DiscoveryNamespaceID:     runtime.NamespaceID,
-			DiscoveryContext:         runtime.Context,
-			DiscoveryPreviousContext: runtime.PreviousContext,
+			DiscoveryTopic:           discoveryTopic,
+			DiscoveryPreviousTopic:   discoveryPreviousTopic,
+			DiscoveryMode:            discoveryMode,
+			DiscoveryClusterID:       discoveryClusterID,
+			DiscoveryNamespaceID:     discoveryNamespaceID,
+			DiscoveryContext:         discoveryContext,
+			DiscoveryPreviousContext: discoveryPreviousContext,
 			AuthorityPublicKey:       cluster.AuthorityPublicKey,
 			AuthorityPrivateKeyFile:  cluster.AuthorityPrivateKeyFile,
 			ClusterName:              cfg.CurrentCluster,

@@ -226,8 +226,9 @@ func TestReadLogTailAndRemoveStale(t *testing.T) {
 	}
 	state := State{ID: "process/attach-myapi", Kind: "process", Command: "attach", Name: "attach-myapi", PID: 999999, PIDFile: filepath.Join(RunDir(root), "attach-myapi.pid"), StateFile: filepath.Join(StateDir(root), "attach-myapi.json"), LogFile: filepath.Join(LogDir(root), "attach-myapi.log")}
 	_ = os.WriteFile(state.LogFile, []byte("line1\nline2\nline3\n"), 0o600)
-	b, _ := json.Marshal(state)
-	_ = os.WriteFile(state.StateFile, b, 0o600)
+	if err := os.WriteFile(state.StateFile, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	lines, err := ReadLogTail(state.LogFile, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -244,6 +245,159 @@ func TestReadLogTailAndRemoveStale(t *testing.T) {
 	}
 	if _, err := os.Stat(state.StateFile); !os.IsNotExist(err) {
 		t.Fatalf("expected state file removed, stat err=%v", err)
+	}
+	removed, err = RemoveStale(root, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("second stale removal = %d, want 0", removed)
+	}
+}
+
+func TestRemoveStaleCollapsesLegacyConnectAliases(t *testing.T) {
+	root := t.TempDir()
+	system := &stubSystem{running: map[int]bool{}, cmdlines: map[int][]string{}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(LogDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	current := State{ID: "process/connect-lms-1234", Kind: "process", Command: "connect", Service: "lms", Name: "connect-lms-1234", PID: 999999, PIDFile: filepath.Join(RunDir(root), "connect-lms-1234.pid"), StateFile: filepath.Join(StateDir(root), "connect-lms-1234.json"), LogFile: filepath.Join(LogDir(root), "connect-lms-1234.log"), Local: "127.0.0.1:1234"}
+	legacy := State{ID: "process/connect-lms-tcp-127-0-0-1-1234", Kind: "process", Command: "connect", Service: "lms", Name: "connect-lms-tcp-127-0-0-1-1234", PID: 999998, PIDFile: filepath.Join(RunDir(root), "connect-lms-tcp-127-0-0-1-1234.pid"), StateFile: filepath.Join(StateDir(root), "connect-lms-tcp-127-0-0-1-1234.json"), LogFile: filepath.Join(LogDir(root), "connect-lms-tcp-127-0-0-1-1234.log"), Local: "tcp://127.0.0.1:1234"}
+	for _, st := range []State{current, legacy} {
+		b, _ := json.Marshal(st)
+		if err := os.WriteFile(st.StateFile, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := RemoveStale(root, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d", removed)
+	}
+	if _, err := os.Stat(current.StateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected current state removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(legacy.StateFile); !os.IsNotExist(err) {
+		t.Fatalf("expected legacy state removed, stat err=%v", err)
+	}
+	removed, err = RemoveStale(root, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("second stale removal = %d, want 0", removed)
+	}
+}
+
+func TestRemoveStaleDoesNotRemoveDegradedProcess(t *testing.T) {
+	root := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	system := &stubSystem{running: map[int]bool{4321: true}, cmdlines: map[int][]string{4321: {"/bin/tubo", "relay"}}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(LogDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := State{ID: "process/relay-default", Kind: "process", Command: "relay", Name: "relay-default", PID: 4321, PIDFile: filepath.Join(RunDir(root), "relay-default.pid"), StateFile: filepath.Join(StateDir(root), "relay-default.json"), LogFile: filepath.Join(LogDir(root), "relay-default.log"), StatusURL: server.URL}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600)
+	_ = os.WriteFile(state.LogFile, []byte("degraded\n"), 0o600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0o600)
+	removed, err := RemoveStale(root, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d", removed)
+	}
+	for _, path := range []string{state.StateFile, state.PIDFile, state.LogFile} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to remain, stat err=%v", path, err)
+		}
+	}
+}
+
+func TestRemoveStaleKeepsDegradedConnectAliases(t *testing.T) {
+	root := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	system := &stubSystem{running: map[int]bool{9876: true}, cmdlines: map[int][]string{9876: {"/bin/tubo", "connect", "lms", "--local", "127.0.0.1:1234"}}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(LogDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	current := State{ID: "process/connect-lms-1234", Kind: "process", Command: "connect", Service: "lms", Name: "connect-lms-1234", PID: 9876, PIDFile: filepath.Join(RunDir(root), "connect-lms-1234.pid"), StateFile: filepath.Join(StateDir(root), "connect-lms-1234.json"), LogFile: filepath.Join(LogDir(root), "connect-lms-1234.log"), Local: "127.0.0.1:1234", StatusURL: server.URL}
+	legacy := State{ID: "process/connect-lms-tcp-127-0-0-1-1234", Kind: "process", Command: "connect", Service: "lms", Name: "connect-lms-tcp-127-0-0-1-1234", PID: 9876, PIDFile: filepath.Join(RunDir(root), "connect-lms-tcp-127-0-0-1-1234.pid"), StateFile: filepath.Join(StateDir(root), "connect-lms-tcp-127-0-0-1-1234.json"), LogFile: filepath.Join(LogDir(root), "connect-lms-tcp-127-0-0-1-1234.log"), Local: "tcp://127.0.0.1:1234", StatusURL: server.URL}
+	for _, st := range []State{current, legacy} {
+		_ = os.WriteFile(st.PIDFile, []byte(fmt.Sprintf("%d\n", st.PID)), 0o600)
+		_ = os.WriteFile(st.LogFile, []byte("degraded\n"), 0o600)
+		b, _ := json.Marshal(st)
+		if err := os.WriteFile(st.StateFile, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := RemoveStale(root, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d", removed)
+	}
+	for _, path := range []string{current.StateFile, legacy.StateFile, current.PIDFile, legacy.PIDFile, current.LogFile, legacy.LogFile} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to remain, stat err=%v", path, err)
+		}
+	}
+}
+
+func TestStopAllowsDegradedProcess(t *testing.T) {
+	root := t.TempDir()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	system := &stubSystem{running: map[int]bool{4321: true}, cmdlines: map[int][]string{4321: {"/bin/tubo", "relay"}}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := State{ID: "process/relay-default", Kind: "process", Command: "relay", Name: "relay-default", PID: 4321, PIDFile: filepath.Join(RunDir(root), "relay-default.pid"), StateFile: filepath.Join(StateDir(root), "relay-default.json"), LogFile: filepath.Join(LogDir(root), "relay-default.log"), StatusURL: server.URL}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0o600)
+	stopped, err := Stop(root, state.ID, system, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopped.ID != state.ID {
+		t.Fatalf("stopped.ID = %q", stopped.ID)
+	}
+	if system.PIDRunning(state.PID) {
+		t.Fatal("expected degraded process to stop")
 	}
 }
 

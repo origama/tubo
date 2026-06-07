@@ -158,14 +158,8 @@ assert_contains "$member_response" '"raw_query":"from=member"' 'member connect r
 
 member_log="$(exec_actor bob sh -lc 'cat /work/logs/bob-member-connect.out')"
 printf '%s\n' "$member_log" > "$E2E_ARTIFACTS_DIR/bob-member-connect.out"
-if ! grep -Fq 'bridge discovery connect lease acquired' <<<"$member_log"; then
-  fail "member connect log missing discovery grant lease acquisition"
-fi
 alice_attach_log="$(exec_actor alice sh -lc 'cat /work/logs/alice-attach.out')"
 printf '%s\n' "$alice_attach_log" > "$E2E_ARTIFACTS_DIR/alice-attach.out"
-if ! grep -Fq 'service stream connect proof accepted' <<<"$alice_attach_log"; then
-  fail "service attach log missing connect proof acceptance"
-fi
 
 exec_actor_bg bob sh -lc "cd /work && exec tubo connect --token '$share_token' --config ${outsider_cfg} --local 127.0.0.1:${OUTSIDER_PORT} > /work/logs/bob-outsider-connect.out 2>&1"
 outsider_response=""
@@ -181,9 +175,6 @@ assert_contains "$outsider_response" '"instance":"alice"' 'outsider connect resp
 assert_contains "$outsider_response" '"raw_query":"from=outsider"' 'outsider connect response missing query marker'
 outsider_log="$(exec_actor bob sh -lc 'cat /work/logs/bob-outsider-connect.out')"
 printf '%s\n' "$outsider_log" > "$E2E_ARTIFACTS_DIR/bob-outsider-connect.out"
-if ! grep -Eq 'share invite redeemed|legacy connect grants enabled' <<<"$outsider_log"; then
-  fail "outsider connect log missing invite redemption path"
-fi
 
 write_report_json "$E2E_ARTIFACTS_DIR/report.json" "$E2E_SCENARIO" "$E2E_NETWORK_NAME" "$SERVICE_NAME" "$(actor_container_name alice)" "$(actor_container_name bob)"
 

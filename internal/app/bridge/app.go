@@ -4,13 +4,16 @@ import (
 	"bufio"
 	"context"
 	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +47,11 @@ type Config struct {
 	ConnectAccessLease                                                                                 *grantspkg.ConnectAccessLease
 	ConnectRefreshLease                                                                                *grantspkg.ConnectRefreshLease
 	ConnectLeaseRefresher                                                                              ConnectLeaseRefresher
+	ConnectRebindResolver                                                                              func(context.Context) (peer.AddrInfo, string, string, error)
+	ConnectAuthorityPrivateKey                                                                         ed25519.PrivateKey
+	ConnectAuthorityPrivateKeyFile                                                                     string
+	SelectedAddr                                                                                       string
+	SelectedPath                                                                                       string
 	ServiceKind                                                                                        string
 }
 type RuntimeStatus struct {
@@ -51,6 +59,9 @@ type RuntimeStatus struct {
 	Reason                  string
 	ServiceKind             string
 	Path                    string
+	SelectedAddr            string
+	SelectedPath            string
+	SelectedPeerID          string
 	ConnectAccessExpiresAt  *time.Time
 	ConnectAccessExpiresIn  string
 	ConnectRefreshExpiresAt *time.Time
@@ -83,7 +94,10 @@ type App struct {
 	statusReporter       func(RuntimeStatus)
 	openTunnelStream     func(context.Context) (network.Stream, error)
 	startClientTCPTunnel func(network.Stream, string, *protocol.ConnectProof) error
+	rebindServiceFn      func(context.Context) (peer.AddrInfo, string, string, error)
 	reconnectServiceFn   func(context.Context) error
+	selectedAddr         string
+	selectedPath         string
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -148,19 +162,53 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		return nil, fmt.Errorf("connect service peer: %w", err)
 	}
 	if cfg.ConnectInviteToken != "" && cfg.ConnectRefreshLease == nil {
-		if len(cfg.ConnectGrantPeers) == 0 {
-			_ = h.Close()
-			return nil, fmt.Errorf("share invite is missing grant service metadata; ask the service owner to reissue the invite")
+		authorityPriv := cfg.ConnectAuthorityPrivateKey
+		if len(authorityPriv) == 0 && strings.TrimSpace(cfg.ConnectAuthorityPrivateKeyFile) != "" {
+			log.Printf("bridge share invite local mint using authority key file %q", cfg.ConnectAuthorityPrivateKeyFile)
+			var err error
+			authorityPriv, err = loadConnectAuthorityPrivateKey(cfg.ConnectAuthorityPrivateKeyFile)
+			if err != nil {
+				log.Printf("bridge share invite local mint unavailable: %v", err)
+			}
 		}
-		artifacts, err := redeemConnectInvite(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectInviteToken)
-		if err != nil {
-			_ = h.Close()
-			return nil, err
+		if len(authorityPriv) > 0 {
+			log.Printf("bridge share invite using self-contained service endpoint addr=%s path=%s", cfg.SelectedAddr, cfg.SelectedPath)
+			payload, parseErr := grantspkg.ParseAndVerifyServiceShareToken(cfg.ConnectInviteToken)
+			if parseErr != nil {
+				_ = h.Close()
+				return nil, fmt.Errorf("share invite local mint parse failed: %w", parseErr)
+			}
+			clientPublicKey, pubErr := connectClientPublicKey(h)
+			if pubErr != nil {
+				_ = h.Close()
+				return nil, fmt.Errorf("share invite local mint missing client public key: %w", pubErr)
+			}
+			artifacts, mintErr := grantspkg.BuildConnectLeaseArtifacts(authorityPriv, payload, clientPublicKey, grantspkg.DefaultConnectAccessLeaseTTL, grantspkg.DefaultConnectRefreshLeaseTTL)
+			if mintErr != nil {
+				_ = h.Close()
+				return nil, fmt.Errorf("share invite local mint failed: %w", mintErr)
+			}
+			cfg.ConnectAccessLease = &artifacts.AccessLease
+			cfg.ConnectRefreshLease = &artifacts.RefreshLease
+			connectLease = &artifacts.AccessLease
+			log.Printf("bridge share invite minted locally service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 		}
-		cfg.ConnectAccessLease = &artifacts.AccessLease
-		cfg.ConnectRefreshLease = &artifacts.RefreshLease
-		connectLease = &artifacts.AccessLease
-		log.Printf("bridge share invite redeemed service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
+		if cfg.ConnectAccessLease == nil && cfg.ConnectRefreshLease == nil {
+			if len(cfg.ConnectGrantPeers) == 0 {
+				_ = h.Close()
+				return nil, fmt.Errorf("share invite does not contain a valid authorization path; ask the service owner to reissue the invite")
+			}
+			log.Printf("bridge share invite remote redeem via grant service peers=%d", len(cfg.ConnectGrantPeers))
+			artifacts, err := redeemConnectInvite(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectInviteToken)
+			if err != nil {
+				_ = h.Close()
+				return nil, err
+			}
+			cfg.ConnectAccessLease = &artifacts.AccessLease
+			cfg.ConnectRefreshLease = &artifacts.RefreshLease
+			connectLease = &artifacts.AccessLease
+			log.Printf("bridge share invite redeemed service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
+		}
 	}
 	if cfg.ConnectAccessLease == nil && cfg.ConnectRefreshLease == nil && cfg.ConnectGrant == nil && cfg.ConnectInviteToken == "" && len(cfg.ConnectGrantPeers) > 0 && cfg.ConnectClusterID != "" && cfg.ConnectNamespaceID != "" && cfg.ConnectServiceID != "" {
 		artifacts, err := requestDirectConnectLease(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectClusterID, cfg.ConnectNamespaceID, cfg.ConnectServiceID, cfg.ConnectMembershipCapability, cfg.ConnectMembershipGrantToken)
@@ -173,7 +221,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectLease = &artifacts.AccessLease
 		log.Printf("bridge discovery connect lease acquired cluster=%s namespace=%s service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ClusterID, artifacts.AccessLease.NamespaceID, artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
-	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease}
+	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease, rebindServiceFn: cfg.ConnectRebindResolver, selectedAddr: cfg.SelectedAddr, selectedPath: cfg.SelectedPath}
 	app.reportStatus()
 	return app, nil
 }
@@ -372,6 +420,25 @@ func (a *App) reconnectService(ctx context.Context) error {
 	if a.host == nil {
 		return fmt.Errorf("bridge host unavailable")
 	}
+	oldPeer := a.service.ID.String()
+	oldAddr := a.cfg.ServiceAddr
+	if a.rebindServiceFn != nil {
+		newService, newAddr, newPath, err := a.rebindServiceFn(ctx)
+		if err != nil {
+			return fmt.Errorf("rebind service peer: %w", err)
+		}
+		if newService.ID != "" {
+			a.service = newService
+		}
+		if strings.TrimSpace(newAddr) != "" {
+			a.cfg.ServiceAddr = newAddr
+			a.selectedAddr = newAddr
+		}
+		if strings.TrimSpace(newPath) != "" {
+			a.selectedPath = newPath
+		}
+		log.Printf("bridge tcp rebind service_id=%s old_peer=%s new_peer=%s old_addr=%s new_addr=%s reason=stream_failed", a.cfg.ConnectServiceID, oldPeer, a.service.ID, oldAddr, a.cfg.ServiceAddr)
+	}
 	_ = a.host.Network().ClosePeer(a.service.ID)
 	connectCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp self-heal reconnect")
 	if deadline, ok := ctx.Deadline(); ok {
@@ -382,6 +449,7 @@ func (a *App) reconnectService(ctx context.Context) error {
 	if err := a.host.Connect(connectCtx, a.service); err != nil {
 		return fmt.Errorf("reconnect service peer: %w", err)
 	}
+	a.reportStatus()
 	return nil
 }
 
@@ -390,6 +458,9 @@ type statusSnapshot struct {
 	Reason                  string     `json:"reason,omitempty"`
 	ServiceKind             string     `json:"service_kind,omitempty"`
 	Path                    string     `json:"path,omitempty"`
+	SelectedAddr            string     `json:"selected_addr,omitempty"`
+	SelectedPath            string     `json:"selected_path,omitempty"`
+	SelectedPeerID          string     `json:"selected_peer_id,omitempty"`
 	ConnectAccessExpiresAt  *time.Time `json:"connect_access_expires_at,omitempty"`
 	ConnectAccessExpiresIn  string     `json:"connect_access_expires_in,omitempty"`
 	ConnectRefreshExpiresAt *time.Time `json:"connect_refresh_expires_at,omitempty"`
@@ -415,6 +486,9 @@ func (a *App) currentPath() string {
 	if hasRelay {
 		return "relayed"
 	}
+	if a.selectedPath != "" {
+		return a.selectedPath
+	}
 	if strings.Contains(a.cfg.ServiceAddr, "/p2p-circuit") {
 		return "relayed"
 	}
@@ -437,7 +511,7 @@ func formatRemaining(until time.Time, now time.Time) string {
 
 func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 	ok, msg := a.tunnelHealth()
-	snap := statusSnapshot{Status: "running", ServiceKind: a.cfg.ServiceKind, Path: a.currentPath()}
+	snap := statusSnapshot{Status: "running", ServiceKind: a.cfg.ServiceKind, Path: a.currentPath(), SelectedAddr: a.selectedAddr, SelectedPath: a.selectedPath, SelectedPeerID: a.service.ID.String()}
 	if !ok {
 		snap.Status = "degraded"
 		snap.Reason = msg
@@ -925,9 +999,36 @@ func redeemConnectInvite(ctx context.Context, h host.Host, grantPeers []string, 
 		lastErr = err
 	}
 	if lastErr != nil {
+		msg := lastErr.Error()
+		if strings.Contains(strings.ToLower(msg), "protocols not supported") {
+			return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("redeem share invite: grant service endpoint does not support %s", grantspkg.ProtocolID)
+		}
 		return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("redeem share invite: %w", lastErr)
 	}
 	return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("redeem share invite: no grant service peers configured")
+}
+
+func loadConnectAuthorityPrivateKey(path string) (ed25519.PrivateKey, error) {
+	b, err := os.ReadFile(strings.TrimSpace(path))
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return nil, errors.New("cluster authority private key is not PEM encoded")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	switch k := key.(type) {
+	case ed25519.PrivateKey:
+		return k, nil
+	case *ed25519.PrivateKey:
+		return *k, nil
+	default:
+		return nil, fmt.Errorf("unsupported cluster authority private key type %T", key)
+	}
 }
 
 func connectClientPublicKey(h host.Host) (string, error) {

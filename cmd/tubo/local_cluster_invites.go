@@ -387,11 +387,13 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	grant.InviteTokenFile = membershipTokenFile
 	cluster.MembershipGrant = &grant
 	joined.Clusters[payload.ClusterName] = cluster
-	// Bug fix: do not unconditionally overwrite the current cluster/namespace.
-	// Only switch context if there is no cluster selected yet, so that existing
-	// work on another cluster is not silently disrupted.
+	// Preserve the current cluster if the user is already working elsewhere,
+	// but follow the invited namespace when joining the same cluster so the
+	// newly granted scope becomes the active one.
 	if joined.CurrentCluster == "" {
 		joined.CurrentCluster = payload.ClusterName
+		joined.CurrentNamespace = payload.Namespace
+	} else if joined.CurrentCluster == payload.ClusterName {
 		joined.CurrentNamespace = payload.Namespace
 	}
 	if err := cfgpkg.WriteFile(configPath, joined, true); err != nil {

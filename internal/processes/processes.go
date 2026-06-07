@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -394,7 +395,7 @@ func Stop(dataRoot, ref string, system System, force bool) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	if status != "running" {
+	if !isLiveStatus(status) {
 		return State{}, fmt.Errorf("process %s is not running", state.ID)
 	}
 	if err := system.TerminatePID(state.PID); err != nil {
@@ -416,24 +417,43 @@ func Stop(dataRoot, ref string, system System, force bool) (State, error) {
 }
 
 func RemoveStale(dataRoot string, system System) (int, error) {
-	states, err := listStates(dataRoot)
+	entries, err := listStateEntries(dataRoot)
 	if err != nil {
 		return 0, err
 	}
 	removed := 0
-	for _, state := range states {
-		if Status(state, system) == "running" {
+	seenConnectAliases := make(map[string]bool)
+	for _, entry := range entries {
+		if isLiveStatus(Status(entry.state, system)) {
 			continue
 		}
-		for _, path := range []string{state.StateFile, state.PIDFile, state.LogFile} {
-			if path == "" {
+		if strings.TrimSpace(entry.state.Command) == "connect" {
+			key := connectAliasKey(entry.state)
+			if seenConnectAliases[key] {
 				continue
 			}
-			_ = os.Remove(path)
+			seenConnectAliases[key] = true
+			for _, grouped := range entries {
+				if isLiveStatus(Status(grouped.state, system)) || strings.TrimSpace(grouped.state.Command) != "connect" {
+					continue
+				}
+				if connectAliasKey(grouped.state) != key {
+					continue
+				}
+				removeConnectArtifacts(dataRoot, grouped.state)
+			}
+			removed++
+			continue
 		}
-		removed++
+		if err := removeStateArtifacts(entry.path, entry.state); err == nil {
+			removed++
+		}
 	}
 	return removed, nil
+}
+
+func isLiveStatus(status string) bool {
+	return status == "running" || status == "degraded"
 }
 
 func UpdateState(path string, mutate func(*State)) error {
@@ -506,7 +526,12 @@ func waitForExit(system System, pid int, timeout time.Duration) error {
 	return fmt.Errorf("process %d did not exit in time", pid)
 }
 
-func listStates(dataRoot string) ([]State, error) {
+type stateEntry struct {
+	path  string
+	state State
+}
+
+func listStateEntries(dataRoot string) ([]stateEntry, error) {
 	entries, err := os.ReadDir(StateDir(dataRoot))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -514,7 +539,7 @@ func listStates(dataRoot string) ([]State, error) {
 		}
 		return nil, err
 	}
-	states := make([]State, 0, len(entries))
+	states := make([]stateEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -526,9 +551,21 @@ func listStates(dataRoot string) ([]State, error) {
 		}
 		var state State
 		if err := json.Unmarshal(b, &state); err != nil {
-			return nil, err
+			state = State{}
 		}
-		states = append(states, state)
+		states = append(states, stateEntry{path: path, state: state})
+	}
+	return states, nil
+}
+
+func listStates(dataRoot string) ([]State, error) {
+	entries, err := listStateEntries(dataRoot)
+	if err != nil {
+		return nil, err
+	}
+	states := make([]State, 0, len(entries))
+	for _, entry := range entries {
+		states = append(states, entry.state)
 	}
 	return states, nil
 }
@@ -648,6 +685,96 @@ func viewFromState(state State, status, confidence string) View {
 		ConnectAccessExpiresAt:  state.ConnectAccessExpiresAt,
 		ConnectRefreshExpiresAt: state.ConnectRefreshExpiresAt,
 	}
+}
+
+func removeStateArtifacts(path string, state State) error {
+	candidates := []string{path}
+	for _, candidate := range []string{state.StateFile, state.PIDFile, state.LogFile} {
+		if candidate == "" {
+			continue
+		}
+		candidates = append(candidates, candidate)
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if err := os.Remove(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeConnectArtifacts(dataRoot string, state State) {
+	for _, name := range connectArtifactNames(state) {
+		for _, path := range []string{filepath.Join(StateDir(dataRoot), name+".json"), filepath.Join(RunDir(dataRoot), name+".pid"), filepath.Join(LogDir(dataRoot), name+".log")} {
+			_ = os.Remove(path)
+		}
+	}
+	for _, path := range []string{state.StateFile, state.PIDFile, state.LogFile} {
+		if path == "" {
+			continue
+		}
+		_ = os.Remove(path)
+	}
+}
+
+func connectAliasKey(state State) string {
+	service := strings.TrimSpace(state.Service)
+	if service == "" {
+		service = strings.TrimSpace(state.Name)
+	}
+	return service + "|" + normalizeConnectLocal(state.Local)
+}
+
+func connectArtifactNames(state State) []string {
+	service := strings.TrimSpace(state.Service)
+	if service == "" {
+		service = strings.TrimSpace(state.Name)
+	}
+	if service == "" {
+		service = "connect"
+	}
+	local := strings.TrimSpace(state.Local)
+	canonical := connectProcessName(service, local)
+	legacy := legacyConnectProcessName(service, local)
+	if canonical == legacy {
+		return []string{canonical}
+	}
+	return []string{canonical, legacy}
+}
+
+func connectProcessName(service, local string) string {
+	name := "connect-" + sanitizeName(service)
+	local = normalizeConnectLocal(local)
+	if _, port, err := net.SplitHostPort(local); err == nil && strings.TrimSpace(port) != "" {
+		return name + "-" + sanitizeName(port)
+	}
+	local = sanitizeName(local)
+	if local == "" {
+		return name
+	}
+	return name + "-" + local
+}
+
+func legacyConnectProcessName(service, local string) string {
+	name := "connect-" + sanitizeName(service)
+	local = sanitizeName(local)
+	if local == "" {
+		return name
+	}
+	return name + "-" + local
+}
+
+func normalizeConnectLocal(local string) string {
+	local = strings.TrimSpace(local)
+	for _, prefix := range []string{"tcp://", "http://", "https://"} {
+		if strings.HasPrefix(local, prefix) {
+			return strings.TrimPrefix(local, prefix)
+		}
+	}
+	return local
 }
 
 func sanitizeName(s string) string {

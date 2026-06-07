@@ -101,6 +101,10 @@ func updateProcessRuntimeState(stateFile string, runtime bridgeapp.RuntimeStatus
 		state.RuntimeStatus = runtime.Status
 		state.DegradedReason = runtime.Reason
 		state.Path = runtime.Path
+		state.SelectedAddr = runtime.SelectedAddr
+		state.SelectedPath = runtime.SelectedPath
+		state.PeerID = runtime.SelectedPeerID
+		state.ServiceKind = runtime.ServiceKind
 		if runtime.ConnectAccessExpiresAt != nil {
 			state.ConnectAccessExpiresAt = runtime.ConnectAccessExpiresAt.UTC().Format(time.RFC3339)
 		} else {
