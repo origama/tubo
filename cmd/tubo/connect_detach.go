@@ -189,6 +189,8 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 		if preflight, resolveErr := connectflow.Resolve(context.Background(), newConnectWorkflow(), connectflow.Request{ConfigPath: req.ConfigPath, ServiceRef: req.ServiceRef, Token: req.Token, Cluster: req.Cluster, Namespace: req.Namespace, Local: localAddr, Timeout: req.Timeout, CachedOnly: req.CachedOnly, Live: req.Live}); resolveErr == nil {
 			resolved = preflight
 		}
+	} else if tokenInfo, parseErr := parseAndVerifyServiceShareToken(req.Token); parseErr == nil {
+		resolved.ServiceKind = tokenInfo.ServiceKind
 	}
 	if resolved.ServiceName == "" {
 		resolved.ServiceName = displayService
