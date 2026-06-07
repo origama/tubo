@@ -196,7 +196,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		if cfg.ConnectAccessLease == nil && cfg.ConnectRefreshLease == nil {
 			if len(cfg.ConnectGrantPeers) == 0 {
 				_ = h.Close()
-				return nil, fmt.Errorf("share invite is missing a usable grant service endpoint; ask the service owner to reissue the invite")
+				return nil, fmt.Errorf("share invite does not contain a valid authorization path; ask the service owner to reissue the invite")
 			}
 			log.Printf("bridge share invite remote redeem via grant service peers=%d", len(cfg.ConnectGrantPeers))
 			artifacts, err := redeemConnectInvite(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectInviteToken)

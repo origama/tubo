@@ -217,6 +217,9 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		bridgeCfg.ConnectServiceID = service.ServiceID
 		bridgeCfg.ConnectNamespaceID = scope.Namespace
 	}
+	if shareToken != "" && len(connectGrantPeers) == 0 && strings.TrimSpace(bridgeCfg.ConnectAuthorityPrivateKeyFile) == "" && len(bridgeCfg.ConnectAuthorityPrivateKey) == 0 {
+		return Result{}, fmt.Errorf("share invite does not contain a valid authorization path; ask the service owner to reissue the invite")
+	}
 	if shareToken == "" && service.GrantService != nil && len(service.GrantService.Peers) > 0 {
 		bridgeCfg.ConnectGrantPeers = append([]string(nil), service.GrantService.Peers...)
 		bridgeCfg.ConnectServiceID = service.ServiceID

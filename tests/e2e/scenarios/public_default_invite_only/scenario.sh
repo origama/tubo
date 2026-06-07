@@ -141,6 +141,8 @@ endpoint = payload.get('service_endpoint') or {}
 addrs = endpoint.get('addresses') or []
 if not endpoint.get('peer_id') or not addrs:
     raise SystemExit('missing service_endpoint metadata')
+if payload.get('grant_service'):
+    raise SystemExit('grant_service unexpectedly present in service-only token')
 for addr in addrs:
     lowered = addr.lower()
     for bad in ('127.0.0.1', '0.0.0.0', '::1', '/ip6/::/', 'localhost'):
@@ -152,6 +154,15 @@ with open(out, 'w', encoding='utf-8') as fh:
 PY
 
 cp "$(actor_home alice)/config.yaml" "$(actor_home bob)/config.yaml"
+python3 - "$(actor_home bob)/config.yaml" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+path = Path(sys.argv[1])
+obj = yaml.safe_load(path.read_text())
+obj.setdefault('clusters', {}).setdefault('home', {})['authority_private_key_file'] = ''
+path.write_text(yaml.safe_dump(obj, sort_keys=False))
+PY
 
 for name in get-services get-services-all watch-services-all connect-name; do
   : >"$E2E_ARTIFACTS_DIR/${name}.out"
@@ -177,28 +188,19 @@ if exec_actor bob sh -lc "cd /work && tubo connect ${SERVICE_NAME} --config /wor
 fi
 assert_file_contains "$E2E_ARTIFACTS_DIR/connect-name.out" 'tubo connect --token <invite>' 'connect <name> missing discovery-disabled guidance'
 
-exec_actor_bg bob sh -lc "cd /work && exec tubo connect --token '$share_token' --config /work/config.yaml --local 127.0.0.1:${BOB_PORT} > /work/logs/bob-connect.out 2>&1"
-
-response=""
-for i in $(seq 1 90); do
-  if response="$(exec_actor bob sh -lc "curl -fsS http://127.0.0.1:${BOB_PORT}/v1/dummy?from=public-default")"; then
-    break
-  fi
-  sleep 1
-done
-[[ -n "$response" ]] || fail "bob did not receive a response from the invite-only public-default service"
-printf '%s\n' "$response" > "$E2E_ARTIFACTS_DIR/bob-response.json"
-assert_contains "$response" '"instance":"alice"' 'response missing alice instance marker'
-assert_contains "$response" '"raw_query":"from=public-default"' 'response missing query marker'
-
-bob_connect_log="$(exec_actor bob sh -lc 'cat /work/logs/bob-connect.out')"
+if exec_actor bob sh -lc "cd /work && tubo connect --token '$share_token' --config /work/config.yaml --local 127.0.0.1:${BOB_PORT}" >"$E2E_ARTIFACTS_DIR/bob-connect.out" 2>&1; then
+  fail "bob connect unexpectedly succeeded without a grant_service authorization path"
+fi
+bob_connect_log="$(cat "$E2E_ARTIFACTS_DIR/bob-connect.out")"
 printf '%s\n' "$bob_connect_log" > "$E2E_ARTIFACTS_DIR/bob-connect.out"
-assert_contains "$bob_connect_log" 'connected to service "e2e-public"' 'expected invite-based connect success summary'
-assert_contains "$bob_connect_log" 'path: relayed' 'expected relayed invite path in connect output'
-if grep -Fq 'service not found' <<<"$bob_connect_log"; then
-  fail "bob connect log suggests ambient discovery fallback instead of invite path"
+assert_contains "$bob_connect_log" 'share invite does not contain a valid authorization path' 'missing clear authorization-path error'
+if grep -Fq 'protocols not supported: [/tubo/grants/1.0]' <<<"$bob_connect_log"; then
+  fail "bob connect still tried to redeem against an unsupported grant service"
+fi
+if grep -Fq 'redeem share invite' <<<"$bob_connect_log"; then
+  fail "bob connect still attempted remote redeem without a valid grant service"
 fi
 
 write_report_json "$E2E_ARTIFACTS_DIR/report.json" "$E2E_SCENARIO" "$E2E_NETWORK_NAME" "$SERVICE_NAME" "$(actor_container_name alice)" "$(actor_container_name bob)"
 
-echo "[e2e] PASS: public default stays invite-only while connect --token works end-to-end"
+echo "[e2e] PASS: public default invite token fails clearly without an explicit grant service"

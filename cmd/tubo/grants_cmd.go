@@ -65,6 +65,13 @@ func clusterGrantServicePeer(cluster cfgpkg.Cluster) string {
 	return ""
 }
 
+func shareGrantServicePeer(cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService) string {
+	if peer := strings.TrimSpace(svc.GrantServicePeer); peer != "" {
+		return peer
+	}
+	return clusterGrantServicePeer(cluster)
+}
+
 func grantServicePeersForTokens(addrs []string) []string {
 	return grantspkg.PreferredAdvertisedGrantServicePeers(addrs)
 }

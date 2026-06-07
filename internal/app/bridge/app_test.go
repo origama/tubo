@@ -300,8 +300,8 @@ func TestBridgeInviteConnectRequiresGrantServiceMetadata(t *testing.T) {
 		ServiceAddr:        p2p.PeerAddrs(serviceHost)[0],
 		ConnectInviteToken: "tubo-share-invite-v1.test",
 	})
-	if err == nil || !strings.Contains(err.Error(), "usable grant service endpoint") {
-		t.Fatalf("expected missing grant-service metadata error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "valid authorization path") {
+		t.Fatalf("expected missing authorization-path error, got %v", err)
 	}
 }
 

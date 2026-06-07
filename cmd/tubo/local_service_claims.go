@@ -373,7 +373,11 @@ func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clu
 		return "", err
 	}
 	serviceEndpointAddrs := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
-	grantPeers := grantServicePeersForTokens(serviceEndpointAddrs)
+	grantPeer := shareGrantServicePeer(cluster, svc)
+	grantPeers := make([]string, 0, 1)
+	if grantPeer != "" {
+		grantPeers = append(grantPeers, grantPeer)
+	}
 	useEndpointMetadata := requireEndpoint || len(grantPeers) > 0 || len(serviceEndpointAddrs) > 0
 	if svc.ServicePublishLeaseFile != "" {
 		if leaseBytes, err := os.ReadFile(svc.ServicePublishLeaseFile); err == nil {

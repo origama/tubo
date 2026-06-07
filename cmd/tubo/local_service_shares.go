@@ -137,8 +137,12 @@ func mintServiceShareArtifacts(configPath string, cfg cfgpkg.Config, cluster cfg
 		return grantspkg.ServiceShareArtifacts{}, err
 	}
 	serviceEndpointAddrs := serviceEndpointAddrsForTokens(cfg, servicePeerID.String())
-	grantPeers := grantServicePeersForTokens(serviceEndpointAddrs)
-	useEndpointMetadata := requireEndpoint || len(grantPeers) > 0 || len(serviceEndpointAddrs) > 0
+	grantPeer := shareGrantServicePeer(cluster, svc)
+	grantPeers := make([]string, 0, 1)
+	if grantPeer != "" {
+		grantPeers = append(grantPeers, grantPeer)
+	}
+	useEndpointMetadata := requireEndpoint || len(serviceEndpointAddrs) > 0 || len(grantPeers) > 0
 	if cluster.AuthorityPrivateKeyFile != "" {
 		return mintAuthorityLocalServiceShareArtifacts(cfg, cluster, clusterName, namespaceName, serviceName, svc, shareTTL, servicePeerID.String(), serviceEndpointAddrs, grantPeers, useEndpointMetadata, requireEndpoint)
 	}
