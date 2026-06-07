@@ -12,10 +12,12 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 ### Changed
 - Detached raw TCP `connect` now performs one bounded inline self-heal attempt when pre-stream setup fails (for example stale path before stream open/handshake), while still failing fast once application bytes have already started flowing.
 - Detached `connect` now renews its access lease proactively before expiry when a refresh lease is available, and process visibility now exposes degraded runtime state plus remaining lease lifetime.
+- `tubo ps` now distinguishes `service` and `pipe` rows and shows `SERVICE KIND` alongside `SERVICE ID`/`SCOPE` for local runtimes when known.
 
 ### Fixed
 - Detached raw TCP `connect` no longer always requires a manual restart to recover from some stale direct-path failures before a new stream starts.
 - `tubo ps` / `describe process/...` no longer misleadingly treat an expired short-lived access lease as the primary tunnel TTL when a longer-lived refresh lease still governs recoverability.
+- `describe process/...` and `inspect process/... --json` now expose service/pipe runtime binding details such as service kind, peer id, selected address, and selected path when available.
 
 ### Compatibility
 - Product version: pending next release

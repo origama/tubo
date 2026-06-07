@@ -1159,6 +1159,7 @@ func detachRoleCommand(commandName, role string, args []string) error {
 		return err
 	}
 	serviceID := ""
+	var attachAuthz attachAuthorization
 	if commandName == "attach" {
 		authz, err := resolveAttachAuthorization(configPath, cfg)
 		if err != nil {
@@ -1166,7 +1167,7 @@ func detachRoleCommand(commandName, role string, args []string) error {
 		}
 		cfg = authz.Config
 		serviceID = authz.Service.ServiceID
-		printAttachShareHint(cfg, authz)
+		attachAuthz = authz
 	}
 	spec, err := buildDetachedSpec(commandName, cfg, args)
 	if err != nil {
@@ -1175,9 +1176,19 @@ func detachRoleCommand(commandName, role string, args []string) error {
 	if serviceID != "" {
 		spec.State.ServiceID = serviceID
 	}
+	if commandName == "attach" {
+		spec.State.ResourceKind = "service"
+		spec.State.ServiceKind = string(cfgpkg.NormalizeServiceKind(cfg.Service.Kind, cfg.Service.Target))
+		if attachAuthz.ServicePeerID != "" {
+			spec.State.PeerID = attachAuthz.ServicePeerID
+		}
+	}
 	state, err := startDetachedProcess(spec)
 	if err != nil {
 		return err
+	}
+	if commandName == "attach" {
+		printAttachShareHint(cfg, attachAuthz)
 	}
 	printDetachedSummary(commandName, state)
 	return nil
@@ -1311,9 +1322,30 @@ func processTTLColumn(item processView) string {
 	return "-"
 }
 
+func processResourceKind(item processView) string {
+	if strings.TrimSpace(item.ResourceKind) != "" {
+		return item.ResourceKind
+	}
+	switch item.Command {
+	case "attach":
+		return "service"
+	case "connect":
+		return "pipe"
+	default:
+		return "process"
+	}
+}
+
+func processServiceKind(item processView) string {
+	if strings.TrimSpace(item.ServiceKind) != "" {
+		return item.ServiceKind
+	}
+	return "-"
+}
+
 func printProcessesTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tCOMMAND\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tTTL\tPID\tLOCAL\tTARGET")
+	fmt.Fprintln(w, "NAME\tKIND\tCOMMAND\tSERVICE KIND\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tTTL\tPID\tLOCAL\tTARGET")
 	for _, item := range items {
 		local := item.Local
 		if local == "" {
@@ -1331,7 +1363,7 @@ func printProcessesTable(items []processView) {
 		if path == "" {
 			path = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.Command, displayServiceID(item.ServiceID), scope, item.Status, path, processTTLColumn(item), item.PID, local, target)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, processResourceKind(item), item.Command, processServiceKind(item), displayServiceID(item.ServiceID), scope, item.Status, path, processTTLColumn(item), item.PID, local, target)
 	}
 	_ = w.Flush()
 }
@@ -1354,6 +1386,9 @@ func formatProcessExpiry(raw string) (string, string) {
 func printProcessDescription(state detachedProcessState, status string) {
 	fmt.Printf("Name: %s\n", state.Name)
 	fmt.Printf("Kind: %s\n", state.Kind)
+	if state.ResourceKind != "" {
+		fmt.Printf("Resource kind: %s\n", state.ResourceKind)
+	}
 	fmt.Printf("Command: %s\n", state.Command)
 	fmt.Printf("Status: %s\n", status)
 	if state.StatusConfidence != "" {
@@ -1366,8 +1401,14 @@ func printProcessDescription(state detachedProcessState, status string) {
 	if state.Service != "" {
 		fmt.Printf("Service: %s\n", state.Service)
 	}
+	if state.ServiceKind != "" {
+		fmt.Printf("Service kind: %s\n", state.ServiceKind)
+	}
 	if state.ServiceID != "" {
 		fmt.Printf("Service ID: %s\n", state.ServiceID)
+	}
+	if state.PeerID != "" {
+		fmt.Printf("Peer ID: %s\n", state.PeerID)
 	}
 	if state.Cluster != "" || state.Namespace != "" {
 		fmt.Printf("Scope: %s/%s\n", state.Cluster, state.Namespace)
@@ -1380,6 +1421,12 @@ func printProcessDescription(state detachedProcessState, status string) {
 	}
 	if state.Path != "" {
 		fmt.Printf("Path: %s\n", state.Path)
+	}
+	if state.SelectedAddr != "" {
+		fmt.Printf("Selected addr: %s\n", state.SelectedAddr)
+	}
+	if state.SelectedPath != "" {
+		fmt.Printf("Selected path: %s\n", state.SelectedPath)
 	}
 	if len(state.CommandLine) > 0 {
 		fmt.Printf("Command line: %s\n", strings.Join(state.CommandLine, " "))
@@ -1556,21 +1603,26 @@ func connectCmd(args []string) error {
 	}
 	name := detachedConnectProcessName(result.ServiceName, localAddr)
 	state := detachedProcessState{
-		ID:        "process/" + name,
-		Kind:      "process",
-		Command:   "connect",
-		Name:      name,
-		Service:   result.ServiceName,
-		ServiceID: result.ServiceID,
-		Cluster:   scopeCluster,
-		Namespace: scopeNamespace,
-		Local:     localAddr,
-		Target:    connectDetachedTarget(req, result.ServiceName, result.ServiceID),
-		Path:      result.Path,
-		LogFile:   "",
-		StateFile: filepath.Join(processStateDir(), name+".json"),
-		PIDFile:   filepath.Join(processRunDir(), name+".pid"),
-		StatusURL: "http://" + connectStatusHostPort(localAddr) + "/healthz",
+		ID:           "process/" + name,
+		Kind:         "process",
+		ResourceKind: "pipe",
+		Command:      "connect",
+		Name:         name,
+		Service:      result.ServiceName,
+		ServiceKind:  result.ServiceKind,
+		ServiceID:    result.ServiceID,
+		PeerID:       result.ServicePeerID,
+		Cluster:      scopeCluster,
+		Namespace:    scopeNamespace,
+		Local:        localAddr,
+		Target:       connectDetachedTarget(req, result.ServiceName, result.ServiceID),
+		Path:         result.Path,
+		SelectedAddr: result.SelectedAddr,
+		SelectedPath: result.Path,
+		LogFile:      "",
+		StateFile:    filepath.Join(processStateDir(), name+".json"),
+		PIDFile:      filepath.Join(processRunDir(), name+".pid"),
+		StatusURL:    "http://" + connectStatusHostPort(localAddr) + "/healthz",
 	}
 	state, cleanup, err := registerCurrentProcess(state)
 	if err != nil {
@@ -1583,13 +1635,15 @@ func connectCmd(args []string) error {
 			}
 		}
 	}()
-	state.Path = result.Path
+	output := fromConnectWorkflowResult(result)
+	if err := updateProcessConnectState(state.StateFile, output); err != nil {
+		logging.Warnf("connect state update failed: %v\n", err)
+	}
 	result.App.SetStatusReporter(func(runtime bridge.RuntimeStatus) {
 		if err := updateProcessRuntimeState(state.StateFile, runtime); err != nil {
 			logging.Warnf("connect runtime status update failed: %v\n", err)
 		}
 	})
-	output := fromConnectWorkflowResult(result)
 	if req.JSONOut {
 		if err := printJSON(output); err != nil {
 			return err

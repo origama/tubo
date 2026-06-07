@@ -37,18 +37,19 @@ type Attempt struct {
 }
 
 type Result struct {
-	Messages     []string
-	ServiceName  string
-	ServiceKind  string
-	ServiceID    string
-	LocalURL     string
-	Path         string
-	Scope        *catalog.Scope
-	SelectedAddr string
-	Direct       string
-	Relay        string
-	Attempts     []Attempt
-	App          *bridge.App
+	Messages      []string
+	ServiceName   string
+	ServiceKind   string
+	ServiceID     string
+	ServicePeerID string
+	LocalURL      string
+	Path          string
+	Scope         *catalog.Scope
+	SelectedAddr  string
+	Direct        string
+	Relay         string
+	Attempts      []Attempt
+	App           *bridge.App
 }
 
 type ShareTokenInfo struct {
@@ -220,18 +221,19 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		return Result{}, err
 	}
 	return Result{
-		Messages:     append([]string(nil), lookup.Messages...),
-		ServiceName:  service.Name,
-		ServiceKind:  service.ServiceKind,
-		ServiceID:    service.ServiceID,
-		LocalURL:     localURL,
-		Path:         selectedPath,
-		Scope:        scopePtr(scope),
-		SelectedAddr: selectedAddr,
-		Direct:       ConnectDirectMessage(service, attempts, selectedPath),
-		Relay:        ConnectRelayMessage(service, selectedAddr, selectedPath),
-		Attempts:     attempts,
-		App:          app,
+		Messages:      append([]string(nil), lookup.Messages...),
+		ServiceName:   service.Name,
+		ServiceKind:   service.ServiceKind,
+		ServiceID:     service.ServiceID,
+		ServicePeerID: service.PeerID,
+		LocalURL:      localURL,
+		Path:          selectedPath,
+		Scope:         scopePtr(scope),
+		SelectedAddr:  selectedAddr,
+		Direct:        ConnectDirectMessage(service, attempts, selectedPath),
+		Relay:         ConnectRelayMessage(service, selectedAddr, selectedPath),
+		Attempts:      attempts,
+		App:           app,
 	}, nil
 }
 
