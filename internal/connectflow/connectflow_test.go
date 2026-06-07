@@ -149,17 +149,12 @@ func TestConnectResolvePassesAuthorityKeyForShareInvites(t *testing.T) {
 	}
 }
 
-func TestResolveFallsBackToExactLookupAndBuildsBridge(t *testing.T) {
+func TestResolveBuildsBridgeFromSelfContainedServiceEndpoint(t *testing.T) {
 	scope := catalog.Scope{Cluster: "cluster-a", Namespace: "default"}
 	cfg := cfgpkg.Config{}
 	cfg.Node.Seed = "bridge-seed"
 	cfg.Network.RelayPeers = []string{"/ip4/1.2.3.4/tcp/4001/p2p/peer"}
-	service := catalog.Service{
-		Name:             "svc",
-		ServiceID:        "svc-1",
-		DirectAddresses:  []string{"/ip4/10.0.0.9/tcp/4101/p2p/peer-a"},
-		RelayedAddresses: []string{"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/peer-a"},
-	}
+	serviceAddr := "/ip4/10.0.0.9/tcp/4101/p2p/peer-a"
 	var selected bridge.Config
 	deps := stubDeps{
 		loadConfig: func(string) (cfgpkg.Config, error) { return cfg, nil },
@@ -170,16 +165,18 @@ func TestResolveFallsBackToExactLookupAndBuildsBridge(t *testing.T) {
 		isServiceID:     func(string) bool { return false },
 		resolveScope:    func(cfgpkg.Config, string, string) (catalog.Scope, error) { return scope, nil },
 		parseShareToken: func(string) (ShareTokenInfo, error) {
-			return ShareTokenInfo{Cluster: scope.Cluster, Namespace: scope.Namespace, TargetServiceID: "svc-1", DisplayNameHint: "svc"}, nil
+			return ShareTokenInfo{Cluster: scope.Cluster, Namespace: scope.Namespace, TargetServiceID: "svc-1", DisplayNameHint: "svc", ServiceKind: "http", ServiceEndpointPeer: "12D3KooWService", ServiceEndpointAddrs: []string{serviceAddr}}, nil
 		},
 		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
 		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { return cfg, nil },
 		markInvite:      func(string, ShareTokenInfo) error { return nil },
 		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) {
-			return catalog.LookupResult{}, catalog.Service{}, errors.New("not found by name")
+			t.Fatal("discoverService should not be called for self-contained token")
+			return catalog.LookupResult{}, catalog.Service{}, nil
 		},
 		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) {
-			return catalog.LookupResult{Messages: []string{"using remote query"}}, service, nil
+			t.Fatal("discoverServiceExact should not be called for self-contained token")
+			return catalog.LookupResult{}, catalog.Service{}, nil
 		},
 		newBridge: func(_ context.Context, bridgeCfg bridge.Config) (*bridge.App, error) {
 			selected = bridgeCfg
@@ -193,20 +190,11 @@ func TestResolveFallsBackToExactLookupAndBuildsBridge(t *testing.T) {
 	if result.ServiceName != "svc" || result.ServiceID != "svc-1" {
 		t.Fatalf("unexpected result identity: %#v", result)
 	}
-	if result.Path != "direct" {
-		t.Fatalf("path = %q", result.Path)
+	if result.Path != "direct" || result.SelectedAddr != serviceAddr {
+		t.Fatalf("unexpected result: %#v", result)
 	}
-	if result.Direct != "selected" {
-		t.Fatalf("direct = %q", result.Direct)
-	}
-	if result.Relay != "available as fallback" {
-		t.Fatalf("relay = %q", result.Relay)
-	}
-	if len(result.Messages) != 1 || result.Messages[0] != "using remote query" {
-		t.Fatalf("messages = %#v", result.Messages)
-	}
-	if selected.ServiceAddr != service.DirectAddresses[0] {
-		t.Fatalf("selected service addr = %q", selected.ServiceAddr)
+	if selected.ServiceAddr != serviceAddr || selected.SelectedAddr != serviceAddr {
+		t.Fatalf("selected service addr = %#v", selected)
 	}
 }
 
@@ -361,12 +349,8 @@ func TestResolveUsesTCPServiceKindFromSelfContainedToken(t *testing.T) {
 	}
 }
 
-func TestResolveBypassesAmbientDiscoveryScopeForTokenFlow(t *testing.T) {
-	service := catalog.Service{
-		Name:            "svc",
-		ServiceID:       "svc-1",
-		DirectAddresses: []string{"/ip4/10.0.0.9/tcp/4101/p2p/peer-a"},
-	}
+func TestResolveBuildsBridgeFromTokenEndpointWithoutAmbientDiscovery(t *testing.T) {
+	serviceAddr := "/ip4/10.0.0.9/tcp/4101/p2p/peer-a"
 	deps := stubDeps{
 		loadConfig: func(string) (cfgpkg.Config, error) { return cfgpkg.Config{}, nil },
 		setupShare: func(serviceRef, token, cluster, namespace string) (string, string, catalog.Scope, error) {
@@ -378,16 +362,18 @@ func TestResolveBypassesAmbientDiscoveryScopeForTokenFlow(t *testing.T) {
 			return catalog.Scope{}, cfgpkg.ErrAmbientDiscoveryDisabled
 		},
 		parseShareToken: func(string) (ShareTokenInfo, error) {
-			return ShareTokenInfo{Cluster: "home", Namespace: "default", TargetServiceID: "svc-1", DisplayNameHint: "svc"}, nil
+			return ShareTokenInfo{Cluster: "home", Namespace: "default", TargetServiceID: "svc-1", DisplayNameHint: "svc", ServiceKind: "http", ServiceEndpointPeer: "12D3KooWService", ServiceEndpointAddrs: []string{serviceAddr}}, nil
 		},
 		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
 		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { return cfg, nil },
 		markInvite:      func(string, ShareTokenInfo) error { return nil },
 		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) {
-			return catalog.LookupResult{}, catalog.Service{}, errors.New("not found by name")
+			t.Fatal("discoverService should not be called for self-contained token")
+			return catalog.LookupResult{}, catalog.Service{}, nil
 		},
 		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) {
-			return catalog.LookupResult{}, service, nil
+			t.Fatal("discoverServiceExact should not be called for self-contained token")
+			return catalog.LookupResult{}, catalog.Service{}, nil
 		},
 		newBridge: func(context.Context, bridge.Config) (*bridge.App, error) { return &bridge.App{}, nil },
 	}
@@ -395,7 +381,7 @@ func TestResolveBypassesAmbientDiscoveryScopeForTokenFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ServiceID != "svc-1" || result.ServiceName != "svc" {
+	if result.ServiceID != "svc-1" || result.ServiceName != "svc" || result.SelectedAddr != serviceAddr {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 }

@@ -193,9 +193,8 @@ assert_contains "$response" '"raw_query":"from=public-default"' 'response missin
 
 bob_connect_log="$(exec_actor bob sh -lc 'cat /work/logs/bob-connect.out')"
 printf '%s\n' "$bob_connect_log" > "$E2E_ARTIFACTS_DIR/bob-connect.out"
-if ! grep -Eq 'share invite redeemed|legacy connect grants enabled' <<<"$bob_connect_log"; then
-  fail "expected invite-based connect path log in bob connect output"
-fi
+assert_contains "$bob_connect_log" 'connected to service "e2e-public"' 'expected invite-based connect success summary'
+assert_contains "$bob_connect_log" 'path: relayed' 'expected relayed invite path in connect output'
 if grep -Fq 'service not found' <<<"$bob_connect_log"; then
   fail "bob connect log suggests ambient discovery fallback instead of invite path"
 fi

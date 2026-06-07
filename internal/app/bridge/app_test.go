@@ -249,6 +249,44 @@ func TestBridgeInviteConnectFailsWhenGrantServicePeersAreUnreachable(t *testing.
 	}
 }
 
+func TestBridgeInviteConnectReportsUnsupportedGrantEndpointClearly(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-unsupported-grant-service", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	grantHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-unsupported-grant-endpoint", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer grantHost.Close()
+	invite, err := grantspkg.BuildServiceShareArtifacts(authPriv, "home", "cluster-123", "default", "myapi", "svc-123", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := invite.Payload
+	payload.GrantService = grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{p2p.PeerAddrs(grantHost)[0]}}
+	token, err := grantspkg.SignServiceShareToken(payload, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(context.Background(), Config{
+		Listen:             "127.0.0.1:0",
+		Seed:               "bridge-unsupported-grant-client",
+		P2PListen:          "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:        p2p.PeerAddrs(serviceHost)[0],
+		ConnectInviteToken: token,
+		ConnectGrantPeers:  append([]string(nil), payload.GrantService.Peers...),
+	})
+	if err == nil || !strings.Contains(err.Error(), "does not support") {
+		t.Fatalf("expected unsupported grant endpoint error, got %v", err)
+	}
+}
+
 func TestBridgeInviteConnectRequiresGrantServiceMetadata(t *testing.T) {
 	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-no-grant-service-service", nil)
 	if err != nil {
@@ -262,7 +300,7 @@ func TestBridgeInviteConnectRequiresGrantServiceMetadata(t *testing.T) {
 		ServiceAddr:        p2p.PeerAddrs(serviceHost)[0],
 		ConnectInviteToken: "tubo-share-invite-v1.test",
 	})
-	if err == nil || !strings.Contains(err.Error(), "missing grant service metadata") {
+	if err == nil || !strings.Contains(err.Error(), "usable grant service endpoint") {
 		t.Fatalf("expected missing grant-service metadata error, got %v", err)
 	}
 }

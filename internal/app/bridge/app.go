@@ -172,30 +172,33 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 			}
 		}
 		if len(authorityPriv) > 0 {
-			if payload, parseErr := grantspkg.ParseAndVerifyServiceShareToken(cfg.ConnectInviteToken); parseErr == nil {
-				clientPublicKey, pubErr := connectClientPublicKey(h)
-				if pubErr == nil {
-					artifacts, mintErr := grantspkg.BuildConnectLeaseArtifacts(authorityPriv, payload, clientPublicKey, grantspkg.DefaultConnectAccessLeaseTTL, grantspkg.DefaultConnectRefreshLeaseTTL)
-					if mintErr == nil {
-						cfg.ConnectAccessLease = &artifacts.AccessLease
-						cfg.ConnectRefreshLease = &artifacts.RefreshLease
-						connectLease = &artifacts.AccessLease
-						log.Printf("bridge share invite minted locally service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
-					} else {
-						log.Printf("bridge share invite local mint failed: %v", mintErr)
-					}
-				} else {
-					log.Printf("bridge share invite local mint missing client public key: %v", pubErr)
-				}
-			} else {
-				log.Printf("bridge share invite local mint parse failed: %v", parseErr)
+			log.Printf("bridge share invite using self-contained service endpoint addr=%s path=%s", cfg.SelectedAddr, cfg.SelectedPath)
+			payload, parseErr := grantspkg.ParseAndVerifyServiceShareToken(cfg.ConnectInviteToken)
+			if parseErr != nil {
+				_ = h.Close()
+				return nil, fmt.Errorf("share invite local mint parse failed: %w", parseErr)
 			}
+			clientPublicKey, pubErr := connectClientPublicKey(h)
+			if pubErr != nil {
+				_ = h.Close()
+				return nil, fmt.Errorf("share invite local mint missing client public key: %w", pubErr)
+			}
+			artifacts, mintErr := grantspkg.BuildConnectLeaseArtifacts(authorityPriv, payload, clientPublicKey, grantspkg.DefaultConnectAccessLeaseTTL, grantspkg.DefaultConnectRefreshLeaseTTL)
+			if mintErr != nil {
+				_ = h.Close()
+				return nil, fmt.Errorf("share invite local mint failed: %w", mintErr)
+			}
+			cfg.ConnectAccessLease = &artifacts.AccessLease
+			cfg.ConnectRefreshLease = &artifacts.RefreshLease
+			connectLease = &artifacts.AccessLease
+			log.Printf("bridge share invite minted locally service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 		}
 		if cfg.ConnectAccessLease == nil && cfg.ConnectRefreshLease == nil {
 			if len(cfg.ConnectGrantPeers) == 0 {
 				_ = h.Close()
-				return nil, fmt.Errorf("share invite is missing grant service metadata; ask the service owner to reissue the invite")
+				return nil, fmt.Errorf("share invite is missing a usable grant service endpoint; ask the service owner to reissue the invite")
 			}
+			log.Printf("bridge share invite remote redeem via grant service peers=%d", len(cfg.ConnectGrantPeers))
 			artifacts, err := redeemConnectInvite(ctx, h, cfg.ConnectGrantPeers, cfg.ConnectInviteToken)
 			if err != nil {
 				_ = h.Close()
@@ -996,6 +999,10 @@ func redeemConnectInvite(ctx context.Context, h host.Host, grantPeers []string, 
 		lastErr = err
 	}
 	if lastErr != nil {
+		msg := lastErr.Error()
+		if strings.Contains(strings.ToLower(msg), "protocols not supported") {
+			return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("redeem share invite: grant service endpoint does not support %s", grantspkg.ProtocolID)
+		}
 		return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("redeem share invite: %w", lastErr)
 	}
 	return grantspkg.ConnectLeaseArtifacts{}, fmt.Errorf("redeem share invite: no grant service peers configured")

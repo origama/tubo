@@ -153,7 +153,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
 	}
 	grantEndpointEnabled := false
-	if cfg.DiscoveryEnabled {
+	if len(authorityPub) > 0 && strings.TrimSpace(cfg.DiscoveryClusterID) != "" && strings.TrimSpace(cfg.DiscoveryNamespaceID) != "" {
 		grantEndpoint, err := newServiceGrantEndpoint(cfg, resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), h.ID().String())
 		if err != nil {
 			_ = h.Close()

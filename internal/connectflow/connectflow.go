@@ -155,21 +155,13 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 	var lookup catalog.LookupResult
 	var service catalog.Service
 	if shareToken != "" {
-		if len(shareInfo.ServiceEndpointAddrs) > 0 {
-			service = catalog.Service{Name: serviceRef, ServiceID: serviceID, ServiceKind: shareInfo.ServiceKind, PeerID: shareInfo.ServiceEndpointPeer}
-			service.DirectAddresses, service.RelayedAddresses = splitServiceAddresses(shareInfo.ServiceEndpointAddrs)
-			if service.Name == "" {
-				service.Name = shareInfo.DisplayNameHint
-			}
-		} else if cfgpkg.IsPublicDefaultScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: scope.Cluster, Namespace: scope.Namespace}) {
-			return Result{}, fmt.Errorf("share invite is missing a self-contained service endpoint for public/home/default; ask the publisher to reissue the invite")
-		} else if serviceID != "" {
-			lookup, service, err = deps.DiscoverService(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef)
-			if err != nil {
-				lookup, service, err = deps.DiscoverServiceExact(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef, serviceID)
-			}
-		} else {
-			lookup, service, err = deps.DiscoverServiceExact(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef, serviceID)
+		if len(shareInfo.ServiceEndpointAddrs) == 0 || strings.TrimSpace(shareInfo.ServiceEndpointPeer) == "" {
+			return Result{}, fmt.Errorf("share invite is missing a self-contained service endpoint; ask the publisher to reissue the invite")
+		}
+		service = catalog.Service{Name: serviceRef, ServiceID: serviceID, ServiceKind: shareInfo.ServiceKind, PeerID: shareInfo.ServiceEndpointPeer}
+		service.DirectAddresses, service.RelayedAddresses = splitServiceAddresses(shareInfo.ServiceEndpointAddrs)
+		if service.Name == "" {
+			service.Name = shareInfo.DisplayNameHint
 		}
 	} else {
 		lookup, service, err = deps.DiscoverServiceExact(cfg, req.Timeout, req.CachedOnly, req.Live, scope, serviceRef, serviceID)
