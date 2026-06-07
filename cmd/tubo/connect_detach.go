@@ -102,6 +102,7 @@ func detachConnectCommand(args []string) error {
 }
 
 func connectProcessState(req connectCLIRequest, result connectflow.Result, localAddr, resourceKind string) detachedProcessState {
+	localAddr = normalizeConnectProcessLocal(localAddr)
 	scopeCluster := ""
 	scopeNamespace := ""
 	if result.Scope != nil {
@@ -109,6 +110,10 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 		scopeNamespace = result.Scope.Namespace
 	}
 	name := detachedConnectProcessName(result.ServiceName, localAddr)
+	statusURL := ""
+	if !strings.EqualFold(strings.TrimSpace(result.ServiceKind), "tcp") {
+		statusURL = "http://" + connectStatusHostPort(localAddr) + "/healthz"
+	}
 	return detachedProcessState{
 		ID:           "process/" + name,
 		Kind:         "process",
@@ -126,7 +131,7 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 		Path:         result.Path,
 		SelectedAddr: result.SelectedAddr,
 		SelectedPath: result.Path,
-		StatusURL:    "http://" + connectStatusHostPort(localAddr) + "/healthz",
+		StatusURL:    statusURL,
 	}
 }
 
@@ -183,6 +188,17 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 	if resolved.ServiceID == "" {
 		resolved.ServiceID = serviceID
 	}
+	if strings.TrimSpace(req.Token) != "" {
+		if tokenInfo, parseErr := parseAndVerifyServiceShareToken(req.Token); parseErr == nil {
+			resolved.ServiceKind = tokenInfo.ServiceKind
+		}
+	}
+	if resolved.ServiceName == "" {
+		resolved.ServiceName = displayService
+	}
+	if resolved.ServiceID == "" {
+		resolved.ServiceID = serviceID
+	}
 	state := connectProcessState(req, resolved, localAddr, "pipe")
 	state.LogFile = logPath
 	state.StateFile = statePath
@@ -196,6 +212,7 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 
 func detachedConnectProcessName(service, local string) string {
 	name := "connect-" + sanitizeProcessName(service)
+	local = normalizeConnectProcessLocal(local)
 	if _, port, err := net.SplitHostPort(local); err == nil && strings.TrimSpace(port) != "" {
 		return name + "-" + sanitizeProcessName(port)
 	}
@@ -211,6 +228,17 @@ func connectStatusHostPort(local string) string {
 		return "127.0.0.1" + local
 	}
 	return local
+}
+
+func normalizeConnectProcessLocal(localURL string) string {
+	localURL = strings.TrimSpace(localURL)
+	for _, prefix := range []string{"tcp://", "http://", "https://"} {
+		if strings.HasPrefix(localURL, prefix) {
+			localURL = strings.TrimPrefix(localURL, prefix)
+			break
+		}
+	}
+	return localURL
 }
 
 func connectDetachedTarget(req connectCLIRequest, displayService, serviceID string) string {
