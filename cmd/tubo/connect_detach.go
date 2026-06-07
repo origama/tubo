@@ -185,9 +185,6 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 	if resolved.ServiceName == "" {
 		resolved.ServiceName = displayService
 	}
-	if resolved.ServiceID == "" {
-		resolved.ServiceID = serviceID
-	}
 	if strings.TrimSpace(req.Token) != "" {
 		if tokenInfo, parseErr := parseAndVerifyServiceShareToken(req.Token); parseErr == nil {
 			resolved.ServiceKind = tokenInfo.ServiceKind
