@@ -395,7 +395,7 @@ func Stop(dataRoot, ref string, system System, force bool) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	if status != "running" && status != "degraded" {
+	if !isLiveStatus(status) {
 		return State{}, fmt.Errorf("process %s is not running", state.ID)
 	}
 	if err := system.TerminatePID(state.PID); err != nil {
@@ -424,7 +424,7 @@ func RemoveStale(dataRoot string, system System) (int, error) {
 	removed := 0
 	seenConnectAliases := make(map[string]bool)
 	for _, entry := range entries {
-		if Status(entry.state, system) == "running" {
+		if isLiveStatus(Status(entry.state, system)) {
 			continue
 		}
 		if strings.TrimSpace(entry.state.Command) == "connect" {
@@ -434,7 +434,7 @@ func RemoveStale(dataRoot string, system System) (int, error) {
 			}
 			seenConnectAliases[key] = true
 			for _, grouped := range entries {
-				if Status(grouped.state, system) == "running" || strings.TrimSpace(grouped.state.Command) != "connect" {
+				if isLiveStatus(Status(grouped.state, system)) || strings.TrimSpace(grouped.state.Command) != "connect" {
 					continue
 				}
 				if connectAliasKey(grouped.state) != key {
@@ -450,6 +450,10 @@ func RemoveStale(dataRoot string, system System) (int, error) {
 		}
 	}
 	return removed, nil
+}
+
+func isLiveStatus(status string) bool {
+	return status == "running" || status == "degraded"
 }
 
 func UpdateState(path string, mutate func(*State)) error {
