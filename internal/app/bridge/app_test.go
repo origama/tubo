@@ -4,7 +4,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -48,6 +52,37 @@ func TestBridgeRefreshesConnectAccessLeaseBeforeExpiry(t *testing.T) {
 	}
 	if atomic.LoadInt32(&refreshes) == 0 {
 		t.Fatal("expected access lease refresh")
+	}
+}
+
+func TestBridgeMintsConnectLeaseLocallyFromShareInvite(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemBytes, err := x509.MarshalPKCS8PrivateKey(authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authFile := filepath.Join(t.TempDir(), "authority.key")
+	if err := os.WriteFile(authFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: pemBytes}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	host, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-local-mint-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	invite, err := grantspkg.BuildServiceShareArtifacts(authPriv, "home", "cluster-123", "default", "myapi", "svc-123", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := New(context.Background(), Config{Seed: "bridge-local-mint-seed", ServiceSeed: "bridge-local-mint-service", ServiceAddr: p2p.PeerAddrs(host)[0], P2PListen: "/ip4/127.0.0.1/tcp/0", ConnectInviteToken: invite.Token, ConnectAuthorityPrivateKeyFile: authFile})
+	if err != nil {
+		t.Fatalf("bridge new: %v", err)
+	}
+	if app.cfg.ConnectAccessLease == nil || app.cfg.ConnectRefreshLease == nil {
+		t.Fatalf("expected minted leases, got %#v", app.cfg)
 	}
 }
 

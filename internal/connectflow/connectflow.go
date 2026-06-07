@@ -2,7 +2,10 @@ package connectflow
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"net"
 	"os"
@@ -10,11 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	bridge "github.com/origama/tubo/internal/app/bridge"
 	capability "github.com/origama/tubo/internal/capability"
 	catalog "github.com/origama/tubo/internal/catalog"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/p2p"
 )
 
 type Request struct {
@@ -201,6 +206,25 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		ConnectInviteToken: connectInviteToken,
 		ConnectGrantPeers:  connectGrantPeers,
 	}
+	if clusterCfg, ok := cfg.Clusters[scope.Cluster]; ok {
+		bridgeCfg.ConnectAuthorityPrivateKeyFile = clusterCfg.AuthorityPrivateKeyFile
+		bridgeCfg.ConnectClusterID = clusterCfg.ClusterID
+		if authorityPriv, err := loadConnectAuthorityPrivateKey(clusterCfg.AuthorityPrivateKeyFile); err == nil {
+			bridgeCfg.ConnectAuthorityPrivateKey = authorityPriv
+		}
+	} else if currentCfg, ok := cfg.Clusters[strings.TrimSpace(cfg.CurrentCluster)]; ok {
+		bridgeCfg.ConnectAuthorityPrivateKeyFile = currentCfg.AuthorityPrivateKeyFile
+		if bridgeCfg.ConnectClusterID == "" {
+			bridgeCfg.ConnectClusterID = currentCfg.ClusterID
+		}
+		if authorityPriv, err := loadConnectAuthorityPrivateKey(currentCfg.AuthorityPrivateKeyFile); err == nil {
+			bridgeCfg.ConnectAuthorityPrivateKey = authorityPriv
+		}
+	}
+	if service.ServiceID != "" {
+		bridgeCfg.ConnectServiceID = service.ServiceID
+		bridgeCfg.ConnectNamespaceID = scope.Namespace
+	}
 	if shareToken == "" && service.GrantService != nil && len(service.GrantService.Peers) > 0 {
 		bridgeCfg.ConnectGrantPeers = append([]string(nil), service.GrantService.Peers...)
 		bridgeCfg.ConnectServiceID = service.ServiceID
@@ -216,6 +240,40 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 	if bridgeCfg.P2PListen == "" {
 		bridgeCfg.P2PListen = "/ip4/0.0.0.0/tcp/0"
 	}
+	if service.ServiceID != "" {
+		pinnedServiceID := service.ServiceID
+		pinnedServiceKind := service.ServiceKind
+		bridgeCfg.ConnectRebindResolver = func(ctx context.Context) (peer.AddrInfo, string, string, error) {
+			_, refreshed, err := deps.DiscoverServiceExact(cfg, req.Timeout, req.CachedOnly, req.Live, scope, service.Name, pinnedServiceID)
+			if err != nil {
+				return peer.AddrInfo{}, "", "", err
+			}
+			refreshed = catalog.NormalizeService(refreshed)
+			if refreshed.ServiceID != "" && refreshed.ServiceID != pinnedServiceID {
+				return peer.AddrInfo{}, "", "", fmt.Errorf("service share is for service_id %q, not %q", pinnedServiceID, refreshed.ServiceID)
+			}
+			if refreshed.ServiceKind != "" && refreshed.ServiceKind != pinnedServiceKind {
+				return peer.AddrInfo{}, "", "", fmt.Errorf("service kind changed from %q to %q for pinned service_id %q", pinnedServiceKind, refreshed.ServiceKind, pinnedServiceID)
+			}
+			candidates, err := ConnectCandidates(refreshed)
+			if err != nil {
+				return peer.AddrInfo{}, "", "", err
+			}
+			if len(candidates) == 0 {
+				return peer.AddrInfo{}, "", "", fmt.Errorf("service %q has no reusable addresses", refreshed.Name)
+			}
+			selected := candidates[0]
+			addrInfo, err := p2p.AddrInfoFromString(selected.Addr)
+			if err != nil {
+				return peer.AddrInfo{}, "", "", err
+			}
+			if addrInfo.ID.String() != refreshed.PeerID {
+				return peer.AddrInfo{}, "", "", fmt.Errorf("resolved peer %s does not match announced peer %s for pinned service_id %q", addrInfo.ID, refreshed.PeerID, pinnedServiceID)
+			}
+			return addrInfo, selected.Addr, selected.Path, nil
+		}
+	}
+
 	selectedPath, selectedAddr, attempts, app, err := ConnectBridge(ctx, deps.NewBridge, bridgeCfg, service)
 	if err != nil {
 		return Result{}, err
@@ -271,6 +329,8 @@ func ConnectBridge(ctx context.Context, newBridge func(context.Context, bridge.C
 	for _, candidate := range candidates {
 		cfg := base
 		cfg.ServiceAddr = candidate.Addr
+		cfg.SelectedAddr = candidate.Addr
+		cfg.SelectedPath = candidate.Path
 		app, err := newBridge(ctx, cfg)
 		if err != nil {
 			attempts = append(attempts, Attempt{Path: candidate.Path, Addr: candidate.Addr, Status: "failed", Error: err.Error()})
@@ -447,6 +507,29 @@ func containsConnectPermission(perms []string) bool {
 		}
 	}
 	return false
+}
+
+func loadConnectAuthorityPrivateKey(path string) (ed25519.PrivateKey, error) {
+	b, err := os.ReadFile(strings.TrimSpace(path))
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(b)
+	if block == nil {
+		return nil, fmt.Errorf("cluster authority private key is not PEM encoded")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	switch k := key.(type) {
+	case ed25519.PrivateKey:
+		return k, nil
+	case *ed25519.PrivateKey:
+		return *k, nil
+	default:
+		return nil, fmt.Errorf("unsupported cluster authority private key type %T", key)
+	}
 }
 
 func splitServiceAddresses(addresses []string) (direct []string, relayed []string) {

@@ -642,7 +642,7 @@ func TestConfigRoundTripWithDiscoverySecretRefs(t *testing.T) {
 	if err := os.WriteFile(previousPath, prev, 0600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := Config{Role: "relay", Clusters: map[string]Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]Namespace{"default": {
+	cfg := Config{Role: "relay", Clusters: map[string]Cluster{"home": {ClusterID: "cluster-123", MembershipGrant: &ClusterMembershipGrant{ClusterName: "home", ClusterID: "cluster-123", Namespace: "default", Role: "member", IssuedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)}, Namespaces: map[string]Namespace{"default": {
 		Discovery:               NamespaceDiscoveryEnabled,
 		DiscoverySecretCurrent:  &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_current", File: secretPath, CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC)},
 		DiscoverySecretPrevious: &ManagedSecretRef{Type: SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)},
@@ -650,6 +650,13 @@ func TestConfigRoundTripWithDiscoverySecretRefs(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	if err := WriteFile(path, cfg, true); err != nil {
 		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("2026-06-02 10:00:00")) || bytes.Contains(raw, []byte("2026-06-09 10:00:00")) {
+		t.Fatalf("config roundtrip wrote legacy time format: %s", raw)
 	}
 	loaded, err := LoadFile(path)
 	if err != nil {
@@ -662,12 +669,52 @@ func TestConfigRoundTripWithDiscoverySecretRefs(t *testing.T) {
 	if ns.DiscoverySecretCurrent.File != secretPath || ns.DiscoverySecretPrevious.File != previousPath {
 		t.Fatalf("unexpected roundtrip refs: %#v", ns)
 	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
+	if loaded.Clusters["home"].MembershipGrant == nil || loaded.Clusters["home"].MembershipGrant.IssuedAt.IsZero() || loaded.Clusters["home"].MembershipGrant.ExpiresAt.IsZero() {
+		t.Fatalf("membership grant times missing after roundtrip: %#v", loaded.Clusters["home"].MembershipGrant)
 	}
 	if bytes.Contains(raw, secret) || bytes.Contains(raw, prev) {
 		t.Fatal("config roundtrip persisted raw discovery secret bytes")
+	}
+}
+
+func TestLoadLegacyTimeFormatsInConfig(t *testing.T) {
+	y := `role: relay
+clusters:
+  home:
+    cluster_id: cluster-123
+    membership_grant:
+      cluster_name: home
+      cluster_id: cluster-123
+      namespace: default
+      role: member
+      issued_at: 2026-06-02 10:00:00+00:00
+      expires_at: 2026-06-09 10:00:00+00:00
+    namespaces:
+      default:
+        discovery: enabled
+        discovery_secret_current:
+          type: namespace-discovery
+          key_id: nsdk_current
+          file: /tmp/current.secret
+          created_at: 2026-06-02 10:00:00+00:00
+          expires_at: 2026-06-09 10:00:00+00:00
+service:
+  name: svc
+  target: http://127.0.0.1:8000
+`
+	p := t.TempDir() + "/legacy-time.yaml"
+	if err := osWrite(p, y); err != nil {
+		t.Fatal(err)
+	}
+	c, err := LoadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Clusters["home"].MembershipGrant == nil || c.Clusters["home"].MembershipGrant.IssuedAt.IsZero() {
+		t.Fatalf("legacy grant times not parsed: %#v", c.Clusters["home"].MembershipGrant)
+	}
+	if got := c.Clusters["home"].Namespaces["default"].DiscoverySecretCurrent; got == nil || got.CreatedAt.IsZero() {
+		t.Fatalf("legacy secret times not parsed: %#v", got)
 	}
 }
 

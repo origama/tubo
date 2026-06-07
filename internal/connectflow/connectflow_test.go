@@ -12,12 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/peer"
 	bridge "github.com/origama/tubo/internal/app/bridge"
 	capability "github.com/origama/tubo/internal/capability"
 	catalog "github.com/origama/tubo/internal/catalog"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/p2p"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -102,6 +104,51 @@ func TestConnectBridgeDoesNotReacquireLeaseForFailedCandidates(t *testing.T) {
 	}
 }
 
+func TestConnectResolvePassesAuthorityKeyForShareInvites(t *testing.T) {
+	cfg := cfgpkg.Config{
+		CurrentOverlay:   "tubo-public",
+		CurrentCluster:   "home",
+		CurrentNamespace: "default",
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {AuthorityPrivateKeyFile: "/work/clusters/home/authority.key", ClusterID: "cluster-123", Namespaces: map[string]cfgpkg.Namespace{"default": {}}},
+		},
+	}
+	var got bridge.Config
+	deps := stubDeps{
+		loadConfig: func(string) (cfgpkg.Config, error) { return cfg, nil },
+		setupShare: func(serviceRef, token, cluster, namespace string) (string, string, catalog.Scope, error) {
+			return serviceRef, "svc-1", catalog.Scope{Cluster: "home", Namespace: "default"}, nil
+		},
+		parseServiceRef: func(ref string) (string, error) { return ref, nil },
+		isServiceID:     func(string) bool { return false },
+		resolveScope: func(cfgpkg.Config, string, string) (catalog.Scope, error) {
+			return catalog.Scope{Cluster: "home", Namespace: "default"}, nil
+		},
+		parseShareToken: func(string) (ShareTokenInfo, error) {
+			return ShareTokenInfo{Cluster: "home", Namespace: "default", TargetServiceID: "svc-1", ServiceKind: "http", ServiceEndpointPeer: "12D3KooWFake", ServiceEndpointAddrs: []string{"/ip4/1.2.3.4/tcp/1/p2p/12D3KooWFake"}, ConnectInviteToken: "token"}, nil
+		},
+		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
+		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { return cfg, nil },
+		markInvite:      func(string, ShareTokenInfo) error { return nil },
+		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) {
+			return catalog.LookupResult{}, catalog.Service{}, errors.New("unexpected discover")
+		},
+		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) {
+			return catalog.LookupResult{}, catalog.Service{}, errors.New("unexpected discover exact")
+		},
+		newBridge: func(_ context.Context, bridgeCfg bridge.Config) (*bridge.App, error) {
+			got = bridgeCfg
+			return &bridge.App{}, nil
+		},
+	}
+	if _, err := Resolve(context.Background(), deps, Request{ConfigPath: "/tmp/config.yaml", Token: "token", Timeout: time.Second}); err != nil {
+		t.Fatal(err)
+	}
+	if got.ConnectAuthorityPrivateKeyFile == "" {
+		t.Fatal("expected authority key file to be passed to bridge")
+	}
+}
+
 func TestResolveFallsBackToExactLookupAndBuildsBridge(t *testing.T) {
 	scope := catalog.Scope{Cluster: "cluster-a", Namespace: "default"}
 	cfg := cfgpkg.Config{}
@@ -160,6 +207,76 @@ func TestResolveFallsBackToExactLookupAndBuildsBridge(t *testing.T) {
 	}
 	if selected.ServiceAddr != service.DirectAddresses[0] {
 		t.Fatalf("selected service addr = %q", selected.ServiceAddr)
+	}
+}
+
+func TestResolveConfiguresPinnedServiceRebindResolver(t *testing.T) {
+	initialHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "connect-rebind-initial", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer initialHost.Close()
+	refreshedHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "connect-rebind-refreshed", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer refreshedHost.Close()
+	scope := catalog.Scope{Cluster: "cluster-a", Namespace: "default"}
+	cfg := cfgpkg.Config{}
+	cfg.Node.Seed = "bridge-seed"
+	initialAddr := "/ip4/10.0.0.9/tcp/4101/p2p/" + initialHost.ID().String()
+	refreshedAddr := "/ip4/10.0.0.10/tcp/4101/p2p/" + refreshedHost.ID().String()
+	initial := catalog.Service{Name: "svc", ServiceID: "svc-1", PeerID: initialHost.ID().String(), ServiceKind: "tcp", DirectAddresses: []string{initialAddr}}
+	refreshed := catalog.Service{Name: "svc", ServiceID: "svc-1", PeerID: refreshedHost.ID().String(), ServiceKind: "tcp", DirectAddresses: []string{refreshedAddr}}
+	var resolver func(context.Context) (peer.AddrInfo, string, string, error)
+	deps := stubDeps{
+		loadConfig: func(string) (cfgpkg.Config, error) { return cfg, nil },
+		setupShare: func(serviceRef, token, cluster, namespace string) (string, string, catalog.Scope, error) {
+			return serviceRef, "svc-1", scope, nil
+		},
+		parseServiceRef: func(ref string) (string, error) { return ref, nil },
+		isServiceID:     func(string) bool { return false },
+		resolveScope:    func(cfgpkg.Config, string, string) (catalog.Scope, error) { return scope, nil },
+		parseShareToken: func(string) (ShareTokenInfo, error) { return ShareTokenInfo{}, errors.New("not a share token") },
+		ensureInvite:    func(string, ShareTokenInfo) error { return nil },
+		importDiscovery: func(cfg cfgpkg.Config, _ ShareTokenInfo) (cfgpkg.Config, error) { return cfg, nil },
+		markInvite:      func(string, ShareTokenInfo) error { return nil },
+		discoverService: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string) (catalog.LookupResult, catalog.Service, error) {
+			return catalog.LookupResult{}, initial, nil
+		},
+		discoverServiceExact: func(cfgpkg.Config, time.Duration, bool, bool, catalog.Scope, string, string) (catalog.LookupResult, catalog.Service, error) {
+			return catalog.LookupResult{}, refreshed, nil
+		},
+		newBridge: func(_ context.Context, bridgeCfg bridge.Config) (*bridge.App, error) {
+			resolver = bridgeCfg.ConnectRebindResolver
+			if bridgeCfg.SelectedAddr == "" {
+				t.Fatal("missing selected addr")
+			}
+			if bridgeCfg.SelectedPath == "" {
+				t.Fatal("missing selected path")
+			}
+			return &bridge.App{}, nil
+		},
+	}
+	result, err := Resolve(context.Background(), deps, Request{ConfigPath: "/tmp/config.yaml", ServiceRef: "svc", Timeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolver == nil {
+		t.Fatal("expected rebind resolver")
+	}
+	info, addr, path, err := resolver(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.ID.String() != refreshed.PeerID {
+		t.Fatalf("rebinding peer = %s, want %s", info.ID, refreshed.PeerID)
+	}
+	if addr != refreshedAddr || path != "direct" {
+		t.Fatalf("rebinding addr/path = %s/%s", addr, path)
+	}
+	if result.ServiceID != "svc-1" || result.SelectedAddr == "" {
+		t.Fatalf("unexpected result: %#v", result)
 	}
 }
 
