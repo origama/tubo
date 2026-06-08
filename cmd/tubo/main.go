@@ -731,6 +731,9 @@ func runRole(commandName, role string, args []string) error {
 }
 
 func printForegroundRuntimeNotice(commandName, role string, cfg cfgpkg.Config) {
+	if commandName == "attach" {
+		return
+	}
 	switch role {
 	case "edge":
 		logging.Warnf("gateway running in foreground; press Ctrl+C to stop\n")

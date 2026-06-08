@@ -176,6 +176,9 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 		if strings.Contains(result.UserMessage, "grant request ") {
 			return attachAuthorization{}, errors.New(result.UserMessage)
 		}
+		if strings.Contains(result.UserMessage, "grant service peer") || strings.Contains(result.UserMessage, "local authority key") {
+			return attachAuthorization{}, fmt.Errorf("missing grant service peer: %s", result.UserMessage)
+		}
 		return attachAuthorization{}, noServicePublishGrantError(result.Config.CurrentCluster, result.Config.CurrentNamespace, result.Config.Service.Name)
 	default:
 		return attachAuthorization{}, errors.New("attach authorization returned an unknown decision")
@@ -463,7 +466,7 @@ func printAttachShareHint(cfg cfgpkg.Config, authz attachAuthorization) {
 }
 
 func noServicePublishGrantError(clusterName, namespaceName, serviceName string) error {
-	return fmt.Errorf("no service publish grant for cluster %q namespace %q service %q; request a grant from a cluster authority or run attach from an authority node", clusterName, namespaceName, serviceName)
+	return fmt.Errorf("missing grant service peer for cluster %q namespace %q service %q; request a grant from a cluster authority or run attach from an authority node", clusterName, namespaceName, serviceName)
 }
 
 func writeServiceClaimFile(path string, claim capability.ServiceClaim) error {

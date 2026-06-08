@@ -311,10 +311,13 @@ func TestPrintForegroundRuntimeNoticeUsesStderr(t *testing.T) {
 	if strings.TrimSpace(stdout) != "" {
 		t.Fatalf("expected empty stdout, got: %q", stdout)
 	}
-	for _, want := range []string{"gateway running in foreground", "relay running in foreground", "service \"myapi\" running in foreground"} {
+	for _, want := range []string{"gateway running in foreground", "relay running in foreground"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("stderr missing %q: %q", want, stderr)
 		}
+	}
+	if strings.Contains(stderr, "service \"myapi\" running in foreground") {
+		t.Fatalf("unexpected attach foreground notice: %q", stderr)
 	}
 }
 
@@ -4203,6 +4206,54 @@ func TestImportServiceShareDiscoveryContextIgnoresAuthorizedKeyCommentDifference
 	}
 }
 
+func TestResolveAttachAuthorizationReportsMissingGrantServicePeerForExpiredPublishLease(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "namespace/virzanti", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CurrentNamespace = "virzanti"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	if err := mintLocalServicePublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTestServiceClaim(t, cluster, cfg.CurrentNamespace, svc, time.Now().Add(-time.Hour), ""); err != nil {
+		t.Fatal(err)
+	}
+	lease, err := readPublishLeaseFile(svc.ServicePublishLeaseFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease.ExpiresAt = time.Now().Add(-time.Hour)
+	if err := writePublishLeaseFile(svc.ServicePublishLeaseFile, lease); err != nil {
+		t.Fatal(err)
+	}
+	cluster.AuthorityPrivateKeyFile = ""
+	cfg.Clusters[cfg.CurrentCluster] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = resolveAttachAuthorization(configPath, cfg)
+	if err == nil || !strings.Contains(err.Error(), "missing grant service peer") {
+		t.Fatalf("expected missing grant service peer error, got %v", err)
+	}
+	if strings.Contains(err.Error(), "no service publish grant") {
+		t.Fatalf("unexpected generic grant error, got %v", err)
+	}
+}
+
 func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -4211,7 +4262,7 @@ func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *t
 	}{
 		{
 			name:    "missing claim",
-			wantErr: "no service publish grant",
+			wantErr: "missing grant service peer",
 		},
 		{
 			name: "wrong peer claim",
@@ -4259,7 +4310,7 @@ func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *t
 					t.Fatal(err)
 				}
 			},
-			wantErr: "no service publish grant",
+			wantErr: "missing grant service peer",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
