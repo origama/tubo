@@ -30,6 +30,9 @@ type State struct {
 	PeerID                  string   `json:"peer_id,omitempty"`
 	Cluster                 string   `json:"cluster,omitempty"`
 	Namespace               string   `json:"namespace,omitempty"`
+	ConnectPolicy           string   `json:"connect_policy,omitempty"`
+	GrantEndpointEnabled    bool     `json:"grant_endpoint_enabled,omitempty"`
+	GrantProtocol           string   `json:"grant_protocol,omitempty"`
 	Local                   string   `json:"local,omitempty"`
 	Target                  string   `json:"target,omitempty"`
 	Path                    string   `json:"path,omitempty"`

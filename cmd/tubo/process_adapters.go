@@ -9,6 +9,7 @@ import (
 
 	bridgeapp "github.com/origama/tubo/internal/app/bridge"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	processes "github.com/origama/tubo/internal/processes"
 )
 
@@ -148,6 +149,28 @@ func updateProcessConnectState(stateFile string, result connectResult) error {
 		state.SelectedAddr = result.Selected
 		state.SelectedPath = result.Path
 	})
+}
+
+func updateAttachProcessState(state *detachedProcessState, cfg cfgpkg.Config) {
+	if state == nil {
+		return
+	}
+	scope, err := cfgpkg.ResolveEffectiveScope(cfg, "", "", false)
+	if err == nil {
+		policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
+		state.ConnectPolicy = string(policy.ConnectPolicy)
+		cluster, ok := cfg.Clusters[scope.Cluster]
+		state.GrantEndpointEnabled = ok && strings.TrimSpace(cluster.AuthorityPublicKey) != "" && strings.TrimSpace(scope.Cluster) != "" && strings.TrimSpace(scope.Namespace) != ""
+		if state.GrantEndpointEnabled {
+			state.GrantProtocol = grantspkg.ProtocolID
+		} else {
+			state.GrantProtocol = ""
+		}
+		return
+	}
+	state.ConnectPolicy = ""
+	state.GrantEndpointEnabled = false
+	state.GrantProtocol = ""
 }
 
 func sanitizeProcessName(s string) string {

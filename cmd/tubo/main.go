@@ -709,6 +709,9 @@ func runRole(commandName, role string, args []string) error {
 	if err != nil {
 		return err
 	}
+	if commandName == "attach" {
+		updateAttachProcessState(&spec.State, c)
+	}
 	spec.State.LogFile = ""
 	state, cleanup, err := registerCurrentProcess(spec.State)
 	if err != nil {
@@ -1211,6 +1214,7 @@ func detachRoleCommand(commandName, role string, args []string) error {
 		if attachAuthz.ServicePeerID != "" {
 			spec.State.PeerID = attachAuthz.ServicePeerID
 		}
+		updateAttachProcessState(&spec.State, cfg)
 	}
 	state, err := startDetachedProcess(spec)
 	if err != nil {
@@ -1435,6 +1439,19 @@ func printProcessDescription(state detachedProcessState, status string) {
 	}
 	if state.ServiceID != "" {
 		fmt.Printf("Service ID: %s\n", state.ServiceID)
+	}
+	if state.Command == "attach" || state.ResourceKind == "service" || state.GrantEndpointEnabled || state.GrantProtocol != "" || state.ConnectPolicy != "" {
+		if state.GrantEndpointEnabled {
+			fmt.Println("Grant endpoint: enabled")
+		} else {
+			fmt.Println("Grant endpoint: disabled")
+		}
+		if state.ConnectPolicy != "" {
+			fmt.Printf("Connect policy: %s\n", state.ConnectPolicy)
+		}
+		if state.GrantProtocol != "" {
+			fmt.Printf("Grant protocol: %s\n", state.GrantProtocol)
+		}
 	}
 	if state.PeerID != "" {
 		fmt.Printf("Peer ID: %s\n", state.PeerID)

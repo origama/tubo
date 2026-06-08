@@ -875,7 +875,7 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Resource kind: service", "Service kind: http", "Peer ID: 12D3KooWServicePeer", "Source: foreground", "Status confidence: pid+cmdline", "Command line:"} {
+	for _, want := range []string{"Resource kind: service", "Service kind: http", "Grant endpoint: disabled", "Peer ID: 12D3KooWServicePeer", "Source: foreground", "Status confidence: pid+cmdline", "Command line:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
@@ -891,7 +891,7 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	if err := json.Unmarshal([]byte(inspectOut), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" || payload.State.ResourceKind != "service" || payload.State.ServiceKind != "http" || payload.State.PeerID != "12D3KooWServicePeer" {
+	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" || payload.State.ResourceKind != "service" || payload.State.ServiceKind != "http" || payload.State.PeerID != "12D3KooWServicePeer" || payload.State.GrantEndpointEnabled || payload.State.ConnectPolicy != "" || payload.State.GrantProtocol != "" {
 		t.Fatalf("unexpected inspect payload: %+v", payload)
 	}
 }
@@ -940,6 +940,47 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
+	}
+}
+
+func TestDescribeProcessShowsGrantEndpointStatusAndPolicy(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmdline, ok := processCommandLine(os.Getpid())
+	if !ok || len(cmdline) == 0 {
+		t.Fatal("expected current process cmdline")
+	}
+	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-myapi", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), Source: "foreground", CommandLine: cmdline, ServiceKind: "http", ServiceID: "service-a", PeerID: "12D3KooWServicePeer", ConnectPolicy: string(cfgpkg.ConnectPolicyNamespaceMember), GrantEndpointEnabled: true, GrantProtocol: grantspkg.ProtocolID}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return describeCmd([]string{state.ID}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Grant endpoint: enabled", "Connect policy: namespace_members", "Grant protocol: /tubo/grants/1.0"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe output missing %q: %s", want, out)
+		}
+	}
+	inspectOut, err := capture(func() error { return inspectCmd([]string{state.ID, "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Status string               `json:"status"`
+		State  detachedProcessState `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(inspectOut), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.State.GrantEndpointEnabled != true || payload.State.ConnectPolicy != string(cfgpkg.ConnectPolicyNamespaceMember) || payload.State.GrantProtocol != grantspkg.ProtocolID {
+		t.Fatalf("unexpected inspect payload: %+v", payload)
 	}
 }
 

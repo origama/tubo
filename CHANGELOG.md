@@ -30,6 +30,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `describe process/...` and `inspect process/... --json` now expose service/pipe runtime binding details such as service kind, peer id, selected address, and selected path when available.
 
 ### Fixed
+- `describe process/attach...` now shows whether the service-scoped grant endpoint is enabled, plus the effective connect policy and grant protocol when available.
 - `namespace_members` connect sessions no longer surface a misleading fresh-token hint while membership-based rollover is still available; invite-only refresh failures keep the existing fresh-token/invite wording.
 - Connect lease renewal now prefers member rollover when possible and only surfaces fresh-token/invite guidance on invite-only paths.
 - Refresh results that are too short-lived for a rollover-capable namespace member now skip the alarmist token/invite hint and roll over through membership instead.
