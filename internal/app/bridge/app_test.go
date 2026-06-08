@@ -7,6 +7,7 @@ import (
 	crand "crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -20,6 +21,7 @@ import (
 	hostpkg "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	coreprotocol "github.com/libp2p/go-libp2p/core/protocol"
+	capability "github.com/origama/tubo/internal/capability"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	iprotocol "github.com/origama/tubo/internal/protocol"
@@ -488,16 +490,180 @@ func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
 		atomic.AddInt32(&refreshes, 1)
 		return grantspkg.ConnectAccessLease{ExpiresAt: time.Now().UTC().Add(connectRefreshMinExtension / 2), IssuedAt: time.Now().UTC()}, nil
 	}}, connectLease: &access}
-	_, err = app.ensureConnectAccessLease(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "near expiry") {
-		t.Fatalf("expected stable near expiry error, got %v", err)
+	lease, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected current lease to remain usable, got %v", err)
 	}
-	_, err = app.ensureConnectAccessLease(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "near expiry") {
-		t.Fatalf("expected stable retry error, got %v", err)
+	if lease.JTI != access.JTI {
+		t.Fatalf("expected current lease to be reused, got %#v", lease)
 	}
 	if got := atomic.LoadInt32(&refreshes); got != 1 {
 		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	snap := app.statusSnapshot(time.Now().UTC())
+	if snap.Status != "degraded" || !strings.Contains(snap.Reason, "near expiry") {
+		t.Fatalf("expected degraded near expiry status, got %#v", snap)
+	}
+}
+
+func TestBridgeConnectLeaseRolloverRenewsAccessAndRefresh(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-member-rollover-client", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeHost.Close()
+	grantHost := newConnectLeaseGrantHost(t, authPriv, 10*time.Second, 20*time.Second, func(msg grantspkg.Message, requester string) error {
+		if msg.MembershipCapability == nil {
+			return errors.New("missing membership capability")
+		}
+		if err := capability.VerifyMembershipCapability(*msg.MembershipCapability, authPriv.Public().(ed25519.PublicKey), "cluster-123", "default", requester); err != nil {
+			return err
+		}
+		if !strings.Contains(strings.Join(msg.MembershipCapability.Permissions, ","), capability.PermissionConnect) {
+			return errors.New("missing connect permission")
+		}
+		return nil
+	})
+	defer grantHost.Close()
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: bridgeHost.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientKey := bridgeHostAuthorizedKey(t, bridgeHost)
+	initial, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-member-rollover-initial", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 150*time.Millisecond, 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{host: bridgeHost, connectLease: &initial.AccessLease, cfg: Config{ConnectRefreshLease: &initial.RefreshLease, ConnectGrantPeers: []string{p2p.PeerAddrs(grantHost)[0]}, ConnectClusterID: "cluster-123", ConnectNamespaceID: "default", ConnectServiceID: "svc-123", ConnectMembershipCapability: &memberCap}}
+	rolled, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("rollover lease: %v", err)
+	}
+	if rolled.JTI == initial.AccessLease.JTI {
+		t.Fatalf("expected rollover to replace access lease: %#v", rolled)
+	}
+	if app.cfg.ConnectRefreshLease == nil || app.cfg.ConnectRefreshLease.JTI == initial.RefreshLease.JTI {
+		t.Fatalf("expected rollover to replace refresh lease: %#v", app.cfg.ConnectRefreshLease)
+	}
+	time.Sleep(350 * time.Millisecond)
+	if _, err := app.connectProof(); err != nil {
+		t.Fatalf("connect proof after rollover and old refresh expiry: %v", err)
+	}
+}
+
+func TestBridgeConnectLeaseRolloverDeniedMarksDegraded(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-member-rollover-denied-client", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeHost.Close()
+	grantHost := newConnectLeaseGrantHost(t, authPriv, 10*time.Second, 20*time.Second, func(msg grantspkg.Message, requester string) error {
+		if msg.MembershipCapability == nil {
+			return errors.New("missing membership capability")
+		}
+		if err := capability.VerifyMembershipCapability(*msg.MembershipCapability, authPriv.Public().(ed25519.PublicKey), "cluster-123", "default", requester); err != nil {
+			return err
+		}
+		if !strings.Contains(strings.Join(msg.MembershipCapability.Permissions, ","), capability.PermissionConnect) {
+			return errors.New("missing connect permission")
+		}
+		return nil
+	})
+	defer grantHost.Close()
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: bridgeHost.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().Add(time.Hour)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientKey := bridgeHostAuthorizedKey(t, bridgeHost)
+	initial, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-member-rollover-denied-initial", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 150*time.Millisecond, 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{host: bridgeHost, connectLease: &initial.AccessLease, cfg: Config{ConnectRefreshLease: &initial.RefreshLease, ConnectGrantPeers: []string{p2p.PeerAddrs(grantHost)[0]}, ConnectClusterID: "cluster-123", ConnectNamespaceID: "default", ConnectServiceID: "svc-123", ConnectMembershipCapability: &memberCap}}
+	lease, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected current lease to remain usable after denial, got %v", err)
+	}
+	if lease.JTI != initial.AccessLease.JTI {
+		t.Fatalf("expected current lease to remain in use, got %#v", lease)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "connect permission") {
+		t.Fatalf("expected degraded membership denial, got %#v", snap)
+	}
+}
+
+func TestBridgeConnectLeaseRolloverTemporaryFailureBacksOff(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-member-rollover-backoff-client", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeHost.Close()
+	var requests int32
+	grantHost := newConnectLeaseGrantHost(t, authPriv, 10*time.Second, 20*time.Second, func(msg grantspkg.Message, requester string) error {
+		if atomic.AddInt32(&requests, 1) == 1 {
+			return errors.New("temporary grant endpoint failure")
+		}
+		if msg.MembershipCapability == nil {
+			return errors.New("missing membership capability")
+		}
+		if err := capability.VerifyMembershipCapability(*msg.MembershipCapability, authPriv.Public().(ed25519.PublicKey), "cluster-123", "default", requester); err != nil {
+			return err
+		}
+		if !strings.Contains(strings.Join(msg.MembershipCapability.Permissions, ","), capability.PermissionConnect) {
+			return errors.New("missing connect permission")
+		}
+		return nil
+	})
+	defer grantHost.Close()
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: bridgeHost.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientKey := bridgeHostAuthorizedKey(t, bridgeHost)
+	initial, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-member-rollover-backoff-initial", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 150*time.Millisecond, 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{host: bridgeHost, connectLease: &initial.AccessLease, cfg: Config{ConnectRefreshLease: &initial.RefreshLease, ConnectGrantPeers: []string{p2p.PeerAddrs(grantHost)[0]}, ConnectClusterID: "cluster-123", ConnectNamespaceID: "default", ConnectServiceID: "svc-123", ConnectMembershipCapability: &memberCap}}
+	lease, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected current lease to remain usable after temporary failure, got %v", err)
+	}
+	if lease.JTI != initial.AccessLease.JTI {
+		t.Fatalf("expected current lease to remain in use, got %#v", lease)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("expected one rollover request, got %d", got)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.NextRefreshRetryAt == nil {
+		t.Fatal("expected retry backoff to be scheduled")
+	}
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "temporary grant endpoint failure") {
+		t.Fatalf("expected degraded temporary failure, got %#v", snap)
+	}
+	lease, err = app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected backoff path to keep current lease usable, got %v", err)
+	}
+	if lease.JTI != initial.AccessLease.JTI {
+		t.Fatalf("expected current lease to remain in use during backoff, got %#v", lease)
+	}
+	if got := atomic.LoadInt32(&requests); got != 1 {
+		t.Fatalf("expected no retry before backoff, got %d requests", got)
 	}
 }
 
@@ -568,6 +734,62 @@ func (stubNetworkStream) SetProtocol(coreprotocol.ID) error            { return 
 func (stubNetworkStream) Stat() network.Stats                          { return network.Stats{} }
 func (stubNetworkStream) Conn() network.Conn                           { return nil }
 func (stubNetworkStream) Scope() network.StreamScope                   { return nil }
+func newConnectLeaseGrantHost(t *testing.T, authPriv ed25519.PrivateKey, accessTTL, refreshTTL time.Duration, authorize func(grantspkg.Message, string) error) hostpkg.Host {
+	t.Helper()
+	grantHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-connect-grant-"+testNameSlug(t.Name()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantHost.SetStreamHandler(grantspkg.ProtocolID, func(stream network.Stream) {
+		defer stream.Close()
+		msg, err := grantspkg.DecodeMessage(stream)
+		if err != nil {
+			_ = grantspkg.EncodeMessage(stream, grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: "invalid", Reason: err.Error()})
+			return
+		}
+		requester := stream.Conn().RemotePeer().String()
+		if authorize != nil {
+			if err := authorize(msg, requester); err != nil {
+				_ = grantspkg.EncodeMessage(stream, grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: "connect-request", Reason: err.Error()})
+				return
+			}
+		}
+		invite := grantspkg.ServiceSharePayload{JTI: "bridge-connect-grant-" + testNameSlug(t.Name()), ClusterID: msg.ClusterID, NamespaceID: msg.NamespaceID, TargetServiceID: msg.ServiceID, ExpiresAt: time.Now().UTC().Add(time.Hour)}
+		artifacts, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, invite, msg.ClientPublicKey, accessTTL, refreshTTL)
+		if err != nil {
+			_ = grantspkg.EncodeMessage(stream, grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: msg.RequestID, Reason: err.Error()})
+			return
+		}
+		_ = grantspkg.EncodeMessage(stream, grantspkg.Message{Type: grantspkg.TypeConnectGranted, Version: grantspkg.VersionV1, RequestID: msg.RequestID, ConnectAccessLease: &artifacts.AccessLease, ConnectRefreshLease: &artifacts.RefreshLease})
+	})
+	return grantHost
+}
+
+func testNameSlug(s string) string {
+	mapped := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		case r >= '0' && r <= '9':
+			return r
+		case r == '-', r == '_', r == '.':
+			return '-'
+		default:
+			return '-'
+		}
+	}, s)
+	mapped = strings.Trim(mapped, "-")
+	for strings.Contains(mapped, "--") {
+		mapped = strings.ReplaceAll(mapped, "--", "-")
+	}
+	if mapped == "" {
+		return "default"
+	}
+	return mapped
+}
+
 func bridgeHostAuthorizedKey(t *testing.T, h hostpkg.Host) string {
 	t.Helper()
 	pub := h.Peerstore().PubKey(h.ID())
