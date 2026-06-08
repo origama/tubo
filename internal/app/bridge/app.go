@@ -542,7 +542,7 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 		snap.ConnectRefreshExpiresIn = formatRemaining(t, now)
 		if rolloverDue := connectRefreshLeaseNeedsRollover(*a.cfg.ConnectRefreshLease, now); rolloverDue && !a.connectCanRolloverLocked() {
 			snap.Status = "degraded"
-			snap.Reason = connectRefreshLeaseRolloverReason(*a.cfg.ConnectRefreshLease, now)
+			snap.Reason = connectRefreshLeaseFreshTokenReason(*a.cfg.ConnectRefreshLease, now)
 		}
 	} else if a.connectLease != nil {
 		if !now.Before(a.connectLease.ExpiresAt.UTC()) {
@@ -579,11 +579,11 @@ func connectRefreshLeaseNeedsRollover(refresh grantspkg.ConnectRefreshLease, now
 	return !now.Before(refresh.ExpiresAt.UTC()) || time.Until(refresh.ExpiresAt.UTC()) <= connectRefreshMinUsefulLifetime
 }
 
-func connectRefreshLeaseRolloverReason(refresh grantspkg.ConnectRefreshLease, now time.Time) string {
+func connectRefreshLeaseFreshTokenReason(refresh grantspkg.ConnectRefreshLease, now time.Time) string {
 	if refresh.ExpiresAt.IsZero() || !now.Before(refresh.ExpiresAt.UTC()) {
 		return "connect refresh lease expired; ask the service owner for a fresh token/invite"
 	}
-	return "connect refresh lease is near expiry; rolling over through membership"
+	return "connect refresh lease is near expiry; ask the service owner for a fresh token/invite"
 }
 
 func (a *App) connectCanRolloverLocked() bool {
@@ -635,7 +635,7 @@ func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 		}
 		rolloverDue := connectRefreshLeaseNeedsRollover(*refresh, now)
 		if rolloverDue && !canRollover {
-			err := errors.New(connectRefreshLeaseRolloverReason(*refresh, now))
+			err := errors.New(connectRefreshLeaseFreshTokenReason(*refresh, now))
 			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
 			a.markTunnelDegraded(err)
 			return
@@ -870,7 +870,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 				return lease, nil
 			}
 			if !a.connectCanRolloverLocked() {
-				err := errors.New(connectRefreshLeaseRolloverReason(*refresh, now))
+				err := errors.New(connectRefreshLeaseFreshTokenReason(*refresh, now))
 				a.connectMu.Unlock()
 				a.recordRefreshFailureLocked(err, refresh.ExpiresAt.UTC())
 				return grantspkg.ConnectAccessLease{}, err
@@ -888,7 +888,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		rolloverDue := connectRefreshLeaseNeedsRollover(*refresh, now)
 		canRollover := a.connectCanRolloverLocked()
 		if rolloverDue && !canRollover {
-			err := errors.New(connectRefreshLeaseRolloverReason(*refresh, now))
+			err := errors.New(connectRefreshLeaseFreshTokenReason(*refresh, now))
 			a.connectMu.Unlock()
 			a.recordRefreshFailureLocked(err, refresh.ExpiresAt.UTC())
 			return grantspkg.ConnectAccessLease{}, err

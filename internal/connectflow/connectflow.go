@@ -19,6 +19,7 @@ import (
 	catalog "github.com/origama/tubo/internal/catalog"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
 )
 
@@ -321,7 +322,10 @@ func ConnectBridge(ctx context.Context, newBridge func(context.Context, bridge.C
 		return "", "", nil, nil, err
 	}
 	attempts := make([]Attempt, 0, len(candidates))
-	for _, candidate := range candidates {
+	total := len(candidates)
+	for idx, candidate := range candidates {
+		attemptNo := idx + 1
+		logging.Verbosef(3, "connect candidate attempt %d/%d path=%s addr=%s\n", attemptNo, total, candidate.Path, candidate.Addr)
 		cfg := base
 		cfg.ServiceAddr = candidate.Addr
 		cfg.SelectedAddr = candidate.Addr
@@ -329,9 +333,11 @@ func ConnectBridge(ctx context.Context, newBridge func(context.Context, bridge.C
 		app, err := newBridge(ctx, cfg)
 		if err != nil {
 			attempts = append(attempts, Attempt{Path: candidate.Path, Addr: candidate.Addr, Status: "failed", Error: err.Error()})
+			logging.Verbosef(3, "connect candidate failed %d/%d path=%s addr=%s err=%q\n", attemptNo, total, candidate.Path, candidate.Addr, err.Error())
 			continue
 		}
 		attempts = append(attempts, Attempt{Path: candidate.Path, Addr: candidate.Addr, Status: "selected"})
+		logging.Verbosef(3, "connect candidate selected %d/%d path=%s addr=%s\n", attemptNo, total, candidate.Path, candidate.Addr)
 		return candidate.Path, candidate.Addr, attempts, app, nil
 	}
 	return "", "", attempts, nil, fmt.Errorf("connect to service %q failed: %s", service.Name, SummarizeAttempts(attempts))

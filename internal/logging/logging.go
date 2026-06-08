@@ -57,6 +57,18 @@ func Progressf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format, args...)
 }
 
+func Verbosef(minVerbosity int, format string, args ...any) {
+	if current.Quiet {
+		return
+	}
+	if current.LogLevel == "error" || current.LogLevel == "warn" || current.LogLevel == "warning" {
+		return
+	}
+	if current.LogLevel == "info" || current.LogLevel == "debug" || current.LogLevel == "trace" || current.Verbosity >= minVerbosity {
+		fmt.Fprintf(os.Stderr, format, args...)
+	}
+}
+
 func Warnf(format string, args ...any) {
 	if current.Quiet {
 		return

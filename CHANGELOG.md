@@ -13,9 +13,12 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - Detached raw TCP `connect` now performs one bounded inline self-heal attempt when pre-stream setup fails (for example stale path before stream open/handshake), while still failing fast once application bytes have already started flowing.
 - Detached `connect` logs now include connect start and service-resolution summaries so tunnel failures are easier to diagnose from the per-process log file.
 - Detached `connect` now renews its access lease proactively before expiry when a refresh lease is available, and process visibility now exposes degraded runtime state plus remaining lease lifetime.
+- `tubo connect -vvv` now logs each candidate address attempt with path, address, and failure/selection reason.
 - `tubo ps` now distinguishes `service` and `pipe` rows and shows `SERVICE KIND` alongside `SERVICE ID`/`SCOPE` for local runtimes when known.
 
 ### Fixed
+- `namespace_members` connect sessions no longer surface a misleading fresh-token hint while a member rollover remains available; invite-only refresh failures keep the existing fresh-token/invite wording.
+- `connect` now reports rollover-capable connect lease renewal without the old intermediate near-expiry alarm in the member path.
 - Detached raw TCP `connect` no longer always requires a manual restart to recover from some stale direct-path failures before a new stream starts.
 - `connect` now re-resolves pinned `service_id` metadata on stream/setup self-heal and can rebind to the newly verified peer/address instead of staying stuck on the original endpoint.
 - `connect --token` no longer treats the service peer address from `service_endpoint` as a fallback grant endpoint; it now requires either a local authority key for minting or an explicit `grant_service` path and fails clearly when neither exists.

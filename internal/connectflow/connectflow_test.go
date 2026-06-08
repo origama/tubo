@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -21,6 +22,7 @@ import (
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
 	"golang.org/x/crypto/ssh"
 )
@@ -119,6 +121,66 @@ func TestConnectBridgeDoesNotReacquireLeaseForFailedCandidates(t *testing.T) {
 	for i, cfg := range seen {
 		if cfg.ConnectAccessLease == nil || cfg.ConnectRefreshLease == nil {
 			t.Fatalf("attempt %d lost connect lease reuse: %#v", i, cfg)
+		}
+	}
+}
+
+func TestConnectBridgeLogsCandidateAttemptsAtHighVerbosity(t *testing.T) {
+	oldCfg := logging.Current()
+	if err := logging.Configure(logging.Config{Runtime: true, Verbosity: 3}); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = logging.Configure(oldCfg)
+	}()
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = oldStderr }()
+	defer r.Close()
+	service := catalog.Service{
+		Name:             "svc",
+		ServiceID:        "svc-1",
+		DirectAddresses:  []string{"/ip4/10.0.0.1/tcp/4101/p2p/peer-a", "/ip4/10.0.0.2/tcp/4101/p2p/peer-a"},
+		RelayedAddresses: []string{"/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/peer-a"},
+	}
+	base := bridge.Config{ConnectAccessLease: &grantspkg.ConnectAccessLease{ServiceID: "svc-1"}, ConnectRefreshLease: &grantspkg.ConnectRefreshLease{ServiceID: "svc-1"}}
+	var seen int
+	_, _, attempts, app, err := ConnectBridge(context.Background(), func(_ context.Context, cfg bridge.Config) (*bridge.App, error) {
+		seen++
+		if seen < 3 {
+			return nil, errors.New("candidate failed")
+		}
+		return &bridge.App{}, nil
+	}, base, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app == nil {
+		t.Fatal("expected app")
+	}
+	if len(attempts) != 3 || attempts[0].Status != "failed" || attempts[1].Status != "failed" || attempts[2].Status != "selected" {
+		t.Fatalf("unexpected attempts: %#v", attempts)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stderr, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	logs := string(stderr)
+	for _, want := range []string{
+		"connect candidate attempt 1/3 path=direct addr=/ip4/10.0.0.1/tcp/4101/p2p/peer-a",
+		"connect candidate failed 1/3 path=direct addr=/ip4/10.0.0.1/tcp/4101/p2p/peer-a err=\"candidate failed\"",
+		"connect candidate attempt 3/3 path=relayed addr=/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/peer-a",
+		"connect candidate selected 3/3 path=relayed addr=/ip4/1.2.3.4/tcp/4001/p2p/relay/p2p-circuit/p2p/peer-a",
+	} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("stderr missing %q: %s", want, logs)
 		}
 	}
 }

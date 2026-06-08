@@ -1,6 +1,11 @@
 package logging
 
-import "testing"
+import (
+	"io"
+	"os"
+	"strings"
+	"testing"
+)
 
 func TestDiagnosticsEnabledThresholds(t *testing.T) {
 	cases := []struct {
@@ -21,5 +26,38 @@ func TestDiagnosticsEnabledThresholds(t *testing.T) {
 				t.Fatalf("diagnosticsEnabled(%+v) = %v, want %v", tt.cfg, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestVerbosefThresholds(t *testing.T) {
+	oldCfg := Current()
+	oldStderr := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	defer func() {
+		os.Stderr = oldStderr
+		_ = Configure(oldCfg)
+	}()
+	if err := Configure(Config{Verbosity: 3}); err != nil {
+		t.Fatal(err)
+	}
+	Verbosef(3, "hello\n")
+	Verbosef(4, "skip\n")
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	if !strings.Contains(got, "hello") {
+		t.Fatalf("expected verbose output, got %q", got)
+	}
+	if strings.Contains(got, "skip") {
+		t.Fatalf("unexpected output for higher threshold, got %q", got)
 	}
 }

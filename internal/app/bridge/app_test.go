@@ -126,8 +126,8 @@ func TestBridgeDoesNotRefreshWhenRefreshLeaseNearExpiry(t *testing.T) {
 		return grantspkg.ConnectAccessLease{}, nil
 	}}, connectLease: &access}
 	_, err = app.ensureConnectAccessLease(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "near expiry") {
-		t.Fatalf("expected near expiry error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "fresh token/invite") {
+		t.Fatalf("expected fresh-token hint, got %v", err)
 	}
 	if got := atomic.LoadInt32(&refreshes); got != 0 {
 		t.Fatalf("refresh calls = %d, want 0", got)
@@ -449,7 +449,7 @@ func TestBridgeStatusSnapshotDegradesWhenRefreshLeaseNearExpiry(t *testing.T) {
 	if snap.Status != "degraded" {
 		t.Fatalf("status = %q", snap.Status)
 	}
-	if !strings.Contains(snap.Reason, "near expiry") {
+	if !strings.Contains(snap.Reason, "fresh token/invite") {
 		t.Fatalf("reason = %q", snap.Reason)
 	}
 }
@@ -483,7 +483,7 @@ func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	access.ExpiresAt = time.Now().UTC().Add(800 * time.Millisecond)
+	access.ExpiresAt = time.Now().UTC().Add(200 * time.Millisecond)
 	access.IssuedAt = time.Now().UTC().Add(-800 * time.Millisecond)
 	var refreshes int32
 	app := &App{host: h, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
@@ -501,8 +501,8 @@ func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
 		t.Fatalf("refresh calls = %d, want 1", got)
 	}
 	snap := app.statusSnapshot(time.Now().UTC())
-	if snap.Status != "degraded" || !strings.Contains(snap.Reason, "near expiry") {
-		t.Fatalf("expected degraded near expiry status, got %#v", snap)
+	if snap.Status != "degraded" || !strings.Contains(snap.Reason, "fresh token/invite") {
+		t.Fatalf("expected degraded token hint, got %#v", snap)
 	}
 }
 
@@ -539,6 +539,10 @@ func TestBridgeConnectLeaseRolloverRenewsAccessAndRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := &App{host: bridgeHost, connectLease: &initial.AccessLease, cfg: Config{ConnectRefreshLease: &initial.RefreshLease, ConnectGrantPeers: []string{p2p.PeerAddrs(grantHost)[0]}, ConnectClusterID: "cluster-123", ConnectNamespaceID: "default", ConnectServiceID: "svc-123", ConnectMembershipCapability: &memberCap}}
+	snap := app.statusSnapshot(time.Now().UTC())
+	if snap.Status == "degraded" || strings.Contains(strings.ToLower(snap.Reason), "fresh token/invite") {
+		t.Fatalf("expected rollover-capable session to stay non-alarmist before rollover, got %#v", snap)
+	}
 	rolled, err := app.ensureConnectAccessLease(context.Background())
 	if err != nil {
 		t.Fatalf("rollover lease: %v", err)
