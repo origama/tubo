@@ -979,48 +979,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 			prevExpiry = current.ExpiresAt.UTC()
 		}
 		if rolloverDue {
-			grantPeers := append([]string(nil), a.cfg.ConnectGrantPeers...)
-			clusterID := a.cfg.ConnectClusterID
-			namespaceID := a.cfg.ConnectNamespaceID
-			serviceID := a.cfg.ConnectServiceID
-			membership := a.cfg.ConnectMembershipCapability
-			membershipGrantToken := a.cfg.ConnectMembershipGrantToken
-			log.Printf("bridge member connect lease rollover requested service=%s cluster=%s namespace=%s", serviceID, clusterID, namespaceID)
-			refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			a.refreshingLease = true
-			a.refreshDone = make(chan struct{})
-			a.connectMu.Unlock()
-			artifacts, err := requestDirectConnectLease(refreshCtx, a.host, grantPeers, clusterID, namespaceID, serviceID, membership, membershipGrantToken)
-			cancel()
-			a.connectMu.Lock()
-			done := a.refreshDone
-			a.refreshingLease = false
-			a.refreshDone = nil
-			if done != nil {
-				close(done)
-			}
-			if err != nil {
-				wrapped := fmt.Errorf("rollover connect lease: %w", err)
-				retryAt := time.Now().UTC().Add(connectRefreshFailureCooldown)
-				if connectLeaseFailureIsTerminal(err) && current != nil && now.Before(current.ExpiresAt.UTC()) {
-					retryAt = current.ExpiresAt.UTC()
-				}
-				if current != nil && now.Before(current.ExpiresAt.UTC()) {
-					a.recordRefreshFailureLocked(wrapped, retryAt)
-					log.Printf("bridge member connect lease rollover failed: %v", err)
-					a.connectMu.Unlock()
-					return *current, nil
-				}
-				a.recordRefreshFailureLocked(wrapped, retryAt)
-				log.Printf("bridge member connect lease rollover failed: %v", err)
-				a.connectMu.Unlock()
-				return grantspkg.ConnectAccessLease{}, wrapped
-			}
-			a.applyConnectLeaseArtifactsLocked(artifacts)
-			a.connectMu.Unlock()
-			log.Printf("bridge member connect lease rolled over service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
-			a.reportStatus()
-			return artifacts.AccessLease, nil
+			return a.rolloverConnectLeaseLocked(ctx, current, now, false)
 		}
 		log.Printf("bridge connect access lease refresh requested service=%s expires_at=%s", refresh.ServiceID, refresh.ExpiresAt.UTC().Format(time.RFC3339))
 		refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1055,6 +1014,9 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 			return grantspkg.ConnectAccessLease{}, wrapped
 		}
 		if !connectRefreshResultUseful(prevExpiry, access.ExpiresAt.UTC(), time.Now().UTC()) {
+			if a.connectCanRolloverLocked() {
+				return a.rolloverConnectLeaseLocked(ctx, current, now, true)
+			}
 			wrapped := errors.New("connect refresh lease is near expiry; ask the service owner for a fresh token/invite")
 			if current != nil && now.Before(current.ExpiresAt.UTC()) {
 				a.recordRefreshFailureLocked(wrapped, current.ExpiresAt.UTC())
@@ -1076,6 +1038,55 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		a.reportStatus()
 		return access, nil
 	}
+}
+
+func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg.ConnectAccessLease, now time.Time, skippedRefresh bool) (grantspkg.ConnectAccessLease, error) {
+	grantPeers := append([]string(nil), a.cfg.ConnectGrantPeers...)
+	clusterID := a.cfg.ConnectClusterID
+	namespaceID := a.cfg.ConnectNamespaceID
+	serviceID := a.cfg.ConnectServiceID
+	membership := a.cfg.ConnectMembershipCapability
+	membershipGrantToken := a.cfg.ConnectMembershipGrantToken
+	if skippedRefresh {
+		log.Printf("bridge connect access lease refresh skipped; rolling over through membership service=%s", serviceID)
+	} else {
+		log.Printf("bridge member connect lease rollover requested service=%s cluster=%s namespace=%s", serviceID, clusterID, namespaceID)
+	}
+	refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	a.refreshingLease = true
+	a.refreshDone = make(chan struct{})
+	a.connectMu.Unlock()
+	artifacts, err := requestDirectConnectLease(refreshCtx, a.host, grantPeers, clusterID, namespaceID, serviceID, membership, membershipGrantToken)
+	cancel()
+	a.connectMu.Lock()
+	done := a.refreshDone
+	a.refreshingLease = false
+	a.refreshDone = nil
+	if done != nil {
+		close(done)
+	}
+	if err != nil {
+		wrapped := fmt.Errorf("rollover connect lease: %w", err)
+		retryAt := time.Now().UTC().Add(connectRefreshFailureCooldown)
+		if connectLeaseFailureIsTerminal(err) && current != nil && now.Before(current.ExpiresAt.UTC()) {
+			retryAt = current.ExpiresAt.UTC()
+		}
+		if current != nil && now.Before(current.ExpiresAt.UTC()) {
+			a.recordRefreshFailureLocked(wrapped, retryAt)
+			log.Printf("bridge member connect lease rollover failed: %v", err)
+			a.connectMu.Unlock()
+			return *current, nil
+		}
+		a.recordRefreshFailureLocked(wrapped, retryAt)
+		log.Printf("bridge member connect lease rollover failed: %v", err)
+		a.connectMu.Unlock()
+		return grantspkg.ConnectAccessLease{}, wrapped
+	}
+	a.applyConnectLeaseArtifactsLocked(artifacts)
+	a.connectMu.Unlock()
+	log.Printf("bridge member connect lease rolled over service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
+	a.reportStatus()
+	return artifacts.AccessLease, nil
 }
 
 func connectRefreshResultUseful(previousExpiry, newExpiry, now time.Time) bool {

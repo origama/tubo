@@ -579,6 +579,81 @@ func TestBridgeConnectLeaseRolloverRenewsAccessAndRefresh(t *testing.T) {
 	}
 }
 
+func TestBridgeConnectLeaseRolloverSkipsAlarmistRefreshHintWhenMembershipCanRollOver(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-member-rollover-skip-refresh-hint-client", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeHost.Close()
+	var rolloverRequests int32
+	grantHost := newConnectLeaseGrantHost(t, authPriv, 10*time.Second, 20*time.Second, func(msg grantspkg.Message, requester string) error {
+		atomic.AddInt32(&rolloverRequests, 1)
+		if msg.MembershipCapability == nil {
+			return errors.New("missing membership capability")
+		}
+		if err := capability.VerifyMembershipCapability(*msg.MembershipCapability, authPriv.Public().(ed25519.PublicKey), "cluster-123", "default", requester); err != nil {
+			return err
+		}
+		if !strings.Contains(strings.Join(msg.MembershipCapability.Permissions, ","), capability.PermissionConnect) {
+			return errors.New("missing connect permission")
+		}
+		return nil
+	})
+	defer grantHost.Close()
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: bridgeHost.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientKey := bridgeHostAuthorizedKey(t, bridgeHost)
+	initial, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-member-rollover-skip-refresh-hint-initial", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 150*time.Millisecond, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh, err := grantspkg.SignConnectRefreshLease(grantspkg.ConnectRefreshLease{JTI: initial.RefreshLease.JTI, SessionID: initial.RefreshLease.SessionID, ShareInviteJTI: initial.RefreshLease.ShareInviteJTI, ClusterID: initial.RefreshLease.ClusterID, NamespaceID: initial.RefreshLease.NamespaceID, ServiceID: initial.RefreshLease.ServiceID, ClientPublicKey: initial.RefreshLease.ClientPublicKey, Permissions: []string{capability.PermissionConnect}, IssuedAt: time.Now().UTC().Add(-time.Second), ExpiresAt: time.Now().UTC().Add(8 * time.Second)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshCalls int32
+	var logBuf bytes.Buffer
+	oldLogOutput := log.Writer()
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(oldLogOutput)
+	app := &App{host: bridgeHost, connectLease: &initial.AccessLease, cfg: Config{ConnectRefreshLease: &refresh, ConnectGrantPeers: []string{p2p.PeerAddrs(grantHost)[0]}, ConnectClusterID: "cluster-123", ConnectNamespaceID: "default", ConnectServiceID: "svc-123", ConnectMembershipCapability: &memberCap, ConnectLeaseRefresher: func(_ context.Context, got grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		atomic.AddInt32(&refreshCalls, 1)
+		return grantspkg.RefreshConnectAccessLease(authPriv, got, 300*time.Millisecond)
+	}}}
+	rolled, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected rollover through membership after useless refresh result, got %v", err)
+	}
+	if got := atomic.LoadInt32(&refreshCalls); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	if got := atomic.LoadInt32(&rolloverRequests); got != 1 {
+		t.Fatalf("rollover requests = %d, want 1", got)
+	}
+	if rolled.JTI == initial.AccessLease.JTI {
+		t.Fatalf("expected rollover to replace access lease: %#v", rolled)
+	}
+	if app.cfg.ConnectRefreshLease == nil || app.cfg.ConnectRefreshLease.JTI == initial.RefreshLease.JTI {
+		t.Fatalf("expected rollover to replace refresh lease: %#v", app.cfg.ConnectRefreshLease)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status == "degraded" || strings.Contains(strings.ToLower(snap.Reason), "fresh token/invite") || strings.Contains(strings.ToLower(snap.LastRefreshError), "fresh token/invite") {
+		t.Fatalf("expected non-alarmist rollover-capable status, got %#v", snap)
+	}
+	if strings.Contains(strings.ToLower(logBuf.String()), "fresh token/invite") {
+		t.Fatalf("expected no fresh-token/invite log for rollover-capable session, got logs: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "bridge connect access lease refresh skipped; rolling over through membership") {
+		t.Fatalf("expected membership rollover log, got logs: %s", logBuf.String())
+	}
+}
+
 func TestBridgeConnectLeaseRolloverDeniedMarksDegraded(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
 	if err != nil {

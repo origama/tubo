@@ -32,6 +32,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 ### Fixed
 - `namespace_members` connect sessions no longer surface a misleading fresh-token hint while membership-based rollover is still available; invite-only refresh failures keep the existing fresh-token/invite wording.
 - Connect lease renewal now prefers member rollover when possible and only surfaces fresh-token/invite guidance on invite-only paths.
+- Refresh results that are too short-lived for a rollover-capable namespace member now skip the alarmist token/invite hint and roll over through membership instead.
 - Detached raw TCP `connect` no longer always requires a manual restart to recover from some stale direct-path failures before a new stream starts.
 - `connect` now re-resolves pinned `service_id` metadata on stream/setup self-heal and can rebind to the newly verified peer/address instead of staying stuck on the original endpoint.
 - `connect --token` no longer treats the service peer address from `service_endpoint` as a fallback grant endpoint; it now requires either a local authority key for minting or an explicit `grant_service` path and fails clearly when neither exists.
