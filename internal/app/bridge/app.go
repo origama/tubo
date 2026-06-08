@@ -252,6 +252,9 @@ func (a *App) Start(ctx context.Context) error {
 	if a.cfg.ConnectRefreshLease != nil {
 		go a.startConnectLeaseRenewal(ctx)
 	}
+	if a.connectPathTransitionMonitoringEnabled() {
+		go a.watchConnectPathTransitions(ctx)
+	}
 	if a.cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
 		go a.serveTCP(ctx, ln)
 		<-ctx.Done()
@@ -600,6 +603,22 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	a.nextRefreshRetryAt = time.Time{}
 }
 
+func ConnectPathTransitionMessage(previous, current string) (string, bool) {
+	prev := strings.TrimSpace(previous)
+	curr := strings.TrimSpace(current)
+	if prev == "" || curr == "" || prev == curr {
+		return "", false
+	}
+	switch {
+	case prev == "relayed" && curr == "direct":
+		return "connect path upgraded to direct", true
+	case prev == "direct" && curr == "relayed":
+		return "connect path downgraded to relayed", true
+	default:
+		return fmt.Sprintf("connect path changed from %s to %s", prev, curr), true
+	}
+}
+
 func connectLeaseFailureIsTerminal(err error) bool {
 	msg := strings.ToLower(strings.TrimSpace(err.Error()))
 	for _, needle := range []string{"denied", "revoked", "not authorized", "missing membership", "no connect grant service peers", "grant service unavailable"} {
@@ -681,6 +700,9 @@ func (a *App) CurrentRuntimeStatus() RuntimeStatus {
 		Reason:                  snap.Reason,
 		ServiceKind:             snap.ServiceKind,
 		Path:                    snap.Path,
+		SelectedAddr:            a.selectedAddr,
+		SelectedPath:            a.selectedPath,
+		SelectedPeerID:          a.service.ID.String(),
 		ConnectAccessExpiresAt:  snap.ConnectAccessExpiresAt,
 		ConnectAccessExpiresIn:  snap.ConnectAccessExpiresIn,
 		ConnectRefreshExpiresAt: snap.ConnectRefreshExpiresAt,
@@ -707,6 +729,42 @@ func (a *App) SetStatusReporter(report func(RuntimeStatus)) {
 func (a *App) reportStatus() {
 	if a.statusReporter != nil {
 		a.statusReporter(a.CurrentRuntimeStatus())
+	}
+}
+
+func (a *App) connectPathTransitionMonitoringEnabled() bool {
+	return a.cfg.ConnectAccessLease != nil || a.cfg.ConnectRefreshLease != nil || a.cfg.ConnectGrant != nil || a.cfg.ConnectInviteToken != "" || len(a.cfg.ConnectGrantPeers) > 0 || a.cfg.ConnectMembershipCapability != nil || a.cfg.ConnectMembershipGrantToken != ""
+}
+
+func (a *App) watchConnectPathTransitions(ctx context.Context) {
+	prev := strings.TrimSpace(a.currentPath())
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		curr := strings.TrimSpace(a.currentPath())
+		if msg, ok := ConnectPathTransitionMessage(prev, curr); ok {
+			runtime := a.CurrentRuntimeStatus()
+			if os.Getenv("TUBO_DETACHED_CHILD") != "1" {
+				selectedPath := runtime.SelectedPath
+				if selectedPath == "" {
+					selectedPath = "-"
+				}
+				selectedAddr := runtime.SelectedAddr
+				if selectedAddr == "" {
+					selectedAddr = "-"
+				}
+				log.Printf("bridge %s selected_path=%s selected_addr=%s", msg, selectedPath, selectedAddr)
+			}
+			a.reportStatus()
+		}
+		if curr != "" {
+			prev = curr
+		}
 	}
 }
 

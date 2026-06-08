@@ -1660,9 +1660,29 @@ func connectCmd(args []string) error {
 	if err := updateProcessConnectState(state.StateFile, output); err != nil {
 		logging.Warnf("connect state update failed: %v\n", err)
 	}
+	lastPath := result.Path
 	result.App.SetStatusReporter(func(runtime bridge.RuntimeStatus) {
 		if err := updateProcessRuntimeState(state.StateFile, runtime); err != nil {
 			logging.Warnf("connect runtime status update failed: %v\n", err)
+		}
+		if notice, ok := bridge.ConnectPathTransitionMessage(lastPath, runtime.Path); ok {
+			line := notice
+			if runtime.SelectedPath != "" || runtime.SelectedAddr != "" {
+				extra := make([]string, 0, 2)
+				if runtime.SelectedPath != "" {
+					extra = append(extra, "selected_path="+runtime.SelectedPath)
+				}
+				if runtime.SelectedAddr != "" {
+					extra = append(extra, "selected_addr="+runtime.SelectedAddr)
+				}
+				line += " " + strings.Join(extra, " ")
+			}
+			if !req.JSONOut {
+				fmt.Fprintln(os.Stdout, line)
+			}
+		}
+		if runtime.Path != "" {
+			lastPath = runtime.Path
 		}
 	})
 	if req.JSONOut {

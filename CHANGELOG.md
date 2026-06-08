@@ -14,6 +14,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - Detached `connect` logs now include connect start and service-resolution summaries so tunnel failures are easier to diagnose from the per-process log file.
 - Detached `connect` now renews its access lease proactively before expiry when a refresh lease is available, and process visibility now exposes degraded runtime state plus remaining lease lifetime.
 - `tubo connect -vvv` now logs each candidate address attempt with path, address, and failure/selection reason.
+- `tubo connect` now emits explicit notices when the active tunnel path upgrades to direct or downgrades to relayed.
 - `tubo ps` now distinguishes `service` and `pipe` rows and shows `SERVICE KIND` alongside `SERVICE ID`/`SCOPE` for local runtimes when known.
 
 ### Fixed

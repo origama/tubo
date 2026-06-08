@@ -454,6 +454,26 @@ func TestBridgeStatusSnapshotDegradesWhenRefreshLeaseNearExpiry(t *testing.T) {
 	}
 }
 
+func TestBridgeConnectPathTransitionMessage(t *testing.T) {
+	if msg, ok := ConnectPathTransitionMessage("relayed", "direct"); !ok || msg != "connect path upgraded to direct" {
+		t.Fatalf("relayed->direct = %q, %v", msg, ok)
+	}
+	if msg, ok := ConnectPathTransitionMessage("direct", "relayed"); !ok || msg != "connect path downgraded to relayed" {
+		t.Fatalf("direct->relayed = %q, %v", msg, ok)
+	}
+	if msg, ok := ConnectPathTransitionMessage("direct", "direct"); ok || msg != "" {
+		t.Fatalf("direct->direct = %q, %v", msg, ok)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusIncludesSelectedBinding(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}, selectedAddr: "/ip4/1.2.3.4/tcp/4001/p2p/peer", selectedPath: "relayed"}
+	snap := app.CurrentRuntimeStatus()
+	if snap.SelectedAddr != "/ip4/1.2.3.4/tcp/4001/p2p/peer" || snap.SelectedPath != "relayed" {
+		t.Fatalf("unexpected runtime selected binding: %#v", snap)
+	}
+}
+
 func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
 	if err != nil {
