@@ -55,14 +55,12 @@
     </p>
 
     <h2>Protocol IDs</h2>
-    <p>Tubo registers two libp2p protocol IDs:</p>
+    <p>Tubo registers one libp2p protocol ID:</p>
     <ul>
       <li><code>/p2p-tunnel/1.1</code> — current version, with hello handshake and capability negotiation.</li>
-      <li><code>/p2p-tunnel/1.0</code> — legacy, no handshake. Supported for backwards compatibility.</li>
     </ul>
     <p>
-      Clients (edge/bridge) negotiate in order: <code>1.1</code> first, fallback to <code>1.0</code>.
-      Services accept both.
+      Clients (edge/bridge) negotiate <code>1.1</code> only. Legacy <code>/p2p-tunnel/1.0</code> peers are no longer supported.
     </p>
 
     <h2>Frame format</h2>
@@ -145,13 +143,11 @@ sequenceDiagram
     <h2>Version negotiation</h2>
     <p>
       libp2p multistream-select handles protocol negotiation. The client proposes
-      <code>/p2p-tunnel/1.1</code>; if the service does not support it, the client falls back
-      to <code>/p2p-tunnel/1.0</code> automatically.
+      <code>/p2p-tunnel/1.1</code> and the service must support it.
     </p>
     <p>
-      Tubo 0.10.0 still supports both stream protocol versions on the service side. Legacy nodes that
-      only speak <code>/p2p-tunnel/1.0</code> can still negotiate the older data-plane stream.
-      Mixed-version data-plane clusters work as long as they do not require newer optional capabilities.
+      Tubo 0.10.0 uses <code>/p2p-tunnel/1.1</code> only. Legacy nodes that only speak
+      <code>/p2p-tunnel/1.0</code> are no longer supported.
     </p>
 
     <h2>Discovery protocol</h2>

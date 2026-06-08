@@ -150,9 +150,9 @@ Smoke harness:
 
 The smoke reads IPs from `terraform output`, uploads binaries + config to the nodes, and verifies the relay-first path by checking `connection_path=relayed` in edge logs.
 
-## Smoke mixed-version on Linode/Terraform
+## Smoke current-protocol on Linode/Terraform
 
-Validates compatibility between different `tubo` binary versions on the real multi-host bench.
+Validates the current `tubo` protocol on the real multi-host bench.
 
 Command:
 
@@ -160,18 +160,11 @@ Command:
 ./tests/smoke-terraform-linode-mixed-version.sh
 ```
 
-By default the script builds:
+Covered scenario:
 
-- the current binary from `main`
-- a legacy binary from ref `c9bbb1f` (pre-protocol 1.1 hello handshake)
-
-Covered scenarios:
-
-- current edge -> legacy service (fallback `/p2p-tunnel/1.0`)
-- legacy edge -> current service (current service accepts legacy)
 - current edge -> current service (negotiates `/p2p-tunnel/1.1`)
 
-The script also uses protocol debug/admin endpoints when available to save operational compatibility evidence.
+The script also uses protocol debug/admin endpoints when available to save operational evidence of the active negotiation.
 
 ## TCP raw throughput benchmark (Docker)
 

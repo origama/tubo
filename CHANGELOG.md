@@ -6,6 +6,16 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+### Changed
+- Removed runtime support for legacy `/p2p-tunnel/1.0` negotiation and stream handlers; Tubo now uses `/p2p-tunnel/1.1` only.
+- Documentation and testbench references now describe the current protocol path without promising a legacy fallback.
+
+### Compatibility
+- Product version: pending next release
+- Protocol version: 1.1
+- Protocol compatibility change: legacy `/p2p-tunnel/1.0` peers are no longer supported
+- Operator action required: upgrade clients/services to 1.1-capable binaries
+
 ## [v0.10.0] - 2026-06-08
 
 ### Added

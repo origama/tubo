@@ -8,12 +8,10 @@ import (
 
 // Protocol version identifier
 const (
-	LegacyProtocolVersion = "1.0"
-	LegacyProtocolID      = "/p2p-tunnel/1.0"
-	ProtocolVersion       = "1.1"
-	ProtocolID            = "/p2p-tunnel/1.1"
-	ProtocolMajor         = iversion.ProtocolMajor
-	ProtocolMinor         = 1
+	ProtocolVersion = "1.1"
+	ProtocolID      = "/p2p-tunnel/1.1"
+	ProtocolMajor   = iversion.ProtocolMajor
+	ProtocolMinor   = 1
 )
 
 // Frame types

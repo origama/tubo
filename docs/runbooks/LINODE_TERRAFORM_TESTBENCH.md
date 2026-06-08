@@ -63,19 +63,13 @@ Because edge is intentionally closed to inbound traffic, the test request is exe
 
 This is consistent with the goal of the bench: testing the distributed relay-first data plane, not public exposure of edge ingress.
 
-## Mixed-version smoke
+## Current-protocol smoke
 
-For cross-version compatibility there is also:
+The real bench also exercises the current protocol path with:
 
 - `tests/smoke-terraform-linode-mixed-version.sh`
 
-The script builds a current binary and a legacy binary (ref configurable via `LEGACY_REF`) and validates at least these cases on the real bench:
-
-1. current edge -> legacy service (`/p2p-tunnel/1.0` fallback)
-2. legacy edge -> current service (current service accepts legacy)
-3. current edge -> current service (`/p2p-tunnel/1.1` with hello handshake)
-
-When current nodes are in use, the script also queries protocol debug/admin endpoints to collect evidence of the active negotiation.
+The script validates current edge -> current service (`/p2p-tunnel/1.1` with hello handshake) and queries protocol debug/admin endpoints to collect evidence of the active negotiation.
 
 ## Files to update once the PAT is available
 

@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TF_DIR="${TF_DIR:-$ROOT_DIR/infra/terraform/linode-distributed}"
 RUN_DIR="${RUN_DIR:-$ROOT_DIR/generated/linode-terraform-mixed-version}"
-LEGACY_REF="${LEGACY_REF:-c9bbb1f}"
 SSH_KEY_PATH="${SSH_KEY_PATH:-}"
 SERVICE_NAME="${SERVICE_NAME:-myapi}"
 REMOTE_BASE_DIR="${REMOTE_BASE_DIR:-/opt/tubo}"
@@ -15,7 +14,6 @@ SERVICE_HEALTH_LISTEN="${SERVICE_HEALTH_LISTEN:-127.0.0.1:8091}"
 DUMMY_API_LISTEN="${DUMMY_API_LISTEN:-127.0.0.1:18000}"
 KEEP_RUNNING="${KEEP_RUNNING:-0}"
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=accept-new)
-LEGACY_WORKTREE=""
 RELAY_IP=""
 EDGE_IP=""
 SERVICE_IP=""
@@ -67,9 +65,6 @@ SSH_KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
 SSH_OPTS+=( -i "$SSH_KEY_PATH" )
 
 cleanup() {
-  if [[ -n "$LEGACY_WORKTREE" ]] && [[ -d "$LEGACY_WORKTREE" ]]; then
-    git -C "$ROOT_DIR" worktree remove --force "$LEGACY_WORKTREE" >/dev/null 2>&1 || true
-  fi
   if [[ "$KEEP_RUNNING" == "1" ]]; then
     info "KEEP_RUNNING=1, leaving remote processes up"
     return
@@ -94,10 +89,6 @@ build_binaries() {
   (cd "$ROOT_DIR" && go build -o "$RUN_DIR/tubo-current" ./cmd/tubo)
   (cd "$ROOT_DIR" && go build -o "$RUN_DIR/dummy-api-server" ./cmd/dummy-api-server)
 
-  info "building legacy binary from $LEGACY_REF"
-  LEGACY_WORKTREE="$(mktemp -d /tmp/tubo-legacy-XXXXXX)"
-  git -C "$ROOT_DIR" worktree add --detach "$LEGACY_WORKTREE" "$LEGACY_REF" >/dev/null
-  (cd "$LEGACY_WORKTREE" && go build -o "$RUN_DIR/tubo-legacy" ./cmd/tubo)
 }
 
 generate_swarm_key() {
@@ -422,7 +413,6 @@ show_summary() {
   info "relay:   $RELAY_IP"
   info "edge:    $EDGE_IP"
   info "service: $SERVICE_IP"
-  info "legacy ref: $LEGACY_REF"
 }
 
 build_binaries
@@ -430,7 +420,5 @@ generate_swarm_key
 fetch_hosts
 generate_configs
 upload_common_artifacts
-run_scenario "current edge -> legacy service (legacy fallback)" "$RUN_DIR/tubo-current" "$RUN_DIR/tubo-legacy" "/p2p-tunnel/1.0" edge 'protocol_version":"1.1'
-run_scenario "legacy edge -> current service (current service accepts legacy)" "$RUN_DIR/tubo-legacy" "$RUN_DIR/tubo-current" "/p2p-tunnel/1.0" service '' 'protocol_version":"1.1'
 run_scenario "current edge -> current service (hello negotiation)" "$RUN_DIR/tubo-current" "$RUN_DIR/tubo-current" "/p2p-tunnel/1.1" edge 'stream_protocol_id":"/p2p-tunnel/1.1' 'stream_protocol_id":"/p2p-tunnel/1.1'
 show_summary

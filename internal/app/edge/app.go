@@ -1189,8 +1189,8 @@ func (gw *Gateway) handleListRoutes(w http.ResponseWriter, r *http.Request) {
 func (gw *Gateway) handleProtocolStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	events := p2p.RecentNegotiations()
-	fmt.Fprintf(w, `{"preferred_stream_protocol_id":%q,"legacy_stream_protocol_id":%q,"protocol_version":%q,"protocol_major":%d,"protocol_minor":%d,"supported_capabilities":[`,
-		p2p.ProtocolID, p2p.LegacyProtocolID, p2p.ProtocolVersion, protocol.ProtocolMajor, protocol.ProtocolMinor)
+	fmt.Fprintf(w, `{"preferred_stream_protocol_id":%q,"protocol_version":%q,"protocol_major":%d,"protocol_minor":%d,"supported_capabilities":[`,
+		p2p.ProtocolID, p2p.ProtocolVersion, protocol.ProtocolMajor, protocol.ProtocolMinor)
 	for i, cap := range protocol.SupportedCapabilities() {
 		if i > 0 {
 			fmt.Fprint(w, ",")

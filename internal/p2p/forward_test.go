@@ -164,50 +164,10 @@ type memoryClientStream struct {
 	protocolID libprotocol.ID
 }
 
-func TestHandleClientRequestLegacyProtocolSkipsHello(t *testing.T) {
-	reqReader, reqWriter := io.Pipe()
-	respReader, respWriter := io.Pipe()
-	stream := &memoryClientStream{reader: respReader, writer: reqWriter, protocolID: LegacyProtocolID}
-
-	serverDone := make(chan error, 1)
-	go func() {
-		defer reqReader.Close()
-		defer respWriter.Close()
-
-		reader := protocol.NewStreamReader(reqReader)
-		if _, err := reader.ReadRequestHeader(); err != nil {
-			serverDone <- err
-			return
-		}
-		chunk, err := reader.ReadBodyChunk()
-		if err != nil {
-			serverDone <- err
-			return
-		}
-		if len(chunk.Data) != 0 || !chunk.IsFinal {
-			serverDone <- fmt.Errorf("legacy empty final chunk: len=%d final=%t", len(chunk.Data), chunk.IsFinal)
-			return
-		}
-		writer := protocol.NewStreamWriter(respWriter)
-		if err := writer.WriteResponseHeader(&protocol.ResponseHeader{StatusCode: 204, StatusText: "No Content"}); err != nil {
-			serverDone <- err
-			return
-		}
-		if err := writer.WriteBodyChunk(&protocol.BodyChunk{Data: nil, IsFinal: true}); err != nil {
-			serverDone <- err
-			return
-		}
-		serverDone <- nil
-	}()
-
-	resp, err := HandleClientRequest(stream, "edge", "GET", "/legacy", "", nil, nil, nil)
-	if err != nil {
-		t.Fatalf("HandleClientRequest legacy: %v", err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.ReadAll(resp.Body)
-	if err := <-serverDone; err != nil {
-		t.Fatal(err)
+func TestSupportedProtocolIDsUsesOnlyPreferredID(t *testing.T) {
+	ids := SupportedProtocolIDs()
+	if len(ids) != 1 || ids[0] != libprotocol.ID(ProtocolID) {
+		t.Fatalf("supported protocol IDs = %#v", ids)
 	}
 }
 

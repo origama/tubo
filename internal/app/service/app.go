@@ -150,7 +150,6 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceTCPStream(cfg.Target, connectAuth))
 	} else {
 		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
-		h.SetStreamHandler(p2p.LegacyProtocolID, p2p.HandleServiceStream(cfg.Target, nil))
 	}
 	grantEndpointEnabled := false
 	if len(authorityPub) > 0 && strings.TrimSpace(cfg.DiscoveryClusterID) != "" && strings.TrimSpace(cfg.DiscoveryNamespaceID) != "" {
@@ -723,8 +722,8 @@ func healthMux(h host.Host) *http.ServeMux {
 	m.HandleFunc("/debug/protocol", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		events := p2p.RecentNegotiations()
-		fmt.Fprintf(w, `{"preferred_stream_protocol_id":%q,"legacy_stream_protocol_id":%q,"protocol_version":%q,"protocol_major":%d,"protocol_minor":%d,"supported_capabilities":[`,
-			p2p.ProtocolID, p2p.LegacyProtocolID, p2p.ProtocolVersion, protocol.ProtocolMajor, protocol.ProtocolMinor)
+		fmt.Fprintf(w, `{"preferred_stream_protocol_id":%q,"protocol_version":%q,"protocol_major":%d,"protocol_minor":%d,"supported_capabilities":[`,
+			p2p.ProtocolID, p2p.ProtocolVersion, protocol.ProtocolMajor, protocol.ProtocolMinor)
 		for i, cap := range protocol.SupportedCapabilities() {
 			if i > 0 {
 				fmt.Fprint(w, ",")

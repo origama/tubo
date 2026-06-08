@@ -2,8 +2,7 @@
 
 **Current Version:** 1.1 | **Current Protocol ID:** `/p2p-tunnel/1.1`
 
-Backward-compatible legacy stream protocol still accepted:
-- `1.0` via `/p2p-tunnel/1.0`
+Legacy `/p2p-tunnel/1.0` support has been removed.
 
 ## Overview
 
