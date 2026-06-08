@@ -116,11 +116,19 @@ func run(args []string) error {
 	case "connect":
 		cleanArgs, detach := stripDetachArgs(args[1:])
 		cleanArgs, noInit := stripNoInitArgs(cleanArgs)
+		connectLogging, cleanArgs, err := parseGlobalCLIOptions(cleanArgs)
+		if err != nil {
+			return err
+		}
+		mergedLogging := mergeGlobalCLIOptions(global, connectLogging)
+		if err := logging.Configure(runtimeLoggingConfig(mergedLogging)); err != nil {
+			return err
+		}
 		if err := ensureJoinedPublicNetwork("connect", noInit); err != nil {
 			return err
 		}
 		if detach {
-			return detachConnectCommand(cleanArgs)
+			return detachConnectCommand(cleanArgs, mergedLogging)
 		}
 		return connectCmd(cleanArgs)
 	case "ps":
@@ -190,6 +198,23 @@ func runtimeLoggingConfig(global globalCLIOptions) logging.Config {
 		runtimeVerbosity = 1
 	}
 	return logging.Config{Quiet: global.Quiet, Verbosity: runtimeVerbosity, LogLevel: global.LogLevel, Runtime: true}
+}
+
+func connectLoggingArgs(global globalCLIOptions) []string {
+	if global.Quiet {
+		return []string{"--quiet"}
+	}
+	if level := strings.TrimSpace(global.LogLevel); level != "" {
+		return []string{"--log-level", level}
+	}
+	if global.Verbosity <= 0 {
+		return nil
+	}
+	args := make([]string, 0, global.Verbosity)
+	for i := 0; i < global.Verbosity; i++ {
+		args = append(args, "-v")
+	}
+	return args
 }
 
 func mergeGlobalCLIOptions(base, extra globalCLIOptions) globalCLIOptions {
@@ -500,6 +525,10 @@ Examples:
 Connect modes:
   - tubo connect --token ... = invite path; does not require ambient discovery when the token carries a self-contained endpoint
   - tubo connect <service> = collaboration path; requires a discovery-enabled scope and the right namespace permissions
+
+Logging:
+  - -v / -vv / -vvv and --log-level can follow connect
+  - detached child logs inherit the same verbosity controls
 
 Flags:
   --local <host:port>       local listener; random 127.0.0.1 port when omitted
@@ -1588,12 +1617,30 @@ func connectCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	requestLabel := strings.TrimSpace(req.ServiceRef)
+	if requestLabel == "" {
+		if strings.TrimSpace(req.Token) != "" {
+			requestLabel = "share-invite"
+		} else {
+			requestLabel = "service"
+		}
+	}
+	localLabel := strings.TrimSpace(req.Local)
+	if localLabel == "" {
+		localLabel = "auto"
+	}
+	logging.Progressf("connect starting service_ref=%q local=%s\n", requestLabel, localLabel)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	result, err := connectflow.Resolve(ctx, newConnectWorkflow(), connectflow.Request{ConfigPath: req.ConfigPath, ServiceRef: req.ServiceRef, Token: req.Token, Cluster: req.Cluster, Namespace: req.Namespace, Local: req.Local, Timeout: req.Timeout, CachedOnly: req.CachedOnly, Live: req.Live})
 	if err != nil {
 		return err
 	}
+	scopeLabel := "-"
+	if result.Scope != nil {
+		scopeLabel = result.Scope.Cluster + "/" + result.Scope.Namespace
+	}
+	logging.Progressf("service resolved service_id=%s service_kind=%s peer=%s path=%s selected_addr=%s scope=%s\n", displayServiceID(result.ServiceID), displayValue(result.ServiceKind), displayValue(result.ServicePeerID), displayValue(result.Path), displayValue(result.SelectedAddr), scopeLabel)
 	state := connectProcessState(req, result, result.LocalURL, "pipe")
 	state.LogFile = ""
 	state.StateFile = filepath.Join(processStateDir(), state.Name+".json")
@@ -2028,6 +2075,13 @@ func displayServiceID(serviceID string) string {
 		return "-"
 	}
 	return serviceID
+}
+
+func displayValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func displayServiceScope(service serviceResource) string {

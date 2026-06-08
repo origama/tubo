@@ -82,12 +82,13 @@ func parseConnectCLIArgs(args []string) (connectCLIRequest, error) {
 	}, nil
 }
 
-func detachConnectCommand(args []string) error {
+func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
 	req, err := parseConnectCLIArgs(args)
 	if err != nil {
 		return err
 	}
-	spec, err := buildDetachedConnectSpec(req, args)
+	childArgs := append(connectLoggingArgs(loggingOpts), args...)
+	spec, err := buildDetachedConnectSpec(req, childArgs)
 	if err != nil {
 		return err
 	}

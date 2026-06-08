@@ -1,12 +1,15 @@
 package bridge
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"io"
+	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -372,6 +375,43 @@ func TestBridgeEstablishTCPTunnelSelfHealsOnStartFailure(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&heals); got != 1 {
 		t.Fatalf("self-heal attempts = %d, want 1", got)
+	}
+}
+
+func TestBridgeTCPFailureLogsAreActionable(t *testing.T) {
+	var buf bytes.Buffer
+	oldOut := log.Writer()
+	oldFlags := log.Flags()
+	oldPrefix := log.Prefix()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	log.SetPrefix("")
+	defer func() {
+		log.SetOutput(oldOut)
+		log.SetFlags(oldFlags)
+		log.SetPrefix(oldPrefix)
+	}()
+	client, server := net.Pipe()
+	defer client.Close()
+	app := &App{
+		openTunnelStream:   func(context.Context) (network.Stream, error) { return nil, io.EOF },
+		reconnectServiceFn: func(context.Context) error { return nil },
+	}
+	done := make(chan struct{})
+	go func() {
+		app.handleTCPConn(server)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handleTCPConn timed out")
+	}
+	logs := buf.String()
+	for _, want := range []string{"bridge tcp self-heal local=", "cause=open stream: EOF", "bridge tcp establish tunnel local="} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("log output missing %q:\n%s", want, logs)
+		}
 	}
 }
 

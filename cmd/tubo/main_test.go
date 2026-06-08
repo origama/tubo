@@ -281,6 +281,8 @@ func TestParseGlobalCLIOptionsAfterSubcommand(t *testing.T) {
 		{args: []string{"share", "-v", "service/myapi"}, wantVerbosity: 1, wantRest: "share service/myapi"},
 		{args: []string{"share", "service/myapi", "-v"}, wantVerbosity: 1, wantRest: "share service/myapi"},
 		{args: []string{"share", "service/myapi", "--log-level", "debug"}, wantVerbosity: 0, wantRest: "share service/myapi"},
+		{args: []string{"connect", "-vvv", "service/myapi"}, wantVerbosity: 3, wantRest: "connect service/myapi"},
+		{args: []string{"connect", "service/myapi", "--log-level", "debug"}, wantVerbosity: 0, wantRest: "connect service/myapi"},
 	}
 	for _, tt := range cases {
 		opts, rest, err := parseGlobalCLIOptions(tt.args)
@@ -327,6 +329,23 @@ func TestRuntimeLoggingConfigEnablesDetachedLogsByDefault(t *testing.T) {
 	}
 	if logging.Current().Verbosity != 1 {
 		t.Fatalf("logging state = %+v, want verbosity 1", logging.Current())
+	}
+}
+
+func TestConnectLoggingArgs(t *testing.T) {
+	cases := []struct {
+		opts globalCLIOptions
+		want string
+	}{
+		{opts: globalCLIOptions{Verbosity: 1}, want: "-v"},
+		{opts: globalCLIOptions{Verbosity: 3}, want: "-v -v -v"},
+		{opts: globalCLIOptions{LogLevel: "debug"}, want: "--log-level debug"},
+		{opts: globalCLIOptions{Quiet: true, Verbosity: 2}, want: "--quiet"},
+	}
+	for _, tt := range cases {
+		if got := strings.Join(connectLoggingArgs(tt.opts), " "); got != tt.want {
+			t.Fatalf("connectLoggingArgs(%+v) = %q, want %q", tt.opts, got, tt.want)
+		}
 	}
 }
 
@@ -493,6 +512,35 @@ func TestBuildDetachedConnectSpec(t *testing.T) {
 	}
 	if !strings.HasPrefix(spec.State.ID, "process/connect-myapi-") {
 		t.Fatalf("unexpected process id: %q", spec.State.ID)
+	}
+}
+
+func TestBuildDetachedConnectSpecUsesConnectLoggingArgs(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "team",
+		Overlays:         map[string]cfgpkg.Overlay{"manual": {}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {Namespaces: map[string]cfgpkg.Namespace{"team": {}}},
+		},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"service/myapi", "--config", configPath, "--timeout", "3s"}
+	req, err := parseConnectCLIArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := buildDetachedConnectSpec(req, append(connectLoggingArgs(globalCLIOptions{Verbosity: 3}), args...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.ChildArgs) < 2 || spec.ChildArgs[0] != "connect" || spec.ChildArgs[1] != "-v" {
+		t.Fatalf("child args did not carry connect verbosity: %#v", spec.ChildArgs)
 	}
 }
 

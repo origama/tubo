@@ -239,6 +239,8 @@ tubo connect lmstudio --local 127.0.0.1:51234
 
 With `-d` / `--detach`, the client tunnel remains in the background as `process/connect-...` and is visible in `tubo ps` / `tubo get processes`. The foreground form is also registered and therefore visible in `tubo ps`.
 
+`-v` / `-vv` / `-vvv` and `--log-level ...` can be placed before or after `connect`; detached child logs inherit those settings.
+
 If `--local` is not specified, Tubo automatically picks a free port on `127.0.0.1`.
 
 For scripting:
