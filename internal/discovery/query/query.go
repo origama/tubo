@@ -31,7 +31,7 @@ type Cache interface {
 	Resolve(serviceName string) (*discovery.ServiceEntry, bool)
 	List() []*discovery.ServiceEntry
 	Add(peer.ID, string, []string, time.Duration) error
-	AddV2(peer.ID, string, string, string, string, string, *grantspkg.GrantServiceEndpoint, []string, []string, time.Duration) error
+	AddV2(peer.ID, string, string, string, string, string, string, *grantspkg.GrantServiceEndpoint, []string, []string, time.Duration) error
 }
 
 type Request struct {
@@ -137,7 +137,7 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 			resp.Error = fmt.Sprintf("invalid service peer id: %v", err)
 			return resp
 		}
-		if err := cache.AddV2(pID, req.Service.ServiceID, req.Service.Name, req.Service.ServiceKind, req.Service.ServicePublicKey, req.Service.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(req.Service.GrantService), append([]string(nil), req.Service.Addresses...), append([]string(nil), req.Service.Capabilities...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
+		if err := cache.AddV2(pID, req.Service.ServiceID, req.Service.Name, req.Service.Kind, req.Service.ServiceKind, req.Service.ServicePublicKey, req.Service.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(req.Service.GrantService), append([]string(nil), req.Service.Addresses...), append([]string(nil), req.Service.Capabilities...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
 			resp.Error = fmt.Sprintf("cache announce: %v", err)
 			return resp
 		}
@@ -202,8 +202,12 @@ func serviceFromEntry(entry *discovery.ServiceEntry) Service {
 		expiresIn = 0
 	}
 	direct, relayed := splitAddresses(entry.Addresses)
+	kind := strings.TrimSpace(entry.Kind)
+	if kind == "" {
+		kind = discovery.ResourceKindService
+	}
 	return Service{
-		Kind:             "service",
+		Kind:             kind,
 		ServiceKind:      entry.ServiceKind,
 		Name:             entry.ServiceName,
 		ServiceID:        entry.ServiceID,

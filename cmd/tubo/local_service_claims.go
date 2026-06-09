@@ -160,6 +160,11 @@ type attachAuthorization struct {
 }
 
 func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAuthorization, error) {
+	var err error
+	if cfg, _, err = ensureAttachServiceIdentity(configPath, cfg); err != nil {
+		return attachAuthorization{}, err
+	}
+	cfg = seedDiscoveredGrantServicePeer(configPath, cfg)
 	result, err := newAttachAuthResolver().Resolve(context.Background(), attachauth.ResolveRequest{ConfigPath: configPath, Config: cfg})
 	if err != nil {
 		return attachAuthorization{}, err
@@ -197,7 +202,10 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 		grantPeer = clusterGrantServicePeer(cluster)
 	}
 	if grantPeer == "" {
-		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a grant service")
+		grantPeer = discoverGrantServicePeer(configPath, cfg)
+	}
+	if grantPeer == "" {
+		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
 	}
 	info, err := p2p.AddrInfoFromString(grantPeer)
 	if err != nil {
@@ -266,6 +274,9 @@ func renewAttachPublishAuthorization(configPath string, cfg cfgpkg.Config, svc c
 	grantPeer := svc.GrantServicePeer
 	if grantPeer == "" {
 		grantPeer = clusterGrantServicePeer(cluster)
+	}
+	if grantPeer == "" {
+		grantPeer = discoverGrantServicePeer(configPath, cfg)
 	}
 	if grantPeer != "" {
 		svc.GrantServicePeer = grantPeer
@@ -463,6 +474,82 @@ func printAttachShareHint(cfg cfgpkg.Config, authz attachAuthorization) {
 	}
 	fmt.Printf("share: unavailable (no authority key available to sign a share invite)\n")
 	fmt.Printf("hint: run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token\n\n", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace)
+}
+
+func seedDiscoveredGrantServicePeer(configPath string, cfg cfgpkg.Config) cfgpkg.Config {
+	clusterName := strings.TrimSpace(cfg.CurrentCluster)
+	namespaceName := strings.TrimSpace(cfg.CurrentNamespace)
+	serviceName := strings.TrimSpace(cfg.Service.Name)
+	if clusterName == "" || namespaceName == "" || serviceName == "" {
+		return cfg
+	}
+	cluster, ok := cfg.Clusters[clusterName]
+	if !ok {
+		return cfg
+	}
+	if cluster.AuthorityPrivateKeyFile != "" || clusterGrantServicePeer(cluster) != "" {
+		return cfg
+	}
+	namespace, ok := cluster.Namespaces[namespaceName]
+	if !ok {
+		return cfg
+	}
+	svc, ok := namespace.Services[serviceName]
+	if !ok || strings.TrimSpace(svc.GrantServicePeer) != "" {
+		return cfg
+	}
+	peer := discoverGrantServicePeer(configPath, cfg)
+	if peer == "" {
+		return cfg
+	}
+	svc.GrantServicePeer = peer
+	namespace.Services[serviceName] = svc
+	cluster.Namespaces[namespaceName] = namespace
+	if cluster.MembershipGrant != nil && cluster.MembershipGrant.GrantServiceProtocol == "" {
+		cluster.MembershipGrant.GrantServiceProtocol = grantspkg.ProtocolID
+	}
+	if cluster.MembershipGrant != nil && len(cluster.MembershipGrant.GrantServicePeers) == 0 {
+		cluster.MembershipGrant.GrantServicePeers = []string{peer}
+	}
+	cfg.Clusters[clusterName] = cluster
+	_ = saveLocalConfig(configPath, cfg)
+	return cfg
+}
+
+func discoverGrantServicePeer(configPath string, cfg cfgpkg.Config) string {
+	scope := serviceScope{Cluster: cfg.CurrentCluster, Namespace: cfg.CurrentNamespace}
+	result, err := discoverServices(configPath, 5*time.Second, false, false, scope)
+	if err != nil {
+		return ""
+	}
+	for _, service := range result.Services {
+		if !isSystemServiceResource(service) {
+			continue
+		}
+		if strings.TrimSpace(service.Name) != "grant-service" {
+			continue
+		}
+		if peer := grantServicePeerFromResource(service); peer != "" {
+			return peer
+		}
+	}
+	return ""
+}
+
+func grantServicePeerFromResource(service serviceResource) string {
+	if service.GrantService != nil {
+		for _, peer := range service.GrantService.Peers {
+			if strings.TrimSpace(peer) != "" {
+				return strings.TrimSpace(peer)
+			}
+		}
+	}
+	for _, addr := range service.Addresses {
+		if strings.TrimSpace(addr) != "" {
+			return strings.TrimSpace(addr)
+		}
+	}
+	return ""
 }
 
 func noServicePublishGrantError(clusterName, namespaceName, serviceName string) error {

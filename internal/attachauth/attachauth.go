@@ -160,7 +160,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		}
 		return result, nil
 	}
-	if grantPeer != "" && r.deps.GrantClient != nil {
+	if r.deps.GrantClient != nil {
 		updatedCfg, updatedSvc, updatedShareToken, grantErr := r.deps.GrantClient.RequestPublishGrant(req.ConfigPath, cfg, svc, servicePeerID)
 		if grantErr == nil {
 			updatedCluster := updatedCfg.Clusters[updatedCfg.CurrentCluster]
@@ -242,7 +242,7 @@ func (r *resolver) Renew(_ context.Context, req RenewRequest) (ResolveResult, er
 		}
 		return ResolveResult{Decision: DecisionReady, Config: cfg, Service: svc, ServicePeerID: req.ServicePeerID, MembershipCapabilityFile: membershipFile, ServiceClaimFile: svc.ServiceClaimFile, ServicePublishLeaseFile: svc.ServicePublishLeaseFile, ServiceShareToken: shareToken, MintedLocally: true}, nil
 	}
-	if grantPeer != "" && r.deps.GrantClient != nil {
+	if r.deps.GrantClient != nil {
 		updatedCfg, updatedSvc, updatedShareToken, err := r.deps.GrantClient.RenewPublishAuthorization(req.ConfigPath, cfg, svc, req.ServicePeerID)
 		if err != nil {
 			return ResolveResult{}, err

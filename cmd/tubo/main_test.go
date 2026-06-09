@@ -4929,10 +4929,10 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 	}
 	serviceIDA := serviceidentity.ServiceIDFromPublicKey(pubA)
 	serviceIDB := serviceidentity.ServiceIDFromPublicKey(pubB)
-	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", "http", serviceidentity.EncodePublicKey(pubA), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
+	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", "service", "http", serviceidentity.EncodePublicKey(pubA), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", "http", serviceidentity.EncodePublicKey(pubB), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
+	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", "service", "http", serviceidentity.EncodePublicKey(pubB), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
@@ -5082,6 +5082,71 @@ func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("services table missing %q: %s", want, out)
 		}
+	}
+}
+
+func TestPrintSystemServicesTableIncludesGrantServiceMetadata(t *testing.T) {
+	out, err := capture(func() error {
+		printSystemServicesTable([]serviceResource{{Kind: "grant-service", Name: "grant-service", Status: "online", PeerID: "12D3-peer", Addresses: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}, GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}}}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"KIND", "PROTOCOL", grantspkg.ProtocolID, "grant-service", "12D3-peer"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("system services table missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestDiscoverGrantServicePeerUsesSystemDiscovery(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "grant-service-discovery-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	t.Cleanup(cache.Stop)
+	addr := p2p.PeerAddrs(server)[0]
+	grantPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(grantPub)
+	grantEndpoint := &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{addr}}
+	if err := cache.AddV2(server.ID(), serviceID, "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPub), "system", grantEndpoint, []string{addr}, nil, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "12D3KooWauthority", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "observability", Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := discoverGrantServicePeer(configPath, cfg); got != addr {
+		t.Fatalf("grant service peer = %q, want %q", got, addr)
 	}
 }
 
