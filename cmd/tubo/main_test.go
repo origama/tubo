@@ -5186,7 +5186,7 @@ func TestDiscoverGrantServicePeerUsesSystemDiscovery(t *testing.T) {
 func TestGetServicesSystemFiltersGrantServiceByActualScope(t *testing.T) {
 	configPath, _, addr, wrongPeer, legacyPeer := newSystemGrantServiceDiscoveryFixture(t)
 	out, err := capture(func() error {
-		return run([]string{"get", "services", "--system", "--config", configPath, "--timeout", "5s"})
+		return run([]string{"get", "services", "--no-init", "--system", "--config", configPath, "--timeout", "5s"})
 	})
 	if err != nil {
 		t.Fatal(err)
