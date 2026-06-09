@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -34,7 +35,11 @@ func grantsCmd(args []string) error {
 	}
 	switch args[0] {
 	case "serve":
-		return grantsServeCmd(args[1:])
+		cleanArgs, detach := stripDetachArgs(args[1:])
+		if detach {
+			return detachGrantsServeCommand(cleanArgs)
+		}
+		return grantsServeCmd(cleanArgs)
 	case "request":
 		return grantsRequestCmd(args[1:])
 	case "pending":
@@ -700,8 +705,48 @@ func grantsServeProcessState(clusterName, namespaceName, listen string) detached
 		Cluster:   clusterName,
 		Namespace: namespaceName,
 		Local:     listen,
-		LogFile:   "",
+		LogFile:   filepath.Join(processLogDir(), name+".log"),
 		StateFile: filepath.Join(processStateDir(), name+".json"),
 		PIDFile:   filepath.Join(processRunDir(), name+".pid"),
 	}
+}
+
+// detachGrantsServeCommand launches "tubo grants serve" as a detached background
+// process, routing stdout+stderr to a log file readable via "tubo logs".
+func detachGrantsServeCommand(args []string) error {
+	// Parse only the flags we need to build the process state name and log path.
+	// The full flag set is re-parsed by the detached child.
+	fs := flag.NewFlagSet("grants serve (detach)", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", "", "")
+	clusterName := fs.String("cluster", "", "")
+	namespaceName := fs.String("namespace", "", "")
+	listen := fs.String("p2p-listen", "/ip4/0.0.0.0/tcp/0", "")
+	// Ignore unknown flags — pass them through to the child as-is.
+	_ = fs.Parse(args)
+	if *clusterName == "" || *namespaceName == "" {
+		cfg, err := loadLocalConfigOrError(*configPath)
+		if err == nil {
+			if *clusterName == "" {
+				*clusterName = cfg.CurrentCluster
+			}
+			if *namespaceName == "" {
+				*namespaceName = cfg.CurrentNamespace
+			}
+		}
+	}
+	if *clusterName == "" || *namespaceName == "" {
+		return errors.New("grants serve requires a cluster and namespace context (--cluster / --namespace or a config with current_cluster set)")
+	}
+	state := grantsServeProcessState(*clusterName, *namespaceName, *listen)
+	spec := detachedSpec{
+		State:     state,
+		ChildArgs: append([]string{"grants", "serve"}, args...),
+	}
+	started, err := startDetachedProcess(spec)
+	if err != nil {
+		return err
+	}
+	printDetachedSummary("grants serve", started)
+	return nil
 }

@@ -3083,6 +3083,38 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	}
 }
 
+func TestGrantsServeProcessStateHasLogFile(t *testing.T) {
+	// grantsServeProcessState must always include a non-empty LogFile path so
+	// that 'tubo logs grants-serve-<cluster>-<namespace>' can read it when the
+	// process is launched with -d.
+	state := grantsServeProcessState("mycluster", "myns", "/ip4/0.0.0.0/tcp/0")
+	if state.LogFile == "" {
+		t.Fatal("LogFile must not be empty in grantsServeProcessState")
+	}
+	if !strings.Contains(state.LogFile, "grants-serve-mycluster-myns") {
+		t.Fatalf("LogFile path %q does not contain expected process name segment", state.LogFile)
+	}
+	if !strings.HasSuffix(state.LogFile, ".log") {
+		t.Fatalf("LogFile %q should end in .log", state.LogFile)
+	}
+}
+
+func TestGrantsServeCmdStripsDetachFlagBeforeParsingFlags(t *testing.T) {
+	// 'tubo grants serve -d ...' must not return an error about an unknown '-d'
+	// flag; the detach flag must be stripped before the flag set is parsed.
+	// We verify this by running the serve sub-command dispatch logic directly;
+	// it will fail with a config-not-found error (not a flag-parse error).
+	err := grantsCmd([]string{"serve", "-d", "--cluster", "home", "--namespace", "default"})
+	if err == nil {
+		// may succeed if a real grants-serve-home-default is already registered;
+		// that is fine for this test.
+		return
+	}
+	if strings.Contains(err.Error(), "flag provided but not defined: -d") {
+		t.Fatalf("-d flag was not stripped before flag parsing: %v", err)
+	}
+}
+
 func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
