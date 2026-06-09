@@ -423,15 +423,19 @@ func (a *App) reconnectService(ctx context.Context) error {
 	if a.host == nil {
 		return fmt.Errorf("bridge host unavailable")
 	}
+	a.connectMu.Lock()
 	oldPeer := a.service.ID.String()
 	oldAddr := a.cfg.ServiceAddr
+	service := a.service
 	if a.rebindServiceFn != nil {
 		newService, newAddr, newPath, err := a.rebindServiceFn(ctx)
 		if err != nil {
+			a.connectMu.Unlock()
 			return fmt.Errorf("rebind service peer: %w", err)
 		}
 		if newService.ID != "" {
 			a.service = newService
+			service = newService
 		}
 		if strings.TrimSpace(newAddr) != "" {
 			a.cfg.ServiceAddr = newAddr
@@ -440,9 +444,14 @@ func (a *App) reconnectService(ctx context.Context) error {
 		if strings.TrimSpace(newPath) != "" {
 			a.selectedPath = newPath
 		}
-		log.Printf("bridge tcp rebind service_id=%s old_peer=%s new_peer=%s old_addr=%s new_addr=%s reason=stream_failed", a.cfg.ConnectServiceID, oldPeer, a.service.ID, oldAddr, a.cfg.ServiceAddr)
 	}
-	_ = a.host.Network().ClosePeer(a.service.ID)
+	newPeer := a.service.ID.String()
+	newAddr := a.cfg.ServiceAddr
+	a.connectMu.Unlock()
+	if a.rebindServiceFn != nil {
+		log.Printf("bridge tcp rebind service_id=%s old_peer=%s new_peer=%s old_addr=%s new_addr=%s reason=stream_failed", a.cfg.ConnectServiceID, oldPeer, newPeer, oldAddr, newAddr)
+	}
+	_ = a.host.Network().ClosePeer(service.ID)
 	connectCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp self-heal reconnect")
 	if deadline, ok := ctx.Deadline(); ok {
 		var cancel context.CancelFunc
@@ -477,7 +486,12 @@ func (a *App) currentPath() string {
 	if a.host == nil {
 		return ""
 	}
-	conns := a.host.Network().ConnsToPeer(a.service.ID)
+	a.connectMu.Lock()
+	serviceID := a.service.ID
+	selectedPath := a.selectedPath
+	serviceAddr := a.cfg.ServiceAddr
+	a.connectMu.Unlock()
+	conns := a.host.Network().ConnsToPeer(serviceID)
 	hasRelay := false
 	for _, conn := range conns {
 		if strings.Contains(conn.RemoteMultiaddr().String(), "/p2p-circuit") {
@@ -489,13 +503,13 @@ func (a *App) currentPath() string {
 	if hasRelay {
 		return "relayed"
 	}
-	if a.selectedPath != "" {
-		return a.selectedPath
+	if selectedPath != "" {
+		return selectedPath
 	}
-	if strings.Contains(a.cfg.ServiceAddr, "/p2p-circuit") {
+	if strings.Contains(serviceAddr, "/p2p-circuit") {
 		return "relayed"
 	}
-	if a.cfg.ServiceAddr != "" {
+	if serviceAddr != "" {
 		return "direct"
 	}
 	return ""
@@ -514,7 +528,12 @@ func formatRemaining(until time.Time, now time.Time) string {
 
 func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 	ok, msg := a.tunnelHealth()
-	snap := statusSnapshot{Status: "running", ServiceKind: a.cfg.ServiceKind, Path: a.currentPath(), SelectedAddr: a.selectedAddr, SelectedPath: a.selectedPath, SelectedPeerID: a.service.ID.String()}
+	a.connectMu.Lock()
+	selAddr := a.selectedAddr
+	selPath := a.selectedPath
+	selPeer := a.service.ID.String()
+	a.connectMu.Unlock()
+	snap := statusSnapshot{Status: "running", ServiceKind: a.cfg.ServiceKind, Path: a.currentPath(), SelectedAddr: selAddr, SelectedPath: selPath, SelectedPeerID: selPeer}
 	if !ok {
 		snap.Status = "degraded"
 		snap.Reason = msg

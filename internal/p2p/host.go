@@ -165,7 +165,11 @@ func PeerAddrs(h host.Host) []string {
 	addrs := h.Addrs()
 	out := make([]string, 0, len(addrs))
 	for _, a := range addrs {
-		p2pAddr, err := multiaddr.NewMultiaddr(fmt.Sprintf("%s/p2p/%s", a.String(), peerID))
+		addr, err := multiaddr.NewMultiaddrBytes(append([]byte(nil), a.Bytes()...))
+		if err != nil {
+			continue
+		}
+		p2pAddr, err := multiaddr.NewMultiaddr(fmt.Sprintf("%s/p2p/%s", addr.String(), peerID))
 		if err == nil {
 			out = append(out, p2pAddr.String())
 		}

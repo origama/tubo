@@ -384,14 +384,19 @@ func TestTCPBridgeRebindsPinnedServiceAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var rebindMu sync.RWMutex
 	currentServiceAddr := p2p.PeerAddrs(service1.Host())[0]
 	currentServicePath := "direct"
 	resolver := func(context.Context) (peer.AddrInfo, string, string, error) {
-		addrInfo, err := p2p.AddrInfoFromString(currentServiceAddr)
+		rebindMu.RLock()
+		addr := currentServiceAddr
+		path := currentServicePath
+		rebindMu.RUnlock()
+		addrInfo, err := p2p.AddrInfoFromString(addr)
 		if err != nil {
 			return peer.AddrInfo{}, "", "", err
 		}
-		return addrInfo, currentServiceAddr, currentServicePath, nil
+		return addrInfo, addr, path, nil
 	}
 
 	bridgeApp, err := bridgeapp.New(ctx, bridgeapp.Config{
@@ -462,7 +467,9 @@ func TestTCPBridgeRebindsPinnedServiceAfterRestart(t *testing.T) {
 	defer service2.Host().Close()
 	go func() { _ = service2.Start(serviceCtx2) }()
 	waitUntil(t, 15*time.Second, func() bool { return httpOK(fmt.Sprintf("http://127.0.0.1:%d/healthz", serviceHealth2)) }, "service2 health")
+	rebindMu.Lock()
 	currentServiceAddr = p2p.PeerAddrs(service2.Host())[0]
+	rebindMu.Unlock()
 
 	roundTrip("two", "second:")
 }

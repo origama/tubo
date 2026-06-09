@@ -224,10 +224,6 @@ func (r *resolver) Renew(_ context.Context, req RenewRequest) (ResolveResult, er
 	cfg := req.Config
 	svc := req.Service
 	cluster := cfg.Clusters[cfg.CurrentCluster]
-	grantPeer := svc.GrantServicePeer
-	if strings.TrimSpace(grantPeer) == "" {
-		grantPeer = grantServicePeer(cluster)
-	}
 	if cluster.AuthorityPrivateKeyFile != "" && r.deps.AuthoritySigner != nil {
 		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
 			return ResolveResult{}, err

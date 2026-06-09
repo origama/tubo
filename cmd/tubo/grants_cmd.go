@@ -660,11 +660,6 @@ func buildGrantServiceDiscoveryArtifacts(runtime cfgpkg.DiscoveryRuntime, h host
 	return service, ann, nil
 }
 
-func buildGrantServiceAnnouncement(runtime cfgpkg.DiscoveryRuntime, h host.Host, overlay *p2p.OverlayHost, authorityPriv ed25519.PrivateKey, claimTTL time.Duration) (discovery.AnnouncementV3, error) {
-	_, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, h, overlay, authorityPriv, claimTTL)
-	return ann, err
-}
-
 func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg cfgpkg.Config, service discoveryquery.Service) {
 	peers := append([]string(nil), cfg.Network.BootstrapPeers...)
 	peers = append(peers, cfg.Network.RelayPeers...)
