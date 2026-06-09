@@ -31,7 +31,7 @@ type Cache interface {
 	Resolve(serviceName string) (*discovery.ServiceEntry, bool)
 	List() []*discovery.ServiceEntry
 	Add(peer.ID, string, []string, time.Duration) error
-	AddV2(peer.ID, string, string, string, string, string, *grantspkg.GrantServiceEndpoint, []string, []string, time.Duration) error
+	AddV2(peer.ID, string, string, string, string, string, string, string, string, *grantspkg.GrantServiceEndpoint, []string, []string, time.Duration) error
 }
 
 type Request struct {
@@ -48,6 +48,8 @@ type Metadata struct {
 
 type Service struct {
 	Kind             string                          `json:"kind"`
+	ClusterID        string                          `json:"cluster_id,omitempty"`
+	NamespaceID      string                          `json:"namespace_id,omitempty"`
 	ServiceKind      string                          `json:"service_kind,omitempty"`
 	Name             string                          `json:"name"`
 	ServiceID        string                          `json:"service_id,omitempty"`
@@ -137,7 +139,7 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 			resp.Error = fmt.Sprintf("invalid service peer id: %v", err)
 			return resp
 		}
-		if err := cache.AddV2(pID, req.Service.ServiceID, req.Service.Name, req.Service.ServiceKind, req.Service.ServicePublicKey, req.Service.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(req.Service.GrantService), append([]string(nil), req.Service.Addresses...), append([]string(nil), req.Service.Capabilities...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
+		if err := cache.AddV2(pID, req.Service.ClusterID, req.Service.NamespaceID, req.Service.ServiceID, req.Service.Name, req.Service.Kind, req.Service.ServiceKind, req.Service.ServicePublicKey, req.Service.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(req.Service.GrantService), append([]string(nil), req.Service.Addresses...), append([]string(nil), req.Service.Capabilities...), time.Duration(req.Service.TTLSeconds)*time.Second); err != nil {
 			resp.Error = fmt.Sprintf("cache announce: %v", err)
 			return resp
 		}
@@ -202,8 +204,14 @@ func serviceFromEntry(entry *discovery.ServiceEntry) Service {
 		expiresIn = 0
 	}
 	direct, relayed := splitAddresses(entry.Addresses)
+	kind := strings.TrimSpace(entry.Kind)
+	if kind == "" {
+		kind = discovery.ResourceKindService
+	}
 	return Service{
-		Kind:             "service",
+		Kind:             kind,
+		ClusterID:        entry.ClusterID,
+		NamespaceID:      entry.NamespaceID,
 		ServiceKind:      entry.ServiceKind,
 		Name:             entry.ServiceName,
 		ServiceID:        entry.ServiceID,

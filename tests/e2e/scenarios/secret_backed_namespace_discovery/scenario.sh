@@ -10,7 +10,9 @@ source "$E2E_ROOT/lib/report.sh"
 CLUSTER_NAME="teamhome"
 NAMESPACE="team"
 SERVICE_NAME="e2e-v3-alice"
+BOB_SERVICE_NAME="e2e-v3-bob"
 DUMMY_PORT="18020"
+BOB_DUMMY_PORT="18021"
 ROTATION_GRACE="6s"
 
 mkdir -p "$E2E_LOG_DIR" "$E2E_ARTIFACTS_DIR"
@@ -82,9 +84,10 @@ exec_actor alice sh -lc "cd /work && tubo create cluster/${CLUSTER_NAME} --confi
 exec_actor alice sh -lc "cd /work && tubo create namespace/${NAMESPACE} --config /work/config.yaml"
 
 exec_actor_bg alice sh -lc "cd /work && DUMMY_API_LISTEN=127.0.0.1:${DUMMY_PORT} DUMMY_API_INSTANCE=alice exec dummy-api-server > /work/logs/alice-dummy-api.out 2>&1"
-wait_http_ok_in_actor alice http://127.0.0.1:${DUMMY_PORT}/healthz 60 || fail "alice dummy api did not become healthy"
+wait_http_ok_in_actor alice http://127.0.0.1:${DUMMY_PORT}/healthz 20 || fail "alice dummy api did not become healthy"
 exec_actor_bg alice sh -lc "cd /work && exec tubo attach http://127.0.0.1:${DUMMY_PORT} --name ${SERVICE_NAME} --config /work/config.yaml --heartbeat-interval 1s > /work/logs/alice-attach.out 2>&1"
-wait_http_ok_in_actor alice http://127.0.0.1:8091/healthz 90 || fail "alice attach runtime did not become healthy"
+wait_http_ok_in_actor alice http://127.0.0.1:8091/healthz 20 || fail "alice attach runtime did not become healthy"
+exec_actor_bg alice sh -lc "cd /work && exec tubo grants serve --config /work/config.yaml --cluster ${CLUSTER_NAME} --namespace ${NAMESPACE} --public-auto-approve --seed grants-${CLUSTER_NAME}-${NAMESPACE} --p2p-listen /ip4/127.0.0.1/tcp/40124 > /work/logs/alice-grants-serve.out 2>&1"
 
 member_share="$(exec_actor alice sh -lc "cd /work && tubo share cluster/${CLUSTER_NAME} --config /work/config.yaml --namespace ${NAMESPACE} --role member --expires 2h")"
 member_token="$(printf '%s\n' "$member_share" | awk '/tubo-invite-v1\./ {print $NF; exit}')"
@@ -98,8 +101,25 @@ exec_actor bob sh -lc "cd /work && tubo use cluster/${CLUSTER_NAME} --config /wo
 
 member_cfg="/work/member/config.yaml"
 
-for i in $(seq 1 60); do
-  if exec_actor bob sh -lc "cd /work && tubo get services --config ${member_cfg} --timeout 5s" > "$E2E_ARTIFACTS_DIR/bob-member-services.out" 2>&1; then
+system_services_out="$E2E_ARTIFACTS_DIR/bob-system-services.out"
+for i in $(seq 1 3); do
+  if exec_actor bob sh -lc "cd /work && tubo get services --system --timeout 3s --config ${member_cfg}" > "$system_services_out" 2>&1; then
+    if grep -Fq "grant-service" "$system_services_out"; then
+      break
+    fi
+  fi
+  sleep 1
+done
+assert_file_contains "$system_services_out" "grant-service" 'member invite should discover the grant service as a system resource'
+assert_file_contains "$system_services_out" "/tubo/grants/1.0" 'system grant service should advertise the grant protocol'
+
+exec_actor_bg bob sh -lc "cd /work && DUMMY_API_LISTEN=127.0.0.1:${BOB_DUMMY_PORT} DUMMY_API_INSTANCE=bob exec dummy-api-server > /work/logs/bob-dummy-api.out 2>&1"
+wait_http_ok_in_actor bob http://127.0.0.1:${BOB_DUMMY_PORT}/healthz 20 || fail "bob dummy api did not become healthy"
+exec_actor_bg bob sh -lc "cd /work && exec tubo attach http://127.0.0.1:${BOB_DUMMY_PORT} --name ${BOB_SERVICE_NAME} --config ${member_cfg} --heartbeat-interval 1s > /work/logs/bob-attach.out 2>&1"
+wait_http_ok_in_actor bob http://127.0.0.1:8091/healthz 20 || fail "bob attach runtime did not become healthy"
+
+for i in $(seq 1 6); do
+  if exec_actor bob sh -lc "cd /work && tubo get services --config ${member_cfg} --timeout 3s" > "$E2E_ARTIFACTS_DIR/bob-member-services.out" 2>&1; then
     if grep -Fq "$SERVICE_NAME" "$E2E_ARTIFACTS_DIR/bob-member-services.out"; then
       break
     fi

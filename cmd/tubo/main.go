@@ -1590,6 +1590,8 @@ func rmCmd(args []string) error {
 
 type serviceResource struct {
 	Kind             string                          `json:"kind"`
+	ClusterID        string                          `json:"cluster_id,omitempty"`
+	NamespaceID      string                          `json:"namespace_id,omitempty"`
 	ServiceKind      string                          `json:"service_kind,omitempty"`
 	Cluster          string                          `json:"cluster,omitempty"`
 	Namespace        string                          `json:"namespace,omitempty"`
@@ -1778,6 +1780,7 @@ func getCmd(args []string) error {
 	namespaceShort := fs.String("n", "", "")
 	allNamespaces := fs.Bool("all-namespaces", false, "")
 	allNamespacesShort := fs.Bool("A", false, "")
+	systemOnly := fs.Bool("system", false, "")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -1820,6 +1823,7 @@ func getCmd(args []string) error {
 			if err != nil {
 				return err
 			}
+			result.Services = filterListedServices(result.Services, *systemOnly)
 			if *jsonOut {
 				return printJSON(struct {
 					Mode     string                   `json:"mode"`
@@ -1831,7 +1835,11 @@ func getCmd(args []string) error {
 				}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
 			}
 			printMessages(result.Messages)
-			printServicesTable(result.Services)
+			if *systemOnly {
+				printSystemServicesTable(result.Services)
+			} else {
+				printServicesTable(result.Services)
+			}
 			return nil
 		}
 		scope := scopes[0]
@@ -1840,6 +1848,7 @@ func getCmd(args []string) error {
 			return err
 		}
 		result := fromCatalogLookupResult(catalogResult)
+		result.Services = filterListedServices(result.Services, *systemOnly)
 		if *jsonOut {
 			return printJSON(struct {
 				Mode     string                   `json:"mode"`
@@ -1851,7 +1860,11 @@ func getCmd(args []string) error {
 			}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
 		}
 		printMessages(result.Messages)
-		printServicesTable(result.Services)
+		if *systemOnly {
+			printSystemServicesTable(result.Services)
+		} else {
+			printServicesTable(result.Services)
+		}
 		return nil
 	case strings.HasPrefix(resource, "service/"):
 		if useAllNamespaces {
@@ -2097,6 +2110,34 @@ func isServiceID(ref string) bool {
 	return serviceidentity.ValidateServiceID(strings.TrimSpace(ref)) == nil
 }
 
+func filterListedServices(services []serviceResource, systemOnly bool) []serviceResource {
+	filtered := make([]serviceResource, 0, len(services))
+	for _, service := range services {
+		isSystem := isSystemServiceResource(service)
+		if systemOnly {
+			if !isSystem || !hasStrictSystemServiceScope(service) {
+				continue
+			}
+		} else if isSystem {
+			continue
+		}
+		filtered = append(filtered, service)
+	}
+	return filtered
+}
+
+func isSystemServiceResource(service serviceResource) bool {
+	kind := strings.TrimSpace(service.Kind)
+	if kind == "" {
+		kind = "service"
+	}
+	return kind != "service" || strings.TrimSpace(service.ServiceKind) == "grant-service"
+}
+
+func hasStrictSystemServiceScope(service serviceResource) bool {
+	return strings.TrimSpace(service.ClusterID) != "" && strings.TrimSpace(service.NamespaceID) != ""
+}
+
 func printServicesTable(services []serviceResource) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSERVICE KIND\tSTATUS\tACCESS\tPATH\tPEER\tCAPABILITIES")
@@ -2106,6 +2147,23 @@ func printServicesTable(services []serviceResource) {
 			caps = strings.Join(service.Capabilities, ",")
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayServiceID(service.ServiceID), displayServiceScope(service), displayServiceKind(service), service.Status, displayServiceConnectPolicy(service), service.Path, service.PeerID, caps)
+	}
+	_ = w.Flush()
+}
+
+func printSystemServicesTable(services []serviceResource) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tKIND\tSCOPE\tPROTOCOL\tSTATUS\tPEER\tADDRS")
+	for _, service := range services {
+		protocol := "-"
+		if service.GrantService != nil && strings.TrimSpace(service.GrantService.Protocol) != "" {
+			protocol = service.GrantService.Protocol
+		}
+		addrs := "-"
+		if len(service.Addresses) > 0 {
+			addrs = strings.Join(service.Addresses, ",")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayValue(service.Kind), displayServiceScope(service), protocol, service.Status, displayValue(service.PeerID), addrs)
 	}
 	_ = w.Flush()
 }

@@ -281,6 +281,29 @@ func TestResolveReturnsReadyWhenGrantPathApproves(t *testing.T) {
 	}
 }
 
+func TestResolveUsesGrantClientWithoutPreconfiguredGrantPeer(t *testing.T) {
+	cfg := testAttachConfig()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
+	grantClient := &fakeGrantClient{cfg: cfg, svc: svc, token: "share-token"}
+	resolver := New(Dependencies{
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{publishLeaseErr: os.ErrNotExist, serviceClaimErr: os.ErrNotExist, membershipFile: "/tmp/membership.cap"},
+		GrantClient:   grantClient,
+		Clock:         SystemClock{},
+	})
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
+	}
+	if got.Decision != DecisionReady {
+		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionReady)
+	}
+	if grantClient.calls != 1 {
+		t.Fatalf("GrantClient calls = %d, want 1", grantClient.calls)
+	}
+}
+
 func TestResolveInterpretsGrantPendingAndDenied(t *testing.T) {
 	tests := []struct {
 		name     string

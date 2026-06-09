@@ -45,6 +45,6 @@ The first scenario validates the basic happy path:
 
 The `collaboration_namespace_flows` scenario covers the collaboration branch: a `member` invite that can discover and connect by name, a `viewer` invite that can list but cannot open a connect lease, and a share invite that continues to work cross-scope even without namespace membership.
 
-The `secret_backed_namespace_discovery` scenario covers the user-facing Discovery V3 happy path: a clean namespace member joins through a cluster invite and discovers an attached service by name. The mismatched-state and rotation grace/expiry cases are covered in the integration suite.
+The `secret_backed_namespace_discovery` scenario covers the user-facing Discovery V3 happy path: a clean namespace member joins through a cluster invite, discovers the system grant service, attaches without local grant peers, and then discovers an attached service by name. The mismatched-state and rotation grace/expiry cases are covered in the integration suite.
 
 The `public_*` scenarios cover the security/discovery gates from `0.7.0.b0`: duplicate display names accepted only as distinct records by `service_id`, invalid leases rejected, stolen/expired/replayed connect proofs rejected, `ConnectAccessLease` auto-renewal, one-time invites even after attach restart and fresh-client retry, and issuer-side revocations for invite/session/service-access.

@@ -27,6 +27,7 @@ type AnnouncementV2 struct {
 }
 
 type AnnouncementV2Payload struct {
+	Kind                 string                          `json:"kind,omitempty"`
 	ServiceName          string                          `json:"service_name"` // display name only; not an authorization key
 	ServiceKind          string                          `json:"service_kind,omitempty"`
 	ServiceID            string                          `json:"service_id,omitempty"`

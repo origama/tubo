@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,12 +16,16 @@ import (
 	"text/tabwriter"
 	"time"
 
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
+	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 func grantsCmd(args []string) error {
@@ -523,6 +529,12 @@ func grantsServeCmd(args []string) error {
 	defer stop()
 	overlay.StartBootstrapRetry(ctx, 5*time.Second)
 	overlay.StartRelayReservations(ctx)
+	scopedCfg := cfg
+	scopedCfg.CurrentCluster = *clusterName
+	scopedCfg.CurrentNamespace = *namespaceName
+	if err := publishGrantServiceDiscovery(ctx, host, overlay, priv, scopedCfg, *claimTTL); err != nil {
+		return err
+	}
 	fmt.Printf("grant service listening peer=%s protocol=%s store=%s\n", host.ID(), grantspkg.ProtocolID, *storePath)
 	for _, addr := range overlay.ReachableAddrs() {
 		if strings.Contains(addr, "/p2p-circuit") {
@@ -534,6 +546,146 @@ func grantsServeCmd(args []string) error {
 	<-ctx.Done()
 	time.Sleep(50 * time.Millisecond)
 	return nil
+}
+
+func publishGrantServiceDiscovery(ctx context.Context, h host.Host, overlay *p2p.OverlayHost, authorityPriv ed25519.PrivateKey, cfg cfgpkg.Config, claimTTL time.Duration) error {
+	scope, err := cfgpkg.ResolveEffectiveScope(cfg, cfg.CurrentCluster, cfg.CurrentNamespace, false)
+	if err != nil {
+		return err
+	}
+	policy := cfgpkg.EffectiveScopePolicy(cfg, scope)
+	if policy.Discovery == cfgpkg.NamespaceDiscoveryDisabled {
+		logging.Warnf("grant service discovery publication disabled for scope %s/%s; grant-service will not be discoverable via `tubo get services --system`\n", cfg.CurrentCluster, cfg.CurrentNamespace)
+		return nil
+	}
+	runtime, err := cfg.RequireDiscoveryRuntime()
+	if err != nil {
+		return fmt.Errorf("grant service discovery publication requires a valid discovery runtime for scope %s/%s: %w", cfg.CurrentCluster, cfg.CurrentNamespace, err)
+	}
+	if runtime.Context == nil {
+		return fmt.Errorf("grant service discovery publication requires a discovery context for scope %s/%s", cfg.CurrentCluster, cfg.CurrentNamespace)
+	}
+	gs, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
+	if err != nil {
+		return err
+	}
+	topic, err := gs.Join(runtime.Topic)
+	if err != nil {
+		return err
+	}
+	priv := h.Peerstore().PrivKey(h.ID())
+	if priv == nil {
+		return fmt.Errorf("no private key for peer")
+	}
+	publisher := discovery.NewPublisher(topic, priv)
+	publish := func() error {
+		service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, h, overlay, authorityPriv, claimTTL)
+		if err != nil {
+			return err
+		}
+		if err := publisher.PublishV3(ctx, ann); err != nil {
+			return err
+		}
+		syncGrantServiceAnnouncementToPeers(ctx, h, cfg, service)
+		return nil
+	}
+	if err := publish(); err != nil {
+		return err
+	}
+	refreshEvery := grantServiceDiscoveryRefreshInterval(claimTTL)
+	go func() {
+		ticker := time.NewTicker(refreshEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := publish(); err != nil {
+					logging.Warnf("grant service discovery publish failed: %v\n", err)
+				}
+			}
+		}
+	}()
+	return nil
+}
+
+func grantServiceDiscoveryRefreshInterval(claimTTL time.Duration) time.Duration {
+	interval := claimTTL / 2
+	switch {
+	case interval <= 0:
+		interval = 5 * time.Second
+	case interval > 5*time.Second:
+		interval = 5 * time.Second
+	case interval < 2*time.Second:
+		interval = 2 * time.Second
+	}
+	return interval
+}
+
+func buildGrantServiceDiscoveryArtifacts(runtime cfgpkg.DiscoveryRuntime, h host.Host, overlay *p2p.OverlayHost, authorityPriv ed25519.PrivateKey, claimTTL time.Duration) (discoveryquery.Service, discovery.AnnouncementV3, error) {
+	if runtime.Context == nil {
+		return discoveryquery.Service{}, discovery.AnnouncementV3{}, fmt.Errorf("missing discovery context for namespace %s/%s", runtime.ClusterID, runtime.NamespaceID)
+	}
+	pubKey := h.Peerstore().PubKey(h.ID())
+	if pubKey == nil {
+		return discoveryquery.Service{}, discovery.AnnouncementV3{}, fmt.Errorf("missing public key for peer %s", h.ID())
+	}
+	rawPub, err := pubKey.Raw()
+	if err != nil {
+		return discoveryquery.Service{}, discovery.AnnouncementV3{}, err
+	}
+	servicePub := ed25519.PublicKey(rawPub)
+	serviceID := serviceidentity.ServiceIDFromPublicKey(servicePub)
+	if claimTTL <= 0 {
+		claimTTL = 24 * time.Hour
+	}
+	now := time.Now().UTC()
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: runtime.ClusterID, NamespaceID: runtime.NamespaceID, SubjectPeerID: h.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: now.Add(claimTTL)}, authorityPriv)
+	if err != nil {
+		return discoveryquery.Service{}, discovery.AnnouncementV3{}, err
+	}
+	serviceClaim, err := capability.SignServiceClaim(capability.ServiceClaim{ClusterID: runtime.ClusterID, NamespaceID: runtime.NamespaceID, ServiceID: serviceID, SubjectPeerID: h.ID().String(), Permissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, ExpiresAt: now.Add(claimTTL)}, authorityPriv)
+	if err != nil {
+		return discoveryquery.Service{}, discovery.AnnouncementV3{}, err
+	}
+	addrs := append([]string(nil), overlay.ReachableAddrs()...)
+	grantPeers := grantServicePeersForTokens(addrs)
+	payload := discovery.AnnouncementV3Payload{ClusterID: runtime.ClusterID, NamespaceID: runtime.NamespaceID, Kind: discovery.ResourceKindGrantService, ServiceName: "grant-service", ServiceKind: "grant-service", ServiceID: serviceID, ServicePublicKey: serviceidentity.EncodePublicKey(servicePub), ConnectPolicy: "system", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: append([]string(nil), grantPeers...)}, Addresses: addrs, MembershipCapability: mustMarshalJSON(membership), ServiceClaim: mustMarshalJSON(serviceClaim), Capabilities: []string{"grant-service"}, RegisteredAt: now}
+	service := discoveryquery.Service{Kind: discovery.ResourceKindGrantService, ClusterID: runtime.ClusterID, NamespaceID: runtime.NamespaceID, ServiceKind: "grant-service", Name: "grant-service", ServiceID: serviceID, ServicePublicKey: serviceidentity.EncodePublicKey(servicePub), ConnectPolicy: "system", GrantService: grantspkg.CloneGrantServiceEndpoint(payload.GrantService), PeerID: h.ID().String(), Addresses: append([]string(nil), addrs...), Status: "online", Path: "unknown", TTLSeconds: int64(claimTTL.Seconds()), Capabilities: []string{"grant-service"}, RegisteredAt: now.Format(time.RFC3339)}
+	ann, err := discovery.NewAnnouncementV3(*runtime.Context, h.ID(), claimTTL, payload)
+	if err != nil {
+		return discoveryquery.Service{}, discovery.AnnouncementV3{}, err
+	}
+	return service, ann, nil
+}
+
+func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg cfgpkg.Config, service discoveryquery.Service) {
+	peers := append([]string(nil), cfg.Network.BootstrapPeers...)
+	peers = append(peers, cfg.Network.RelayPeers...)
+	seen := make(map[string]struct{}, len(peers))
+	for _, raw := range peers {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if _, ok := seen[raw]; ok {
+			continue
+		}
+		seen[raw] = struct{}{}
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			continue
+		}
+		if _, err := discoveryquery.AnnounceService(ctx, h, info, service); err != nil {
+			logging.Warnf("grant service discovery announce failed peer=%s: %v\n", info.ID, err)
+		}
+	}
+}
+
+func mustMarshalJSON(v any) []byte {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 func grantsServeProcessState(clusterName, namespaceName, listen string) detachedProcessState {

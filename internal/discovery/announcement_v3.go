@@ -45,6 +45,7 @@ type AnnouncementV3 struct {
 type AnnouncementV3Payload struct {
 	ClusterID            string                          `json:"cluster_id"`
 	NamespaceID          string                          `json:"namespace_id"`
+	Kind                 string                          `json:"kind,omitempty"`
 	ServiceName          string                          `json:"service_name"`
 	ServiceKind          string                          `json:"service_kind,omitempty"`
 	ServiceID            string                          `json:"service_id,omitempty"`

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -1634,7 +1635,7 @@ func TestLocalSecretCommandsReportPreviousAndMissingFiles(t *testing.T) {
 	}
 	ns := cfg.Clusters["home"].Namespaces["default"]
 	ns.DiscoverySecretCurrent.File = filepath.Join(t.TempDir(), "missing.secret")
-	ns.DiscoverySecretPrevious = &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Date(2026, 6, 9, 10, 0, 0, 0, time.UTC)}
+	ns.DiscoverySecretPrevious = &cfgpkg.ManagedSecretRef{Type: cfgpkg.SecretTypeNamespaceDiscovery, KeyID: "nsdk_previous", File: previousPath, CreatedAt: time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC), ExpiresAt: time.Now().UTC().Add(24 * time.Hour)}
 	cluster := cfg.Clusters["home"]
 	cluster.Namespaces["default"] = ns
 	cfg.Clusters["home"] = cluster
@@ -4929,10 +4930,10 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 	}
 	serviceIDA := serviceidentity.ServiceIDFromPublicKey(pubA)
 	serviceIDB := serviceidentity.ServiceIDFromPublicKey(pubB)
-	if err := cache.AddV2(server.ID(), serviceIDA, "myapi", "http", serviceidentity.EncodePublicKey(pubA), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
+	if err := cache.AddV2(server.ID(), "cluster-123", "observability", serviceIDA, "myapi", "service", "http", serviceidentity.EncodePublicKey(pubA), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.AddV2(server.ID(), serviceIDB, "myapi", "http", serviceidentity.EncodePublicKey(pubB), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
+	if err := cache.AddV2(server.ID(), "cluster-123", "observability", serviceIDB, "myapi", "service", "http", serviceidentity.EncodePublicKey(pubB), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
@@ -5082,6 +5083,201 @@ func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("services table missing %q: %s", want, out)
 		}
+	}
+}
+
+func TestFilterListedServicesDropsUnscopedSystemResources(t *testing.T) {
+	services := []serviceResource{
+		{Name: "user-api", Kind: "service"},
+		{Name: "grant-service", Kind: "grant-service", ClusterID: "cluster-123", NamespaceID: "team"},
+		{Name: "legacy-grant-service", Kind: "grant-service"},
+	}
+	filtered := filterListedServices(services, true)
+	if len(filtered) != 1 || filtered[0].Name != "grant-service" {
+		t.Fatalf("unexpected filtered system services: %#v", filtered)
+	}
+}
+
+func TestPrintSystemServicesTableIncludesGrantServiceMetadata(t *testing.T) {
+	out, err := capture(func() error {
+		printSystemServicesTable([]serviceResource{{Kind: "grant-service", Name: "grant-service", Status: "online", PeerID: "12D3-peer", Addresses: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}, GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}}}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"KIND", "PROTOCOL", grantspkg.ProtocolID, "grant-service", "12D3-peer"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("system services table missing %q: %s", want, out)
+		}
+	}
+}
+
+func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config, string, string, string) {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "grant-service-discovery-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	t.Cleanup(cache.Stop)
+	addr := p2p.PeerAddrs(server)[0]
+	wrongPeer := "/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWWrongGrant"
+	legacyPeer := "/ip4/9.8.7.5/tcp/4001/p2p/12D3KooWLegacyGrant"
+	grantPubLegacy, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantPubA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grantPubB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(server.ID(), "", "", serviceidentity.ServiceIDFromPublicKey(grantPubLegacy), "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPubLegacy), "system", &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{legacyPeer}}, []string{legacyPeer}, nil, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(server.ID(), "cluster-123", "other", serviceidentity.ServiceIDFromPublicKey(grantPubA), "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPubA), "system", &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{wrongPeer}}, []string{wrongPeer}, nil, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(server.ID(), "cluster-123", "observability", serviceidentity.ServiceIDFromPublicKey(grantPubB), "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPubB), "system", &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{addr}}, []string{addr}, nil, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	configRoot := filepath.Join(t.TempDir(), "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
+	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "observability", Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return configPath, cfg, addr, wrongPeer, legacyPeer
+}
+
+func TestDiscoverGrantServicePeerUsesSystemDiscovery(t *testing.T) {
+	configPath, cfg, addr, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	if got := discoverGrantServicePeer(configPath, cfg); got != addr {
+		t.Fatalf("grant service peer = %q, want %q", got, addr)
+	}
+}
+
+func TestGetServicesSystemFiltersGrantServiceByActualScope(t *testing.T) {
+	configPath, _, addr, wrongPeer, legacyPeer := newSystemGrantServiceDiscoveryFixture(t)
+	out, err := capture(func() error {
+		return run([]string{"get", "services", "--no-init", "--system", "--config", configPath, "--timeout", "5s"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, addr) {
+		t.Fatalf("system services output missing scoped grant peer %q: %s", addr, out)
+	}
+	if strings.Contains(out, wrongPeer) {
+		t.Fatalf("system services output leaked wrong-scope grant peer %q: %s", wrongPeer, out)
+	}
+	if strings.Contains(out, legacyPeer) {
+		t.Fatalf("system services output leaked unscoped legacy grant peer %q: %s", legacyPeer, out)
+	}
+}
+
+func TestBuildGrantServiceDiscoveryArtifactsUsesScopedRuntime(t *testing.T) {
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "team", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "default", Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}, "team": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "team")}}}}}
+	scopedCfg := cfg
+	scopedCfg.CurrentNamespace = "team"
+	runtime, err := scopedCfg.RequireDiscoveryRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "scoped-grant-service-test", PrivateKeyFile: keyPath, Component: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer overlay.Close()
+	service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, overlay.Host, overlay, authorityPriv, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.NamespaceID != "team" || service.ClusterID != "cluster-123" {
+		t.Fatalf("unexpected discovery service scope: %#v", service)
+	}
+	payload, err := ann.Payload(*runtime.Context)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.NamespaceID != "team" || payload.ClusterID != "cluster-123" {
+		t.Fatalf("unexpected discovery payload scope: %#v", payload)
+	}
+}
+
+func TestPublishGrantServiceDiscoveryFailsWithoutRuntimeInDiscoverableScope(t *testing.T) {
+	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{
+		CurrentCluster:   "home",
+		CurrentNamespace: "observability",
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {
+				ClusterID:          "cluster-123",
+				AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))),
+				Namespaces: map[string]cfgpkg.Namespace{
+					"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled},
+				},
+			},
+		},
+	}
+	err = publishGrantServiceDiscovery(context.Background(), nil, nil, nil, cfg, time.Minute)
+	if err == nil || !strings.Contains(err.Error(), "requires a valid discovery runtime") {
+		t.Fatalf("expected explicit discovery runtime error, got %v", err)
 	}
 }
 

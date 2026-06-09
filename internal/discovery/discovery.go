@@ -367,7 +367,11 @@ func (s *PubSubSubscriber) handleMessageV2WithScope(msg *pubsub.Message, scope s
 	if s.replay != nil && s.replay.Seen(replayKey, expiresAt) {
 		return
 	}
-	if err := s.cache.AddV2(ann.PeerID, payload.ServiceID, payload.ServiceName, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), payload.Addresses, append([]string(nil), payload.Capabilities...), cacheTTL); err != nil {
+	kind := strings.TrimSpace(payload.Kind)
+	if kind == "" {
+		kind = ResourceKindService
+	}
+	if err := s.cache.AddV2(ann.PeerID, scope.clusterID, scope.namespaceID, payload.ServiceID, payload.ServiceName, kind, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), payload.Addresses, append([]string(nil), payload.Capabilities...), cacheTTL); err != nil {
 		return
 	}
 	log.Printf("discovery v2 announcement accepted service=%q peer=%s namespace=%s/%s addrs=%d ttl=%s", payload.ServiceName, ann.PeerID, scope.clusterID, scope.namespaceID, len(payload.Addresses), ann.TTL)
@@ -481,7 +485,11 @@ func (s *PubSubSubscriber) handleMessageV3(msg *pubsub.Message, scope subscriber
 	if s.replay != nil && s.replay.Seen(replayKey, expiresAt) {
 		return
 	}
-	if err := s.cache.AddV2(ann.PeerID, payload.ServiceID, payload.ServiceName, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), payload.Addresses, append([]string(nil), payload.Capabilities...), cacheTTL); err != nil {
+	kind := strings.TrimSpace(payload.Kind)
+	if kind == "" {
+		kind = ResourceKindService
+	}
+	if err := s.cache.AddV2(ann.PeerID, scope.clusterID, scope.namespaceID, payload.ServiceID, payload.ServiceName, kind, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), payload.Addresses, append([]string(nil), payload.Capabilities...), cacheTTL); err != nil {
 		return
 	}
 	log.Printf("discovery v3 announcement accepted service=%q peer=%s namespace=%s/%s addrs=%d ttl=%s", payload.ServiceName, ann.PeerID, scope.clusterID, scope.namespaceID, len(payload.Addresses), ann.TTL)

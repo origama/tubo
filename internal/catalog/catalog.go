@@ -44,7 +44,7 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 	}
 	if !live {
 		if services, adminAddr, err := FetchLocalServiceCache(cfg); err == nil {
-			services = applyScopeToServices(services, scope)
+			services = applyRequestedScope(cfg, scope, services)
 			return LookupResult{Services: services, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, nil
 		}
 		if cachedOnly {
@@ -52,7 +52,7 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 		}
 		if services, metadata, messages, err := FetchRemoteServiceCache(cfg, timeout); err == nil {
 			messages = append([]string{"no local cache found"}, messages...)
-			services = applyScopeToServices(services, scope)
+			services = applyRequestedScope(cfg, scope, services)
 			if len(services) > 0 {
 				return LookupResult{Services: services, Messages: messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, nil
 			}
@@ -60,7 +60,7 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 			if obsErr != nil {
 				return LookupResult{}, obsErr
 			}
-			services = applyScopeToServices(services, scope)
+			services = applyRequestedScope(cfg, scope, services)
 			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
 			return LookupResult{Services: services, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, nil
 		} else {
@@ -69,7 +69,7 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 			if obsErr != nil {
 				return LookupResult{}, obsErr
 			}
-			services = applyScopeToServices(services, scope)
+			services = applyRequestedScope(cfg, scope, services)
 			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
 			return LookupResult{Services: services, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, nil
 		}
@@ -78,7 +78,7 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 	if err != nil {
 		return LookupResult{}, err
 	}
-	services = applyScopeToServices(services, scope)
+	services = applyRequestedScope(cfg, scope, services)
 	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
 	if !live {
 		messages = append([]string{"no local cache found"}, messages...)
@@ -109,6 +109,7 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 	}
 	if !live {
 		if services, adminAddr, err := FetchLocalServiceCache(cfg); err == nil {
+			services = filterServicesByActualScope(cfg, scope, services)
 			service, err := RequireService(services, serviceName)
 			if err == nil {
 				service = applyScope(service, scope)
@@ -122,6 +123,7 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 			return LookupResult{}, Service{}, errors.New("no local cache found")
 		}
 		if services, metadata, messages, err := FetchRemoteServiceCache(cfg, timeout); err == nil {
+			services = filterServicesByActualScope(cfg, scope, services)
 			service, err := RequireService(services, serviceName)
 			if err != nil {
 				if IsAmbiguousServiceError(err) {
@@ -139,6 +141,7 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 			if obsErr != nil {
 				return LookupResult{}, Service{}, obsErr
 			}
+			services = filterServicesByActualScope(cfg, scope, services)
 			service, obsErr := RequireService(services, serviceName)
 			if obsErr != nil {
 				return LookupResult{}, Service{}, obsErr
@@ -152,6 +155,7 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 	if err != nil {
 		return LookupResult{}, Service{}, err
 	}
+	services = filterServicesByActualScope(cfg, scope, services)
 	service, err := RequireService(services, serviceName)
 	if err != nil {
 		return LookupResult{}, Service{}, err
@@ -176,6 +180,7 @@ func DiscoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 	}
 	if !live {
 		if services, adminAddr, err := FetchLocalServiceCache(cfg); err == nil {
+			services = filterServicesByActualScope(cfg, scope, services)
 			service, err := RequireServiceByID(services, serviceID)
 			if err == nil {
 				service = applyScope(service, scope)
@@ -186,6 +191,7 @@ func DiscoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 			return LookupResult{}, Service{}, errors.New("no local cache found")
 		}
 		if services, metadata, messages, err := FetchRemoteServiceCache(cfg, timeout); err == nil {
+			services = filterServicesByActualScope(cfg, scope, services)
 			service, err := RequireServiceByID(services, serviceID)
 			if err == nil {
 				messages = append([]string{"no local cache found"}, messages...)
@@ -199,6 +205,7 @@ func DiscoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 			if obsErr != nil {
 				return LookupResult{}, Service{}, obsErr
 			}
+			services = filterServicesByActualScope(cfg, scope, services)
 			service, obsErr := RequireServiceByID(services, serviceID)
 			if obsErr != nil {
 				return LookupResult{}, Service{}, obsErr
@@ -224,6 +231,7 @@ func DiscoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 	if err != nil {
 		return LookupResult{}, Service{}, err
 	}
+	services = filterServicesByActualScope(cfg, scope, services)
 	service, err := RequireServiceByID(services, serviceID)
 	if err != nil {
 		if serviceName != "" {
@@ -498,14 +506,21 @@ func ServiceResourceFromEntry(entry *discovery.ServiceEntry) Service {
 	if expiresIn < 0 {
 		expiresIn = 0
 	}
-	return NormalizeService(Service{Kind: "service", ServiceKind: entry.ServiceKind, Name: entry.ServiceName, ServiceID: entry.ServiceID, ServicePublicKey: entry.ServicePublicKey, ConnectPolicy: entry.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(entry.GrantService), PeerID: entry.PeerID.String(), Addresses: append([]string(nil), entry.Addresses...), Status: "online", TTLSeconds: int64(entry.TTL.Seconds()), ExpiresInSeconds: int64(expiresIn.Seconds()), Capabilities: append([]string(nil), entry.Capabilities...), RegisteredAt: entry.Registered.Format(time.RFC3339)})
+	kind := strings.TrimSpace(entry.Kind)
+	if kind == "" {
+		kind = discovery.ResourceKindService
+	}
+	return NormalizeService(Service{Kind: kind, ClusterID: entry.ClusterID, NamespaceID: entry.NamespaceID, ServiceKind: entry.ServiceKind, Name: entry.ServiceName, ServiceID: entry.ServiceID, ServicePublicKey: entry.ServicePublicKey, ConnectPolicy: entry.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(entry.GrantService), PeerID: entry.PeerID.String(), Addresses: append([]string(nil), entry.Addresses...), Status: "online", TTLSeconds: int64(entry.TTL.Seconds()), ExpiresInSeconds: int64(expiresIn.Seconds()), Capabilities: append([]string(nil), entry.Capabilities...), RegisteredAt: entry.Registered.Format(time.RFC3339)})
 }
 
 func ServiceFromQueryService(service discoveryquery.Service) Service {
-	return NormalizeService(Service{Kind: service.Kind, ServiceKind: service.ServiceKind, Name: service.Name, ServiceID: service.ServiceID, ServicePublicKey: service.ServicePublicKey, ConnectPolicy: service.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(service.GrantService), PeerID: service.PeerID, Addresses: append([]string(nil), service.Addresses...), DirectAddresses: append([]string(nil), service.DirectAddresses...), RelayedAddresses: append([]string(nil), service.RelayedAddresses...), Status: service.Status, Path: service.Path, TTLSeconds: service.TTLSeconds, ExpiresInSeconds: service.ExpiresInSeconds, Capabilities: append([]string(nil), service.Capabilities...), RegisteredAt: service.RegisteredAt})
+	return NormalizeService(Service{Kind: service.Kind, ClusterID: service.ClusterID, NamespaceID: service.NamespaceID, ServiceKind: service.ServiceKind, Name: service.Name, ServiceID: service.ServiceID, ServicePublicKey: service.ServicePublicKey, ConnectPolicy: service.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(service.GrantService), PeerID: service.PeerID, Addresses: append([]string(nil), service.Addresses...), DirectAddresses: append([]string(nil), service.DirectAddresses...), RelayedAddresses: append([]string(nil), service.RelayedAddresses...), Status: service.Status, Path: service.Path, TTLSeconds: service.TTLSeconds, ExpiresInSeconds: service.ExpiresInSeconds, Capabilities: append([]string(nil), service.Capabilities...), RegisteredAt: service.RegisteredAt})
 }
 
 func NormalizeService(service Service) Service {
+	if strings.TrimSpace(service.Kind) == "" {
+		service.Kind = discovery.ResourceKindService
+	}
 	if strings.TrimSpace(service.ServiceKind) == "" {
 		service.ServiceKind = string(cfgpkg.ServiceKindHTTP)
 	}
@@ -602,6 +617,73 @@ func ambiguousServiceNameErrorf(name string, matches []Service) error {
 	}
 	b.WriteString("Or use a verified alias.")
 	return AmbiguousServiceNameError(b.String())
+}
+
+func applyRequestedScope(cfg cfgpkg.Config, scope Scope, items []Service) []Service {
+	items = filterServicesByActualScope(cfg, scope, items)
+	return applyScopeToServices(items, scope)
+}
+
+func filterServicesByActualScope(cfg cfgpkg.Config, scope Scope, items []Service) []Service {
+	clusterName := strings.TrimSpace(scope.Cluster)
+	if clusterName == "" {
+		clusterName = strings.TrimSpace(cfg.CurrentCluster)
+	}
+	namespaceName := strings.TrimSpace(scope.Namespace)
+	if namespaceName == "" && !scope.AllNamespaces {
+		namespaceName = strings.TrimSpace(cfg.CurrentNamespace)
+	}
+	clusterID := ""
+	if cluster, ok := cfg.Clusters[clusterName]; ok {
+		clusterID = strings.TrimSpace(cluster.ClusterID)
+	}
+	filtered := make([]Service, 0, len(items))
+	for _, service := range items {
+		if !matchesActualScope(service, clusterID, namespaceName, scope.AllNamespaces) {
+			continue
+		}
+		filtered = append(filtered, service)
+	}
+	return filtered
+}
+
+func matchesActualScope(service Service, clusterID, namespaceID string, allNamespaces bool) bool {
+	if isStrictScopeSystemService(service) {
+		return matchesStrictSystemScope(service, clusterID, namespaceID, allNamespaces)
+	}
+	if clusterID != "" && strings.TrimSpace(service.ClusterID) != "" && strings.TrimSpace(service.ClusterID) != clusterID {
+		return false
+	}
+	if !allNamespaces && namespaceID != "" && strings.TrimSpace(service.NamespaceID) != "" && strings.TrimSpace(service.NamespaceID) != namespaceID {
+		return false
+	}
+	return true
+}
+
+func isStrictScopeSystemService(service Service) bool {
+	kind := strings.TrimSpace(service.Kind)
+	if kind == "" {
+		kind = discovery.ResourceKindService
+	}
+	return kind != discovery.ResourceKindService || strings.TrimSpace(service.ServiceKind) == discovery.ResourceKindGrantService
+}
+
+func matchesStrictSystemScope(service Service, clusterID, namespaceID string, allNamespaces bool) bool {
+	actualClusterID := strings.TrimSpace(service.ClusterID)
+	actualNamespaceID := strings.TrimSpace(service.NamespaceID)
+	if actualClusterID == "" || actualNamespaceID == "" {
+		return false
+	}
+	if strings.TrimSpace(clusterID) == "" || actualClusterID != strings.TrimSpace(clusterID) {
+		return false
+	}
+	if allNamespaces {
+		return true
+	}
+	if strings.TrimSpace(namespaceID) == "" || actualNamespaceID != strings.TrimSpace(namespaceID) {
+		return false
+	}
+	return true
 }
 
 func applyScope(service Service, scope Scope) Service {
