@@ -6,16 +6,32 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+## [v0.10.1] - 2026-06-10
+
+Patch release fixing five reliability and usability bugs found during live end-to-end testing of the member publish-grant workflow on a private cluster after v0.10.0.
+
+### Added
+- `tubo grants serve` now accepts `-d` / `--detach` to start as a background process, with stdout/stderr routed to a log file readable via `tubo logs grants-serve-<cluster>-<namespace>`.
+- `docs/runbooks/member-publish-grants.md`: new runbook documenting the full workflow for non-authority peers to publish services in a private cluster — prerequisites, `grants serve` on the authority, member `attach`, grant approval, lease renewal, and troubleshooting.
+
+### Fixed
+- **Relay reservation race**: `requestPublishGrantForAttach` started Submit/Poll immediately after `StartRelayReservations` (non-blocking). The relay circuit was obtained (~1 s) but dropped while `NewStream` to the grant service peer was in flight, causing a silent network error that was reported as the generic `missing grant service peer` message. Fix: poll `HasRelayReservation()` for up to 10 s before proceeding.
+- **Service names with `@` rejected by grant server**: `serviceNameRE` was `^[a-z0-9][a-z0-9-]{0,62}$`, which rejected host-qualified names like `piwebui@oripi`. The CLI accepted and stored these names normally, but every Submit was denied with `invalid service name`. Extended regex to `^[a-z0-9][a-z0-9@._-]{0,62}$`.
+- **Real GrantClient errors collapsed into generic message**: any error from Submit/Poll was replaced with `missing grant service peer for cluster…`, making diagnosis impossible. The actual error is now surfaced in the `DecisionRetryable` path.
+- **Expired `grant_request_id` loops forever**: when a pending request expired on the authority side, the client kept polling the same expired ID on every subsequent `attach`, receiving `grant request expired` each time. The stale ID is now cleared and a fresh Submit is issued in the same call.
+- `tubo logs grants-serve-<cluster>-<namespace>` returned `no Tubo-owned log file recorded` even after `-d` launch because `grantsServeProcessState` set `LogFile: ""`. The correct `processLogDir()`-based path is now assigned.
+
 ### Changed
 - Removed runtime support for legacy `/p2p-tunnel/1.0` negotiation and stream handlers; Tubo now uses `/p2p-tunnel/1.1` only.
 - `grants serve` now publishes a discoverable system `grant-service` record when namespace discovery is enabled, and `tubo get services --system` shows system resources without exposing them in the default listing; legacy unscoped control-plane records are now ignored so `grant-service` resolution stays strictly bound to matching cluster/namespace scope metadata.
 - Documentation and testbench references now describe the current protocol path without promising a legacy fallback.
+- Added diagnostic progress logging (visible with `-vvv`) in grant-client peer selection, relay reservation wait, and discovery query paths.
 
 ### Compatibility
-- Product version: pending next release
+- Product version: v0.10.1
 - Protocol version: 1.1
-- Protocol compatibility change: legacy `/p2p-tunnel/1.0` peers are no longer supported
-- Operator action required: upgrade clients/services to 1.1-capable binaries
+- Protocol compatibility change: none
+- Operator action required: none
 
 ## [v0.10.0] - 2026-06-08
 
