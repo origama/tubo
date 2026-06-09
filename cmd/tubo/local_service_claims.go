@@ -225,18 +225,20 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 	// to the grant service peer depends on it.
 	if len(cfg.Network.RelayPeers) > 0 {
 		waitCtx, waitCancel := context.WithTimeout(ctx, 10*time.Second)
+		defer waitCancel()
 		for !overlay.HasRelayReservation() {
 			select {
 			case <-waitCtx.Done():
 				logging.Progressf("grants-client: relay reservation not ready after wait, proceeding anyway\n")
-				goto submitGrant
 			case <-time.After(200 * time.Millisecond):
+				continue
 			}
+			break
 		}
-		logging.Progressf("grants-client: relay reservation ready\n")
-		waitCancel()
+		if overlay.HasRelayReservation() {
+			logging.Progressf("grants-client: relay reservation ready\n")
+		}
 	}
-submitGrant:
 	var resp grantspkg.Message
 	if svc.GrantRequestID != "" {
 		resp, err = grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
