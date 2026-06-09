@@ -242,7 +242,25 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 	var resp grantspkg.Message
 	if svc.GrantRequestID != "" {
 		resp, err = grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
-	} else {
+		if err == nil && resp.Type == grantspkg.TypeExpired {
+			// The pending request expired on the authority side. Clear the stored
+			// request ID so the next iteration submits a fresh request instead of
+			// polling a request that will never be approved.
+			logging.Progressf("grants-client: pending request %s expired; clearing and resubmitting\n", svc.GrantRequestID)
+			svc.GrantRequestID = ""
+			cluster2 := cfg.Clusters[cfg.CurrentCluster]
+			ns2 := cluster2.Namespaces[cfg.CurrentNamespace]
+			if svc2, ok := ns2.Services[cfg.Service.Name]; ok {
+				svc2.GrantRequestID = ""
+				ns2.Services[cfg.Service.Name] = svc2
+				cluster2.Namespaces[cfg.CurrentNamespace] = ns2
+				cfg.Clusters[cfg.CurrentCluster] = cluster2
+				_ = saveLocalConfig(configPath, cfg)
+			}
+			resp = grantspkg.Message{} // fall through to submit
+		}
+	}
+	if resp.Type == "" && svc.GrantRequestID == "" {
 		leaseReq, err := buildServicePublishLeaseRequest(configPath, cfg, svc, servicePeerID)
 		if err != nil {
 			return cfg, svc, "", err
