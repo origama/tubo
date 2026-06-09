@@ -520,7 +520,7 @@ clusters:
   home:
     cluster_id: ${cluster_id}
     authority_public_key: ${authority_public_key}
-    authority_private_key_file: ${authority_key_file}
+    authority_private_key_file: ${host_authority_key_file}
     membership_capability_file: ${tenant_a_namespace_cap_file}
     namespaces:
       tenant-a:
