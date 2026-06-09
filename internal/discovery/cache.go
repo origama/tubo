@@ -18,6 +18,8 @@ const (
 // ServiceEntry represents a cached service registration.
 type ServiceEntry struct {
 	Kind             string
+	ClusterID        string
+	NamespaceID      string
 	ServiceID        string
 	ServiceName      string
 	ServiceKind      string
@@ -71,12 +73,12 @@ func (c *Cache) SetExpiredCallback(fn func(serviceName string, peerID peer.ID)) 
 
 // Add registers or updates a legacy name-keyed service entry.
 func (c *Cache) Add(pID peer.ID, serviceName string, addresses []string, ttl time.Duration) error {
-	return c.AddV2(pID, "", serviceName, ResourceKindService, "http", "", "", nil, addresses, nil, ttl)
+	return c.AddV2(pID, "", "", "", serviceName, ResourceKindService, "http", "", "", nil, addresses, nil, ttl)
 }
 
 // AddV2 registers or updates a service_id-keyed entry. Display name is metadata
 // and is not unique; multiple entries may share the same ServiceName.
-func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, kind, serviceKind, servicePublicKey, connectPolicy string, grantService *grantspkg.GrantServiceEndpoint, addresses []string, capabilities []string, ttl time.Duration) error {
+func (c *Cache) AddV2(pID peer.ID, clusterID, namespaceID, serviceID, serviceName, kind, serviceKind, servicePublicKey, connectPolicy string, grantService *grantspkg.GrantServiceEndpoint, addresses []string, capabilities []string, ttl time.Duration) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -94,6 +96,8 @@ func (c *Cache) AddV2(pID peer.ID, serviceID, serviceName, kind, serviceKind, se
 	}
 	entry := &ServiceEntry{
 		Kind:             entryKind,
+		ClusterID:        strings.TrimSpace(clusterID),
+		NamespaceID:      strings.TrimSpace(namespaceID),
 		ServiceID:        serviceID,
 		ServiceName:      serviceName,
 		ServiceKind:      serviceKind,

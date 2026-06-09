@@ -56,7 +56,7 @@ func TestResponseForRequestAnnounce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer h.Close()
-	service := Service{Name: "myapi", ServiceKind: "tcp", PeerID: h.ID().String(), ConnectPolicy: "namespace_members", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant"}}, Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, Capabilities: []string{"hello-v1", "raw-tcp-v1"}, TTLSeconds: 30}
+	service := Service{ClusterID: "cluster-123", NamespaceID: "observability", Name: "myapi", ServiceKind: "tcp", PeerID: h.ID().String(), ConnectPolicy: "namespace_members", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant"}}, Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, Capabilities: []string{"hello-v1", "raw-tcp-v1"}, TTLSeconds: 30}
 	resp := responseForRequest(h, "relay", cache, Request{Type: RequestTypeAnnounce, Service: &service})
 	if resp.Error != "" {
 		t.Fatalf("unexpected announce error: %#v", resp)
@@ -73,6 +73,9 @@ func TestResponseForRequestAnnounce(t *testing.T) {
 	}
 	if entry.ServiceKind != "tcp" {
 		t.Fatalf("service kind = %q", entry.ServiceKind)
+	}
+	if entry.ClusterID != "cluster-123" || entry.NamespaceID != "observability" {
+		t.Fatalf("scope ids = %q/%q", entry.ClusterID, entry.NamespaceID)
 	}
 	if len(entry.Capabilities) != 2 || entry.Capabilities[1] != "raw-tcp-v1" {
 		t.Fatalf("capabilities = %#v", entry.Capabilities)

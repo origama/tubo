@@ -439,7 +439,7 @@ func (a *App) cacheCurrentAnnouncementV3(payload discovery.AnnouncementV3Payload
 	if a.cache == nil {
 		return
 	}
-	if err := a.cache.AddV2(a.host.ID(), payload.ServiceID, payload.ServiceName, payload.Kind, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), append([]string(nil), payload.Addresses...), append([]string(nil), payload.Capabilities...), ttl); err != nil {
+	if err := a.cache.AddV2(a.host.ID(), payload.ClusterID, payload.NamespaceID, payload.ServiceID, payload.ServiceName, payload.Kind, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), append([]string(nil), payload.Addresses...), append([]string(nil), payload.Capabilities...), ttl); err != nil {
 		log.Printf("heartbeat local cache update failed: %v", err)
 	}
 }
@@ -448,7 +448,7 @@ func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.Ann
 	peers := append([]string(nil), a.cfg.BootstrapPeers...)
 	peers = append(peers, a.cfg.RelayPeers...)
 	seen := make(map[string]struct{}, len(peers))
-	service := discoveryquery.Service{Kind: payload.Kind, ServiceKind: payload.ServiceKind, Name: payload.ServiceName, ServiceID: payload.ServiceID, ServicePublicKey: payload.ServicePublicKey, ConnectPolicy: payload.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(payload.GrantService), PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), Capabilities: append([]string(nil), payload.Capabilities...), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
+	service := discoveryquery.Service{Kind: payload.Kind, ClusterID: payload.ClusterID, NamespaceID: payload.NamespaceID, ServiceKind: payload.ServiceKind, Name: payload.ServiceName, ServiceID: payload.ServiceID, ServicePublicKey: payload.ServicePublicKey, ConnectPolicy: payload.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(payload.GrantService), PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), Capabilities: append([]string(nil), payload.Capabilities...), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
 	for _, raw := range peers {
 		if raw == "" {
 			continue
