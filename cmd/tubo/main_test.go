@@ -3083,6 +3083,38 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	}
 }
 
+func TestGrantsServeProcessStateHasLogFile(t *testing.T) {
+	// grantsServeProcessState must always include a non-empty LogFile path so
+	// that 'tubo logs grants-serve-<cluster>-<namespace>' can read it when the
+	// process is launched with -d.
+	state := grantsServeProcessState("mycluster", "myns", "/ip4/0.0.0.0/tcp/0")
+	if state.LogFile == "" {
+		t.Fatal("LogFile must not be empty in grantsServeProcessState")
+	}
+	if !strings.Contains(state.LogFile, "grants-serve-mycluster-myns") {
+		t.Fatalf("LogFile path %q does not contain expected process name segment", state.LogFile)
+	}
+	if !strings.HasSuffix(state.LogFile, ".log") {
+		t.Fatalf("LogFile %q should end in .log", state.LogFile)
+	}
+}
+
+func TestGrantsServeCmdStripsDetachFlagBeforeParsingFlags(t *testing.T) {
+	// 'tubo grants serve -d ...' must not return an error about an unknown '-d'
+	// flag; the detach flag must be stripped before the flag set is parsed.
+	// We verify this by running the serve sub-command dispatch logic directly;
+	// it will fail with a config-not-found error (not a flag-parse error).
+	err := grantsCmd([]string{"serve", "-d", "--cluster", "home", "--namespace", "default"})
+	if err == nil {
+		// may succeed if a real grants-serve-home-default is already registered;
+		// that is fine for this test.
+		return
+	}
+	if strings.Contains(err.Error(), "flag provided but not defined: -d") {
+		t.Fatalf("-d flag was not stripped before flag parsing: %v", err)
+	}
+}
+
 func TestGrantsApproveRejectsExpiredAndMissingAuthority(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -3831,6 +3863,91 @@ func expirePublishLeaseFile(t *testing.T, path string, expiresAt time.Time) {
 	}
 	if err := os.WriteFile(path, append(out, '\n'), 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRequestPublishGrantClearsExpiredRequestIDAndResubmits(t *testing.T) {
+	// When a pending grant request has expired on the authority side (TypeExpired),
+	// requestPublishGrantForAttach must clear the local grant_request_id and submit
+	// a fresh request instead of looping forever on the expired ID.
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-expired-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	grantServer, err := grantspkg.NewServer(grantspkg.ServerConfig{
+		AuthorityPrivateKey: authorityPriv,
+		ClusterName:         "home",
+		ClusterID:           cluster.ClusterID,
+		NamespaceID:         "default",
+		Store:               store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverHost.SetStreamHandler(grantspkg.ProtocolID, grantServer.HandleStream)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	// Pre-populate a stale grant_request_id that does not exist in the store
+	// (simulates an already-expired request that was cleaned up server-side).
+	svc.GrantRequestID = "gr_expired_does_not_exist"
+	svc.GrantServicePeer = grantPeer
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cl := cfg.Clusters["home"]
+	cl.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cl
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Call requestPublishGrantForAttach — it should:
+	//   1. Poll gr_expired_does_not_exist → TypeExpired from server
+	//   2. Clear grant_request_id from config
+	//   3. Submit a fresh request → TypePending
+	//   4. Return with err containing "is pending"
+	_, updatedSvc, _, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
+	if err == nil {
+		t.Fatal("expected pending error, got nil")
+	}
+	if !strings.Contains(err.Error(), "is pending") {
+		t.Fatalf("expected pending error, got: %v", err)
+	}
+	if updatedSvc.GrantRequestID == "gr_expired_does_not_exist" {
+		t.Fatal("stale grant_request_id was not cleared")
+	}
+	if updatedSvc.GrantRequestID == "" {
+		t.Fatal("new grant_request_id was not saved after resubmit")
+	}
+	// Verify the new request is in the store
+	pending, err := store.ListPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) == 0 {
+		t.Fatal("expected a new pending request in the store after resubmit")
+	}
+	if pending[0].ID != updatedSvc.GrantRequestID {
+		t.Fatalf("store request ID %q does not match saved %q", pending[0].ID, updatedSvc.GrantRequestID)
 	}
 }
 

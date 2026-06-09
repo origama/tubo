@@ -29,6 +29,7 @@ Project work, planning, implementation scope, and acceptance criteria are tracke
 - [`runbooks/OPERABILITY.md`](./runbooks/OPERABILITY.md)
 - [`runbooks/PROCESS_SUPERVISORS.md`](./runbooks/PROCESS_SUPERVISORS.md)
 - [`runbooks/discovery-multi-host.md`](./runbooks/discovery-multi-host.md)
+- [`runbooks/member-publish-grants.md`](./runbooks/member-publish-grants.md)
 - [`runbooks/LINODE_TERRAFORM_TESTBENCH.md`](./runbooks/LINODE_TERRAFORM_TESTBENCH.md)
 - [`runbooks/RELEASING.md`](./runbooks/RELEASING.md)
 

@@ -413,6 +413,37 @@ func testAttachConfig() cfgpkg.Config {
 	}
 }
 
+func TestResolvePreservesRealGrantClientErrorAsRetryable(t *testing.T) {
+	// Scenario: grant-service peer was discovered and the GrantClient was called,
+	// but Submit/Poll failed with a real error (e.g. dial timeout, protocol mismatch).
+	// The Resolve result must carry DecisionRetryable with UserMessage = real error,
+	// not the generic "stored publish authorization requires refresh or mint" fallback.
+	cfg := testAttachConfigWithGrantPeer()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease", GrantServicePeer: "/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWGrant"}
+	realErr := fmt.Errorf("dial backoff: connection refused")
+	grantClient := &fakeGrantClient{cfg: cfg, svc: svc, err: realErr}
+	resolver := New(Dependencies{
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{publishLeaseErr: os.ErrNotExist, serviceClaimErr: os.ErrNotExist},
+		GrantClient:   grantClient,
+		Clock:         SystemClock{},
+	})
+
+	got, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg})
+	if err != nil {
+		t.Fatalf("Resolve error = %v", err)
+	}
+	if got.Decision != DecisionRetryable {
+		t.Fatalf("Decision = %q, want %q", got.Decision, DecisionRetryable)
+	}
+	if !strings.Contains(got.UserMessage, "connection refused") {
+		t.Fatalf("UserMessage = %q, want real error surfaced", got.UserMessage)
+	}
+	if grantClient.calls != 1 {
+		t.Fatalf("GrantClient calls = %d, want 1", grantClient.calls)
+	}
+}
+
 func testAttachConfigWithGrantPeer() cfgpkg.Config {
 	cfg := testAttachConfig()
 	cfg.Clusters["home"] = cfgpkg.Cluster{
