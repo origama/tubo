@@ -2115,7 +2115,7 @@ func filterListedServices(services []serviceResource, systemOnly bool) []service
 	for _, service := range services {
 		isSystem := isSystemServiceResource(service)
 		if systemOnly {
-			if !isSystem {
+			if !isSystem || !hasStrictSystemServiceScope(service) {
 				continue
 			}
 		} else if isSystem {
@@ -2132,6 +2132,10 @@ func isSystemServiceResource(service serviceResource) bool {
 		kind = "service"
 	}
 	return kind != "service" || strings.TrimSpace(service.ServiceKind) == "grant-service"
+}
+
+func hasStrictSystemServiceScope(service serviceResource) bool {
+	return strings.TrimSpace(service.ClusterID) != "" && strings.TrimSpace(service.NamespaceID) != ""
 }
 
 func printServicesTable(services []serviceResource) {

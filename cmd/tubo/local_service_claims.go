@@ -527,16 +527,16 @@ func discoverGrantServicePeer(configPath string, cfg cfgpkg.Config) string {
 		clusterID = strings.TrimSpace(cluster.ClusterID)
 	}
 	for _, service := range result.Services {
-		if !isSystemServiceResource(service) {
+		if !isSystemServiceResource(service) || !hasStrictSystemServiceScope(service) {
 			continue
 		}
 		if strings.TrimSpace(service.Name) != "grant-service" {
 			continue
 		}
-		if clusterID != "" && strings.TrimSpace(service.ClusterID) != "" && strings.TrimSpace(service.ClusterID) != clusterID {
+		if strings.TrimSpace(clusterID) == "" || strings.TrimSpace(service.ClusterID) != strings.TrimSpace(clusterID) {
 			continue
 		}
-		if strings.TrimSpace(cfg.CurrentNamespace) != "" && strings.TrimSpace(service.NamespaceID) != "" && strings.TrimSpace(service.NamespaceID) != strings.TrimSpace(cfg.CurrentNamespace) {
+		if strings.TrimSpace(cfg.CurrentNamespace) == "" || strings.TrimSpace(service.NamespaceID) != strings.TrimSpace(cfg.CurrentNamespace) {
 			continue
 		}
 		if peer := grantServicePeerFromResource(service); peer != "" {

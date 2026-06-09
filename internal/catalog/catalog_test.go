@@ -6,6 +6,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
@@ -36,6 +37,23 @@ func TestServiceResourceFromEntryPreservesConnectMetadata(t *testing.T) {
 	}
 	if service.ServiceKind != "tcp" || len(service.Capabilities) != 2 {
 		t.Fatalf("service metadata = %#v", service)
+	}
+}
+
+func TestMatchesActualScopeKeepsLegacyUserServicesButRejectsLegacySystemServices(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "team", Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123"}}}
+	scope := Scope{Cluster: "home", Namespace: "team"}
+	services := []Service{
+		{Name: "user-api", Kind: discovery.ResourceKindService},
+		{Name: "grant-service", Kind: discovery.ResourceKindGrantService},
+		{Name: "scoped-grant-service", Kind: discovery.ResourceKindGrantService, ClusterID: "cluster-123", NamespaceID: "team"},
+	}
+	filtered := filterServicesByActualScope(cfg, scope, services)
+	if len(filtered) != 2 {
+		t.Fatalf("filtered len = %d, want 2: %#v", len(filtered), filtered)
+	}
+	if filtered[0].Name != "user-api" || filtered[1].Name != "scoped-grant-service" {
+		t.Fatalf("unexpected filtered services: %#v", filtered)
 	}
 }
 

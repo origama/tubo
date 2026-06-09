@@ -8,7 +8,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Changed
 - Removed runtime support for legacy `/p2p-tunnel/1.0` negotiation and stream handlers; Tubo now uses `/p2p-tunnel/1.1` only.
-- `grants serve` now publishes a discoverable system `grant-service` record when namespace discovery is enabled, and `tubo get services --system` shows system resources without exposing them in the default listing.
+- `grants serve` now publishes a discoverable system `grant-service` record when namespace discovery is enabled, and `tubo get services --system` shows system resources without exposing them in the default listing; legacy unscoped control-plane records are now ignored so `grant-service` resolution stays strictly bound to matching cluster/namespace scope metadata.
 - Documentation and testbench references now describe the current protocol path without promising a legacy fallback.
 
 ### Compatibility

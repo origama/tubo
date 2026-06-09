@@ -5086,6 +5086,18 @@ func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
 	}
 }
 
+func TestFilterListedServicesDropsUnscopedSystemResources(t *testing.T) {
+	services := []serviceResource{
+		{Name: "user-api", Kind: "service"},
+		{Name: "grant-service", Kind: "grant-service", ClusterID: "cluster-123", NamespaceID: "team"},
+		{Name: "legacy-grant-service", Kind: "grant-service"},
+	}
+	filtered := filterListedServices(services, true)
+	if len(filtered) != 1 || filtered[0].Name != "grant-service" {
+		t.Fatalf("unexpected filtered system services: %#v", filtered)
+	}
+}
+
 func TestPrintSystemServicesTableIncludesGrantServiceMetadata(t *testing.T) {
 	out, err := capture(func() error {
 		printSystemServicesTable([]serviceResource{{Kind: "grant-service", Name: "grant-service", Status: "online", PeerID: "12D3-peer", Addresses: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}, GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}}}})
@@ -5101,7 +5113,7 @@ func TestPrintSystemServicesTableIncludesGrantServiceMetadata(t *testing.T) {
 	}
 }
 
-func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config, string, string) {
+func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config, string, string, string) {
 	t.Helper()
 	keyPath := filepath.Join(t.TempDir(), "swarm.key")
 	keyData, err := newSwarmKeyData()
@@ -5124,12 +5136,20 @@ func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config,
 	t.Cleanup(cache.Stop)
 	addr := p2p.PeerAddrs(server)[0]
 	wrongPeer := "/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWWrongGrant"
+	legacyPeer := "/ip4/9.8.7.5/tcp/4001/p2p/12D3KooWLegacyGrant"
+	grantPubLegacy, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	grantPubA, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
 	grantPubB, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(server.ID(), "", "", serviceidentity.ServiceIDFromPublicKey(grantPubLegacy), "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPubLegacy), "system", &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{legacyPeer}}, []string{legacyPeer}, nil, 30*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := cache.AddV2(server.ID(), "cluster-123", "other", serviceidentity.ServiceIDFromPublicKey(grantPubA), "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPubA), "system", &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{wrongPeer}}, []string{wrongPeer}, nil, 30*time.Second); err != nil {
@@ -5153,18 +5173,18 @@ func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config,
 	if err := saveLocalConfig(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	return configPath, cfg, addr, wrongPeer
+	return configPath, cfg, addr, wrongPeer, legacyPeer
 }
 
 func TestDiscoverGrantServicePeerUsesSystemDiscovery(t *testing.T) {
-	configPath, cfg, addr, _ := newSystemGrantServiceDiscoveryFixture(t)
+	configPath, cfg, addr, _, _ := newSystemGrantServiceDiscoveryFixture(t)
 	if got := discoverGrantServicePeer(configPath, cfg); got != addr {
 		t.Fatalf("grant service peer = %q, want %q", got, addr)
 	}
 }
 
 func TestGetServicesSystemFiltersGrantServiceByActualScope(t *testing.T) {
-	configPath, _, addr, wrongPeer := newSystemGrantServiceDiscoveryFixture(t)
+	configPath, _, addr, wrongPeer, legacyPeer := newSystemGrantServiceDiscoveryFixture(t)
 	out, err := capture(func() error {
 		return run([]string{"get", "services", "--system", "--config", configPath, "--timeout", "5s"})
 	})
@@ -5176,6 +5196,9 @@ func TestGetServicesSystemFiltersGrantServiceByActualScope(t *testing.T) {
 	}
 	if strings.Contains(out, wrongPeer) {
 		t.Fatalf("system services output leaked wrong-scope grant peer %q: %s", wrongPeer, out)
+	}
+	if strings.Contains(out, legacyPeer) {
+		t.Fatalf("system services output leaked unscoped legacy grant peer %q: %s", legacyPeer, out)
 	}
 }
 

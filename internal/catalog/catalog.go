@@ -648,10 +648,39 @@ func filterServicesByActualScope(cfg cfgpkg.Config, scope Scope, items []Service
 }
 
 func matchesActualScope(service Service, clusterID, namespaceID string, allNamespaces bool) bool {
+	if isStrictScopeSystemService(service) {
+		return matchesStrictSystemScope(service, clusterID, namespaceID, allNamespaces)
+	}
 	if clusterID != "" && strings.TrimSpace(service.ClusterID) != "" && strings.TrimSpace(service.ClusterID) != clusterID {
 		return false
 	}
 	if !allNamespaces && namespaceID != "" && strings.TrimSpace(service.NamespaceID) != "" && strings.TrimSpace(service.NamespaceID) != namespaceID {
+		return false
+	}
+	return true
+}
+
+func isStrictScopeSystemService(service Service) bool {
+	kind := strings.TrimSpace(service.Kind)
+	if kind == "" {
+		kind = discovery.ResourceKindService
+	}
+	return kind != discovery.ResourceKindService || strings.TrimSpace(service.ServiceKind) == discovery.ResourceKindGrantService
+}
+
+func matchesStrictSystemScope(service Service, clusterID, namespaceID string, allNamespaces bool) bool {
+	actualClusterID := strings.TrimSpace(service.ClusterID)
+	actualNamespaceID := strings.TrimSpace(service.NamespaceID)
+	if actualClusterID == "" || actualNamespaceID == "" {
+		return false
+	}
+	if strings.TrimSpace(clusterID) == "" || actualClusterID != strings.TrimSpace(clusterID) {
+		return false
+	}
+	if allNamespaces {
+		return true
+	}
+	if strings.TrimSpace(namespaceID) == "" || actualNamespaceID != strings.TrimSpace(namespaceID) {
 		return false
 	}
 	return true
