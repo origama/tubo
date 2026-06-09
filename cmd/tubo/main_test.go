@@ -5168,8 +5168,13 @@ func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config,
 		t.Fatal(err)
 	}
 	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configRoot := filepath.Join(t.TempDir(), "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
 	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "observability", Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := saveLocalConfig(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
