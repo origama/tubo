@@ -36,7 +36,7 @@ const (
 	MaxTTL          = 30 * 24 * time.Hour
 )
 
-var serviceNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+var serviceNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9@._-]{0,62}$`)
 
 type Message struct {
 	Type                  string                           `json:"type"`

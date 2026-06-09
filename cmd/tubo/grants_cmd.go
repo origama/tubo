@@ -679,6 +679,8 @@ func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg c
 		}
 		if _, err := discoveryquery.AnnounceService(ctx, h, info, service); err != nil {
 			logging.Warnf("grant service discovery announce failed peer=%s: %v\n", info.ID, err)
+		} else {
+			logging.Progressf("grant service discovery announced peer=%s service=%s\n", info.ID, service.ServiceID)
 		}
 	}
 }

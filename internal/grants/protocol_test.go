@@ -52,7 +52,8 @@ func TestGrantMessageValidationRejectsInvalid(t *testing.T) {
 		{"bad version", func() Message { m := validSubmit(); m.Version = "v2"; return m }(), "version"},
 		{"bad type", func() Message { m := validSubmit(); m.Type = "bad"; return m }(), "type"},
 		{"missing service", func() Message { m := validSubmit(); m.ServiceName = ""; return m }(), "missing"},
-		{"bad name", func() Message { m := validSubmit(); m.ServiceName = "Bad_Name"; return m }(), "invalid service name"},
+		{"bad name uppercase", func() Message { m := validSubmit(); m.ServiceName = "Bad_Name"; return m }(), "invalid service name"},
+		{"bad name space", func() Message { m := validSubmit(); m.ServiceName = "bad name"; return m }(), "invalid service name"},
 		{"bad permission", func() Message { m := validSubmit(); m.RequestedPermissions = []string{"root"}; return m }(), "permissions"},
 		{"ttl too large", func() Message {
 			m := validSubmit()
@@ -68,6 +69,17 @@ func TestGrantMessageValidationRejectsInvalid(t *testing.T) {
 				t.Fatalf("expected %q error, got %v", tc.want, err)
 			}
 		})
+	}
+}
+
+func TestGrantMessageValidationAcceptsAtSignInServiceName(t *testing.T) {
+	validNames := []string{"piwebui@oripi", "myapi@host.example", "svc-1@node2", "a@b"}
+	for _, name := range validNames {
+		m := validSubmit()
+		m.ServiceName = name
+		if err := ValidateMessage(m); err != nil {
+			t.Fatalf("service name %q should be valid, got: %v", name, err)
+		}
 	}
 }
 
