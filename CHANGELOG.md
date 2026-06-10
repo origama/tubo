@@ -6,6 +6,22 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+## [v0.10.3] - 2026-06-10
+
+Patch release fixing silent relay reservation lapse on always-connected nodes (grants-serve authority unreachable via relay after ~1 hour).
+
+### Fixed
+- **Relay reservation silently lapses for stable, always-connected nodes** (#232): the `maintainRelayReservations` loop in both `internal/p2p.OverlayHost` and `internal/app/service.App` delegated the renewal decision to `hasRelayReservation()`, which short-circuits to `true` whenever `Host.Addrs()` still contains a `/p2p-circuit` address from autorelay. With `autorelay: true` that address lingers even after the underlying circuit-v2 reservation has expired. For nodes with a stable relay connection (the disconnect notifiee never fires), this meant the reservation was acquired once at startup and never renewed — silently lapsing after the 1-hour TTL. Remote nodes dialling via `/p2p-circuit` received phantom connections that immediately dropped with `protocols not supported`, preventing publish-lease renewal and degrading dependent `connect` pipes.
+  - Introduced `needsRelayReservation()` in both packages: a pure, expiry-based predicate that ignores lingering circuit addresses and triggers proactive renewal 10 minutes before expiry (`relayReservationRenewMargin = 10m`), regardless of relay-connection stability.
+  - Both maintenance loops now gate the reserve call on `needsRelayReservation()` instead of `!hasRelayReservation()`.
+  - `hasRelayReservation()` / `HasRelayReservation()` are unchanged — they continue to serve as readiness/announce gates where a lingering circuit addr is an acceptable readiness signal.
+
+### Compatibility
+- Product version: v0.10.3
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none; already-running nodes will self-heal at the next maintenance-loop tick after upgrade.
+
 ## [v0.10.2] - 2026-06-10
 
 Patch release fixing orphan PID file handling in the detached process lifecycle.

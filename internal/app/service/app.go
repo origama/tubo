@@ -328,6 +328,30 @@ func (a *App) hasRelayReservation() bool {
 	return !readyUntil.IsZero() && time.Now().Before(readyUntil)
 }
 
+// relayReservationRenewMargin is how far ahead of the reservation expiry the
+// maintenance loop proactively renews. It must be shorter than the relay's
+// reservation_ttl (typically 1h) so that renewals happen well before expiry.
+const relayReservationRenewMargin = 10 * time.Minute
+
+// needsRelayReservation reports whether the maintenance loop should (re)acquire
+// a relay reservation right now. Unlike hasRelayReservation, it does NOT treat
+// a lingering /p2p-circuit address in Host.Addrs() as proof of a live
+// reservation. It renews proactively based on the tracked expiry so that
+// always-connected nodes (e.g. a grants-serve authority with a stable relay
+// link) do not silently lose their reservation when the 1-hour TTL lapses.
+func (a *App) needsRelayReservation() bool {
+	if len(a.relayInfos) > 0 && !a.hasConnectedRelay() {
+		return true
+	}
+	a.reservationMu.RLock()
+	readyUntil := a.reservationReadyUntil
+	a.reservationMu.RUnlock()
+	if readyUntil.IsZero() {
+		return true
+	}
+	return time.Now().After(readyUntil.Add(-relayReservationRenewMargin))
+}
+
 func mergeRelayCircuitAddrs(base []string, relayInfos []peer.AddrInfo, self peer.ID) []string {
 	seen := make(map[string]struct{}, len(base)+len(relayInfos))
 	out := make([]string, 0, len(base)+len(relayInfos))
@@ -676,7 +700,7 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 		}
 		lastReady = ready
 
-		if !ready {
+		if a.needsRelayReservation() {
 			for _, relayInfo := range a.relayInfos {
 				reserveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				if err := a.host.Connect(reserveCtx, relayInfo); err != nil {

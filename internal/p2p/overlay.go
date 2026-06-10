@@ -193,11 +193,35 @@ func (o *OverlayHost) registerRelayNotifiee() {
 	})
 }
 
+// relayReservationRenewMargin is how far ahead of the reservation expiry the
+// maintenance loop proactively renews. It must be shorter than the relay's
+// reservation_ttl (typically 1h) so that renewals happen well before expiry.
+const relayReservationRenewMargin = 10 * time.Minute
+
+// needsRelayReservation reports whether the maintenance loop should (re)acquire
+// a relay reservation right now. Unlike HasRelayReservation, it does NOT treat
+// a lingering /p2p-circuit address in Host.Addrs() as proof of a live
+// reservation. It renews proactively based on the tracked expiry so that
+// always-connected nodes (e.g. a grants-serve authority with a stable relay
+// link) do not silently lose their reservation when the 1-hour TTL lapses.
+func (o *OverlayHost) needsRelayReservation() bool {
+	if len(o.RelayInfos) > 0 && !o.hasConnectedRelay() {
+		return true
+	}
+	o.reservationMu.RLock()
+	readyUntil := o.reservationReadyUntil
+	o.reservationMu.RUnlock()
+	if readyUntil.IsZero() {
+		return true
+	}
+	return time.Now().After(readyUntil.Add(-relayReservationRenewMargin))
+}
+
 func (o *OverlayHost) maintainRelayReservations(ctx context.Context) {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
-		if !o.HasRelayReservation() {
+		if o.needsRelayReservation() {
 			for _, relayInfo := range o.RelayInfos {
 				reserveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				if err := o.Host.Connect(reserveCtx, relayInfo); err != nil {

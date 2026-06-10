@@ -89,6 +89,85 @@ func TestHasRelayReservationUsesTrackedExpiry(t *testing.T) {
 	}
 }
 
+func TestNeedsRelayReservation_NoReservationYet(t *testing.T) {
+	app := &App{
+		reservationReadyUntil: time.Time{},
+		relayConnected:        map[peer.ID]bool{peer.ID("12D3KooWRelay"): true},
+		relayInfos:            []peer.AddrInfo{{ID: peer.ID("12D3KooWRelay")}},
+	}
+	if !app.needsRelayReservation() {
+		t.Fatal("expected needsRelayReservation=true when no reservation has been acquired")
+	}
+}
+
+func TestNeedsRelayReservation_FreshReservation(t *testing.T) {
+	app := &App{
+		reservationReadyUntil: time.Now().Add(30 * time.Minute),
+		relayConnected:        map[peer.ID]bool{peer.ID("12D3KooWRelay"): true},
+		relayInfos:            []peer.AddrInfo{{ID: peer.ID("12D3KooWRelay")}},
+	}
+	if app.needsRelayReservation() {
+		t.Fatal("expected needsRelayReservation=false for a fresh reservation outside the renewal margin")
+	}
+}
+
+func TestNeedsRelayReservation_WithinRenewMargin(t *testing.T) {
+	// Expires within the 10-minute margin: proactive renewal is due.
+	app := &App{
+		reservationReadyUntil: time.Now().Add(5 * time.Minute),
+		relayConnected:        map[peer.ID]bool{peer.ID("12D3KooWRelay"): true},
+		relayInfos:            []peer.AddrInfo{{ID: peer.ID("12D3KooWRelay")}},
+	}
+	if !app.needsRelayReservation() {
+		t.Fatal("expected needsRelayReservation=true when reservation is within the renewal margin")
+	}
+}
+
+func TestNeedsRelayReservation_Expired(t *testing.T) {
+	app := &App{
+		reservationReadyUntil: time.Now().Add(-time.Second),
+		relayConnected:        map[peer.ID]bool{peer.ID("12D3KooWRelay"): true},
+		relayInfos:            []peer.AddrInfo{{ID: peer.ID("12D3KooWRelay")}},
+	}
+	if !app.needsRelayReservation() {
+		t.Fatal("expected needsRelayReservation=true for an expired reservation")
+	}
+}
+
+func TestNeedsRelayReservation_RelayDisconnected(t *testing.T) {
+	// Relay not connected: must reserve regardless of tracked expiry.
+	app := &App{
+		reservationReadyUntil: time.Now().Add(30 * time.Minute),
+		relayConnected:        map[peer.ID]bool{},
+		relayInfos:            []peer.AddrInfo{{ID: peer.ID("12D3KooWRelay")}},
+	}
+	if !app.needsRelayReservation() {
+		t.Fatal("expected needsRelayReservation=true when relay is disconnected")
+	}
+}
+
+func TestNeedsRelayReservation_IgnoresLingeringCircuitAddr(t *testing.T) {
+	// Regression: a lingering /p2p-circuit addr in Host.Addrs() (from autorelay)
+	// must NOT suppress proactive renewal when the tracked expiry is within the
+	// renewal margin. needsRelayReservation must not inspect Host.Addrs().
+	//
+	// hasRelayReservation() would return true here (via the addr-scan path when
+	// host is non-nil), causing the old maintenance loop to skip renewal.
+	// needsRelayReservation must return true regardless.
+	app := &App{
+		reservationReadyUntil: time.Now().Add(5 * time.Minute),
+		relayConnected:        map[peer.ID]bool{peer.ID("12D3KooWRelay"): true},
+		relayInfos:            []peer.AddrInfo{{ID: peer.ID("12D3KooWRelay")}},
+		// host intentionally left nil: the real bug manifests when host.Addrs()
+		// contains a circuit addr. With a nil host, hasRelayReservation falls
+		// through to the timer — but needsRelayReservation must still fire
+		// based purely on the expiry margin.
+	}
+	if !app.needsRelayReservation() {
+		t.Fatal("expected needsRelayReservation=true: expiry within margin must trigger renewal")
+	}
+}
+
 func writeTestPublishLease(t *testing.T, path string, authorityPriv ed25519.PrivateKey, clusterID, namespaceID, serviceName, serviceSeed string, expiresAt time.Time) string {
 	t.Helper()
 	owner, err := serviceidentity.Generate()
