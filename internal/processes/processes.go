@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,7 +172,14 @@ func StartDetached(spec DetachedSpec, executable string, env []string, configure
 	}
 	for _, path := range []string{spec.State.StateFile, spec.State.PIDFile} {
 		if _, err := os.Stat(path); err == nil {
-			return State{}, fmt.Errorf("detached process state already exists for %s", spec.State.ID)
+			hint := ""
+			if path == spec.State.PIDFile {
+				// PID file exists but no state file: likely an orphan from a
+				// previous run whose state was lost. Run 'tubo rm --stale' or
+				// 'tubo stop' to clear it.
+				hint = " (orphan pid file found without state; run 'tubo rm --stale' or 'tubo stop' to clear it)"
+			}
+			return State{}, fmt.Errorf("detached process state already exists for %s%s", spec.State.ID, hint)
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return State{}, err
 		}
@@ -449,6 +457,60 @@ func RemoveStale(dataRoot string, system System) (int, error) {
 			continue
 		}
 		if err := removeStateArtifacts(entry.path, entry.state); err == nil {
+			removed++
+		}
+	}
+	// Remove orphan .pid files that have no corresponding .json state file.
+	orphanCount, err := removeOrphanPIDs(dataRoot, system)
+	if err != nil {
+		return removed, err
+	}
+	removed += orphanCount
+	return removed, nil
+}
+
+// removeOrphanPIDs removes .pid files in RunDir that have no corresponding
+// .json in StateDir and whose process is no longer running.
+func removeOrphanPIDs(dataRoot string, system System) (int, error) {
+	runDir := RunDir(dataRoot)
+	pidEntries, err := os.ReadDir(runDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	stateDir := StateDir(dataRoot)
+	removed := 0
+	for _, e := range pidEntries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".pid") {
+			continue
+		}
+		base := strings.TrimSuffix(e.Name(), ".pid")
+		jsonPath := filepath.Join(stateDir, base+".json")
+		if _, err := os.Stat(jsonPath); err == nil {
+			// .json exists — handled by the main loop above.
+			continue
+		}
+		// Orphan .pid: read the PID and check if alive.
+		pidPath := filepath.Join(runDir, e.Name())
+		raw, readErr := os.ReadFile(pidPath)
+		if readErr != nil {
+			continue
+		}
+		pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if parseErr != nil || pid <= 0 {
+			// Unreadable PID file — remove it.
+			if rerr := os.Remove(pidPath); rerr == nil {
+				removed++
+			}
+			continue
+		}
+		if system != nil && system.PIDRunning(pid) {
+			// Process is still alive; leave it alone.
+			continue
+		}
+		if rerr := os.Remove(pidPath); rerr == nil {
 			removed++
 		}
 	}

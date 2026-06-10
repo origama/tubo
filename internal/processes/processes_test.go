@@ -425,3 +425,61 @@ func TestStop(t *testing.T) {
 		t.Fatal("expected process to stop")
 	}
 }
+
+func TestRemoveStaleOrphanPIDFile(t *testing.T) {
+	root := t.TempDir()
+	system := &stubSystem{running: map[int]bool{}, cmdlines: map[int][]string{}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write an orphan .pid file with no corresponding .json state file.
+	orphanPID := filepath.Join(RunDir(root), "attach-lms.pid")
+	if err := os.WriteFile(orphanPID, []byte("99999\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Process is not running → RemoveStale should remove the orphan.
+	removed, err := RemoveStale(root, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 1 {
+		t.Fatalf("expected 1 orphan removed, got %d", removed)
+	}
+	if _, err := os.Stat(orphanPID); !os.IsNotExist(err) {
+		t.Fatalf("expected orphan pid file removed, stat err=%v", err)
+	}
+}
+
+func TestRemoveStaleKeepsOrphanPIDFileForLiveProcess(t *testing.T) {
+	root := t.TempDir()
+	const livePID = 88888
+	system := &stubSystem{running: map[int]bool{livePID: true}, cmdlines: map[int][]string{}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// Orphan .pid for a still-running process.
+	orphanPID := filepath.Join(RunDir(root), "attach-lms.pid")
+	if err := os.WriteFile(orphanPID, []byte(fmt.Sprintf("%d\n", livePID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := RemoveStale(root, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 0 {
+		t.Fatalf("expected 0 removed for live process, got %d", removed)
+	}
+	if _, err := os.Stat(orphanPID); err != nil {
+		t.Fatalf("expected orphan pid file to remain, stat err=%v", err)
+	}
+}
