@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -453,6 +454,13 @@ func splitGrantIDArg(args []string) (string, []string) {
 }
 
 func grantsServeCmd(args []string) error {
+	// Configure runtime logging (enables log.Printf output) when running as a
+	// detached child process. Without this, the standard logger writes to
+	// io.Discard because the non-runtime logging config set in main() has
+	// Verbosity=0 and Runtime=false.
+	if os.Getenv("TUBO_DETACHED_CHILD") == "1" {
+		_ = logging.Configure(logging.Config{Verbosity: 1, Runtime: true})
+	}
 	fs := flag.NewFlagSet("grants serve", flag.ContinueOnError)
 	configPath := fs.String("config", "", "")
 	clusterName := fs.String("cluster", "", "")
@@ -540,15 +548,16 @@ func grantsServeCmd(args []string) error {
 	if err := publishGrantServiceDiscovery(ctx, host, overlay, priv, scopedCfg, *claimTTL); err != nil {
 		return err
 	}
-	fmt.Printf("grant service listening peer=%s protocol=%s store=%s\n", host.ID(), grantspkg.ProtocolID, *storePath)
+	log.Printf("grants serve started pid=%d peer=%s protocol=%s store=%s", os.Getpid(), host.ID(), grantspkg.ProtocolID, *storePath)
 	for _, addr := range overlay.ReachableAddrs() {
 		if strings.Contains(addr, "/p2p-circuit") {
-			fmt.Printf("relay addr: %s\n", addr)
+			log.Printf("relay addr: %s", addr)
 			continue
 		}
-		fmt.Printf("addr: %s\n", addr)
+		log.Printf("addr: %s", addr)
 	}
 	<-ctx.Done()
+	log.Printf("grants serve stopped")
 	time.Sleep(50 * time.Millisecond)
 	return nil
 }
@@ -607,7 +616,7 @@ func publishGrantServiceDiscovery(ctx context.Context, h host.Host, overlay *p2p
 				return
 			case <-ticker.C:
 				if err := publish(); err != nil {
-					logging.Warnf("grant service discovery publish failed: %v\n", err)
+					log.Printf("grant service discovery publish failed: %v", err)
 				}
 			}
 		}
@@ -683,9 +692,9 @@ func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg c
 			continue
 		}
 		if _, err := discoveryquery.AnnounceService(ctx, h, info, service); err != nil {
-			logging.Warnf("grant service discovery announce failed peer=%s: %v\n", info.ID, err)
+			log.Printf("grant service discovery announce failed peer=%s: %v", info.ID, err)
 		} else {
-			logging.Progressf("grant service discovery announced peer=%s service=%s\n", info.ID, service.ServiceID)
+			log.Printf("grant service discovery announced peer=%s service=%s", info.ID, service.ServiceID)
 		}
 	}
 }

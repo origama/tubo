@@ -281,7 +281,7 @@ func LoadState(dataRoot, ref string, system System) (State, string, error) {
 			return state, status, nil
 		}
 	}
-	return State{}, "", fmt.Errorf("unknown process %q", ref)
+	return State{}, "", fmt.Errorf("unknown process %q", strings.TrimPrefix(ref, "process/"))
 }
 
 func StatusDetails(state State, system System) (string, string) {

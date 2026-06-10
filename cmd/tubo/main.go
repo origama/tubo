@@ -727,7 +727,14 @@ func runRole(commandName, role string, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	_ = state
-	return launcher.Run(ctx, newRuntimeLauncher(), role, configPath, c)
+	log.Printf("%s started pid=%d", commandName, os.Getpid())
+	err = launcher.Run(ctx, newRuntimeLauncher(), role, configPath, c)
+	if err != nil {
+		log.Printf("%s stopped with error: %v", commandName, err)
+	} else {
+		log.Printf("%s stopped", commandName)
+	}
+	return err
 }
 
 func printForegroundRuntimeNotice(commandName, role string, cfg cfgpkg.Config) {
@@ -1525,6 +1532,13 @@ func logsCmd(args []string) error {
 	}
 	state, _, err := loadProcessState(fs.Arg(0))
 	if err != nil {
+		if views, listErr := listProcessViews(false); listErr == nil && len(views) > 0 {
+			names := make([]string, 0, len(views))
+			for _, v := range views {
+				names = append(names, v.Name)
+			}
+			return fmt.Errorf("%w\nhint: running processes are: %s", err, strings.Join(names, ", "))
+		}
 		return err
 	}
 	if strings.TrimSpace(state.LogFile) == "" {
