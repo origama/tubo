@@ -6,6 +6,7 @@ import (
 	"fmt"
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/network"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -60,6 +61,9 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		return nil, err
 	}
 	var opts []libp2p.Option
+	// Disable default resource manager limits to allow many concurrent connections.
+	// The relay has its own limits (MaxReservations, MaxCircuits, etc.) configured via relayv2.Resources.
+	opts = append(opts, libp2p.ResourceManager(&network.NullResourceManager{}))
 	if allowed, configured, err := p2p.LoadAllowedPeersFromEnv(); err != nil {
 		return nil, err
 	} else if configured {
