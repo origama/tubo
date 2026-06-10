@@ -6,6 +6,20 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+## [v0.10.2] - 2026-06-10
+
+Patch release fixing orphan PID file handling in the detached process lifecycle.
+
+### Fixed
+- **Orphan PID files block re-attach**: if a detached process (e.g. `attach -d`) crashed or was killed before writing its `.json` state file, the `.pid` file was left behind. `tubo rm --stale` did not clean it up (it only scanned `processes/*.json`), and the next `tubo attach -d` with the same name failed with the misleading error `detached process state already exists`. `RemoveStale` now also scans `RunDir` for `.pid` files with no matching `.json`, removes them when the underlying process is no longer running, and leaves them intact when the process is still alive.
+- **Unclear error when orphan PID blocks start**: `StartDetached` now emits an actionable hint — `orphan pid file found without state; run 'tubo rm --stale' or 'tubo stop' to clear it` — when the `.pid` file is the blocking artifact.
+
+### Compatibility
+- Product version: v0.10.2
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none
+
 ## [v0.10.1] - 2026-06-10
 
 Patch release fixing five reliability and usability bugs found during live end-to-end testing of the member publish-grant workflow on a private cluster after v0.10.0.
