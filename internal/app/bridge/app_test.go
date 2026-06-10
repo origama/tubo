@@ -10,6 +10,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -904,4 +905,69 @@ func bridgeHostAuthorizedKey(t *testing.T, h hostpkg.Host) string {
 		t.Fatal(err)
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
+}
+
+func TestConnectRefreshBackoffGrowsExponentially(t *testing.T) {
+	const base = connectRefreshFailureCooldown
+	const maxBackoff = 120 * time.Second
+	// Verify each attempt produces a value in [base, maxBackoff*1.2] and that
+	// early attempts grow strictly. Once the cap is reached, growth stops.
+	for attempt := 1; attempt <= 10; attempt++ {
+		// Sample many times to account for jitter.
+		var min, max time.Duration
+		for i := 0; i < 200; i++ {
+			d := connectRefreshBackoff(attempt)
+			if min == 0 || d < min {
+				min = d
+			}
+			if d > max {
+				max = d
+			}
+		}
+		if min < base {
+			t.Fatalf("attempt %d: min sample %v < base %v", attempt, min, base)
+		}
+		if max > time.Duration(float64(maxBackoff)*1.21) {
+			t.Fatalf("attempt %d: max sample %v exceeds cap+jitter", attempt, max)
+		}
+		// For early attempts (before the cap is hit), the median should be
+		// strictly greater than the base.
+		if attempt <= 4 {
+			expectedMin := time.Duration(float64(base) * math.Pow(2, float64(attempt-1)) * 0.75)
+			if min < expectedMin {
+				t.Fatalf("attempt %d: min sample %v < expected lower bound %v", attempt, min, expectedMin)
+			}
+		}
+	}
+}
+
+func TestRecordRefreshFailureLocked_BackoffGrows(t *testing.T) {
+	app := &App{}
+	now := time.Now().UTC()
+	// First failure: retryAt = now (no useful deadline from caller).
+	app.recordRefreshFailureLocked(errors.New("e1"), now)
+	retry1 := app.nextRefreshRetryAt
+	if retry1.Before(now.Add(connectRefreshFailureCooldown - time.Second)) {
+		t.Fatalf("first retry too soon: %v", retry1)
+	}
+	// Second failure: backoff should be >= first.
+	app.recordRefreshFailureLocked(errors.New("e2"), now)
+	retry2 := app.nextRefreshRetryAt
+	if retry2.Before(retry1) {
+		t.Fatalf("second retry %v is before first %v", retry2, retry1)
+	}
+	// Caller deadline further in future should win.
+	far := now.Add(200 * time.Second)
+	app.recordRefreshFailureLocked(errors.New("e3"), far)
+	if app.nextRefreshRetryAt != far {
+		t.Fatalf("expected caller deadline %v, got %v", far, app.nextRefreshRetryAt)
+	}
+	// Success resets counter and retry time.
+	app.applyConnectLeaseArtifactsLocked(grantspkg.ConnectLeaseArtifacts{})
+	if app.consecutiveRefreshFails != 0 {
+		t.Fatalf("counter not reset after success: %d", app.consecutiveRefreshFails)
+	}
+	if !app.nextRefreshRetryAt.IsZero() {
+		t.Fatalf("retryAt not cleared after success: %v", app.nextRefreshRetryAt)
+	}
 }

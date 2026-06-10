@@ -12,6 +12,8 @@ import (
 	"io"
 	"log"
 	"net"
+	"math"
+	"math/rand"
 	"net/http"
 	"os"
 	"strings"
@@ -85,8 +87,9 @@ type App struct {
 	connectLease         *grantspkg.ConnectAccessLease
 	refreshingLease      bool
 	refreshDone          chan struct{}
-	lastRefreshError     string
-	nextRefreshRetryAt   time.Time
+	lastRefreshError          string
+	nextRefreshRetryAt        time.Time
+	consecutiveRefreshFails   int
 	healthMu             sync.RWMutex
 	lastTunnelError      string
 	lastTunnelErrorAt    time.Time
@@ -327,6 +330,31 @@ const bridgeSelfHealTimeout = 2 * time.Second
 const connectRefreshMinUsefulLifetime = 5 * time.Second
 const connectRefreshFailureCooldown = 5 * time.Second
 const connectRefreshMinExtension = time.Second
+
+// connectRefreshBackoff returns an exponential backoff duration for consecutive
+// refresh/rollover failures. The backoff starts at connectRefreshFailureCooldown
+// (5 s), doubles on each attempt, and is capped at 120 s. A ±20 % jitter is
+// added to avoid thundering-herd when multiple connects refresh simultaneously.
+// The 120 s cap ensures the client recovers well before a server-side deny-cache
+// TTL (default 30 s) can be perpetually renewed by rapid retries.
+func connectRefreshBackoff(consecutiveFailures int) time.Duration {
+	const base = connectRefreshFailureCooldown
+	const maxBackoff = 120 * time.Second
+	if consecutiveFailures <= 0 {
+		return base
+	}
+	mult := math.Pow(2, float64(consecutiveFailures-1))
+	d := time.Duration(float64(base) * mult)
+	if d > maxBackoff {
+		d = maxBackoff
+	}
+	// ±20% jitter
+	jitter := time.Duration(float64(d) * (0.8 + 0.4*rand.Float64()))
+	if jitter < base {
+		jitter = base
+	}
+	return jitter
+}
 
 func (a *App) establishTCPTunnel(localAddr string) (network.Stream, error) {
 	var lastErr error
@@ -620,6 +648,7 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	a.cfg.ConnectRefreshLease = &refresh
 	a.lastRefreshError = ""
 	a.nextRefreshRetryAt = time.Time{}
+	a.consecutiveRefreshFails = 0
 }
 
 func ConnectPathTransitionMessage(previous, current string) (string, bool) {
@@ -1052,6 +1081,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		a.cfg.ConnectAccessLease = &access
 		a.lastRefreshError = ""
 		a.nextRefreshRetryAt = time.Time{}
+		a.consecutiveRefreshFails = 0
 		a.connectMu.Unlock()
 		log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
 		a.reportStatus()
@@ -1102,6 +1132,7 @@ func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg
 		return grantspkg.ConnectAccessLease{}, wrapped
 	}
 	a.applyConnectLeaseArtifactsLocked(artifacts)
+	a.consecutiveRefreshFails = 0
 	a.connectMu.Unlock()
 	log.Printf("bridge member connect lease rolled over service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	a.reportStatus()
@@ -1132,8 +1163,17 @@ func (a *App) recordRefreshFailureLocked(err error, retryAt time.Time) {
 	if err == nil {
 		return
 	}
+	a.consecutiveRefreshFails++
 	a.lastRefreshError = err.Error()
-	a.nextRefreshRetryAt = retryAt.UTC()
+	// Apply exponential backoff so rapid retries cannot perpetually renew the
+	// server-side deny-cache. If the caller's retryAt is further in the future
+	// (e.g. a terminal lease-expiry deadline), honour that instead.
+	backoffAt := time.Now().UTC().Add(connectRefreshBackoff(a.consecutiveRefreshFails))
+	if retryAt.UTC().After(backoffAt) {
+		a.nextRefreshRetryAt = retryAt.UTC()
+	} else {
+		a.nextRefreshRetryAt = backoffAt
+	}
 }
 
 func (a *App) refreshConnectAccessLease(ctx context.Context, refresh grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
