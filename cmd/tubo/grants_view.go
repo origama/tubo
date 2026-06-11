@@ -164,23 +164,6 @@ func summarizeGrantRequests(requests []grantspkg.Request, aliasIdx peerAliasInde
 	return out
 }
 
-func groupRequestsByKey(requests []grantspkg.Request) map[string][]grantspkg.Request {
-	groups := make(map[string][]grantspkg.Request, len(requests))
-	for _, req := range requests {
-		key := grantRequestGroupKey(req)
-		groups[key] = append(groups[key], req)
-	}
-	for key := range groups {
-		sort.SliceStable(groups[key], func(i, j int) bool {
-			if !groups[key][i].RequestedAt.Equal(groups[key][j].RequestedAt) {
-				return groups[key][i].RequestedAt.Before(groups[key][j].RequestedAt)
-			}
-			return groups[key][i].ID < groups[key][j].ID
-		})
-	}
-	return groups
-}
-
 func printGrantRequestsWide(requests []grantspkg.Request, title, storePath, sourceLabel string) {
 	sort.SliceStable(requests, func(i, j int) bool {
 		if !requests[i].RequestedAt.Equal(requests[j].RequestedAt) {

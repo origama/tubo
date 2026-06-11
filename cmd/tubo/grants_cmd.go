@@ -12,10 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -446,38 +444,6 @@ func ensureNoApprovedServiceCollision(store *grantspkg.Store, req grantspkg.Requ
 		}
 	}
 	return nil
-}
-
-func printGrantRequests(requests []grantspkg.Request) {
-	sort.SliceStable(requests, func(i, j int) bool {
-		if requests[i].ServiceID != requests[j].ServiceID {
-			return requests[i].ServiceID < requests[j].ServiceID
-		}
-		return requests[i].RequestedAt.Before(requests[j].RequestedAt)
-	})
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSTATUS\tSCOPE\tSERVICE\tSERVICE_ID\tREQUESTER\tSERVICE_PEER\tEXPIRES")
-	for _, req := range requests {
-		scope := req.ClusterName + "/" + req.NamespaceID
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", req.ID, req.Status, scope, req.ServiceName, req.ServiceID, req.RequesterPeerID, req.ServicePeerID, req.ExpiresAt.Format(time.RFC3339))
-	}
-	_ = w.Flush()
-}
-
-func printGrantRequest(req grantspkg.Request) {
-	fmt.Printf("ID: %s\n", req.ID)
-	fmt.Printf("Status: %s\n", req.Status)
-	fmt.Printf("Cluster: %s (%s)\n", req.ClusterName, req.ClusterID)
-	fmt.Printf("Namespace: %s\n", req.NamespaceID)
-	fmt.Printf("Requester PeerID: %s\n", req.RequesterPeerID)
-	fmt.Printf("Service: %s (%s)\n", req.ServiceName, req.ServiceID)
-	fmt.Printf("Service Kind: %s\n", grantspkg.NormalizeServiceShareKind(req.ServiceKind))
-	fmt.Printf("Service PeerID: %s\n", req.ServicePeerID)
-	fmt.Printf("Permissions: %s\n", strings.Join(req.RequestedPermissions, ","))
-	fmt.Printf("Status Expires: %s\n", req.ExpiresAt.Format(time.RFC3339))
-	if req.DenialReason != "" {
-		fmt.Printf("Denial Reason: %s\n", req.DenialReason)
-	}
 }
 
 func splitGrantIDArg(args []string) (string, []string) {
