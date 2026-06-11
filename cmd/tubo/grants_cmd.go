@@ -12,10 +12,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strings"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
@@ -32,7 +30,7 @@ import (
 
 func grantsCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo grants <serve|pending|describe|approve|deny|history>")
+		return errors.New("usage: tubo grants <serve|request|pending|describe|approve|deny|history>")
 	}
 	switch args[0] {
 	case "serve":
@@ -263,18 +261,23 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 	}
 }
 
-func grantStoreFlagSet(name string, args []string) (*flag.FlagSet, *string, *string, error) {
+func grantViewFlagSet(name string, args []string) (*flag.FlagSet, *string, *string, *bool, *bool, *bool, *bool, *bool, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	configPath := fs.String("config", "", "")
 	storePath := fs.String("store", grantspkg.DefaultStorePath(), "")
+	wide := fs.Bool("wide", false, "")
+	jsonOut := fs.Bool("json", false, "")
+	all := fs.Bool("all", false, "")
+	verbose := fs.Bool("verbose", false, "")
+	verboseShort := fs.Bool("v", false, "")
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
-	return fs, configPath, storePath, nil
+	return fs, configPath, storePath, wide, jsonOut, all, verbose, verboseShort, nil
 }
 
 func grantsPendingCmd(args []string) error {
-	_, _, storePath, err := grantStoreFlagSet("grants pending", args)
+	_, _, storePath, wide, jsonOut, _, verbose, verboseShort, err := grantViewFlagSet("grants pending", args)
 	if err != nil {
 		return err
 	}
@@ -282,32 +285,60 @@ func grantsPendingCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	printGrantRequests(requests)
+	if *jsonOut {
+		aliasIdx, _ := loadPeerAliasIndex()
+		return printGrantListJSON("pending", *storePath, requests, summarizeGrantRequests(requests, aliasIdx))
+	}
+	if *wide {
+		printGrantRequestsWide(requests, "Pending grant requests", *storePath, "source:")
+		return nil
+	}
+	aliasIdx, _ := loadPeerAliasIndex()
+	printGrantPendingHuman(requests, "Pending grant requests", aliasIdx, *verbose || *verboseShort)
 	return nil
 }
 
 func grantsDescribeCmd(args []string) error {
 	id, flagArgs := splitGrantIDArg(args)
-	_, _, storePath, err := grantStoreFlagSet("grants describe", flagArgs)
+	_, _, storePath, wide, jsonOut, _, _, _, err := grantViewFlagSet("grants describe", flagArgs)
 	if err != nil {
 		return err
 	}
 	if id == "" {
 		return errors.New("usage: tubo grants describe <request-id>")
 	}
-	req, ok, err := grantspkg.NewStore(*storePath).Get(id)
+	store := grantspkg.NewStore(*storePath)
+	req, ok, err := store.Get(id)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("grant request %q not found", id)
 	}
-	printGrantRequest(req)
+	all, err := store.ListAll()
+	if err != nil {
+		return err
+	}
+	related := relatedGrantRequests(all, req)
+	if *jsonOut {
+		aliasIdx, _ := loadPeerAliasIndex()
+		group := summarizeGrantRequests(related, aliasIdx)
+		groupView := grantRequestGroup{}
+		if len(group) > 0 {
+			groupView = group[0]
+		}
+		return printGrantDescribeJSON(*storePath, req, groupView, related, aliasIdx.name(req.RequesterPeerID))
+	}
+	if *wide {
+		printGrantRequestWide(req)
+		return nil
+	}
+	printGrantRequestReview(req, related, *storePath)
 	return nil
 }
 
 func grantsHistoryCmd(args []string) error {
-	_, _, storePath, err := grantStoreFlagSet("grants history", args)
+	_, _, storePath, wide, jsonOut, all, verbose, verboseShort, err := grantViewFlagSet("grants history", args)
 	if err != nil {
 		return err
 	}
@@ -315,8 +346,15 @@ func grantsHistoryCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("history source: authority/local store %s\n", *storePath)
-	printGrantRequests(requests)
+	if *jsonOut {
+		aliasIdx, _ := loadPeerAliasIndex()
+		return printGrantListJSON("history", *storePath, requests, summarizeGrantRequests(requests, aliasIdx))
+	}
+	if *wide {
+		printGrantRequestsWide(requests, "Grant request history", *storePath, "history source:")
+		return nil
+	}
+	printGrantHistoryHuman(requests, "Grant history", *storePath, *all, *verbose || *verboseShort)
 	return nil
 }
 
@@ -406,38 +444,6 @@ func ensureNoApprovedServiceCollision(store *grantspkg.Store, req grantspkg.Requ
 		}
 	}
 	return nil
-}
-
-func printGrantRequests(requests []grantspkg.Request) {
-	sort.SliceStable(requests, func(i, j int) bool {
-		if requests[i].ServiceID != requests[j].ServiceID {
-			return requests[i].ServiceID < requests[j].ServiceID
-		}
-		return requests[i].RequestedAt.Before(requests[j].RequestedAt)
-	})
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tSTATUS\tSCOPE\tSERVICE\tSERVICE_ID\tREQUESTER\tSERVICE_PEER\tEXPIRES")
-	for _, req := range requests {
-		scope := req.ClusterName + "/" + req.NamespaceID
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", req.ID, req.Status, scope, req.ServiceName, req.ServiceID, req.RequesterPeerID, req.ServicePeerID, req.ExpiresAt.Format(time.RFC3339))
-	}
-	_ = w.Flush()
-}
-
-func printGrantRequest(req grantspkg.Request) {
-	fmt.Printf("ID: %s\n", req.ID)
-	fmt.Printf("Status: %s\n", req.Status)
-	fmt.Printf("Cluster: %s (%s)\n", req.ClusterName, req.ClusterID)
-	fmt.Printf("Namespace: %s\n", req.NamespaceID)
-	fmt.Printf("Requester PeerID: %s\n", req.RequesterPeerID)
-	fmt.Printf("Service: %s (%s)\n", req.ServiceName, req.ServiceID)
-	fmt.Printf("Service Kind: %s\n", grantspkg.NormalizeServiceShareKind(req.ServiceKind))
-	fmt.Printf("Service PeerID: %s\n", req.ServicePeerID)
-	fmt.Printf("Permissions: %s\n", strings.Join(req.RequestedPermissions, ","))
-	fmt.Printf("Status Expires: %s\n", req.ExpiresAt.Format(time.RFC3339))
-	if req.DenialReason != "" {
-		fmt.Printf("Denial Reason: %s\n", req.DenialReason)
-	}
 }
 
 func splitGrantIDArg(args []string) (string, []string) {
@@ -538,6 +544,7 @@ func grantsServeCmd(args []string) error {
 		}
 	}()
 	_ = state
+	logging.Warnf("grant service running in foreground; press Ctrl+C to stop\n")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	overlay.StartBootstrapRetry(ctx, 5*time.Second)

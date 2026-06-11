@@ -3042,14 +3042,19 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, first.ID) || !strings.Contains(out, second.ID) {
-		t.Fatalf("pending output missing requests: %s", out)
+	for _, want := range []string{"Pending grant requests", "source: authority/local store", "wants to publish", "myapi", "other", "approve:", "deny:", "inspect:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("pending output missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "ATTEMPTS") {
+		t.Fatalf("pending output should not use the dense table header: %s", out)
 	}
 	out, err = capture(func() error { return run([]string{"grants", "describe", first.ID, "--store", storePath}) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "Service PeerID: 12D3-service") {
+	if !strings.Contains(out, "Service peer: 12D3-service") {
 		t.Fatalf("describe output missing peer: %s", out)
 	}
 	if _, err := capture(func() error {
@@ -3078,8 +3083,10 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, grantspkg.StatusApproved) || !strings.Contains(out, grantspkg.StatusDenied) {
-		t.Fatalf("history missing statuses: %s", out)
+	for _, want := range []string{"Grant history", "source: authority/local store", "Active approvals", "Denied requests", "valid for", "denied"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("history missing %q: %s", want, out)
+		}
 	}
 }
 
@@ -5425,11 +5432,11 @@ func TestGrantsHistoryIncludesServiceMetadataAndSource(t *testing.T) {
 	if _, err := store.CreatePending(reqA); err != nil {
 		t.Fatal(err)
 	}
-	out, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath}) })
+	out, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath, "--wide"}) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"history source: authority/local store", "SERVICE_ID", "SCOPE", "service-a", "service-b"} {
+	for _, want := range []string{"Grant request history", "history source: authority/local store", "SERVICE_ID", "REQUESTER", "SERVICE_PEER", "service-a", "service-b"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("grants history missing %q: %s", want, out)
 		}

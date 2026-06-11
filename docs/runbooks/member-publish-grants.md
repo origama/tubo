@@ -146,18 +146,21 @@ On the **authority node**, list pending requests:
 tubo grants pending
 ```
 
-Expected output:
+Default output is now a compact action-oriented list that groups repeated attempts by requester/service identity and shows the local alias when available. Use `--wide` for the full technical table:
 
+```bash
+tubo grants pending --wide
 ```
-ID                   STATUS   SCOPE             SERVICE      REQUESTER  SERVICE_PEER  EXPIRES
-gr_a0f4b0d61b77d0f1  pending  mycluster/default myservice    12D3KooW…  12D3KooW…     2026-06-10T...
-```
+
+History uses compact sections too; `tubo grants history --all` shows older expired groups and `--wide` shows the raw table.
 
 Inspect the request if needed:
 
 ```bash
 tubo grants describe gr_a0f4b0d61b77d0f1
 ```
+
+`describe` now prints a readable review card with requester, service, verification hints, and approve/deny suggestions.
 
 Approve with a TTL:
 

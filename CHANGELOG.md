@@ -6,6 +6,13 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+### Added
+- Grant review UX now defaults to action-oriented `tubo grants pending` cards and compact grouped `tubo grants history` sections, adds `--all` / `--wide` / `--json` / `--verbose`, adds a readable `tubo grants describe` review card, and adds local peer aliases via `tubo peers alias`.
+
+### Fixed
+- Foreground `tubo grants serve` now emits an immediate startup notice so the smoke/CI foreground-registration check sees the process before discovery publication work completes.
+- Release runbook now explicitly requires the same CI checks (`go build`, `go test -race -coverprofile`, `golangci-lint`, `smoke-cli-ux`, and `smoke-compose`) before tagging.
+
 ## [v0.10.4] - 2026-06-11
 
 Patch release fixing relay connection limits that caused concurrent connection failures.
