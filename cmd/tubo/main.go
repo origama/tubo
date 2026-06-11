@@ -633,8 +633,8 @@ Create local clusters, namespaces, and namespace-scoped service identities in th
 Rotate the managed namespace discovery secret using the current/previous model.`)
 	case "grants":
 		fmt.Println(`Usage:
-  tubo grants pending [--wide] [--json]
-  tubo grants history [--wide] [--json]
+  tubo grants pending [--wide] [--json] [--verbose]
+  tubo grants history [--wide] [--json] [--all] [--verbose]
   tubo grants describe <request-id> [--wide] [--json]
   tubo grants approve <request-id> --ttl 7d
   tubo grants deny <request-id> --reason <reason>

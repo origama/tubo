@@ -3042,13 +3042,13 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Pending grant requests", "ATTEMPTS", "myapi", "other", "2"} {
+	for _, want := range []string{"Pending grant requests", "source: authority/local store", "wants to publish", "myapi", "other", "approve:", "deny:", "inspect:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pending output missing %q: %s", want, out)
 		}
 	}
-	if strings.Contains(out, first.ID) || strings.Contains(out, second.ID) {
-		t.Fatalf("pending output should be compact: %s", out)
+	if strings.Contains(out, "ATTEMPTS") {
+		t.Fatalf("pending output should not use the dense table header: %s", out)
 	}
 	out, err = capture(func() error { return run([]string{"grants", "describe", first.ID, "--store", storePath}) })
 	if err != nil {
@@ -3083,8 +3083,10 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, grantspkg.StatusApproved) || !strings.Contains(out, grantspkg.StatusDenied) {
-		t.Fatalf("history missing statuses: %s", out)
+	for _, want := range []string{"Grant history", "source: authority/local store", "Active approvals", "Denied requests", "valid for", "denied"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("history missing %q: %s", want, out)
+		}
 	}
 }
 

@@ -146,11 +146,13 @@ On the **authority node**, list pending requests:
 tubo grants pending
 ```
 
-Default output is now a compact review list that groups repeated attempts by requester/service identity and shows the local alias when available. Use `--wide` for the full technical table:
+Default output is now a compact action-oriented list that groups repeated attempts by requester/service identity and shows the local alias when available. Use `--wide` for the full technical table:
 
 ```bash
 tubo grants pending --wide
 ```
+
+History uses compact sections too; `tubo grants history --all` shows older expired groups and `--wide` shows the raw table.
 
 Inspect the request if needed:
 

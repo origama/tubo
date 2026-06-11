@@ -16,7 +16,6 @@ import (
 )
 
 type grantRequestFixture struct {
-	pub        ed25519.PublicKey
 	priv       ed25519.PrivateKey
 	serviceID  string
 	servicePub string
@@ -28,12 +27,7 @@ func newGrantRequestFixture(t *testing.T) grantRequestFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return grantRequestFixture{
-		pub:        pub,
-		priv:       priv,
-		serviceID:  serviceidentity.ServiceIDFromPublicKey(pub),
-		servicePub: serviceidentity.EncodePublicKey(pub),
-	}
+	return grantRequestFixture{priv: priv, serviceID: serviceidentity.ServiceIDFromPublicKey(pub), servicePub: serviceidentity.EncodePublicKey(pub)}
 }
 
 func (fx grantRequestFixture) request(t *testing.T, serviceName, servicePeerID, requesterPeerID, nonce string, requestedAt, expiresAt time.Time) grantspkg.Request {
@@ -67,22 +61,21 @@ func (fx grantRequestFixture) request(t *testing.T, serviceName, servicePeerID, 
 	}
 }
 
-func TestGrantsPendingHumanOutputGroupsRepeatedAttemptsAndUsesAlias(t *testing.T) {
+func TestGrantsPendingHumanOutputCardsUseAliasAndActionCommands(t *testing.T) {
 	now := time.Now().UTC()
 	fx := newGrantRequestFixture(t)
 	storePath := filepath.Join(t.TempDir(), "requests.json")
 	aliasPath := filepath.Join(t.TempDir(), "aliases.json")
 	t.Setenv("TUBO_PEER_ALIAS_STORE", aliasPath)
 	aliasStore := peers.NewStore(aliasPath)
-	if _, err := aliasStore.Upsert("12D3-requester", "oripi", "verified via SSH"); err != nil {
+	if _, err := aliasStore.Upsert("12D3KooWRequester", "oripi", "verified via SSH"); err != nil {
 		t.Fatal(err)
 	}
 	store := grantspkg.NewStore(storePath)
-	req1, err := store.CreatePending(fx.request(t, "myapi", "12D3-service-peer", "12D3-requester", "nonce-1", now.Add(-5*time.Minute), now.Add(time.Hour)))
-	if err != nil {
+	if _, err := store.CreatePending(fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-1", now.Add(-5*time.Minute), now.Add(time.Hour))); err != nil {
 		t.Fatal(err)
 	}
-	req2, err := store.CreatePending(fx.request(t, "myapi", "12D3-service-peer", "12D3-requester", "nonce-2", now.Add(-4*time.Minute), now.Add(time.Hour)))
+	req2, err := store.CreatePending(fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-2", now.Add(-4*time.Minute), now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,16 +83,92 @@ func TestGrantsPendingHumanOutputGroupsRepeatedAttemptsAndUsesAlias(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Pending grant requests", "oripi", "myapi", "ATTEMPTS", "2"} {
+	for _, want := range []string{"Pending grant requests", "source: authority/local store", "oripi wants to publish myapi (http) in home/default", "requester: 12D3KooWRequester", "attempts: 2", "approve:", "deny:", "inspect:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pending output missing %q: %s", want, out)
 		}
 	}
-	if strings.Count(out, "myapi") != 1 {
-		t.Fatalf("expected grouped pending output to mention myapi once, got: %s", out)
+	if !strings.Contains(out, req2.ID) {
+		t.Fatalf("expected pending card to include latest request id: %s", out)
 	}
-	if strings.Contains(out, req1.ID) || strings.Contains(out, req2.ID) {
-		t.Fatalf("expected compact pending output to hide full request IDs: %s", out)
+}
+
+func TestGrantsPendingHumanOutputFallsBackToAbbreviatedPeerID(t *testing.T) {
+	now := time.Now().UTC()
+	fx := newGrantRequestFixture(t)
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	store := grantspkg.NewStore(storePath)
+	if _, err := store.CreatePending(fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequesterVeryLongPeerIDForFallback", "nonce-1", now.Add(-5*time.Minute), now.Add(time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return grantsPendingCmd([]string{"--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "unknown peer") {
+		t.Fatalf("expected abbreviated peer id instead of unknown peer: %s", out)
+	}
+	if !strings.Contains(out, "…") {
+		t.Fatalf("expected abbreviated peer id in output: %s", out)
+	}
+}
+
+func TestGrantsHistoryCompactSeparatesSectionsAndHidesOlderExpiredGroups(t *testing.T) {
+	now := time.Now().UTC()
+	fx := newGrantRequestFixture(t)
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	store := grantspkg.NewStore(storePath)
+
+	approvedReq, err := store.CreatePending(fx.request(t, "alpha", "12D3KooWServiceA", "12D3KooWRequesterA", "nonce-approved", now.Add(-90*time.Minute), now.Add(time.Hour)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Approve(approvedReq.ID, capability.ServiceClaim{ClusterID: approvedReq.ClusterID, NamespaceID: approvedReq.NamespaceID, ServiceID: approvedReq.ServiceID, SubjectPeerID: approvedReq.ServicePeerID, Permissions: approvedReq.RequestedPermissions, ExpiresAt: now.Add(45 * time.Minute), Signature: []byte("sig")}, nil, nil, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.CreatePending(fx.request(t, "pending-svc", "12D3KooWServiceP", "12D3KooWRequesterP", "nonce-pending", now.Add(-15*time.Minute), now.Add(2*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreatePending(fx.request(t, "denied-svc", "12D3KooWServiceD", "12D3KooWRequesterD", "nonce-denied", now.Add(-2*time.Hour), now.Add(2*time.Hour))); err != nil {
+		t.Fatal(err)
+	}
+	deniedReq, err := store.CreatePending(fx.request(t, "denied-svc", "12D3KooWServiceD", "12D3KooWRequesterD", "nonce-denied-2", now.Add(-10*time.Minute), now.Add(2*time.Hour)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Deny(deniedReq.ID, "no"); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 0; i < 6; i++ {
+		serviceName := "expired-" + string(rune('a'+i))
+		requester := "12D3KooWExpiredRequester" + string(rune('a'+i))
+		servicePeer := "12D3KooWExpiredService" + string(rune('a'+i))
+		if _, err := store.CreatePending(fx.request(t, serviceName, servicePeer, requester, serviceName, now.Add(-time.Hour), now.Add(-time.Minute))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	out, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Grant history", "source: authority/local store", "Active approvals", "Pending requests", "Denied requests", "Recent expired groups", "Older expired groups hidden:"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact history missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "service-") || strings.Contains(out, "2026-") {
+		t.Fatalf("compact history should not show full service IDs or RFC3339 timestamps: %s", out)
+	}
+
+	allOut, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath, "--all"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(allOut, "Older expired groups hidden:") {
+		t.Fatalf("--all should show every expired group: %s", allOut)
 	}
 }
 
@@ -149,23 +218,7 @@ func TestGrantsDescribeReviewCardIncludesHistoryAndHints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{
-		"Grant request ",
-		current.ID,
-		"Status: pending",
-		"Scope: home/default",
-		"Requester",
-		"Alias: oripi",
-		"Seen before: yes",
-		"Previous decisions: 0 approved, 0 denied, 1 expired",
-		"Service",
-		"Service ID:",
-		"Service peer:",
-		"Requested permissions",
-		"Suggested verification",
-		"tubo grants approve ",
-		"tubo grants deny ",
-	} {
+	for _, want := range []string{"Grant request ", current.ID, "Status: pending", "Scope: home/default", "Requester", "Alias: oripi", "Seen before: yes", "Previous decisions: 0 approved, 0 denied, 1 expired", "Service", "Service ID:", "Service peer:", "Requested permissions", "Suggested verification", "tubo grants approve ", "tubo grants deny "} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
@@ -231,9 +284,6 @@ func TestGrantsDescribeJSONIncludesFullRequestData(t *testing.T) {
 	}
 	if !strings.Contains(payload.RequesterAlias, "oripi") || payload.Group.Expired != 1 {
 		t.Fatalf("unexpected describe grouping data: %#v", payload)
-	}
-	if current.ID == "" {
-		t.Fatalf("expected stored ID to be assigned")
 	}
 }
 

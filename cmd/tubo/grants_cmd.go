@@ -263,20 +263,23 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 	}
 }
 
-func grantViewFlagSet(name string, args []string) (*flag.FlagSet, *string, *string, *bool, *bool, error) {
+func grantViewFlagSet(name string, args []string) (*flag.FlagSet, *string, *string, *bool, *bool, *bool, *bool, *bool, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	configPath := fs.String("config", "", "")
 	storePath := fs.String("store", grantspkg.DefaultStorePath(), "")
 	wide := fs.Bool("wide", false, "")
 	jsonOut := fs.Bool("json", false, "")
+	all := fs.Bool("all", false, "")
+	verbose := fs.Bool("verbose", false, "")
+	verboseShort := fs.Bool("v", false, "")
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, nil, nil, nil, err
+		return nil, nil, nil, nil, nil, nil, nil, nil, err
 	}
-	return fs, configPath, storePath, wide, jsonOut, nil
+	return fs, configPath, storePath, wide, jsonOut, all, verbose, verboseShort, nil
 }
 
 func grantsPendingCmd(args []string) error {
-	_, _, storePath, wide, jsonOut, err := grantViewFlagSet("grants pending", args)
+	_, _, storePath, wide, jsonOut, _, verbose, verboseShort, err := grantViewFlagSet("grants pending", args)
 	if err != nil {
 		return err
 	}
@@ -292,13 +295,14 @@ func grantsPendingCmd(args []string) error {
 		printGrantRequestsWide(requests, "Pending grant requests", *storePath)
 		return nil
 	}
-	printGrantRequestsHuman(requests, "Pending grant requests", *storePath)
+	aliasIdx, _ := loadPeerAliasIndex()
+	printGrantPendingHuman(requests, "Pending grant requests", aliasIdx, *verbose || *verboseShort)
 	return nil
 }
 
 func grantsDescribeCmd(args []string) error {
 	id, flagArgs := splitGrantIDArg(args)
-	_, _, storePath, wide, jsonOut, err := grantViewFlagSet("grants describe", flagArgs)
+	_, _, storePath, wide, jsonOut, _, _, _, err := grantViewFlagSet("grants describe", flagArgs)
 	if err != nil {
 		return err
 	}
@@ -336,7 +340,7 @@ func grantsDescribeCmd(args []string) error {
 }
 
 func grantsHistoryCmd(args []string) error {
-	_, _, storePath, wide, jsonOut, err := grantViewFlagSet("grants history", args)
+	_, _, storePath, wide, jsonOut, all, verbose, verboseShort, err := grantViewFlagSet("grants history", args)
 	if err != nil {
 		return err
 	}
@@ -352,7 +356,7 @@ func grantsHistoryCmd(args []string) error {
 		printGrantRequestsWide(requests, "Grant request history", *storePath)
 		return nil
 	}
-	printGrantRequestsHuman(requests, "Grant request history", *storePath)
+	printGrantHistoryHuman(requests, "Grant history", *storePath, *all, *verbose || *verboseShort)
 	return nil
 }
 

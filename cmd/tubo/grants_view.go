@@ -34,6 +34,7 @@ type grantRequestGroup struct {
 	LatestStatus      string    `json:"latest_status"`
 	LatestRequestedAt time.Time `json:"latest_requested_at"`
 	LatestExpiresAt   time.Time `json:"latest_expires_at"`
+	LatestDecidedAt   time.Time `json:"latest_decided_at"`
 }
 
 type grantRequestListJSON struct {
@@ -75,24 +76,13 @@ func loadPeerAliasIndex() (peerAliasIndex, error) {
 	return peerAliasIndex{byID: byID}, nil
 }
 
-func (idx peerAliasIndex) label(peerID string) string {
-	peerID = strings.TrimSpace(peerID)
-	if peerID == "" {
-		return "unknown peer"
-	}
-	if alias, ok := idx.byID[peerID]; ok && strings.TrimSpace(alias.Name) != "" {
-		return alias.Name
-	}
-	return "unknown peer"
-}
-
 func (idx peerAliasIndex) name(peerID string) string {
 	peerID = strings.TrimSpace(peerID)
 	if peerID == "" {
 		return ""
 	}
 	if alias, ok := idx.byID[peerID]; ok {
-		return alias.Name
+		return strings.TrimSpace(alias.Name)
 	}
 	return ""
 }
@@ -103,7 +93,7 @@ func (idx peerAliasIndex) note(peerID string) string {
 		return ""
 	}
 	if alias, ok := idx.byID[peerID]; ok {
-		return alias.Note
+		return strings.TrimSpace(alias.Note)
 	}
 	return ""
 }
@@ -142,6 +132,7 @@ func summarizeGrantRequests(requests []grantspkg.Request, aliasIdx peerAliasInde
 			group.LatestStatus = req.Status
 			group.LatestRequestedAt = req.RequestedAt
 			group.LatestExpiresAt = req.ExpiresAt
+			group.LatestDecidedAt = req.DecidedAt
 		}
 		switch req.Status {
 		case grantspkg.StatusPending:
@@ -152,6 +143,9 @@ func summarizeGrantRequests(requests []grantspkg.Request, aliasIdx peerAliasInde
 			group.Denied++
 		case grantspkg.StatusExpired:
 			group.Expired++
+		}
+		if req.DecidedAt.After(group.LatestDecidedAt) {
+			group.LatestDecidedAt = req.DecidedAt
 		}
 	}
 	out := make([]grantRequestGroup, 0, len(groups))
@@ -212,31 +206,160 @@ func printGrantRequestsWide(requests []grantspkg.Request, title, storePath strin
 	_ = w.Flush()
 }
 
-func printGrantRequestsHuman(requests []grantspkg.Request, title, storePath string) {
+func printGrantPendingHuman(requests []grantspkg.Request, title string, aliasIdx peerAliasIndex, verbose bool) {
+	groups := summarizeGrantRequests(requests, aliasIdx)
+	if title != "" {
+		fmt.Println(title)
+	}
+	fmt.Println("source: authority/local store")
+	if len(groups) == 0 {
+		fmt.Println("(no grant requests)")
+		return
+	}
+	for i, group := range groups {
+		fmt.Printf("%d. %s wants to publish %s (%s) in %s/%s\n", i+1, displayGrantRequester(aliasIdx, group.RequesterPeerID), group.ServiceName, grantspkg.NormalizeServiceShareKind(group.ServiceKind), group.ClusterName, group.NamespaceID)
+		fmt.Printf("   requester: %s\n", abbreviatePeerID(group.RequesterPeerID))
+		fmt.Printf("   attempts: %d · last seen %s · expires in %s\n", group.Attempts, humanizeAgo(group.LastSeen), humanizeRelativeExpiry(group.LatestExpiresAt))
+		if verbose {
+			fmt.Printf("   peer: %s\n", abbreviatePeerID(group.ServicePeerID))
+		}
+		if group.LatestRequestID != "" {
+			fmt.Printf("\n   approve: tubo grants approve %s --ttl 168h\n", group.LatestRequestID)
+			fmt.Printf("   deny:    tubo grants deny %s --reason \"<reason>\"\n", group.LatestRequestID)
+			fmt.Printf("   inspect: tubo grants describe %s\n", group.LatestRequestID)
+		}
+		if i != len(groups)-1 {
+			fmt.Println()
+		}
+	}
+}
+
+func splitGrantHistorySections(groups []grantRequestGroup, all bool) (approved, pending, denied, expired []grantRequestGroup, hiddenExpired int) {
+	for _, group := range groups {
+		switch group.LatestStatus {
+		case grantspkg.StatusApproved:
+			approved = append(approved, group)
+		case grantspkg.StatusPending:
+			pending = append(pending, group)
+		case grantspkg.StatusDenied:
+			denied = append(denied, group)
+		case grantspkg.StatusExpired:
+			expired = append(expired, group)
+		default:
+			pending = append(pending, group)
+		}
+	}
+	sortGrantGroups(approved)
+	sortGrantGroups(pending)
+	sortGrantGroups(denied)
+	sortGrantGroups(expired)
+	if !all && len(expired) > 5 {
+		hiddenExpired = len(expired) - 5
+		expired = expired[:5]
+	}
+	return approved, pending, denied, expired, hiddenExpired
+}
+
+func sortGrantGroups(groups []grantRequestGroup) {
+	sort.SliceStable(groups, func(i, j int) bool {
+		if !groups[i].LastSeen.Equal(groups[j].LastSeen) {
+			return groups[i].LastSeen.After(groups[j].LastSeen)
+		}
+		if groups[i].ServiceName != groups[j].ServiceName {
+			return groups[i].ServiceName < groups[j].ServiceName
+		}
+		return groups[i].RequesterPeerID < groups[j].RequesterPeerID
+	})
+}
+
+func printGrantHistoryHuman(requests []grantspkg.Request, title, storePath string, all, verbose bool) {
 	aliasIdx, err := loadPeerAliasIndex()
 	if err != nil {
 		aliasIdx = peerAliasIndex{byID: map[string]peers.Alias{}}
 	}
 	groups := summarizeGrantRequests(requests, aliasIdx)
+	approved, pending, denied, expired, hiddenExpired := splitGrantHistorySections(groups, all)
 	if title != "" {
 		fmt.Println(title)
 	}
-	if storePath != "" {
-		fmt.Printf("source: authority/local store %s\n", storePath)
-	}
+	fmt.Println("source: authority/local store")
 	if len(groups) == 0 {
 		fmt.Println("(no grant requests)")
 		return
 	}
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "#\tSTATUS\tWHO\tSERVICE\tKIND\tATTEMPTS\tFIRST SEEN\tLAST SEEN\tEXPIRES")
-	for i, group := range groups {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", i+1, group.LatestStatus, displayGrantRequester(aliasIdx, group.RequesterPeerID), group.ServiceName, grantspkg.NormalizeServiceShareKind(group.ServiceKind), group.Attempts, humanizeAgo(group.FirstSeen), humanizeAgo(group.LastSeen), humanizeRelativeExpiry(group.LatestExpiresAt))
-		fmt.Fprintf(w, "\trequester: %s\n", abbreviatePeerID(group.RequesterPeerID))
-		fmt.Fprintf(w, "\tservice:   %s\n", abbreviateID(group.ServiceID))
-		fmt.Fprintf(w, "\tpeer:      %s\n", abbreviatePeerID(group.ServicePeerID))
+	renderSection := func(header string, items []grantRequestGroup) {
+		if len(items) == 0 {
+			return
+		}
+		fmt.Println()
+		fmt.Println(header)
+		for _, group := range items {
+			fmt.Printf("  %s %s %s — %s\n", grantHistoryBullet(group), displayGrantRequester(aliasIdx, group.RequesterPeerID), group.ServiceName, grantHistoryStatusPhrase(group))
+			fmt.Printf("    requester %s · service peer %s · %d attempts · last seen %s\n", abbreviatePeerID(group.RequesterPeerID), abbreviatePeerID(group.ServicePeerID), group.Attempts, humanizeAgo(group.LastSeen))
+			if verbose {
+				fmt.Printf("    scope %s/%s\n", group.ClusterName, group.NamespaceID)
+				if group.ServiceID != "" {
+					fmt.Printf("    service id %s\n", abbreviateID(group.ServiceID))
+				}
+				if group.LatestRequestID != "" {
+					fmt.Printf("    request %s\n", group.LatestRequestID)
+				}
+			}
+		}
 	}
-	_ = w.Flush()
+	renderSection("Active approvals", approved)
+	renderSection("Pending requests", pending)
+	renderSection("Denied requests", denied)
+	renderSection("Recent expired groups", expired)
+	if hiddenExpired > 0 {
+		fmt.Printf("\nOlder expired groups hidden: %d\n", hiddenExpired)
+		fmt.Println("Show everything:")
+		fmt.Println("  tubo grants history --all")
+		fmt.Println("  tubo grants history --wide")
+	}
+}
+
+func grantHistoryBullet(group grantRequestGroup) string {
+	switch group.LatestStatus {
+	case grantspkg.StatusApproved:
+		return "✓"
+	case grantspkg.StatusDenied:
+		return "✗"
+	case grantspkg.StatusExpired:
+		return "·"
+	case grantspkg.StatusPending:
+		return "?"
+	default:
+		return "·"
+	}
+}
+
+func grantHistoryStatusPhrase(group grantRequestGroup) string {
+	now := time.Now().UTC()
+	switch group.LatestStatus {
+	case grantspkg.StatusApproved:
+		if !group.LatestExpiresAt.IsZero() && group.LatestExpiresAt.After(now) {
+			return "valid for " + humanizeRelativeExpiryFrom(group.LatestExpiresAt, now)
+		}
+		return "approved"
+	case grantspkg.StatusPending:
+		if !group.LatestExpiresAt.IsZero() && group.LatestExpiresAt.After(now) {
+			return "pending, expires in " + humanizeRelativeExpiryFrom(group.LatestExpiresAt, now)
+		}
+		return "pending"
+	case grantspkg.StatusDenied:
+		if !group.LatestDecidedAt.IsZero() {
+			return "denied " + humanizeElapsedFrom(group.LatestDecidedAt, now) + " ago"
+		}
+		return "denied"
+	case grantspkg.StatusExpired:
+		if !group.LatestExpiresAt.IsZero() {
+			return "expired " + humanizeElapsedFrom(group.LatestExpiresAt, now) + " ago"
+		}
+		return "expired"
+	default:
+		return strings.TrimSpace(group.LatestStatus)
+	}
 }
 
 func printGrantRequestWide(req grantspkg.Request) {
@@ -315,7 +438,7 @@ func displayGrantRequester(aliasIdx peerAliasIndex, peerID string) string {
 	if alias := strings.TrimSpace(aliasIdx.name(peerID)); alias != "" {
 		return alias
 	}
-	return "unknown peer"
+	return abbreviatePeerID(peerID)
 }
 
 func abbreviateID(value string) string {
@@ -347,10 +470,14 @@ func peerSuffix(value string) string {
 }
 
 func humanizeAgo(ts time.Time) string {
+	return humanizeAgoFrom(ts, time.Now().UTC())
+}
+
+func humanizeAgoFrom(ts, now time.Time) string {
 	if ts.IsZero() {
 		return "-"
 	}
-	d := time.Since(ts.UTC())
+	d := now.Sub(ts.UTC())
 	if d < 0 {
 		d = -d
 	}
@@ -369,12 +496,36 @@ func humanizeAgo(ts time.Time) string {
 }
 
 func humanizeRelativeExpiry(ts time.Time) string {
+	return humanizeRelativeExpiryFrom(ts, time.Now().UTC())
+}
+
+func humanizeRelativeExpiryFrom(ts, now time.Time) string {
 	if ts.IsZero() {
 		return "-"
 	}
-	d := time.Until(ts.UTC())
+	d := ts.UTC().Sub(now)
 	if d <= 0 {
 		return "expired"
+	}
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+func humanizeElapsedFrom(ts, now time.Time) string {
+	if ts.IsZero() {
+		return "-"
+	}
+	d := now.Sub(ts.UTC())
+	if d < 0 {
+		d = -d
 	}
 	switch {
 	case d < time.Minute:

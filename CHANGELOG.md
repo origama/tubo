@@ -7,7 +7,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 ## [Unreleased]
 
 ### Added
-- Grant review UX now defaults to compact grouped output for `tubo grants pending` / `tubo grants history`, adds `--wide` / `--json`, adds a readable `tubo grants describe` review card, and adds local peer aliases via `tubo peers alias`.
+- Grant review UX now defaults to action-oriented `tubo grants pending` cards and compact grouped `tubo grants history` sections, adds `--all` / `--wide` / `--json` / `--verbose`, adds a readable `tubo grants describe` review card, and adds local peer aliases via `tubo peers alias`.
 
 ### Fixed
 - Foreground `tubo grants serve` now emits an immediate startup notice so the smoke/CI foreground-registration check sees the process before discovery publication work completes.
