@@ -6,6 +6,19 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+## [v0.10.4] - 2026-06-11
+
+Patch release fixing relay connection limits that caused concurrent connection failures.
+
+### Fixed
+- **Relay rejects concurrent connections due to default libp2p ResourceManager limits** (#233): the relay node used libp2p's default `ResourceManager`, which has very conservative per-peer and system-wide connection limits (~4 concurrent streams). This caused intermittent "privnet: could not read full nonce: EOF" errors when multiple clients tried to connect simultaneously. Fix: disabled the default ResourceManager with `libp2p.ResourceManager(&network.NullResourceManager{})` — the relay already has its own rate-limiting via `relayv2.Resources()`.
+
+### Compatibility
+- Product version: v0.10.4
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: restart relay nodes to pick up the fix
+
 ## [v0.10.3] - 2026-06-10
 
 Patch release fixing silent relay reservation lapse on always-connected nodes (grants-serve authority unreachable via relay after ~1 hour).
