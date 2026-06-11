@@ -32,7 +32,7 @@ import (
 
 func grantsCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo grants <serve|pending|describe|approve|deny|history>")
+		return errors.New("usage: tubo grants <serve|request|pending|describe|approve|deny|history>")
 	}
 	switch args[0] {
 	case "serve":
@@ -263,18 +263,20 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 	}
 }
 
-func grantStoreFlagSet(name string, args []string) (*flag.FlagSet, *string, *string, error) {
+func grantViewFlagSet(name string, args []string) (*flag.FlagSet, *string, *string, *bool, *bool, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	configPath := fs.String("config", "", "")
 	storePath := fs.String("store", grantspkg.DefaultStorePath(), "")
+	wide := fs.Bool("wide", false, "")
+	jsonOut := fs.Bool("json", false, "")
 	if err := fs.Parse(args); err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, nil, err
 	}
-	return fs, configPath, storePath, nil
+	return fs, configPath, storePath, wide, jsonOut, nil
 }
 
 func grantsPendingCmd(args []string) error {
-	_, _, storePath, err := grantStoreFlagSet("grants pending", args)
+	_, _, storePath, wide, jsonOut, err := grantViewFlagSet("grants pending", args)
 	if err != nil {
 		return err
 	}
@@ -282,32 +284,59 @@ func grantsPendingCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	printGrantRequests(requests)
+	if *jsonOut {
+		aliasIdx, _ := loadPeerAliasIndex()
+		return printGrantListJSON("pending", *storePath, requests, summarizeGrantRequests(requests, aliasIdx))
+	}
+	if *wide {
+		printGrantRequestsWide(requests, "Pending grant requests", *storePath)
+		return nil
+	}
+	printGrantRequestsHuman(requests, "Pending grant requests", *storePath)
 	return nil
 }
 
 func grantsDescribeCmd(args []string) error {
 	id, flagArgs := splitGrantIDArg(args)
-	_, _, storePath, err := grantStoreFlagSet("grants describe", flagArgs)
+	_, _, storePath, wide, jsonOut, err := grantViewFlagSet("grants describe", flagArgs)
 	if err != nil {
 		return err
 	}
 	if id == "" {
 		return errors.New("usage: tubo grants describe <request-id>")
 	}
-	req, ok, err := grantspkg.NewStore(*storePath).Get(id)
+	store := grantspkg.NewStore(*storePath)
+	req, ok, err := store.Get(id)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return fmt.Errorf("grant request %q not found", id)
 	}
-	printGrantRequest(req)
+	all, err := store.ListAll()
+	if err != nil {
+		return err
+	}
+	related := relatedGrantRequests(all, req)
+	if *jsonOut {
+		aliasIdx, _ := loadPeerAliasIndex()
+		group := summarizeGrantRequests(related, aliasIdx)
+		groupView := grantRequestGroup{}
+		if len(group) > 0 {
+			groupView = group[0]
+		}
+		return printGrantDescribeJSON(*storePath, req, groupView, related, aliasIdx.name(req.RequesterPeerID))
+	}
+	if *wide {
+		printGrantRequestWide(req)
+		return nil
+	}
+	printGrantRequestReview(req, related, *storePath)
 	return nil
 }
 
 func grantsHistoryCmd(args []string) error {
-	_, _, storePath, err := grantStoreFlagSet("grants history", args)
+	_, _, storePath, wide, jsonOut, err := grantViewFlagSet("grants history", args)
 	if err != nil {
 		return err
 	}
@@ -315,8 +344,15 @@ func grantsHistoryCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("history source: authority/local store %s\n", *storePath)
-	printGrantRequests(requests)
+	if *jsonOut {
+		aliasIdx, _ := loadPeerAliasIndex()
+		return printGrantListJSON("history", *storePath, requests, summarizeGrantRequests(requests, aliasIdx))
+	}
+	if *wide {
+		printGrantRequestsWide(requests, "Grant request history", *storePath)
+		return nil
+	}
+	printGrantRequestsHuman(requests, "Grant request history", *storePath)
 	return nil
 }
 
@@ -538,6 +574,7 @@ func grantsServeCmd(args []string) error {
 		}
 	}()
 	_ = state
+	logging.Warnf("grant service running in foreground; press Ctrl+C to stop\n")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	overlay.StartBootstrapRetry(ctx, 5*time.Second)

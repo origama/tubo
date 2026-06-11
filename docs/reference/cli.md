@@ -561,7 +561,9 @@ tubo grants serve --cluster home --namespace default --public-auto-approve \
   --connect-access-ttl 10m --connect-refresh-ttl 48h
 # prints direct addr plus relay addr when relay peers are configured
 tubo grants pending
+tubo grants pending --wide
 tubo grants describe gr_123
+tubo grants describe gr_123 --json
 tubo grants approve gr_123 --ttl 168h
 tubo grants deny gr_123
 
@@ -569,9 +571,17 @@ tubo grants request service/myapi --peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
 tubo grants request service/myapi --poll
 # if joined with a grant-requester invite, --peer can be omitted
 tubo grants history
+tubo grants history --wide
+tubo grants history --json
+
+tubo peers alias 12D3KooW... --name oripi --note "verified via SSH"
 ```
 
-The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and now publishes a system `grant-service` discovery record when namespace discovery is enabled, so members can discover the grant endpoint even without local `grant_service_peers`. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `grants history` now prints `SCOPE` and `SERVICE_ID`, sorts by `service_id`, and prefixes the output with the local store path so the source is explicit. `attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, revoked, or still-pending grants stop publication.
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and now publishes a system `grant-service` discovery record when namespace discovery is enabled, so members can discover the grant endpoint even without local `grant_service_peers`. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed.
+
+The default operator view is now review-oriented: `grants pending` and `grants history` group repeated attempts by requester/service identity, compact full peer and service IDs into a short review card, and keep the raw table available with `--wide`. `grants describe` shows the same review card plus local history and approval/denial suggestions; `--json` exposes the raw request data alongside the grouped summary. `tubo peers alias <peer-id> --name <label>` stores a local operator-only label that the grant review views will display when available.
+
+`attach` also uses the saved `grant_service_peer`/`grant_request_id` metadata to submit or poll before service publication; when a token is available it is printed before the process detaches or enters the foreground wait; denied, expired, revoked, or still-pending grants stop publication.
 
 ## Multi-node setup
 

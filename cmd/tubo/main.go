@@ -165,6 +165,8 @@ func run(args []string) error {
 		return revokeCmd(args[1:])
 	case "grants":
 		return grantsCmd(args[1:])
+	case "peers":
+		return peersCmd(args[1:])
 	case "create":
 		return localCreateCmd(args[1:])
 	case "rotate":
@@ -439,6 +441,8 @@ Usage:
   tubo share revoke <share-invite>
   tubo revoke <invite|session|service-access|publish> <id-or-service>
   tubo rotate secret/namespace-discovery/home/default --grace 24h
+  tubo grants pending
+  tubo peers alias <peer-id> --name <label>
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [overlay/public|tubo-public]
@@ -627,6 +631,21 @@ Create local clusters, namespaces, and namespace-scoped service identities in th
   tubo rotate secret/namespace-discovery/<cluster>/<namespace> --grace 24h [--json]
 
 Rotate the managed namespace discovery secret using the current/previous model.`)
+	case "grants":
+		fmt.Println(`Usage:
+  tubo grants pending [--wide] [--json]
+  tubo grants history [--wide] [--json]
+  tubo grants describe <request-id> [--wide] [--json]
+  tubo grants approve <request-id> --ttl 7d
+  tubo grants deny <request-id> --reason <reason>
+  tubo grants request service/<name> --peer <multiaddr>
+
+Manage publish-grant requests on the authority node.`)
+	case "peers":
+		fmt.Println(`Usage:
+  tubo peers alias <peer-id> --name <label> [--note <note>] [--json]
+
+Save a local operator-only label for a peer ID.`)
 	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
