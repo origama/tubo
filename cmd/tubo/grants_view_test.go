@@ -119,7 +119,7 @@ func TestGrantsHistoryCompactSeparatesSectionsAndHidesOlderExpiredGroups(t *test
 	storePath := filepath.Join(t.TempDir(), "requests.json")
 	store := grantspkg.NewStore(storePath)
 
-	approvedReq, err := store.CreatePending(fx.request(t, "alpha", "12D3KooWServiceA", "12D3KooWRequesterA", "nonce-approved", now.Add(-90*time.Minute), now.Add(time.Hour)))
+	approvedReq, err := store.CreatePending(fx.request(t, "alpha", "12D3KooWServiceA", "12D3KooWRequesterA", "nonce-approved", now.Add(-26*time.Hour), now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestGrantsHistoryCompactSeparatesSectionsAndHidesOlderExpiredGroups(t *test
 		serviceName := "expired-" + string(rune('a'+i))
 		requester := "12D3KooWExpiredRequester" + string(rune('a'+i))
 		servicePeer := "12D3KooWExpiredService" + string(rune('a'+i))
-		if _, err := store.CreatePending(fx.request(t, serviceName, servicePeer, requester, serviceName, now.Add(-time.Hour), now.Add(-time.Minute))); err != nil {
+		if _, err := store.CreatePending(fx.request(t, serviceName, servicePeer, requester, serviceName, now.Add(-25*time.Hour), now.Add(-26*time.Hour))); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -154,13 +154,21 @@ func TestGrantsHistoryCompactSeparatesSectionsAndHidesOlderExpiredGroups(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Grant history", "source: authority/local store", "Active approvals", "Pending requests", "Denied requests", "Recent expired groups", "Older expired groups hidden:"} {
+	for _, want := range []string{"Grant history", "source: authority/local store", "Active approvals", "Pending requests", "Denied requests", "Recent expired groups", "Older expired groups hidden:", "alpha  http", "1d ago"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("compact history missing %q: %s", want, out)
 		}
 	}
-	if strings.Contains(out, "service-") || strings.Contains(out, "2026-") {
-		t.Fatalf("compact history should not show full service IDs or RFC3339 timestamps: %s", out)
+	if strings.Contains(out, "2026-") {
+		t.Fatalf("compact history should not show RFC3339 timestamps: %s", out)
+	}
+
+	verboseOut, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath, "--verbose"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(verboseOut, "requester ") || !strings.Contains(verboseOut, "service peer ") {
+		t.Fatalf("verbose history should include request details: %s", verboseOut)
 	}
 
 	allOut, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath, "--all"}) })

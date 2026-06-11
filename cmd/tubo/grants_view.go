@@ -181,7 +181,7 @@ func groupRequestsByKey(requests []grantspkg.Request) map[string][]grantspkg.Req
 	return groups
 }
 
-func printGrantRequestsWide(requests []grantspkg.Request, title, storePath string) {
+func printGrantRequestsWide(requests []grantspkg.Request, title, storePath, sourceLabel string) {
 	sort.SliceStable(requests, func(i, j int) bool {
 		if !requests[i].RequestedAt.Equal(requests[j].RequestedAt) {
 			return requests[i].RequestedAt.Before(requests[j].RequestedAt)
@@ -195,7 +195,11 @@ func printGrantRequestsWide(requests []grantspkg.Request, title, storePath strin
 		fmt.Println(title)
 	}
 	if storePath != "" {
-		fmt.Printf("history source: authority/local store %s\n", storePath)
+		label := strings.TrimSpace(sourceLabel)
+		if label == "" {
+			label = "source:"
+		}
+		fmt.Printf("%s authority/local store %s\n", label, storePath)
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "ID\tSTATUS\tSCOPE\tSERVICE\tSERVICE_KIND\tSERVICE_ID\tREQUESTER\tSERVICE_PEER\tEXPIRES")
@@ -294,15 +298,15 @@ func printGrantHistoryHuman(requests []grantspkg.Request, title, storePath strin
 		fmt.Println()
 		fmt.Println(header)
 		for _, group := range items {
-			fmt.Printf("  %s %s %s — %s\n", grantHistoryBullet(group), displayGrantRequester(aliasIdx, group.RequesterPeerID), group.ServiceName, grantHistoryStatusPhrase(group))
-			fmt.Printf("    requester %s · service peer %s · %d attempts · last seen %s\n", abbreviatePeerID(group.RequesterPeerID), abbreviatePeerID(group.ServicePeerID), group.Attempts, humanizeAgo(group.LastSeen))
+			fmt.Printf("  %s %s  %s  %s\n", grantHistoryBullet(group), group.ServiceName, grantspkg.NormalizeServiceShareKind(group.ServiceKind), grantHistoryStatusPhrase(group))
+			if group.LatestRequestID != "" {
+				fmt.Printf("    inspect: tubo grants describe %s\n", group.LatestRequestID)
+			}
 			if verbose {
+				fmt.Printf("    requester %s · service peer %s · %d attempts · last seen %s\n", abbreviatePeerID(group.RequesterPeerID), abbreviatePeerID(group.ServicePeerID), group.Attempts, humanizeAgo(group.LastSeen))
 				fmt.Printf("    scope %s/%s\n", group.ClusterName, group.NamespaceID)
 				if group.ServiceID != "" {
 					fmt.Printf("    service id %s\n", abbreviateID(group.ServiceID))
-				}
-				if group.LatestRequestID != "" {
-					fmt.Printf("    request %s\n", group.LatestRequestID)
 				}
 			}
 		}
@@ -491,7 +495,7 @@ func humanizeAgoFrom(ts, now time.Time) string {
 	case d < 24*time.Hour:
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	default:
-		return ts.UTC().Format(time.RFC3339)
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
 	}
 }
 

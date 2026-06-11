@@ -292,7 +292,7 @@ func grantsPendingCmd(args []string) error {
 		return printGrantListJSON("pending", *storePath, requests, summarizeGrantRequests(requests, aliasIdx))
 	}
 	if *wide {
-		printGrantRequestsWide(requests, "Pending grant requests", *storePath)
+		printGrantRequestsWide(requests, "Pending grant requests", *storePath, "source:")
 		return nil
 	}
 	aliasIdx, _ := loadPeerAliasIndex()
@@ -353,7 +353,7 @@ func grantsHistoryCmd(args []string) error {
 		return printGrantListJSON("history", *storePath, requests, summarizeGrantRequests(requests, aliasIdx))
 	}
 	if *wide {
-		printGrantRequestsWide(requests, "Grant request history", *storePath)
+		printGrantRequestsWide(requests, "Grant request history", *storePath, "history source:")
 		return nil
 	}
 	printGrantHistoryHuman(requests, "Grant history", *storePath, *all, *verbose || *verboseShort)
