@@ -91,6 +91,7 @@ type View struct {
 	StartedAt               string   `json:"started_at,omitempty"`
 	Source                  string   `json:"source,omitempty"`
 	CommandLine             []string `json:"command_line,omitempty"`
+	DegradedReason          string   `json:"degraded_reason,omitempty"`
 	ConnectAccessExpiresAt  string   `json:"connect_access_expires_at,omitempty"`
 	ConnectRefreshExpiresAt string   `json:"connect_refresh_expires_at,omitempty"`
 }
@@ -747,6 +748,7 @@ func viewFromState(state State, status, confidence string) View {
 		StartedAt:               state.StartedAt,
 		Source:                  state.Source,
 		CommandLine:             append([]string(nil), state.CommandLine...),
+		DegradedReason:          state.DegradedReason,
 		ConnectAccessExpiresAt:  state.ConnectAccessExpiresAt,
 		ConnectRefreshExpiresAt: state.ConnectRefreshExpiresAt,
 	}

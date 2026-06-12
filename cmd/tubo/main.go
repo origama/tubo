@@ -422,7 +422,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|create|rotate|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|peers|create|rotate|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -439,6 +439,7 @@ Usage:
   tubo share cluster/home --role member
   tubo share service/myapp --expires 1h
   tubo share revoke <share-invite>
+  tubo peers alias <peer-id> --name <label>
   tubo revoke <invite|session|service-access|publish> <id-or-service>
   tubo rotate secret/namespace-discovery/home/default --grace 24h
   tubo grants pending
@@ -470,6 +471,7 @@ Discovery and process management:
   tubo use overlay/public
   tubo share cluster/home --role member
   tubo ps
+  tubo peers alias <peer-id> --name <label>
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
 
@@ -561,6 +563,11 @@ Path selection:
   tubo get processes [--json]
 
 Inspect local processes, local config resources, or services announced in the swarm.`)
+	case "peers":
+		fmt.Println(`Usage:
+  tubo peers alias <peer-id> --name <label> [--note <note>] [--json]
+
+Manage local peer display aliases.`)
 	case "describe":
 		fmt.Println(`Usage:
   tubo describe service/<name>
@@ -1410,6 +1417,7 @@ func printProcessList(items []processView, wide bool) {
 		fmt.Println("Running Tubo processes")
 		fmt.Println()
 		printProcessesCompactTable(items)
+		printProcessesCompactHints(items)
 		return
 	}
 	printProcessesTable(items)
@@ -1422,6 +1430,31 @@ func printProcessesCompactTable(items []processView) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, processResourceKind(item), item.Status, displayValue(item.Service), displayValue(item.Local), displayValue(item.Target), summarizeProcessPath(item.Path), processTTLColumn(item))
 	}
 	_ = w.Flush()
+}
+
+func printProcessesCompactHints(items []processView) {
+	printed := false
+	for _, item := range items {
+		if item.Status != "degraded" && item.Status != "stale" {
+			continue
+		}
+		if !printed {
+			fmt.Println()
+			printed = true
+		}
+		reason := strings.TrimSpace(item.DegradedReason)
+		if reason == "" {
+			switch item.Status {
+			case "stale":
+				reason = "registration is stale"
+			default:
+				reason = "runtime is degraded"
+			}
+		}
+		fmt.Printf("%s is %s: %s\n", item.Name, item.Status, reason)
+		fmt.Printf("  describe: tubo describe process/%s\n", item.Name)
+		fmt.Printf("  logs: tubo logs %s\n", item.Name)
+	}
 }
 
 func printProcessesTable(items []processView) {
@@ -1475,7 +1508,24 @@ func formatProcessExpiry(raw string) (string, string) {
 	if remaining <= 0 {
 		return ts.UTC().Format(time.RFC3339), "expired"
 	}
-	return ts.UTC().Format(time.RFC3339), remaining.Round(time.Second).String()
+	return ts.UTC().Format(time.RFC3339), humanizeDurationCompact(remaining)
+}
+
+func humanizeDurationCompact(d time.Duration) string {
+	if d <= 0 {
+		return "expired"
+	}
+	d = d.Round(time.Second)
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
 }
 
 func printProcessDescription(state detachedProcessState, status string) {
@@ -2200,13 +2250,14 @@ func hasStrictSystemServiceScope(service serviceResource) bool {
 
 func printServiceList(services []serviceResource, wide bool, systemOnly bool, scopeLabel string) {
 	if !wide {
+		aliasIdx := loadPeerAliasIndex()
 		if systemOnly {
 			fmt.Printf("System services in %s\n\n", scopeLabel)
-			printSystemServicesCompactTable(services)
+			printSystemServicesCompactTable(services, aliasIdx)
 			return
 		}
 		fmt.Printf("Services in %s\n\n", scopeLabel)
-		printServicesCompactTable(services)
+		printServicesCompactTable(services, aliasIdx)
 		return
 	}
 	if systemOnly {
@@ -2216,20 +2267,20 @@ func printServiceList(services []serviceResource, wide bool, systemOnly bool, sc
 	printServicesTable(services)
 }
 
-func printServicesCompactTable(services []serviceResource) {
+func printServicesCompactTable(services []serviceResource, aliasIdx peerAliasIndex) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "SERVICE\tKIND\tACCESS\tSTATUS\tROUTE\tPEER\tEXPIRES")
 	for _, service := range services {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayServiceKind(service), displayServiceConnectPolicy(service), displayValue(service.Status), serviceRouteSummary(service), servicePeerSummary(service.PeerID), serviceExpiresSummary(service))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayServiceKind(service), displayServiceConnectPolicy(service), displayValue(service.Status), serviceRouteSummary(service), displayPeerSummary(aliasIdx, service.PeerID), serviceExpiresSummary(service))
 	}
 	_ = w.Flush()
 }
 
-func printSystemServicesCompactTable(services []serviceResource) {
+func printSystemServicesCompactTable(services []serviceResource, aliasIdx peerAliasIndex) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tPROTOCOL\tPEER\tADDRS")
 	for _, service := range services {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), serviceProtocolSummary(service), servicePeerSummary(service.PeerID), serviceAddressSummary(service))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), serviceProtocolSummary(service), displayPeerSummary(aliasIdx, service.PeerID), serviceAddressSummary(service))
 	}
 	_ = w.Flush()
 }
@@ -2332,7 +2383,7 @@ func serviceExpiresSummary(service serviceResource) string {
 	if service.ExpiresInSeconds <= 0 {
 		return "-"
 	}
-	return (time.Duration(service.ExpiresInSeconds) * time.Second).Round(time.Second).String()
+	return humanizeDurationCompact(time.Duration(service.ExpiresInSeconds) * time.Second)
 }
 
 func serviceAddressSummary(service serviceResource) string {
