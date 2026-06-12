@@ -2307,6 +2307,25 @@ func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
 	}
 }
 
+func TestSaveLocalConfigPreservesExistingMembershipGrant(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	original := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", MembershipGrant: &cfgpkg.ClusterMembershipGrant{ClusterName: "home", ClusterID: "cluster-123", Namespace: "default", Role: clusterInviteViewerRole, ExpiresAt: time.Now().Add(time.Hour)}, Namespaces: map[string]cfgpkg.Namespace{"default": {}}}}}
+	if err := cfgpkg.WriteFile(configPath, original, true); err != nil {
+		t.Fatal(err)
+	}
+	stale := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]cfgpkg.Namespace{"default": {ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember}}}}}
+	if err := saveLocalConfig(configPath, stale); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Clusters["home"].MembershipGrant == nil || reloaded.Clusters["home"].MembershipGrant.Role != clusterInviteViewerRole {
+		t.Fatalf("membership grant was lost after saveLocalConfig: %#v", reloaded.Clusters["home"].MembershipGrant)
+	}
+}
+
 func TestViewerClusterInvitationShareJoinAllowsListButNotConnect(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {

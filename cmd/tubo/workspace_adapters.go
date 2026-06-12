@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+
 	cfgpkg "github.com/origama/tubo/internal/config"
 	workspace "github.com/origama/tubo/internal/workspace"
 )
@@ -20,7 +22,30 @@ func saveLocalConfig(path string, cfg cfgpkg.Config) error {
 	if path == "" {
 		path = defaultTuboConfigPath()
 	}
+	if _, err := os.Stat(path); err == nil {
+		if current, err := cfgpkg.LoadFile(path); err == nil {
+			cfg = preserveLocalMembershipGrant(cfg, current)
+		}
+	}
 	return localWorkspace().SaveConfig(path, cfg)
+}
+
+func preserveLocalMembershipGrant(next, current cfgpkg.Config) cfgpkg.Config {
+	if next.Clusters == nil || len(current.Clusters) == 0 {
+		return next
+	}
+	for name, currentCluster := range current.Clusters {
+		nextCluster, ok := next.Clusters[name]
+		if !ok || nextCluster.MembershipGrant != nil || currentCluster.MembershipGrant == nil {
+			continue
+		}
+		grant := *currentCluster.MembershipGrant
+		grant.Permissions = append([]string(nil), currentCluster.MembershipGrant.Permissions...)
+		grant.GrantServicePeers = append([]string(nil), currentCluster.MembershipGrant.GrantServicePeers...)
+		nextCluster.MembershipGrant = &grant
+		next.Clusters[name] = nextCluster
+	}
+	return next
 }
 
 func parseLocalResourceRef(resource string) (string, string, error) {
