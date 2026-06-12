@@ -443,7 +443,6 @@ Usage:
   tubo revoke <invite|session|service-access|publish> <id-or-service>
   tubo rotate secret/namespace-discovery/home/default --grace 24h
   tubo grants pending
-  tubo peers alias <peer-id> --name <label>
   tubo relay [-d]
   tubo gateway [-d]
   tubo join [overlay/public|tubo-public]
@@ -471,7 +470,6 @@ Discovery and process management:
   tubo use overlay/public
   tubo share cluster/home --role member
   tubo ps
-  tubo peers alias <peer-id> --name <label>
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
 
@@ -563,11 +561,6 @@ Path selection:
   tubo get processes [--json]
 
 Inspect local processes, local config resources, or services announced in the swarm.`)
-	case "peers":
-		fmt.Println(`Usage:
-  tubo peers alias <peer-id> --name <label> [--note <note>] [--json]
-
-Manage local peer display aliases.`)
 	case "describe":
 		fmt.Println(`Usage:
   tubo describe service/<name>
@@ -2250,7 +2243,7 @@ func hasStrictSystemServiceScope(service serviceResource) bool {
 
 func printServiceList(services []serviceResource, wide bool, systemOnly bool, scopeLabel string) {
 	if !wide {
-		aliasIdx := loadPeerAliasIndex()
+		aliasIdx, _ := loadPeerAliasIndex()
 		if systemOnly {
 			fmt.Printf("System services in %s\n\n", scopeLabel)
 			printSystemServicesCompactTable(services, aliasIdx)
@@ -2271,7 +2264,7 @@ func printServicesCompactTable(services []serviceResource, aliasIdx peerAliasInd
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "SERVICE\tKIND\tACCESS\tSTATUS\tROUTE\tPEER\tEXPIRES")
 	for _, service := range services {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayServiceKind(service), displayServiceConnectPolicy(service), displayValue(service.Status), serviceRouteSummary(service), displayPeerSummary(aliasIdx, service.PeerID), serviceExpiresSummary(service))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayServiceKind(service), displayServiceConnectPolicy(service), displayValue(service.Status), serviceRouteSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceExpiresSummary(service))
 	}
 	_ = w.Flush()
 }
@@ -2280,7 +2273,7 @@ func printSystemServicesCompactTable(services []serviceResource, aliasIdx peerAl
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tPROTOCOL\tPEER\tADDRS")
 	for _, service := range services {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), serviceProtocolSummary(service), displayPeerSummary(aliasIdx, service.PeerID), serviceAddressSummary(service))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), serviceProtocolSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceAddressSummary(service))
 	}
 	_ = w.Flush()
 }
