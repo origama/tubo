@@ -8,6 +8,11 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Added
 - Grant review UX now defaults to action-oriented `tubo grants pending` cards and compact grouped `tubo grants history` sections, adds `--all` / `--wide` / `--json` / `--verbose`, adds a readable `tubo grants describe` review card, and adds local peer aliases via `tubo peers alias`.
+- Compact default listings for `tubo ps`, `tubo get processes`, `tubo get services`, and `tubo get services --system`, with `--wide` preserving the technical table view.
+
+### Changed
+- Default process and service lists now prioritize human-readable operational summaries: status, route, access policy, peer summary, and expiry/TTL.
+- Compact process listings now add short `describe`/`logs` hints for degraded or stale rows.
 
 ### Fixed
 - Foreground `tubo grants serve` now emits an immediate startup notice so the smoke/CI foreground-registration check sees the process before discovery publication work completes.

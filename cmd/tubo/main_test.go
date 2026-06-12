@@ -1014,6 +1014,37 @@ func TestPrintProcessesTableIncludesTTLColumn(t *testing.T) {
 	}
 }
 
+func TestPrintProcessListCompactView(t *testing.T) {
+	out, err := capture(func() error {
+		printProcessList([]processView{{
+			Name:                   "connect-lms-1234",
+			ResourceKind:           "pipe",
+			ServiceKind:            "tcp",
+			Command:                "connect",
+			Service:                "lmstudio",
+			Status:                 "degraded",
+			Path:                   "relayed",
+			Local:                  "127.0.0.1:1234",
+			Target:                 "lmstudio",
+			ConnectAccessExpiresAt: time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339),
+		}}, false)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Running Tubo processes", "NAME", "KIND", "STATUS", "SERVICE", "LOCAL", "TARGET", "PATH", "TTL", "relay"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact process list missing %q: %s", want, out)
+		}
+	}
+	for _, want := range []string{"COMMAND", "PID", "SERVICE ID"} {
+		if strings.Contains(out, want) {
+			t.Fatalf("compact process list leaked %q: %s", want, out)
+		}
+	}
+}
+
 func TestLogsCmdShowsSystemdHintWhenNoLogFile(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
@@ -5210,6 +5241,49 @@ func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
 	}
 }
 
+func TestPrintServiceListCompactView(t *testing.T) {
+	longPeerID := "12D3KooWabcdefghijklmnopqrstuvwx1234567890"
+	out, err := capture(func() error {
+		printServiceList([]serviceResource{{Name: "piwebui@oripi", ServiceKind: "http", ConnectPolicy: "namespace_members", Status: "active", Path: "relayed", PeerID: longPeerID, ExpiresInSeconds: 3480}}, false, false, serviceScopeLabel(serviceScope{Cluster: "virzanti", Namespace: "default"}))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Services in virzanti/default", "SERVICE", "KIND", "ACCESS", "STATUS", "ROUTE", "PEER", "EXPIRES", "piwebui@oripi", "http", "namespace_members", "relay", "58m"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact services list missing %q: %s", want, out)
+		}
+	}
+	for _, want := range []string{"SERVICE ID", longPeerID, "CAPABILITIES"} {
+		if strings.Contains(out, want) {
+			t.Fatalf("compact services list leaked %q: %s", want, out)
+		}
+	}
+}
+
+func TestPrintSystemServicesListCompactView(t *testing.T) {
+	longPeerID := "12D3KooWabcdefghijklmnopqrstuvwx1234567890"
+	longAddr := "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWabcdefghijklmnopqrstuvwx1234567890"
+	out, err := capture(func() error {
+		printServiceList([]serviceResource{{Kind: "grant-service", Name: "grant-service", Status: "online", PeerID: longPeerID, RelayedAddresses: []string{longAddr}, GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{longAddr}}}}, false, true, serviceScopeLabel(serviceScope{Cluster: "virzanti", Namespace: "default"}))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"System services in virzanti/default", "NAME", "KIND", "STATUS", "PROTOCOL", "PEER", "ADDRS", grantspkg.ProtocolID, "1 relay addr"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact system services list missing %q: %s", want, out)
+		}
+	}
+	for _, want := range []string{longPeerID, longAddr} {
+		if strings.Contains(out, want) {
+			t.Fatalf("compact system services list leaked %q: %s", want, out)
+		}
+	}
+}
+
 func TestFilterListedServicesDropsUnscopedSystemResources(t *testing.T) {
 	services := []serviceResource{
 		{Name: "user-api", Kind: "service"},
@@ -5320,14 +5394,19 @@ func TestGetServicesSystemFiltersGrantServiceByActualScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, addr) {
-		t.Fatalf("system services output missing scoped grant peer %q: %s", addr, out)
+	for _, want := range []string{"System services in home/observability", "grant-service", "1 direct addr"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("system services output missing %q: %s", want, out)
+		}
 	}
 	if strings.Contains(out, wrongPeer) {
 		t.Fatalf("system services output leaked wrong-scope grant peer %q: %s", wrongPeer, out)
 	}
 	if strings.Contains(out, legacyPeer) {
 		t.Fatalf("system services output leaked unscoped legacy grant peer %q: %s", legacyPeer, out)
+	}
+	if strings.Contains(out, addr) {
+		t.Fatalf("system services output should not print full multiaddr %q: %s", addr, out)
 	}
 }
 

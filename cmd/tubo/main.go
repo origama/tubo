@@ -1405,6 +1405,25 @@ func processServiceKind(item processView) string {
 	return "-"
 }
 
+func printProcessList(items []processView, wide bool) {
+	if !wide {
+		fmt.Println("Running Tubo processes")
+		fmt.Println()
+		printProcessesCompactTable(items)
+		return
+	}
+	printProcessesTable(items)
+}
+
+func printProcessesCompactTable(items []processView) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tSERVICE\tLOCAL\tTARGET\tPATH\tTTL")
+	for _, item := range items {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, processResourceKind(item), item.Status, displayValue(item.Service), displayValue(item.Local), displayValue(item.Target), summarizeProcessPath(item.Path), processTTLColumn(item))
+	}
+	_ = w.Flush()
+}
+
 func printProcessesTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tKIND\tCOMMAND\tSERVICE KIND\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tTTL\tPID\tLOCAL\tTARGET")
@@ -1428,6 +1447,20 @@ func printProcessesTable(items []processView) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, processResourceKind(item), item.Command, processServiceKind(item), displayServiceID(item.ServiceID), scope, item.Status, path, processTTLColumn(item), item.PID, local, target)
 	}
 	_ = w.Flush()
+}
+
+func summarizeProcessPath(path string) string {
+	path = strings.TrimSpace(path)
+	switch {
+	case path == "":
+		return "unknown"
+	case strings.Contains(strings.ToLower(path), "relay"):
+		return "relay"
+	case strings.Contains(strings.ToLower(path), "direct"):
+		return "direct"
+	default:
+		return path
+	}
 }
 
 func formatProcessExpiry(raw string) (string, string) {
@@ -1770,6 +1803,7 @@ func psCmd(args []string) error {
 	fs := flag.NewFlagSet("ps", flag.ContinueOnError)
 	all := fs.Bool("all", false, "")
 	jsonOut := fs.Bool("json", false, "")
+	wide := fs.Bool("wide", false, "")
 	kind := fs.String("kind", "", "")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -1793,7 +1827,7 @@ func psCmd(args []string) error {
 			Items []processView `json:"items"`
 		}{Count: len(items), Items: items})
 	}
-	printProcessesTable(items)
+	printProcessList(items, *wide)
 	return nil
 }
 
@@ -1806,6 +1840,7 @@ func getCmd(args []string) error {
 	configPath := fs.String("config", defaultTuboConfigPath(), "")
 	timeout := fs.Duration("timeout", defaultDiscoveryTimeout, "")
 	jsonOut := fs.Bool("json", false, "")
+	wide := fs.Bool("wide", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
 	cluster := fs.String("cluster", "", "")
@@ -1833,7 +1868,7 @@ func getCmd(args []string) error {
 				Items []processView `json:"items"`
 			}{Count: len(items), Items: items})
 		}
-		printProcessesTable(items)
+		printProcessList(items, *wide)
 		return nil
 	case resource == "overlays" || resource == "clusters" || resource == "namespaces" || resource == "secrets":
 		return localGetResource(resource, *configPath, *jsonOut)
@@ -1868,11 +1903,7 @@ func getCmd(args []string) error {
 				}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
 			}
 			printMessages(result.Messages)
-			if *systemOnly {
-				printSystemServicesTable(result.Services)
-			} else {
-				printServicesTable(result.Services)
-			}
+			printServiceList(result.Services, *wide, *systemOnly, serviceScopeLabelPtr(result.Scope))
 			return nil
 		}
 		scope := scopes[0]
@@ -1893,11 +1924,7 @@ func getCmd(args []string) error {
 			}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
 		}
 		printMessages(result.Messages)
-		if *systemOnly {
-			printSystemServicesTable(result.Services)
-		} else {
-			printServicesTable(result.Services)
-		}
+		printServiceList(result.Services, *wide, *systemOnly, serviceScopeLabel(scope))
 		return nil
 	case strings.HasPrefix(resource, "service/"):
 		if useAllNamespaces {
@@ -2171,6 +2198,42 @@ func hasStrictSystemServiceScope(service serviceResource) bool {
 	return strings.TrimSpace(service.ClusterID) != "" && strings.TrimSpace(service.NamespaceID) != ""
 }
 
+func printServiceList(services []serviceResource, wide bool, systemOnly bool, scopeLabel string) {
+	if !wide {
+		if systemOnly {
+			fmt.Printf("System services in %s\n\n", scopeLabel)
+			printSystemServicesCompactTable(services)
+			return
+		}
+		fmt.Printf("Services in %s\n\n", scopeLabel)
+		printServicesCompactTable(services)
+		return
+	}
+	if systemOnly {
+		printSystemServicesTable(services)
+		return
+	}
+	printServicesTable(services)
+}
+
+func printServicesCompactTable(services []serviceResource) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "SERVICE\tKIND\tACCESS\tSTATUS\tROUTE\tPEER\tEXPIRES")
+	for _, service := range services {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayServiceKind(service), displayServiceConnectPolicy(service), displayValue(service.Status), serviceRouteSummary(service), servicePeerSummary(service.PeerID), serviceExpiresSummary(service))
+	}
+	_ = w.Flush()
+}
+
+func printSystemServicesCompactTable(services []serviceResource) {
+	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tPROTOCOL\tPEER\tADDRS")
+	for _, service := range services {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), serviceProtocolSummary(service), servicePeerSummary(service.PeerID), serviceAddressSummary(service))
+	}
+	_ = w.Flush()
+}
+
 func printServicesTable(services []serviceResource) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSERVICE KIND\tSTATUS\tACCESS\tPATH\tPEER\tCAPABILITIES")
@@ -2199,6 +2262,117 @@ func printSystemServicesTable(services []serviceResource) {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayValue(service.Kind), displayServiceScope(service), protocol, service.Status, displayValue(service.PeerID), addrs)
 	}
 	_ = w.Flush()
+}
+
+func serviceScopeLabel(scope serviceScope) string {
+	if scope.AllNamespaces {
+		if scope.Cluster != "" {
+			return scope.Cluster + " across all namespaces"
+		}
+		return "all namespaces"
+	}
+	if scope.Cluster != "" && scope.Namespace != "" {
+		return scope.Cluster + "/" + scope.Namespace
+	}
+	if scope.Cluster != "" {
+		return scope.Cluster
+	}
+	if scope.Namespace != "" {
+		return scope.Namespace
+	}
+	return "current scope"
+}
+
+func serviceScopeLabelPtr(scope *serviceScope) string {
+	if scope == nil {
+		return "current scope"
+	}
+	return serviceScopeLabel(*scope)
+}
+
+func serviceRouteSummary(service serviceResource) string {
+	path := strings.ToLower(strings.TrimSpace(service.Path))
+	switch {
+	case path == "":
+		switch {
+		case len(service.DirectAddresses) > 0 && len(service.RelayedAddresses) > 0:
+			return "mixed"
+		case len(service.DirectAddresses) > 0:
+			return "direct"
+		case len(service.RelayedAddresses) > 0:
+			return "relay"
+		default:
+			return "unknown"
+		}
+	case strings.Contains(path, "relay"):
+		return "relay"
+	case strings.Contains(path, "direct"):
+		return "direct"
+	default:
+		return path
+	}
+}
+
+func serviceProtocolSummary(service serviceResource) string {
+	if service.GrantService != nil && strings.TrimSpace(service.GrantService.Protocol) != "" {
+		return service.GrantService.Protocol
+	}
+	return "-"
+}
+
+func servicePeerSummary(peerID string) string {
+	peerID = strings.TrimSpace(peerID)
+	if peerID == "" {
+		return "-"
+	}
+	return abbreviateValue(peerID, 16)
+}
+
+func serviceExpiresSummary(service serviceResource) string {
+	if service.ExpiresInSeconds <= 0 {
+		return "-"
+	}
+	return (time.Duration(service.ExpiresInSeconds) * time.Second).Round(time.Second).String()
+}
+
+func serviceAddressSummary(service serviceResource) string {
+	direct := len(service.DirectAddresses)
+	relayed := len(service.RelayedAddresses)
+	if direct == 0 && relayed == 0 {
+		if len(service.Addresses) == 0 {
+			return "-"
+		}
+		return fmt.Sprintf("%d addrs", len(service.Addresses))
+	}
+	parts := make([]string, 0, 2)
+	if direct > 0 {
+		parts = append(parts, summarizeCount(direct, "direct addr"))
+	}
+	if relayed > 0 {
+		parts = append(parts, summarizeCount(relayed, "relay addr"))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func summarizeCount(count int, label string) string {
+	if count == 1 {
+		return "1 " + label
+	}
+	return fmt.Sprintf("%d %ss", count, label)
+}
+
+func abbreviateValue(value string, max int) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	if max <= 0 || len(value) <= max {
+		return value
+	}
+	if max <= 3 {
+		return value[:max]
+	}
+	return value[:max-3] + "..."
 }
 
 func displayServiceID(serviceID string) string {
