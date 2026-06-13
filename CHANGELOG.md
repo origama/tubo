@@ -6,6 +6,9 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+### Added
+- Lightweight reachability manager and probe helpers in `internal/reachability` that emit state-transition and recovered events for future bridge/service recovery loops.
+
 ## [v0.10.5] - 2026-06-13
 
 Patch release with a cleaner operator UX for grant review and resource listings, plus a safety fix that prevents stale config writes from dropping membership grants.

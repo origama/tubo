@@ -42,6 +42,7 @@ type Classification struct {
 type Event struct {
 	At             time.Time
 	Type           EventType
+	Subject        string
 	Classification Classification
 	Err            error
 }
@@ -49,6 +50,8 @@ type Event struct {
 type Snapshot struct {
 	At             time.Time
 	Classification Classification
+	NextProbeAt    *time.Time
+	LastEvent      *Event
 }
 
 func HealthyClassification() Classification {
