@@ -26,6 +26,7 @@ import (
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	iprotocol "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/reachability"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -472,6 +473,26 @@ func TestBridgeCurrentRuntimeStatusIncludesSelectedBinding(t *testing.T) {
 	snap := app.CurrentRuntimeStatus()
 	if snap.SelectedAddr != "/ip4/1.2.3.4/tcp/4001/p2p/peer" || snap.SelectedPath != "relayed" {
 		t.Fatalf("unexpected runtime selected binding: %#v", snap)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusIncludesNetworkReachabilityState(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}}
+	app.markTunnelDegraded(errors.New("grant service unavailable"))
+	snap := app.CurrentRuntimeStatus()
+	if snap.NetworkState != string(reachability.StateGrantUnreachable) || snap.NetworkReason != string(reachability.StateGrantUnreachable) {
+		t.Fatalf("unexpected degraded network status: %#v", snap)
+	}
+	if snap.NetworkSince == nil || snap.LastNetworkErrorAt == nil || snap.LastNetworkRecoveredAt != nil {
+		t.Fatalf("unexpected degraded network timestamps: %#v", snap)
+	}
+	app.markTunnelHealthy()
+	snap = app.CurrentRuntimeStatus()
+	if snap.NetworkState != string(reachability.StateHealthy) || snap.NetworkReason != string(reachability.StateHealthy) {
+		t.Fatalf("unexpected recovered network status: %#v", snap)
+	}
+	if snap.LastNetworkRecoveredAt == nil || snap.LastNetworkError != "" {
+		t.Fatalf("unexpected recovered network timestamps: %#v", snap)
 	}
 }
 

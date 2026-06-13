@@ -1608,6 +1608,27 @@ func printProcessDescription(state detachedProcessState, status string) {
 	if state.LastRefreshError != "" {
 		fmt.Printf("Last refresh error: %s\n", state.LastRefreshError)
 	}
+	if state.NetworkState != "" {
+		fmt.Printf("Network state: %s\n", state.NetworkState)
+	}
+	if state.NetworkReason != "" {
+		fmt.Printf("Network reason: %s\n", state.NetworkReason)
+	}
+	if ts, rem := formatProcessExpiry(state.NetworkSince); ts != "" {
+		fmt.Printf("Network since: %s\n", ts)
+		fmt.Printf("Network since in: %s\n", rem)
+	}
+	if state.LastNetworkError != "" {
+		fmt.Printf("Last network error: %s\n", state.LastNetworkError)
+	}
+	if ts, rem := formatProcessExpiry(state.LastNetworkErrorAt); ts != "" {
+		fmt.Printf("Last network error at: %s\n", ts)
+		fmt.Printf("Last network error in: %s\n", rem)
+	}
+	if ts, rem := formatProcessExpiry(state.LastNetworkRecoveredAt); ts != "" {
+		fmt.Printf("Last network recovered at: %s\n", ts)
+		fmt.Printf("Last network recovered in: %s\n", rem)
+	}
 	if ts, rem := formatProcessExpiry(state.NextRefreshRetryAt); ts != "" {
 		fmt.Printf("Next refresh retry at: %s\n", ts)
 		fmt.Printf("Next refresh retry in: %s\n", rem)

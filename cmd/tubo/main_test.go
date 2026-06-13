@@ -932,6 +932,12 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 		DegradedReason:          "connect refresh lease expired",
 		ConnectAccessExpiresAt:  time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339),
 		ConnectRefreshExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+		NetworkState:            "offline_suspected",
+		NetworkReason:           "offline_suspected",
+		NetworkSince:            time.Now().Add(-2 * time.Minute).UTC().Format(time.RFC3339),
+		LastNetworkError:        "failed to dial grant endpoint: connection refused",
+		LastNetworkErrorAt:      time.Now().Add(-90 * time.Second).UTC().Format(time.RFC3339),
+		LastNetworkRecoveredAt:  time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339),
 	}
 	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
 	b, _ := json.Marshal(state)
@@ -940,7 +946,7 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Connect access expires in:", "Connect refresh expires in: expired"} {
+	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Network state: offline_suspected", "Network reason: offline_suspected", "Last network error: failed to dial grant endpoint: connection refused", "Connect access expires in:", "Connect refresh expires in: expired"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}

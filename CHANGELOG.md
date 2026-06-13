@@ -8,6 +8,10 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Added
 - Lightweight reachability manager and probe helpers in `internal/reachability` that emit state-transition and recovered events for future bridge/service recovery loops.
+- Bridge runtime status now includes network reachability state/reason and recovery timestamps, and detached `describe process/...` output surfaces them too.
+
+### Changed
+- Detached bridge logs now print one reachability transition line on degrade/recovery instead of repeating the same failure on every retry.
 
 ## [v0.10.5] - 2026-06-13
 

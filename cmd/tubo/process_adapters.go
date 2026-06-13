@@ -118,6 +118,24 @@ func updateProcessRuntimeState(stateFile string, runtime bridgeapp.RuntimeStatus
 		}
 		state.LastTunnelError = runtime.LastTunnelError
 		state.LastRefreshError = runtime.LastRefreshError
+		state.NetworkState = runtime.NetworkState
+		state.NetworkReason = runtime.NetworkReason
+		if runtime.NetworkSince != nil {
+			state.NetworkSince = runtime.NetworkSince.UTC().Format(time.RFC3339)
+		} else {
+			state.NetworkSince = ""
+		}
+		state.LastNetworkError = runtime.LastNetworkError
+		if runtime.LastNetworkErrorAt != nil {
+			state.LastNetworkErrorAt = runtime.LastNetworkErrorAt.UTC().Format(time.RFC3339)
+		} else {
+			state.LastNetworkErrorAt = ""
+		}
+		if runtime.LastNetworkRecoveredAt != nil {
+			state.LastNetworkRecoveredAt = runtime.LastNetworkRecoveredAt.UTC().Format(time.RFC3339)
+		} else {
+			state.LastNetworkRecoveredAt = ""
+		}
 		if runtime.NextRefreshRetryAt != nil {
 			state.NextRefreshRetryAt = runtime.NextRefreshRetryAt.UTC().Format(time.RFC3339)
 		} else {

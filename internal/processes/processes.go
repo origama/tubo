@@ -55,6 +55,12 @@ type State struct {
 	LastTunnelError         string   `json:"last_tunnel_error,omitempty"`
 	LastTunnelErrorAt       string   `json:"last_tunnel_error_at,omitempty"`
 	LastTunnelHealthyAt     string   `json:"last_tunnel_healthy_at,omitempty"`
+	NetworkState            string   `json:"network_state,omitempty"`
+	NetworkReason           string   `json:"network_reason,omitempty"`
+	NetworkSince            string   `json:"network_since,omitempty"`
+	LastNetworkError        string   `json:"last_network_error,omitempty"`
+	LastNetworkErrorAt      string   `json:"last_network_error_at,omitempty"`
+	LastNetworkRecoveredAt  string   `json:"last_network_recovered_at,omitempty"`
 	LastRefreshError        string   `json:"last_refresh_error,omitempty"`
 	NextRefreshRetryAt      string   `json:"next_refresh_retry_at,omitempty"`
 }
@@ -94,6 +100,12 @@ type View struct {
 	DegradedReason          string   `json:"degraded_reason,omitempty"`
 	ConnectAccessExpiresAt  string   `json:"connect_access_expires_at,omitempty"`
 	ConnectRefreshExpiresAt string   `json:"connect_refresh_expires_at,omitempty"`
+	NetworkState            string   `json:"network_state,omitempty"`
+	NetworkReason           string   `json:"network_reason,omitempty"`
+	NetworkSince            string   `json:"network_since,omitempty"`
+	LastNetworkError        string   `json:"last_network_error,omitempty"`
+	LastNetworkErrorAt      string   `json:"last_network_error_at,omitempty"`
+	LastNetworkRecoveredAt  string   `json:"last_network_recovered_at,omitempty"`
 }
 
 type System interface {
@@ -751,6 +763,12 @@ func viewFromState(state State, status, confidence string) View {
 		DegradedReason:          state.DegradedReason,
 		ConnectAccessExpiresAt:  state.ConnectAccessExpiresAt,
 		ConnectRefreshExpiresAt: state.ConnectRefreshExpiresAt,
+		NetworkState:            state.NetworkState,
+		NetworkReason:           state.NetworkReason,
+		NetworkSince:            state.NetworkSince,
+		LastNetworkError:        state.LastNetworkError,
+		LastNetworkErrorAt:      state.LastNetworkErrorAt,
+		LastNetworkRecoveredAt:  state.LastNetworkRecoveredAt,
 	}
 }
 

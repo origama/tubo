@@ -72,6 +72,12 @@ type RuntimeStatus struct {
 	LastTunnelError         string
 	LastTunnelErrorAt       *time.Time
 	LastTunnelHealthyAt     *time.Time
+	NetworkState            string
+	NetworkReason           string
+	NetworkSince            *time.Time
+	LastNetworkError        string
+	LastNetworkErrorAt      *time.Time
+	LastNetworkRecoveredAt  *time.Time
 	LastRefreshError        string
 	NextRefreshRetryAt      *time.Time
 }
@@ -393,11 +399,18 @@ func (a *App) establishTCPTunnel(localAddr string) (network.Stream, error) {
 }
 
 func (a *App) markTunnelHealthy() {
+	now := time.Now()
 	a.healthMu.Lock()
-	a.lastTunnelHealthyAt = time.Now()
+	previousError := a.lastTunnelError
+	previousErrorAt := a.lastTunnelErrorAt
+	previousHealthyAt := a.lastTunnelHealthyAt
+	a.lastTunnelHealthyAt = now
 	a.lastTunnelError = ""
 	a.lastTunnelErrorAt = time.Time{}
 	a.healthMu.Unlock()
+	if previousError != "" && (previousHealthyAt.IsZero() || previousHealthyAt.Before(previousErrorAt)) {
+		log.Printf("bridge network recovered reason=network_recovered message=%q", "network reachability recovered")
+	}
 	a.reportStatus()
 }
 
@@ -405,10 +418,18 @@ func (a *App) markTunnelDegraded(err error) {
 	if err == nil {
 		return
 	}
+	now := time.Now()
+	classification := reachability.Classify(err)
 	a.healthMu.Lock()
+	previousError := a.lastTunnelError
+	previousHealthyAt := a.lastTunnelHealthyAt
+	previousErrorAt := a.lastTunnelErrorAt
 	a.lastTunnelError = err.Error()
-	a.lastTunnelErrorAt = time.Now()
+	a.lastTunnelErrorAt = now
 	a.healthMu.Unlock()
+	if previousError == "" || previousError != err.Error() || (!previousHealthyAt.IsZero() && previousHealthyAt.After(previousErrorAt)) {
+		log.Printf("bridge network degraded reason=%s message=%q", classification.Reason, err.Error())
+	}
 	a.reportStatus()
 }
 
@@ -422,6 +443,43 @@ func (a *App) tunnelHealth() (bool, string) {
 		return true, "ok"
 	}
 	return false, fmt.Sprintf("degraded: %s", a.lastTunnelError)
+}
+
+type networkStatusSnapshot struct {
+	State           string
+	Reason          string
+	Since           *time.Time
+	LastError       string
+	LastErrorAt     *time.Time
+	LastRecoveredAt *time.Time
+}
+
+func (a *App) networkStatus() networkStatusSnapshot {
+	a.healthMu.RLock()
+	lastTunnelError := a.lastTunnelError
+	lastTunnelErrorAt := a.lastTunnelErrorAt
+	lastTunnelHealthyAt := a.lastTunnelHealthyAt
+	a.healthMu.RUnlock()
+	if lastTunnelError == "" || (!lastTunnelHealthyAt.IsZero() && lastTunnelHealthyAt.After(lastTunnelErrorAt)) {
+		snap := networkStatusSnapshot{State: string(reachability.StateHealthy), Reason: string(reachability.StateHealthy)}
+		if !lastTunnelHealthyAt.IsZero() {
+			t := lastTunnelHealthyAt.UTC()
+			snap.Since = &t
+			snap.LastRecoveredAt = &t
+		}
+		return snap
+	}
+	classification := reachability.Classify(errors.New(lastTunnelError))
+	snap := networkStatusSnapshot{State: string(classification.State), Reason: classification.Reason, LastError: lastTunnelError}
+	if snap.Reason == "" {
+		snap.Reason = lastTunnelError
+	}
+	if !lastTunnelErrorAt.IsZero() {
+		t := lastTunnelErrorAt.UTC()
+		snap.Since = &t
+		snap.LastErrorAt = &t
+	}
+	return snap
 }
 
 func (a *App) openServiceTunnelStream(ctx context.Context) (network.Stream, error) {
@@ -509,6 +567,12 @@ type statusSnapshot struct {
 	LastTunnelError         string     `json:"last_tunnel_error,omitempty"`
 	LastTunnelErrorAt       *time.Time `json:"last_tunnel_error_at,omitempty"`
 	LastTunnelHealthyAt     *time.Time `json:"last_tunnel_healthy_at,omitempty"`
+	NetworkState            string     `json:"network_state,omitempty"`
+	NetworkReason           string     `json:"network_reason,omitempty"`
+	NetworkSince            *time.Time `json:"network_since,omitempty"`
+	LastNetworkError        string     `json:"last_network_error,omitempty"`
+	LastNetworkErrorAt      *time.Time `json:"last_network_error_at,omitempty"`
+	LastNetworkRecoveredAt  *time.Time `json:"last_network_recovered_at,omitempty"`
 }
 
 func (a *App) currentPath() string {
@@ -567,6 +631,13 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 		snap.Status = "degraded"
 		snap.Reason = msg
 	}
+	network := a.networkStatus()
+	snap.NetworkState = network.State
+	snap.NetworkReason = network.Reason
+	snap.NetworkSince = network.Since
+	snap.LastNetworkError = network.LastError
+	snap.LastNetworkErrorAt = network.LastErrorAt
+	snap.LastNetworkRecoveredAt = network.LastRecoveredAt
 	a.healthMu.RLock()
 	if a.lastTunnelError != "" {
 		snap.LastTunnelError = a.lastTunnelError
@@ -771,6 +842,12 @@ func (a *App) CurrentRuntimeStatus() RuntimeStatus {
 		LastTunnelError:         snap.LastTunnelError,
 		LastTunnelErrorAt:       snap.LastTunnelErrorAt,
 		LastTunnelHealthyAt:     snap.LastTunnelHealthyAt,
+		NetworkState:            snap.NetworkState,
+		NetworkReason:           snap.NetworkReason,
+		NetworkSince:            snap.NetworkSince,
+		LastNetworkError:        snap.LastNetworkError,
+		LastNetworkErrorAt:      snap.LastNetworkErrorAt,
+		LastNetworkRecoveredAt:  snap.LastNetworkRecoveredAt,
 		LastRefreshError:        lastRefreshError,
 		NextRefreshRetryAt: func() *time.Time {
 			if nextRefreshRetryAt.IsZero() {
