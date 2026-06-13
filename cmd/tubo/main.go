@@ -2364,14 +2364,6 @@ func serviceProtocolSummary(service serviceResource) string {
 	return "-"
 }
 
-func servicePeerSummary(peerID string) string {
-	peerID = strings.TrimSpace(peerID)
-	if peerID == "" {
-		return "-"
-	}
-	return abbreviateValue(peerID, 16)
-}
-
 func serviceExpiresSummary(service serviceResource) string {
 	if service.ExpiresInSeconds <= 0 {
 		return "-"
@@ -2403,20 +2395,6 @@ func summarizeCount(count int, label string) string {
 		return "1 " + label
 	}
 	return fmt.Sprintf("%d %ss", count, label)
-}
-
-func abbreviateValue(value string, max int) string {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "-"
-	}
-	if max <= 0 || len(value) <= max {
-		return value
-	}
-	if max <= 3 {
-		return value[:max]
-	}
-	return value[:max-3] + "..."
 }
 
 func displayServiceID(serviceID string) string {

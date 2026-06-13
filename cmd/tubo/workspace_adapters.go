@@ -31,7 +31,7 @@ func saveLocalConfig(path string, cfg cfgpkg.Config) error {
 }
 
 func preserveLocalMembershipGrant(next, current cfgpkg.Config) cfgpkg.Config {
-	if next.Clusters == nil || len(current.Clusters) == 0 {
+	if len(next.Clusters) == 0 || len(current.Clusters) == 0 {
 		return next
 	}
 	for name, currentCluster := range current.Clusters {

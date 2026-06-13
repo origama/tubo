@@ -1048,6 +1048,15 @@ func TestPrintProcessListCompactView(t *testing.T) {
 
 func TestProcessListingCommandsUseCompactWideAndJSONPaths(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configRoot := filepath.Join(t.TempDir(), "config")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(configPath, cfgpkg.Config{}, true); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -1071,9 +1080,9 @@ func TestProcessListingCommandsUseCompactWideAndJSONPaths(t *testing.T) {
 		{name: "ps compact", args: []string{"ps"}},
 		{name: "ps wide", args: []string{"ps", "--wide"}, wide: true},
 		{name: "ps json", args: []string{"ps", "--json"}, jsonOut: true},
-		{name: "get processes compact", args: []string{"get", "processes", "--no-init"}},
-		{name: "get processes wide", args: []string{"get", "processes", "--no-init", "--wide"}, wide: true},
-		{name: "get processes json", args: []string{"get", "processes", "--no-init", "--json"}, jsonOut: true},
+		{name: "get processes compact", args: []string{"get", "processes", "--no-init", "--config", configPath}},
+		{name: "get processes wide", args: []string{"get", "processes", "--no-init", "--config", configPath, "--wide"}, wide: true},
+		{name: "get processes json", args: []string{"get", "processes", "--no-init", "--config", configPath, "--json"}, jsonOut: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := capture(func() error { return run(tc.args) })
