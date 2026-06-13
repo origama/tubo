@@ -802,13 +802,11 @@ func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 		}
 		now := time.Now().UTC()
 		if nextRetry.After(now) {
-			if reached := reachability.WaitForRecovered(ctx, a.renewalRecoveryEvents(), time.Until(nextRetry)); ctx.Err() != nil {
+			reachability.WaitForRecovered(ctx, a.renewalRecoveryEvents(), time.Until(nextRetry))
+			if ctx.Err() != nil {
 				return
-			} else if reached {
-				now = time.Now().UTC()
-			} else {
-				now = time.Now().UTC()
 			}
+			now = time.Now().UTC()
 		}
 		rolloverDue := connectRefreshLeaseNeedsRollover(*refresh, now)
 		if rolloverDue && !canRollover {
