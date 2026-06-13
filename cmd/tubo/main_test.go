@@ -5556,7 +5556,12 @@ func TestGetServicesCommandPathsUsePeerAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)}), Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	configRoot := filepath.Join(t.TempDir(), "config")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
 	}
