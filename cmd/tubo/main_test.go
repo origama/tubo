@@ -1014,6 +1014,121 @@ func TestPrintProcessesTableIncludesTTLColumn(t *testing.T) {
 	}
 }
 
+func TestPrintProcessListCompactView(t *testing.T) {
+	out, err := capture(func() error {
+		printProcessList([]processView{{
+			Name:                   "connect-lms-1234",
+			ResourceKind:           "pipe",
+			ServiceKind:            "tcp",
+			Command:                "connect",
+			Service:                "lmstudio",
+			Status:                 "degraded",
+			DegradedReason:         "last grant renewal failed",
+			Path:                   "relayed",
+			Local:                  "127.0.0.1:1234",
+			Target:                 "lmstudio",
+			ConnectAccessExpiresAt: time.Now().Add(90 * time.Minute).UTC().Format(time.RFC3339),
+		}}, false)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Running Tubo processes", "NAME", "KIND", "STATUS", "SERVICE", "LOCAL", "TARGET", "PATH", "TTL", "relay", "1h", "describe: tubo describe process/connect-lms-1234", "logs: tubo logs connect-lms-1234", "last grant renewal failed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact process list missing %q: %s", want, out)
+		}
+	}
+	for _, want := range []string{"COMMAND", "PID", "SERVICE ID", "1h0m0s"} {
+		if strings.Contains(out, want) {
+			t.Fatalf("compact process list leaked %q: %s", want, out)
+		}
+	}
+}
+
+func TestProcessListingCommandsUseCompactWideAndJSONPaths(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configRoot := filepath.Join(t.TempDir(), "config")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(configPath, cfgpkg.Config{}, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := detachedProcessState{ID: "process/attach-lmstudio", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-lmstudio", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-lmstudio.pid"), StateFile: filepath.Join(processStateDir(), "attach-lmstudio.json"), LogFile: filepath.Join(processLogDir(), "attach-lmstudio.log"), Service: "lmstudio", ServiceKind: "http", StatusConfidence: "pid", RuntimeStatus: "degraded", DegradedReason: "last grant renewal failed", ConnectAccessExpiresAt: time.Now().Add(90 * time.Minute).UTC().Format(time.RFC3339)}
+	if err := os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(state)
+	if err := os.WriteFile(state.StateFile, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wide    bool
+		jsonOut bool
+	}{
+		{name: "ps compact", args: []string{"ps"}},
+		{name: "ps wide", args: []string{"ps", "--wide"}, wide: true},
+		{name: "ps json", args: []string{"ps", "--json"}, jsonOut: true},
+		{name: "get processes compact", args: []string{"get", "processes", "--no-init", "--config", configPath}},
+		{name: "get processes wide", args: []string{"get", "processes", "--no-init", "--config", configPath, "--wide"}, wide: true},
+		{name: "get processes json", args: []string{"get", "processes", "--no-init", "--config", configPath, "--json"}, jsonOut: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := capture(func() error { return run(tc.args) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.jsonOut {
+				var payload struct {
+					Count int           `json:"count"`
+					Items []processView `json:"items"`
+				}
+				if err := json.Unmarshal([]byte(out), &payload); err != nil {
+					t.Fatalf("json parse: %v\nout=%s", err, out)
+				}
+				if payload.Count != 1 || len(payload.Items) != 1 || payload.Items[0].Name != state.Name || payload.Items[0].DegradedReason != state.DegradedReason {
+					t.Fatalf("unexpected json payload: %#v", payload)
+				}
+				return
+			}
+			if tc.wide {
+				for _, want := range []string{"COMMAND", "SERVICE KIND", "SERVICE ID", "PID", state.Name} {
+					if !strings.Contains(out, want) {
+						t.Fatalf("wide process listing missing %q: %s", want, out)
+					}
+				}
+				for _, want := range []string{"Running Tubo processes", "describe:", "logs:"} {
+					if strings.Contains(out, want) {
+						t.Fatalf("wide process listing leaked %q: %s", want, out)
+					}
+				}
+				return
+			}
+			for _, want := range []string{"Running Tubo processes", "SERVICE", "TTL", "1h", "describe: tubo describe process/attach-lmstudio", "logs: tubo logs attach-lmstudio", state.DegradedReason} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("compact process listing missing %q: %s", want, out)
+				}
+			}
+			for _, want := range []string{"COMMAND", "PID", "SERVICE ID", "1h0m0s"} {
+				if strings.Contains(out, want) {
+					t.Fatalf("compact process listing leaked %q: %s", want, out)
+				}
+			}
+		})
+	}
+}
+
 func TestLogsCmdShowsSystemdHintWhenNoLogFile(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
@@ -1060,7 +1175,7 @@ func TestUsageMentionsIntentCommands(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected usage error")
 	}
-	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "use", "share", "bundle-url"} {
+	for _, want := range []string{"attach", "connect", "gateway", "relay", "join", "use", "share", "peers", "bundle-url"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("usage missing %q: %s", want, err)
 		}
@@ -2198,6 +2313,44 @@ func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
 	}
 	if payload.Discovery != nil && strings.Contains(stdout, payload.Discovery.Secret) {
 		t.Fatal("join json leaked raw discovery entry value")
+	}
+}
+
+func TestSaveLocalConfigPreservesExistingMembershipGrant(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	original := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", MembershipGrant: &cfgpkg.ClusterMembershipGrant{ClusterName: "home", ClusterID: "cluster-123", Namespace: "default", Role: clusterInviteViewerRole, ExpiresAt: time.Now().Add(time.Hour)}, Namespaces: map[string]cfgpkg.Namespace{"default": {}}}}}
+	if err := cfgpkg.WriteFile(configPath, original, true); err != nil {
+		t.Fatal(err)
+	}
+	stale := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]cfgpkg.Namespace{"default": {ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember}}}}}
+	if err := saveLocalConfig(configPath, stale); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Clusters["home"].MembershipGrant == nil || reloaded.Clusters["home"].MembershipGrant.Role != clusterInviteViewerRole {
+		t.Fatalf("membership grant was lost after saveLocalConfig: %#v", reloaded.Clusters["home"].MembershipGrant)
+	}
+}
+
+func TestSaveLocalConfigDoesNotPreserveGrantAcrossClusterIdChange(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	original := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-old", MembershipGrant: &cfgpkg.ClusterMembershipGrant{ClusterName: "home", ClusterID: "cluster-old", Namespace: "default", Role: clusterInviteViewerRole, ExpiresAt: time.Now().Add(time.Hour)}, Namespaces: map[string]cfgpkg.Namespace{"default": {}}}}}
+	if err := cfgpkg.WriteFile(configPath, original, true); err != nil {
+		t.Fatal(err)
+	}
+	recreated := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-new", Namespaces: map[string]cfgpkg.Namespace{"default": {ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember}}}}}
+	if err := saveLocalConfig(configPath, recreated); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Clusters["home"].MembershipGrant != nil {
+		t.Fatalf("membership grant should not survive cluster id change: %#v", reloaded.Clusters["home"].MembershipGrant)
 	}
 }
 
@@ -5022,7 +5175,7 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	}
 }
 
-func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceScope, string, string) {
+func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceScope, string, string, string) {
 	t.Helper()
 	keyPath := filepath.Join(t.TempDir(), "swarm.key")
 	keyData, err := newSwarmKeyData()
@@ -5081,11 +5234,11 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
 		},
 	}
-	return cfg, serviceScope{Cluster: "home", Namespace: "observability"}, serviceIDA, serviceIDB
+	return cfg, serviceScope{Cluster: "home", Namespace: "observability"}, addr, serviceIDA, serviceIDB
 }
 
 func TestDiscoverServiceRejectsDuplicateDisplayNames(t *testing.T) {
-	cfg, scope, serviceIDA, serviceIDB := newDuplicateServiceDiscoveryFixture(t)
+	cfg, scope, _, serviceIDA, serviceIDB := newDuplicateServiceDiscoveryFixture(t)
 	_, _, err := discoverServiceWithConfig(cfg, 5*time.Second, false, false, scope, "myapi")
 	if err == nil {
 		t.Fatal("expected duplicate display name error")
@@ -5101,7 +5254,7 @@ func TestDiscoverServiceRejectsDuplicateDisplayNames(t *testing.T) {
 }
 
 func TestDiscoverServiceExactByServiceIDReturnsMatchingDuplicate(t *testing.T) {
-	cfg, scope, _, serviceIDB := newDuplicateServiceDiscoveryFixture(t)
+	cfg, scope, _, _, serviceIDB := newDuplicateServiceDiscoveryFixture(t)
 	result, service, err := discoverServiceExactWithConfig(cfg, 5*time.Second, false, false, scope, "", serviceIDB)
 	if err != nil {
 		t.Fatal(err)
@@ -5206,6 +5359,49 @@ func TestPrintServicesTableIncludesServiceMetadata(t *testing.T) {
 	for _, want := range []string{"SERVICE KIND", "SERVICE ID", "SCOPE", "ACCESS", "service-a", "home/default", "unknown"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("services table missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestPrintServiceListCompactView(t *testing.T) {
+	longPeerID := "12D3KooWabcdefghijklmnopqrstuvwx1234567890"
+	out, err := capture(func() error {
+		printServiceList([]serviceResource{{Name: "piwebui@oripi", ServiceKind: "http", ConnectPolicy: "namespace_members", Status: "active", Path: "relayed", PeerID: longPeerID, ExpiresInSeconds: 3480}}, false, false, serviceScopeLabel(serviceScope{Cluster: "virzanti", Namespace: "default"}))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Services in virzanti/default", "SERVICE", "KIND", "ACCESS", "STATUS", "ROUTE", "PEER", "EXPIRES", "piwebui@oripi", "http", "namespace_members", "relay", "58m"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact services list missing %q: %s", want, out)
+		}
+	}
+	for _, want := range []string{"SERVICE ID", longPeerID, "CAPABILITIES"} {
+		if strings.Contains(out, want) {
+			t.Fatalf("compact services list leaked %q: %s", want, out)
+		}
+	}
+}
+
+func TestPrintSystemServicesListCompactView(t *testing.T) {
+	longPeerID := "12D3KooWabcdefghijklmnopqrstuvwx1234567890"
+	longAddr := "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWabcdefghijklmnopqrstuvwx1234567890"
+	out, err := capture(func() error {
+		printServiceList([]serviceResource{{Kind: "grant-service", Name: "grant-service", Status: "online", PeerID: longPeerID, RelayedAddresses: []string{longAddr}, GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{longAddr}}}}, false, true, serviceScopeLabel(serviceScope{Cluster: "virzanti", Namespace: "default"}))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"System services in virzanti/default", "NAME", "KIND", "STATUS", "PROTOCOL", "PEER", "ADDRS", grantspkg.ProtocolID, "1 relay addr"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact system services list missing %q: %s", want, out)
+		}
+	}
+	for _, want := range []string{longPeerID, longAddr} {
+		if strings.Contains(out, want) {
+			t.Fatalf("compact system services list leaked %q: %s", want, out)
 		}
 	}
 }
@@ -5320,14 +5516,171 @@ func TestGetServicesSystemFiltersGrantServiceByActualScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, addr) {
-		t.Fatalf("system services output missing scoped grant peer %q: %s", addr, out)
+	for _, want := range []string{"System services in home/observability", "grant-service", "1 direct addr"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("system services output missing %q: %s", want, out)
+		}
 	}
 	if strings.Contains(out, wrongPeer) {
 		t.Fatalf("system services output leaked wrong-scope grant peer %q: %s", wrongPeer, out)
 	}
 	if strings.Contains(out, legacyPeer) {
 		t.Fatalf("system services output leaked unscoped legacy grant peer %q: %s", legacyPeer, out)
+	}
+	if strings.Contains(out, addr) {
+		t.Fatalf("system services output should not print full multiaddr %q: %s", addr, out)
+	}
+}
+
+func peerIDFromMultiaddr(t *testing.T, addr string) string {
+	t.Helper()
+	idx := strings.LastIndex(addr, "/p2p/")
+	if idx < 0 {
+		t.Fatalf("missing p2p peer in addr: %s", addr)
+	}
+	peerID := strings.TrimSpace(addr[idx+len("/p2p/"):])
+	if peerID == "" {
+		t.Fatalf("empty peer id in addr: %s", addr)
+	}
+	return peerID
+}
+
+func TestGetServicesCommandPathsUsePeerAliases(t *testing.T) {
+	cfg, _, addr, _, _ := newDuplicateServiceDiscoveryFixture(t)
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)}), Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}
+	configRoot := filepath.Join(t.TempDir(), "config")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	peerID := peerIDFromMultiaddr(t, addr)
+	if _, err := capture(func() error { return run([]string{"peers", "alias", peerID, "--name", "relay"}) }); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		args    []string
+		wide    bool
+		jsonOut bool
+	}{
+		{name: "compact", args: []string{"get", "services", "--no-init", "--config", configPath, "--timeout", "5s"}},
+		{name: "wide", args: []string{"get", "services", "--no-init", "--config", configPath, "--timeout", "5s", "--wide"}, wide: true},
+		{name: "json", args: []string{"get", "services", "--no-init", "--config", configPath, "--timeout", "5s", "--json"}, jsonOut: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := capture(func() error { return run(tc.args) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.jsonOut {
+				var payload struct {
+					Count int               `json:"count"`
+					Items []serviceResource `json:"items"`
+				}
+				if err := json.Unmarshal([]byte(out), &payload); err != nil {
+					t.Fatalf("json parse: %v\nout=%s", err, out)
+				}
+				if payload.Count != 2 || len(payload.Items) != 2 {
+					t.Fatalf("unexpected json payload: %#v", payload)
+				}
+				if payload.Items[0].PeerID != peerID && payload.Items[1].PeerID != peerID {
+					t.Fatalf("json peer ids missing %q: %#v", peerID, payload)
+				}
+				return
+			}
+			if tc.wide {
+				for _, want := range []string{"SERVICE ID", peerID} {
+					if !strings.Contains(out, want) {
+						t.Fatalf("wide service listing missing %q: %s", want, out)
+					}
+				}
+				if strings.Contains(out, "Services in home/observability") {
+					t.Fatalf("wide service listing should not use compact header: %s", out)
+				}
+				return
+			}
+			for _, want := range []string{"Services in home/observability", "SERVICE", "ACCESS", "STATUS", "ROUTE", "EXPIRES", "relay"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("compact service listing missing %q: %s", want, out)
+				}
+			}
+			if strings.Contains(out, peerID) {
+				t.Fatalf("compact service listing leaked full peer id %q: %s", peerID, out)
+			}
+		})
+	}
+}
+
+func TestGetSystemServicesCommandPathsUsePeerAliases(t *testing.T) {
+	configPath, _, addr, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	peerID := peerIDFromMultiaddr(t, addr)
+	if _, err := capture(func() error { return run([]string{"peers", "alias", peerID, "--name", "grant-relay"}) }); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name    string
+		args    []string
+		wide    bool
+		jsonOut bool
+	}{
+		{name: "compact", args: []string{"get", "services", "--no-init", "--system", "--config", configPath, "--timeout", "5s"}},
+		{name: "wide", args: []string{"get", "services", "--no-init", "--system", "--config", configPath, "--timeout", "5s", "--wide"}, wide: true},
+		{name: "json", args: []string{"get", "services", "--no-init", "--system", "--config", configPath, "--timeout", "5s", "--json"}, jsonOut: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := capture(func() error { return run(tc.args) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.jsonOut {
+				var payload struct {
+					Count int               `json:"count"`
+					Items []serviceResource `json:"items"`
+				}
+				if err := json.Unmarshal([]byte(out), &payload); err != nil {
+					t.Fatalf("json parse: %v\nout=%s", err, out)
+				}
+				if payload.Count != 1 || len(payload.Items) != 1 {
+					t.Fatalf("unexpected json payload: %#v", payload)
+				}
+				if payload.Items[0].PeerID != peerID || len(payload.Items[0].Addresses) == 0 || payload.Items[0].Addresses[0] != addr {
+					t.Fatalf("json system payload missing peer or address: %#v", payload)
+				}
+				return
+			}
+			if tc.wide {
+				for _, want := range []string{"KIND", "PROTOCOL", peerID, addr} {
+					if !strings.Contains(out, want) {
+						t.Fatalf("wide system listing missing %q: %s", want, out)
+					}
+				}
+				return
+			}
+			for _, want := range []string{"System services in home/observability", "NAME", "KIND", "STATUS", "PROTOCOL", "PEER", "ADDRS", "grant-relay", "1 direct addr"} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("compact system listing missing %q: %s", want, out)
+				}
+			}
+			if strings.Contains(out, peerID) || strings.Contains(out, addr) {
+				t.Fatalf("compact system listing leaked full peer/address: %s", out)
+			}
+		})
 	}
 }
 

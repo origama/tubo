@@ -8,8 +8,15 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Added
 - Grant review UX now defaults to action-oriented `tubo grants pending` cards and compact grouped `tubo grants history` sections, adds `--all` / `--wide` / `--json` / `--verbose`, adds a readable `tubo grants describe` review card, and adds local peer aliases via `tubo peers alias`.
+- Compact default listings for `tubo ps`, `tubo get processes`, `tubo get services`, and `tubo get services --system`, with `--wide` preserving the technical table view.
+- `tubo peers alias <peer-id> --name <label>` for local peer display aliases used by compact service listings.
+
+### Changed
+- Default process and service lists now prioritize human-readable operational summaries: status, route, access policy, peer summary, and expiry/TTL.
+- Compact process listings now add short `describe`/`logs` hints for degraded or stale rows.
 
 ### Fixed
+- `saveLocalConfig` now preserves an existing local membership grant only when the cluster identity still matches, preventing stale config writes from copying a grant onto a recreated cluster with a different `cluster_id`.
 - Foreground `tubo grants serve` now emits an immediate startup notice so the smoke/CI foreground-registration check sees the process before discovery publication work completes.
 - Release runbook now explicitly requires the same CI checks (`go build`, `go test -race -coverprofile`, `golangci-lint`, `smoke-cli-ux`, and `smoke-compose`) before tagging.
 
