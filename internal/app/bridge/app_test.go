@@ -527,6 +527,63 @@ func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
 	}
 }
 
+func TestBridgeConnectAccessLeaseRefreshTransientFailureBacksOff(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-refresh-transient-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	clientKey := bridgeHostAuthorizedKey(t, h)
+	artifacts, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-refresh-transient", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 2*time.Minute, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	current := artifacts.AccessLease
+	current.IssuedAt = now.Add(-2 * time.Minute)
+	current.ExpiresAt = now.Add(30 * time.Second)
+	refresh := artifacts.RefreshLease
+	var refreshes int32
+	app := &App{host: h, connectLease: &current, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		atomic.AddInt32(&refreshes, 1)
+		return grantspkg.ConnectAccessLease{}, errors.New("grant service unavailable")
+	}}}
+	lease, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected current lease to remain usable after transient failure, got %v", err)
+	}
+	if lease.JTI != current.JTI {
+		t.Fatalf("expected current lease to be reused, got %#v", lease)
+	}
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "grant service unavailable") {
+		t.Fatalf("expected degraded transient grant failure, got %#v", snap)
+	}
+	if snap.NextRefreshRetryAt == nil {
+		t.Fatal("expected retry backoff to be scheduled")
+	}
+	if !snap.NextRefreshRetryAt.Before(current.ExpiresAt.UTC()) {
+		t.Fatalf("expected retry before current access expiry, got retry=%v expiry=%v", snap.NextRefreshRetryAt, current.ExpiresAt.UTC())
+	}
+	lease, err = app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected current lease to remain usable during backoff, got %v", err)
+	}
+	if lease.JTI != current.JTI {
+		t.Fatalf("expected current lease to remain in use during backoff, got %#v", lease)
+	}
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("expected no retry before backoff, got %d refreshes", got)
+	}
+}
+
 func TestBridgeConnectLeaseRolloverRenewsAccessAndRefresh(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
 	if err != nil {

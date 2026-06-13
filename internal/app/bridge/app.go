@@ -677,6 +677,19 @@ func connectLeaseFailureIsTerminal(err error) bool {
 	}
 }
 
+func connectLeaseFailureRetryAt(err error, current *grantspkg.ConnectAccessLease, refresh grantspkg.ConnectRefreshLease, now time.Time) time.Time {
+	retryAt := now.Add(connectRefreshFailureCooldown)
+	switch reachability.Classify(err).Class {
+	case reachability.ErrorAuth, reachability.ErrorConfig:
+		if current != nil && now.Before(current.ExpiresAt.UTC()) {
+			retryAt = current.ExpiresAt.UTC()
+		} else if !refresh.ExpiresAt.IsZero() {
+			retryAt = refresh.ExpiresAt.UTC()
+		}
+	}
+	return retryAt
+}
+
 func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 	for {
 		a.connectMu.Lock()
@@ -1045,12 +1058,8 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		}
 		if err != nil {
 			wrapped := fmt.Errorf("refresh connect access lease: %w", err)
-			retryAt := time.Now().UTC().Add(connectRefreshFailureCooldown)
-			if connectLeaseFailureIsTerminal(err) {
-				retryAt = refresh.ExpiresAt.UTC()
-			}
+			retryAt := connectLeaseFailureRetryAt(err, current, *refresh, now)
 			if current != nil && now.Before(current.ExpiresAt.UTC()) {
-				retryAt = current.ExpiresAt.UTC()
 				a.recordRefreshFailureLocked(wrapped, retryAt)
 				log.Printf("bridge connect access lease refresh failed: %v", err)
 				a.connectMu.Unlock()
