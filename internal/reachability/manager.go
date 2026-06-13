@@ -150,12 +150,10 @@ func (m *Manager) record(kind any, err error, classification Classification) Sna
 func (m *Manager) nextDelay() time.Duration {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	switch m.snapshot.Classification.Class {
-	case ErrorNone, ErrorUnknown:
+	if m.snapshot.Classification.Class == ErrorNone {
 		return m.probeInterval
-	default:
-		return m.probeBackoff
 	}
+	return m.probeBackoff
 }
 
 func (m *Manager) nextProbeAtLocked(now time.Time, classification Classification) *time.Time {

@@ -100,6 +100,33 @@ func TestManagerStartProbesAndCanBeCanceled(t *testing.T) {
 	cancel()
 }
 
+func TestManagerUnknownProbeFailureUsesBackoff(t *testing.T) {
+	base := time.Unix(1_700_000_200, 0).UTC()
+	m := NewManager(ManagerConfig{
+		Probe: ProbeFunc(func(context.Context) error {
+			return errors.New("unexpected probe failure")
+		}),
+		ProbeInterval: 30 * time.Second,
+		ProbeBackoff:  5 * time.Second,
+		Now:           func() time.Time { return base },
+		Buffer:        4,
+	})
+
+	snap, err := m.ProbeNow(context.Background())
+	if err == nil {
+		t.Fatal("expected probe to fail")
+	}
+	if snap.Classification.State != StateUnknown || snap.Classification.Class != ErrorUnknown {
+		t.Fatalf("unexpected snapshot: %#v", snap)
+	}
+	if snap.NextProbeAt == nil || !snap.NextProbeAt.Equal(base.Add(5*time.Second)) {
+		t.Fatalf("unexpected next probe: %#v", snap.NextProbeAt)
+	}
+	if got := m.nextDelay(); got != 5*time.Second {
+		t.Fatalf("unexpected next delay: %v", got)
+	}
+}
+
 func TestManagerRecordFailureAndSuccessUpdateSnapshot(t *testing.T) {
 	base := time.Unix(1_700_000_100, 0).UTC()
 	m := NewManager(ManagerConfig{
