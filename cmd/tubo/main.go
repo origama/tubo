@@ -1504,6 +1504,21 @@ func formatProcessExpiry(raw string) (string, string) {
 	return ts.UTC().Format(time.RFC3339), humanizeDurationCompact(remaining)
 }
 
+func formatProcessEventTime(raw string) (string, string) {
+	if strings.TrimSpace(raw) == "" {
+		return "", ""
+	}
+	ts, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return raw, "unknown"
+	}
+	now := time.Now().UTC()
+	if ts.After(now) {
+		return ts.UTC().Format(time.RFC3339), humanizeDurationCompact(ts.Sub(now))
+	}
+	return ts.UTC().Format(time.RFC3339), humanizeDurationCompact(now.Sub(ts))
+}
+
 func humanizeDurationCompact(d time.Duration) string {
 	if d <= 0 {
 		return "expired"
@@ -1614,20 +1629,20 @@ func printProcessDescription(state detachedProcessState, status string) {
 	if state.NetworkReason != "" {
 		fmt.Printf("Network reason: %s\n", state.NetworkReason)
 	}
-	if ts, rem := formatProcessExpiry(state.NetworkSince); ts != "" {
+	if ts, rem := formatProcessEventTime(state.NetworkSince); ts != "" {
 		fmt.Printf("Network since: %s\n", ts)
-		fmt.Printf("Network since in: %s\n", rem)
+		fmt.Printf("Network since ago: %s\n", rem)
 	}
 	if state.LastNetworkError != "" {
 		fmt.Printf("Last network error: %s\n", state.LastNetworkError)
 	}
-	if ts, rem := formatProcessExpiry(state.LastNetworkErrorAt); ts != "" {
+	if ts, rem := formatProcessEventTime(state.LastNetworkErrorAt); ts != "" {
 		fmt.Printf("Last network error at: %s\n", ts)
-		fmt.Printf("Last network error in: %s\n", rem)
+		fmt.Printf("Last network error ago: %s\n", rem)
 	}
-	if ts, rem := formatProcessExpiry(state.LastNetworkRecoveredAt); ts != "" {
+	if ts, rem := formatProcessEventTime(state.LastNetworkRecoveredAt); ts != "" {
 		fmt.Printf("Last network recovered at: %s\n", ts)
-		fmt.Printf("Last network recovered in: %s\n", rem)
+		fmt.Printf("Last network recovered ago: %s\n", rem)
 	}
 	if ts, rem := formatProcessExpiry(state.NextRefreshRetryAt); ts != "" {
 		fmt.Printf("Next refresh retry at: %s\n", ts)

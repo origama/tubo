@@ -946,9 +946,14 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Network state: offline_suspected", "Network reason: offline_suspected", "Last network error: failed to dial grant endpoint: connection refused", "Connect access expires in:", "Connect refresh expires in: expired"} {
+	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Network state: offline_suspected", "Network reason: offline_suspected", "Network since ago:", "Last network error: failed to dial grant endpoint: connection refused", "Last network error at:", "Last network error ago:", "Last network recovered at:", "Last network recovered ago:", "Connect access expires in:", "Connect refresh expires in: expired"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
+		}
+	}
+	for _, want := range []string{"Network since in:", "Last network error in:", "Last network recovered in:"} {
+		if strings.Contains(out, want) {
+			t.Fatalf("describe output should not contain %q: %s", want, out)
 		}
 	}
 }
