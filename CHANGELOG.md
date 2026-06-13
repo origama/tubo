@@ -21,6 +21,7 @@ Patch release with a cleaner operator UX for grant review and resource listings,
 
 ### Fixed
 - `saveLocalConfig` now preserves an existing local membership grant only when the cluster identity still matches, preventing stale config writes from copying a grant onto a recreated cluster with a different `cluster_id`.
+- Service announcement skip logs now include stable reason tokens (`reason=relay_not_ready`, `reason=publish_lease_missing`, `reason=publish_lease_expired`, `reason=publish_lease_invalid`) alongside human-readable messages.
 - Service announcement skips now report precise reasons (`relay_not_ready`, `publish_lease_missing`, `publish_lease_expired`, `publish_lease_invalid`) instead of collapsing them into generic lease wording.
 - Foreground `tubo grants serve` now emits an immediate startup notice so the smoke/CI foreground-registration check sees the process before discovery publication work completes.
 - Release runbook now explicitly requires the same CI checks (`go build`, `go test -race -coverprofile`, `golangci-lint`, `smoke-cli-ux`, and `smoke-compose`) before tagging.

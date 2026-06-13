@@ -263,12 +263,12 @@ func (a *App) Start(ctx context.Context) error {
 	go a.maintainRelayReservations(ctx)
 	if a.cfg.DiscoveryEnabled && a.discoveryMode == discovery.ModeNamespaceV3 {
 		if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok && reason != AnnouncementReady {
-			log.Printf("initial announcement deferred: %s", announcementBlockDescription(reason))
+			log.Printf("initial announcement deferred: %s", announcementBlockLogDetails(reason))
 		}
 		go a.runAnnouncementLoopV3(ctx)
 	} else if a.cfg.DiscoveryEnabled {
 		if !a.hb.PublishNow(ctx) {
-			log.Printf("initial announcement deferred: relay reservation not ready yet")
+			log.Printf("initial announcement deferred: reason=relay_not_ready message=%q", "relay reservation not ready yet")
 		}
 		a.hb.Start(ctx)
 	}
@@ -403,6 +403,10 @@ func announcementBlockDescription(reason AnnouncementBlockReason) string {
 	}
 }
 
+func announcementBlockLogDetails(reason AnnouncementBlockReason) string {
+	return fmt.Sprintf("reason=%s message=%q", reason, announcementBlockDescription(reason))
+}
+
 func classifyPublishLeaseBlockReason(err error, leaseBytes []byte) AnnouncementBlockReason {
 	if err == nil {
 		if len(leaseBytes) == 0 {
@@ -488,7 +492,7 @@ func (a *App) runAnnouncementLoopV3(ctx context.Context) {
 		case <-ticker.C:
 			ann, payload, reason, ok := a.currentAnnouncementV3()
 			if !ok {
-				log.Printf("heartbeat skipped: %s; service remains running but is not advertised", announcementBlockDescription(reason))
+				log.Printf("heartbeat skipped: %s; service remains running but is not advertised", announcementBlockLogDetails(reason))
 				continue
 			}
 			if err := a.publisher.PublishV3(ctx, ann); err != nil {
@@ -729,7 +733,7 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 		}
 		if a.discoveryMode == discovery.ModeNamespaceV3 {
 			if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok && reason != AnnouncementReady {
-				log.Printf("relay-ready publish skipped: %s", announcementBlockDescription(reason))
+				log.Printf("relay-ready publish skipped: %s", announcementBlockLogDetails(reason))
 			}
 			return
 		}

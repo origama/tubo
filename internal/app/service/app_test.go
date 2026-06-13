@@ -297,6 +297,12 @@ func TestAnnouncementBlockDescription(t *testing.T) {
 	}
 }
 
+func TestAnnouncementBlockLogDetails(t *testing.T) {
+	if got := announcementBlockLogDetails(AnnouncementBlockedPublishLeaseMissing); got != `reason=publish_lease_missing message="publish lease missing"` {
+		t.Fatalf("announcementBlockLogDetails() = %q", got)
+	}
+}
+
 func TestPublishCurrentAnnouncementV3ReportsPublisherUnavailable(t *testing.T) {
 	reason, ok := (&App{}).publishCurrentAnnouncementV3(context.Background())
 	if ok || reason != AnnouncementBlockedPublisherUnavailable {
