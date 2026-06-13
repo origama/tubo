@@ -16,6 +16,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - Compact process listings now add short `describe`/`logs` hints for degraded or stale rows.
 
 ### Fixed
+- `saveLocalConfig` now preserves an existing local membership grant only when the cluster identity still matches, preventing stale config writes from copying a grant onto a recreated cluster with a different `cluster_id`.
 - Foreground `tubo grants serve` now emits an immediate startup notice so the smoke/CI foreground-registration check sees the process before discovery publication work completes.
 - Release runbook now explicitly requires the same CI checks (`go build`, `go test -race -coverprofile`, `golangci-lint`, `smoke-cli-ux`, and `smoke-compose`) before tagging.
 

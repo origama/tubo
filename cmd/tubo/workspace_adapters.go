@@ -39,6 +39,9 @@ func preserveLocalMembershipGrant(next, current cfgpkg.Config) cfgpkg.Config {
 		if !ok || nextCluster.MembershipGrant != nil || currentCluster.MembershipGrant == nil {
 			continue
 		}
+		if currentCluster.ClusterID != "" && nextCluster.ClusterID != "" && currentCluster.ClusterID != nextCluster.ClusterID {
+			continue
+		}
 		grant := *currentCluster.MembershipGrant
 		grant.Permissions = append([]string(nil), currentCluster.MembershipGrant.Permissions...)
 		grant.GrantServicePeers = append([]string(nil), currentCluster.MembershipGrant.GrantServicePeers...)
