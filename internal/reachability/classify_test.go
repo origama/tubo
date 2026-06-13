@@ -34,6 +34,7 @@ func TestClassifyTransientErrors(t *testing.T) {
 		{name: "no route", err: errors.New("connect failed: network is unreachable"), state: StateOfflineSuspected},
 		{name: "relay not ready", err: errors.New("relay reservation not ready"), state: StateRelayNotReady},
 		{name: "grant unavailable", err: errors.New("grant service unavailable"), state: StateGrantUnreachable},
+		{name: "dial refused", err: errors.New("failed to dial grant endpoint: connection refused"), state: StateOfflineSuspected},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -90,9 +91,20 @@ func TestClassifyConfigErrors(t *testing.T) {
 }
 
 func TestClassifyUnknownError(t *testing.T) {
-	got := Classify(errors.New("something unexpected happened"))
-	if got.State != StateUnknown || got.Class != ErrorUnknown || got.Reason != string(StateUnknown) {
-		t.Fatalf("unexpected classification: %#v", got)
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "unexpected", err: errors.New("something unexpected happened")},
+		{name: "bare connection refused", err: errors.New("connection refused")},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Classify(tc.err)
+			if got.State != StateUnknown || got.Class != ErrorUnknown || got.Reason != string(StateUnknown) {
+				t.Fatalf("unexpected classification: %#v", got)
+			}
+		})
 	}
 }
 

@@ -93,13 +93,15 @@ func isNetworkTransient(err error, msg string) bool {
 	if errors.As(err, &ne) && ne.Timeout() {
 		return true
 	}
+	if isContextualConnectionRefused(msg) {
+		return true
+	}
 	phrases := []string{
 		"timeout",
 		"timed out",
 		"context deadline exceeded",
 		"network is unreachable",
 		"no route to host",
-		"connection refused",
 		"failed to dial",
 		"dial tcp",
 		"i/o timeout",
@@ -107,6 +109,13 @@ func isNetworkTransient(err error, msg string) bool {
 		"broken pipe",
 	}
 	return containsAny(msg, phrases)
+}
+
+func isContextualConnectionRefused(msg string) bool {
+	if !strings.Contains(msg, "connection refused") {
+		return false
+	}
+	return containsAny(msg, []string{"failed to dial", "dial tcp", "grant service", "grant endpoint", "relay"})
 }
 
 func reasonForError(err error) string {
