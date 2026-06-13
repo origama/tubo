@@ -265,7 +265,7 @@ func TestCurrentAnnouncementV2AdvertisesRelayGrantEndpoint(t *testing.T) {
 	defer app.host.Close()
 	app.reservationReadyUntil = time.Now().Add(time.Minute)
 	app.relayConnected[relayID] = true
-	_, payload, ok := app.currentAnnouncementV3()
+	_, payload, _, ok := app.currentAnnouncementV3()
 	if !ok {
 		t.Fatal("expected current announcement")
 	}
@@ -274,6 +274,225 @@ func TestCurrentAnnouncementV2AdvertisesRelayGrantEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(payload.GrantService.Peers[0], "/p2p-circuit/p2p/"+app.host.ID().String()) {
 		t.Fatalf("unexpected grant peer %q", payload.GrantService.Peers[0])
+	}
+}
+
+func TestAnnouncementBlockDescription(t *testing.T) {
+	tests := []struct {
+		reason AnnouncementBlockReason
+		want   string
+	}{
+		{AnnouncementBlockedPublisherUnavailable, "discovery publisher unavailable"},
+		{AnnouncementBlockedRelayNotReady, "relay reservation not ready yet"},
+		{AnnouncementBlockedPublishLeaseMissing, "publish lease missing"},
+		{AnnouncementBlockedPublishLeaseExpired, "publish lease expired"},
+		{AnnouncementBlockedPublishLeaseInvalid, "publish lease invalid or unverifiable"},
+	}
+	for _, tc := range tests {
+		t.Run(string(tc.reason), func(t *testing.T) {
+			if got := announcementBlockDescription(tc.reason); got != tc.want {
+				t.Fatalf("announcementBlockDescription(%q) = %q, want %q", tc.reason, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPublishCurrentAnnouncementV3ReportsPublisherUnavailable(t *testing.T) {
+	reason, ok := (&App{}).publishCurrentAnnouncementV3(context.Background())
+	if ok || reason != AnnouncementBlockedPublisherUnavailable {
+		t.Fatalf("publishCurrentAnnouncementV3() = (%q, %v)", reason, ok)
+	}
+}
+
+func TestCurrentAnnouncementV3ReportsRelayNotReady(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seed := "service-announcement-relay-not-ready"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayID, err := p2p.PeerIDFromSeed("relay-announcement-relay-not-ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	topic, dctx := testDiscoveryContext(t, "cluster-123", "default")
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", RelayPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/" + relayID.String()}, Autorelay: true, HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	if _, _, reason, ok := app.currentAnnouncementV3(); ok || reason != AnnouncementBlockedRelayNotReady {
+		t.Fatalf("currentAnnouncementV3() = (_, _, %q, %v)", reason, ok)
+	}
+}
+
+func TestCurrentAnnouncementV3ReportsMissingPublishLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seed := "service-announcement-lease-missing"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayID, err := p2p.PeerIDFromSeed("relay-announcement-lease-missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	if err := os.Remove(leasePath); err != nil {
+		t.Fatal(err)
+	}
+	topic, dctx := testDiscoveryContext(t, "cluster-123", "default")
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", RelayPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/" + relayID.String()}, Autorelay: true, HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.reservationReadyUntil = time.Now().Add(time.Minute)
+	app.relayConnected[relayID] = true
+	if _, _, reason, ok := app.currentAnnouncementV3(); ok || reason != AnnouncementBlockedPublishLeaseMissing {
+		t.Fatalf("currentAnnouncementV3() = (_, _, %q, %v)", reason, ok)
+	}
+}
+
+func TestCurrentAnnouncementV3ReportsExpiredPublishLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seed := "service-announcement-lease-expired"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayID, err := p2p.PeerIDFromSeed("relay-announcement-lease-expired")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Now().Add(-time.Minute))
+	topic, dctx := testDiscoveryContext(t, "cluster-123", "default")
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", RelayPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/" + relayID.String()}, Autorelay: true, HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.reservationReadyUntil = time.Now().Add(time.Minute)
+	app.relayConnected[relayID] = true
+	if _, _, reason, ok := app.currentAnnouncementV3(); ok || reason != AnnouncementBlockedPublishLeaseExpired {
+		t.Fatalf("currentAnnouncementV3() = (_, _, %q, %v)", reason, ok)
+	}
+}
+
+func TestCurrentAnnouncementV3ReportsInvalidPublishLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	seed := "service-announcement-lease-invalid"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayID, err := p2p.PeerIDFromSeed("relay-announcement-lease-invalid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	if err := os.WriteFile(leasePath, []byte("not-json\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	topic, dctx := testDiscoveryContext(t, "cluster-123", "default")
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", RelayPeers: []string{"/ip4/1.2.3.4/tcp/4001/p2p/" + relayID.String()}, Autorelay: true, HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.reservationReadyUntil = time.Now().Add(time.Minute)
+	app.relayConnected[relayID] = true
+	if _, _, reason, ok := app.currentAnnouncementV3(); ok || reason != AnnouncementBlockedPublishLeaseInvalid {
+		t.Fatalf("currentAnnouncementV3() = (_, _, %q, %v)", reason, ok)
 	}
 }
 
@@ -434,8 +653,8 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	if app.cache == nil {
 		t.Fatal("expected service cache")
 	}
-	if !app.publishCurrentAnnouncementV3(ctx) {
-		t.Fatal("expected publishCurrentAnnouncementV3 to succeed")
+	if reason, ok := app.publishCurrentAnnouncementV3(ctx); !ok || reason != AnnouncementReady {
+		t.Fatalf("expected publishCurrentAnnouncementV3 to succeed, got (%q, %v)", reason, ok)
 	}
 	entry, ok := app.cache.Resolve("myapi")
 	if !ok {
@@ -533,8 +752,8 @@ func TestPublishCurrentAnnouncementV3SkipsWithoutPublisher(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.host.Close()
-	if app.publishCurrentAnnouncementV3(ctx) {
-		t.Fatal("expected publishCurrentAnnouncementV3 to skip when discovery publisher is disabled")
+	if reason, ok := app.publishCurrentAnnouncementV3(ctx); ok || reason != AnnouncementBlockedPublisherUnavailable {
+		t.Fatalf("expected publisher unavailable skip, got (%q, %v)", reason, ok)
 	}
 }
 
@@ -574,7 +793,7 @@ func TestServiceDiscoveryQuerySuspendsWithoutValidPublishLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer app.host.Close()
-	if _, _, ok := app.currentAnnouncementV3(); ok {
-		t.Fatal("expected suspended announcement")
+	if _, _, reason, ok := app.currentAnnouncementV3(); ok || reason != AnnouncementBlockedPublishLeaseExpired {
+		t.Fatalf("expected suspended announcement, got (_, _, %q, %v)", reason, ok)
 	}
 }

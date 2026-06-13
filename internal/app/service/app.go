@@ -262,8 +262,8 @@ func (a *App) Start(ctx context.Context) error {
 	}
 	go a.maintainRelayReservations(ctx)
 	if a.cfg.DiscoveryEnabled && a.discoveryMode == discovery.ModeNamespaceV3 {
-		if !a.publishCurrentAnnouncementV3(ctx) {
-			log.Printf("initial announcement deferred: publish lease unavailable or relay reservation not ready yet")
+		if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok && reason != AnnouncementReady {
+			log.Printf("initial announcement deferred: %s", announcementBlockDescription(reason))
 		}
 		go a.runAnnouncementLoopV3(ctx)
 	} else if a.cfg.DiscoveryEnabled {
@@ -375,13 +375,59 @@ func mergeRelayCircuitAddrs(base []string, relayInfos []peer.AddrInfo, self peer
 	return out
 }
 
-func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.AnnouncementV3Payload, bool) {
+type AnnouncementBlockReason string
+
+const (
+	AnnouncementReady                       AnnouncementBlockReason = ""
+	AnnouncementBlockedPublisherUnavailable AnnouncementBlockReason = "publisher_unavailable"
+	AnnouncementBlockedRelayNotReady        AnnouncementBlockReason = "relay_not_ready"
+	AnnouncementBlockedPublishLeaseMissing  AnnouncementBlockReason = "publish_lease_missing"
+	AnnouncementBlockedPublishLeaseExpired  AnnouncementBlockReason = "publish_lease_expired"
+	AnnouncementBlockedPublishLeaseInvalid  AnnouncementBlockReason = "publish_lease_invalid"
+)
+
+func announcementBlockDescription(reason AnnouncementBlockReason) string {
+	switch reason {
+	case AnnouncementBlockedPublisherUnavailable:
+		return "discovery publisher unavailable"
+	case AnnouncementBlockedRelayNotReady:
+		return "relay reservation not ready yet"
+	case AnnouncementBlockedPublishLeaseMissing:
+		return "publish lease missing"
+	case AnnouncementBlockedPublishLeaseExpired:
+		return "publish lease expired"
+	case AnnouncementBlockedPublishLeaseInvalid:
+		return "publish lease invalid or unverifiable"
+	default:
+		return "announcement not ready"
+	}
+}
+
+func classifyPublishLeaseBlockReason(err error, leaseBytes []byte) AnnouncementBlockReason {
+	if err == nil {
+		if len(leaseBytes) == 0 {
+			return AnnouncementBlockedPublishLeaseMissing
+		}
+		return AnnouncementReady
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return AnnouncementBlockedPublishLeaseMissing
+	case strings.Contains(msg, "publish lease expired"):
+		return AnnouncementBlockedPublishLeaseExpired
+	default:
+		return AnnouncementBlockedPublishLeaseInvalid
+	}
+}
+
+func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.AnnouncementV3Payload, AnnouncementBlockReason, bool) {
 	if a.discoveryMode != discovery.ModeNamespaceV3 || a.cfg.DiscoveryContext == nil {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementReady, false
 	}
 	addrs := expandUnspecifiedListenAddrs(p2p.PeerAddrs(a.host), a.cfg.Listen, a.host.ID())
 	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) && !a.hasRelayReservation() {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementBlockedRelayNotReady, false
 	}
 	if a.requireRelayReadyAnn {
 		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
@@ -395,8 +441,8 @@ func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.Annou
 		payload.MembershipCapability = capBytes
 	}
 	leaseBytes, lease, err := a.loadPublishLeaseBytes()
-	if err != nil || len(leaseBytes) == 0 {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
+	if blockReason := classifyPublishLeaseBlockReason(err, leaseBytes); blockReason != AnnouncementReady {
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, false
 	}
 	payload.PublishLease = leaseBytes
 	payload.ServicePublicKey = lease.ServicePublicKey
@@ -405,29 +451,29 @@ func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.Annou
 	}
 	ann, err := discovery.NewAnnouncementV3(*a.cfg.DiscoveryContext, a.host.ID(), a.announcementTTL, payload)
 	if err != nil {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementBlockedPublishLeaseInvalid, false
 	}
-	return ann, payload, true
+	return ann, payload, AnnouncementReady, true
 }
 
-func (a *App) publishCurrentAnnouncementV3(ctx context.Context) bool {
+func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlockReason, bool) {
 	if a.publisher == nil {
-		return false
+		return AnnouncementBlockedPublisherUnavailable, false
 	}
-	ann, payload, ok := a.currentAnnouncementV3()
+	ann, payload, reason, ok := a.currentAnnouncementV3()
 	if !ok {
-		return false
+		return reason, false
 	}
 	if err := a.publisher.PublishV3(ctx, ann); err != nil {
 		log.Printf("heartbeat immediate publish failed: %v", err)
-		return false
+		return AnnouncementReady, false
 	}
 	a.cacheCurrentAnnouncementV3(payload, ann.TTL)
 	if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
 		log.Printf("heartbeat relay sync failed: %v", err)
 	}
 	log.Printf("heartbeat published discovery v3 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
-	return true
+	return AnnouncementReady, true
 }
 
 func (a *App) runAnnouncementLoopV3(ctx context.Context) {
@@ -440,9 +486,9 @@ func (a *App) runAnnouncementLoopV3(ctx context.Context) {
 			log.Println("heartbeat loop: context cancelled, stopping")
 			return
 		case <-ticker.C:
-			ann, payload, ok := a.currentAnnouncementV3()
+			ann, payload, reason, ok := a.currentAnnouncementV3()
 			if !ok {
-				log.Printf("heartbeat skipped: publish lease unavailable or expired; service remains running but is not advertised")
+				log.Printf("heartbeat skipped: %s; service remains running but is not advertised", announcementBlockDescription(reason))
 				continue
 			}
 			if err := a.publisher.PublishV3(ctx, ann); err != nil {
@@ -682,8 +728,8 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 			return
 		}
 		if a.discoveryMode == discovery.ModeNamespaceV3 {
-			if !a.publishCurrentAnnouncementV3(ctx) {
-				log.Printf("relay-ready publish skipped: announcement not ready")
+			if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok && reason != AnnouncementReady {
+				log.Printf("relay-ready publish skipped: %s", announcementBlockDescription(reason))
 			}
 			return
 		}
