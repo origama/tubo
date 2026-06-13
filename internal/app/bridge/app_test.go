@@ -476,6 +476,24 @@ func TestBridgeCurrentRuntimeStatusIncludesSelectedBinding(t *testing.T) {
 	}
 }
 
+func TestBridgeRenewalReachabilityWakeOnRecovery(t *testing.T) {
+	app := &App{renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
+	app.recordRenewalReachabilityFailure(errors.New("grant service unavailable"))
+	done := make(chan bool, 1)
+	go func() {
+		done <- reachability.WaitForRecovered(context.Background(), app.renewalRecoveryEvents(), time.Hour)
+	}()
+	app.recordRenewalReachabilitySuccess()
+	select {
+	case recovered := <-done:
+		if !recovered {
+			t.Fatal("expected recovered wake")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected recovered wake")
+	}
+}
+
 func TestBridgeCurrentRuntimeStatusIncludesNetworkReachabilityState(t *testing.T) {
 	app := &App{cfg: Config{ServiceKind: "tcp"}}
 	app.markTunnelDegraded(errors.New("grant service unavailable"))

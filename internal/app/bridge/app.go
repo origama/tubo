@@ -102,6 +102,7 @@ type App struct {
 	lastTunnelErrorAt       time.Time
 	lastTunnelHealthyAt     time.Time
 	statusReporter          func(RuntimeStatus)
+	renewalReachability     *reachability.Manager
 	openTunnelStream        func(context.Context) (network.Stream, error)
 	startClientTCPTunnel    func(network.Stream, string, *protocol.ConnectProof) error
 	rebindServiceFn         func(context.Context) (peer.AddrInfo, string, string, error)
@@ -231,7 +232,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectLease = &artifacts.AccessLease
 		log.Printf("bridge discovery connect lease acquired cluster=%s namespace=%s service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ClusterID, artifacts.AccessLease.NamespaceID, artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
-	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease, rebindServiceFn: cfg.ConnectRebindResolver, selectedAddr: cfg.SelectedAddr, selectedPath: cfg.SelectedPath}
+	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease, rebindServiceFn: cfg.ConnectRebindResolver, selectedAddr: cfg.SelectedAddr, selectedPath: cfg.SelectedPath, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
 	app.reportStatus()
 	return app, nil
 }
@@ -410,6 +411,7 @@ func (a *App) markTunnelHealthy() {
 	a.healthMu.Unlock()
 	if previousError != "" && (previousHealthyAt.IsZero() || previousHealthyAt.Before(previousErrorAt)) {
 		log.Printf("bridge network recovered reason=network_recovered message=%q", "network reachability recovered")
+		a.recordRenewalReachabilitySuccess()
 	}
 	a.reportStatus()
 }
@@ -429,8 +431,34 @@ func (a *App) markTunnelDegraded(err error) {
 	a.healthMu.Unlock()
 	if previousError == "" || previousError != err.Error() || (!previousHealthyAt.IsZero() && previousHealthyAt.After(previousErrorAt)) {
 		log.Printf("bridge network degraded reason=%s message=%q", classification.Reason, err.Error())
+		a.recordRenewalReachabilityFailure(err)
 	}
 	a.reportStatus()
+}
+
+func (a *App) recordRenewalReachabilityFailure(err error) {
+	if a.renewalReachability == nil || err == nil {
+		return
+	}
+	classification := reachability.Classify(err)
+	switch classification.Class {
+	case reachability.ErrorTransient, reachability.ErrorUnknown:
+		a.renewalReachability.RecordFailure(reachability.FailureKindNetwork, err)
+	}
+}
+
+func (a *App) recordRenewalReachabilitySuccess() {
+	if a.renewalReachability == nil {
+		return
+	}
+	a.renewalReachability.RecordSuccess(reachability.SuccessKindNetwork)
+}
+
+func (a *App) renewalRecoveryEvents() <-chan reachability.Event {
+	if a == nil || a.renewalReachability == nil {
+		return nil
+	}
+	return a.renewalReachability.Events()
 }
 
 func (a *App) tunnelHealth() (bool, string) {
@@ -774,15 +802,13 @@ func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 		}
 		now := time.Now().UTC()
 		if nextRetry.After(now) {
-			wait := time.Until(nextRetry)
-			timer := time.NewTimer(wait)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
+			if reached := reachability.WaitForRecovered(ctx, a.renewalRecoveryEvents(), time.Until(nextRetry)); ctx.Err() != nil {
 				return
-			case <-timer.C:
+			} else if reached {
+				now = time.Now().UTC()
+			} else {
+				now = time.Now().UTC()
 			}
-			continue
 		}
 		rolloverDue := connectRefreshLeaseNeedsRollover(*refresh, now)
 		if rolloverDue && !canRollover {
@@ -1170,6 +1196,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		a.consecutiveRefreshFails = 0
 		a.connectMu.Unlock()
 		log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
+		a.recordRenewalReachabilitySuccess()
 		a.reportStatus()
 		return access, nil
 	}
@@ -1239,6 +1266,7 @@ func (a *App) recordRefreshFailure(err error, retryAt time.Time) {
 	if err == nil {
 		return
 	}
+	a.recordRenewalReachabilityFailure(err)
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
 	a.lastRefreshError = err.Error()
@@ -1249,6 +1277,7 @@ func (a *App) recordRefreshFailureLocked(err error, retryAt time.Time) {
 	if err == nil {
 		return
 	}
+	a.recordRenewalReachabilityFailure(err)
 	a.consecutiveRefreshFails++
 	a.lastRefreshError = err.Error()
 	// Apply exponential backoff so rapid retries cannot perpetually renew the

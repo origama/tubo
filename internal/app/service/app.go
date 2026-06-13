@@ -29,6 +29,7 @@ import (
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/reachability"
 )
 
 type Config struct {
@@ -57,27 +58,28 @@ type Config struct {
 	Visibility                                                                                                     string
 }
 type App struct {
-	cfg                     Config
-	host                    host.Host
-	publisher               *discovery.Publisher
-	hb                      *discovery.HeartbeatLoop
-	discoveryMode           discovery.Mode
-	serviceID               string
-	serviceCapabilityFile   string
-	serviceClaimFile        string
-	servicePublishLeaseFile string
-	grantEndpointEnabled    bool
-	health                  *http.Server
-	cache                   *discovery.Cache
-	subscriber              *discovery.PubSubSubscriber
-	stopSubscriber          chan struct{}
-	relayInfos              []peer.AddrInfo
-	announcementTTL         time.Duration
-	requireRelayReadyAnn    bool
-	reservationMu           sync.RWMutex
-	reservationReadyUntil   time.Time
-	relayConnMu             sync.RWMutex
-	relayConnected          map[peer.ID]bool
+	cfg                      Config
+	host                     host.Host
+	publisher                *discovery.Publisher
+	hb                       *discovery.HeartbeatLoop
+	discoveryMode            discovery.Mode
+	serviceID                string
+	serviceCapabilityFile    string
+	serviceClaimFile         string
+	servicePublishLeaseFile  string
+	grantEndpointEnabled     bool
+	health                   *http.Server
+	cache                    *discovery.Cache
+	subscriber               *discovery.PubSubSubscriber
+	stopSubscriber           chan struct{}
+	relayInfos               []peer.AddrInfo
+	announcementTTL          time.Duration
+	requireRelayReadyAnn     bool
+	reservationMu            sync.RWMutex
+	reservationReadyUntil    time.Time
+	relayConnMu              sync.RWMutex
+	relayConnected           map[peer.ID]bool
+	announcementReachability *reachability.Manager
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -210,22 +212,23 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
 	}
 	app := &App{
-		cfg:                     cfg,
-		host:                    h,
-		publisher:               pub,
-		cache:                   cache,
-		subscriber:              subscriber,
-		stopSubscriber:          stopSubscriber,
-		relayInfos:              relays,
-		announcementTTL:         computeAnnouncementTTL(cfg.HeartbeatInterval),
-		requireRelayReadyAnn:    len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
-		relayConnected:          make(map[peer.ID]bool),
-		discoveryMode:           mode,
-		serviceID:               resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName),
-		serviceCapabilityFile:   cfg.MembershipCapabilityFile,
-		serviceClaimFile:        cfg.ServiceClaimFile,
-		servicePublishLeaseFile: cfg.ServicePublishLeaseFile,
-		grantEndpointEnabled:    grantEndpointEnabled,
+		cfg:                      cfg,
+		host:                     h,
+		publisher:                pub,
+		cache:                    cache,
+		subscriber:               subscriber,
+		stopSubscriber:           stopSubscriber,
+		relayInfos:               relays,
+		announcementTTL:          computeAnnouncementTTL(cfg.HeartbeatInterval),
+		requireRelayReadyAnn:     len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
+		relayConnected:           make(map[peer.ID]bool),
+		announcementReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4}),
+		discoveryMode:            mode,
+		serviceID:                resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName),
+		serviceCapabilityFile:    cfg.MembershipCapabilityFile,
+		serviceClaimFile:         cfg.ServiceClaimFile,
+		servicePublishLeaseFile:  cfg.ServicePublishLeaseFile,
+		grantEndpointEnabled:     grantEndpointEnabled,
 	}
 	app.registerRelayNotifiee()
 	return app, nil
@@ -466,12 +469,15 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 	}
 	ann, payload, reason, ok := a.currentAnnouncementV3()
 	if !ok {
+		a.recordAnnouncementReachabilityFailure(reason)
 		return reason, false
 	}
 	if err := a.publisher.PublishV3(ctx, ann); err != nil {
 		log.Printf("heartbeat immediate publish failed: %v", err)
+		a.recordAnnouncementReachabilityFailure(AnnouncementBlockedRelayNotReady)
 		return AnnouncementReady, false
 	}
+	a.recordAnnouncementReachabilitySuccess()
 	a.cacheCurrentAnnouncementV3(payload, ann.TTL)
 	if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
 		log.Printf("heartbeat relay sync failed: %v", err)
@@ -481,32 +487,48 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 }
 
 func (a *App) runAnnouncementLoopV3(ctx context.Context) {
-	ticker := time.NewTicker(a.cfg.HeartbeatInterval)
-	defer ticker.Stop()
 	log.Printf("heartbeat loop started (interval=%s)", a.cfg.HeartbeatInterval)
 	for {
-		select {
-		case <-ctx.Done():
+		if err := ctx.Err(); err != nil {
 			log.Println("heartbeat loop: context cancelled, stopping")
 			return
-		case <-ticker.C:
-			ann, payload, reason, ok := a.currentAnnouncementV3()
-			if !ok {
+		}
+		if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok {
+			if reason != AnnouncementReady {
 				log.Printf("heartbeat skipped: %s; service remains running but is not advertised", announcementBlockLogDetails(reason))
-				continue
-			}
-			if err := a.publisher.PublishV3(ctx, ann); err != nil {
-				log.Printf("heartbeat publish failed: %v", err)
-			} else {
-				a.cacheCurrentAnnouncementV3(payload, ann.TTL)
-				if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
-					log.Printf("heartbeat relay sync failed: %v", err)
-				} else {
-					log.Printf("heartbeat published discovery v3 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
-				}
 			}
 		}
+		if recovered := reachability.WaitForRecovered(ctx, a.announcementRecoveryEvents(), a.cfg.HeartbeatInterval); !recovered && ctx.Err() != nil {
+			log.Println("heartbeat loop: context cancelled, stopping")
+			return
+		}
 	}
+}
+
+func (a *App) recordAnnouncementReachabilityFailure(reason AnnouncementBlockReason) {
+	if a.announcementReachability == nil {
+		return
+	}
+	switch reason {
+	case AnnouncementBlockedRelayNotReady:
+		a.announcementReachability.RecordFailure(reachability.FailureKindRelay, errors.New(announcementBlockDescription(reason)))
+	case AnnouncementBlockedPublisherUnavailable:
+		a.announcementReachability.RecordFailure(reachability.FailureKindNetwork, errors.New(announcementBlockDescription(reason)))
+	}
+}
+
+func (a *App) recordAnnouncementReachabilitySuccess() {
+	if a.announcementReachability == nil {
+		return
+	}
+	a.announcementReachability.RecordSuccess(reachability.SuccessKindRelay)
+}
+
+func (a *App) announcementRecoveryEvents() <-chan reachability.Event {
+	if a == nil || a.announcementReachability == nil {
+		return nil
+	}
+	return a.announcementReachability.Events()
 }
 
 func (a *App) cacheCurrentAnnouncementV3(payload discovery.AnnouncementV3Payload, ttl time.Duration) {

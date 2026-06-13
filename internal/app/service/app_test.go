@@ -19,6 +19,7 @@ import (
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/reachability"
 	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
@@ -34,6 +35,24 @@ func mustParseMultiaddrs(t *testing.T, raw ...string) []multiaddr.Multiaddr {
 		out = append(out, m)
 	}
 	return out
+}
+
+func TestAnnouncementReachabilityWakeOnRecovery(t *testing.T) {
+	app := &App{announcementReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
+	app.recordAnnouncementReachabilityFailure(AnnouncementBlockedRelayNotReady)
+	done := make(chan bool, 1)
+	go func() {
+		done <- reachability.WaitForRecovered(context.Background(), app.announcementRecoveryEvents(), time.Hour)
+	}()
+	app.recordAnnouncementReachabilitySuccess()
+	select {
+	case recovered := <-done:
+		if !recovered {
+			t.Fatal("expected recovered wake")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected recovered wake")
+	}
 }
 
 func testDiscoveryContext(t *testing.T, clusterID, namespaceID string) (string, *discovery.NamespaceDiscoveryContext) {

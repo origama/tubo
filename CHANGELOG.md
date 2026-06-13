@@ -12,6 +12,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Changed
 - Detached bridge logs now print one reachability transition line on degrade/recovery instead of repeating the same failure on every retry.
+- Service announcement and bridge lease-renewal retry loops now wake on recovered reachability events instead of waiting only for their fixed timers/backoffs.
 - `describe process/...` now formats historical network timestamps with `... ago` labels instead of expiry-style `in` labels.
 
 ## [v0.10.5] - 2026-06-13
