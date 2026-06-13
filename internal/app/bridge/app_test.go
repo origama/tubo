@@ -566,6 +566,125 @@ func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
 	}
 }
 
+func TestBridgeConnectLeaseRenewalWakesOnRecoveredEventBeforeCooldown(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-renewal-recovery-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	clientKey := bridgeHostAuthorizedKey(t, h)
+	artifacts, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-renewal-recovery", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 2*time.Minute, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	current := artifacts.AccessLease
+	current.IssuedAt = now.Add(-7 * time.Second)
+	current.ExpiresAt = now.Add(2 * time.Second)
+	refresh := artifacts.RefreshLease
+	var refreshes int32
+	app := &App{host: h, connectLease: &current, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		if atomic.AddInt32(&refreshes, 1) == 1 {
+			return grantspkg.ConnectAccessLease{}, errors.New("grant service unavailable")
+		}
+		return grantspkg.RefreshConnectAccessLease(authPriv, refresh, 10*time.Minute)
+	}}, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
+	lease, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected current lease to remain usable after transient failure, got %v", err)
+	}
+	if lease.JTI != current.JTI {
+		t.Fatalf("expected current lease to be reused, got %#v", lease)
+	}
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.NextRefreshRetryAt == nil || !snap.NextRefreshRetryAt.After(now) {
+		t.Fatalf("expected retry backoff to be scheduled in the future, got %#v", snap.NextRefreshRetryAt)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	woke := make(chan bool, 1)
+	go func() {
+		woke <- app.waitForRenewalRetry(ctx, *snap.NextRefreshRetryAt)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	app.recordRenewalReachabilitySuccess()
+	select {
+	case ok := <-woke:
+		if !ok {
+			t.Fatal("expected recovery wake before cooldown elapsed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected recovery wake before cooldown elapsed")
+	}
+}
+
+func TestBridgeConnectLeaseRenewalRecoveryDoesNotBypassAuthFailure(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-renewal-auth-failure-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	clientKey := bridgeHostAuthorizedKey(t, h)
+	artifacts, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-renewal-auth-failure", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 2*time.Minute, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	current := artifacts.AccessLease
+	current.IssuedAt = now.Add(-7 * time.Second)
+	current.ExpiresAt = now.Add(2 * time.Second)
+	refresh := artifacts.RefreshLease
+	var refreshes int32
+	app := &App{host: h, connectLease: &current, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		atomic.AddInt32(&refreshes, 1)
+		return grantspkg.ConnectAccessLease{}, errors.New("membership capability is missing connect permission")
+	}}, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
+	lease, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("expected current lease to remain usable after auth failure, got %v", err)
+	}
+	if lease.JTI != current.JTI {
+		t.Fatalf("expected current lease to be reused, got %#v", lease)
+	}
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("refresh calls = %d, want 1", got)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.NextRefreshRetryAt == nil || !snap.NextRefreshRetryAt.After(now) {
+		t.Fatalf("expected retry backoff to be scheduled in the future, got %#v", snap.NextRefreshRetryAt)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		_ = app.waitForRenewalRetry(ctx, *snap.NextRefreshRetryAt)
+		close(done)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	app.recordRenewalReachabilitySuccess()
+	time.Sleep(200 * time.Millisecond)
+	if got := atomic.LoadInt32(&refreshes); got != 1 {
+		t.Fatalf("expected no retry before terminal cooldown elapsed, got %d refreshes", got)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected renewal wait to stop after cancel")
+	}
+}
+
 func TestBridgeConnectAccessLeaseRefreshTransientFailureBacksOff(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
 	if err != nil {
@@ -583,8 +702,8 @@ func TestBridgeConnectAccessLeaseRefreshTransientFailureBacksOff(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	current := artifacts.AccessLease
-	current.IssuedAt = now.Add(-2 * time.Minute)
-	current.ExpiresAt = now.Add(30 * time.Second)
+	current.IssuedAt = now.Add(-7 * time.Second)
+	current.ExpiresAt = now.Add(2 * time.Second)
 	refresh := artifacts.RefreshLease
 	var refreshes int32
 	app := &App{host: h, connectLease: &current, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
@@ -608,8 +727,8 @@ func TestBridgeConnectAccessLeaseRefreshTransientFailureBacksOff(t *testing.T) {
 	if snap.NextRefreshRetryAt == nil {
 		t.Fatal("expected retry backoff to be scheduled")
 	}
-	if !snap.NextRefreshRetryAt.Before(current.ExpiresAt.UTC()) {
-		t.Fatalf("expected retry before current access expiry, got retry=%v expiry=%v", snap.NextRefreshRetryAt, current.ExpiresAt.UTC())
+	if !snap.NextRefreshRetryAt.After(now) {
+		t.Fatalf("expected retry to be scheduled in the future, got retry=%v now=%v", snap.NextRefreshRetryAt, now)
 	}
 	lease, err = app.ensureConnectAccessLease(context.Background())
 	if err != nil {

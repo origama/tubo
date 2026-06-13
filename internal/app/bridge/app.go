@@ -95,6 +95,7 @@ type App struct {
 	refreshingLease         bool
 	refreshDone             chan struct{}
 	lastRefreshError        string
+	lastRefreshErrorClass   reachability.ErrorClass
 	nextRefreshRetryAt      time.Time
 	consecutiveRefreshFails int
 	healthMu                sync.RWMutex
@@ -747,6 +748,7 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	a.cfg.ConnectAccessLease = &access
 	a.cfg.ConnectRefreshLease = &refresh
 	a.lastRefreshError = ""
+	a.lastRefreshErrorClass = reachability.ErrorNone
 	a.nextRefreshRetryAt = time.Time{}
 	a.consecutiveRefreshFails = 0
 }
@@ -789,6 +791,36 @@ func connectLeaseFailureRetryAt(err error, current *grantspkg.ConnectAccessLease
 	return retryAt
 }
 
+func (a *App) refreshRetryCanWakeOnRecovery() bool {
+	a.connectMu.Lock()
+	class := a.lastRefreshErrorClass
+	a.connectMu.Unlock()
+	switch class {
+	case reachability.ErrorTransient, reachability.ErrorUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *App) waitForRenewalRetry(ctx context.Context, nextRetry time.Time) bool {
+	wait := time.Until(nextRetry)
+	if wait <= 0 {
+		return false
+	}
+	if a.refreshRetryCanWakeOnRecovery() {
+		return reachability.WaitForRecovered(ctx, a.renewalRecoveryEvents(), wait)
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return false
+	}
+}
+
 func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 	for {
 		a.connectMu.Lock()
@@ -802,7 +834,9 @@ func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 		}
 		now := time.Now().UTC()
 		if nextRetry.After(now) {
-			reachability.WaitForRecovered(ctx, a.renewalRecoveryEvents(), time.Until(nextRetry))
+			if a.waitForRenewalRetry(ctx, nextRetry) {
+				now = time.Now().UTC()
+			}
 			if ctx.Err() != nil {
 				return
 			}
@@ -1190,6 +1224,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		a.connectLease = &access
 		a.cfg.ConnectAccessLease = &access
 		a.lastRefreshError = ""
+		a.lastRefreshErrorClass = reachability.ErrorNone
 		a.nextRefreshRetryAt = time.Time{}
 		a.consecutiveRefreshFails = 0
 		a.connectMu.Unlock()
@@ -1268,6 +1303,7 @@ func (a *App) recordRefreshFailure(err error, retryAt time.Time) {
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
 	a.lastRefreshError = err.Error()
+	a.lastRefreshErrorClass = reachability.Classify(err).Class
 	a.nextRefreshRetryAt = retryAt.UTC()
 }
 
@@ -1278,6 +1314,7 @@ func (a *App) recordRefreshFailureLocked(err error, retryAt time.Time) {
 	a.recordRenewalReachabilityFailure(err)
 	a.consecutiveRefreshFails++
 	a.lastRefreshError = err.Error()
+	a.lastRefreshErrorClass = reachability.Classify(err).Class
 	// Apply exponential backoff so rapid retries cannot perpetually renew the
 	// server-side deny-cache. If the caller's retryAt is further in the future
 	// (e.g. a terminal lease-expiry deadline), honour that instead.

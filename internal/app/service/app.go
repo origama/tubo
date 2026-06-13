@@ -80,6 +80,9 @@ type App struct {
 	relayConnMu              sync.RWMutex
 	relayConnected           map[peer.ID]bool
 	announcementReachability *reachability.Manager
+	announcementRecoveryBus  *reachability.Broadcaster
+	announcementLogMu        sync.Mutex
+	lastAnnouncementLogAt    time.Time
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -223,6 +226,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		requireRelayReadyAnn:     len(relays) > 0 && (cfg.Autorelay || cfg.ForceReachability == "private"),
 		relayConnected:           make(map[peer.ID]bool),
 		announcementReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4}),
+		announcementRecoveryBus:  reachability.NewBroadcaster(),
 		discoveryMode:            mode,
 		serviceID:                resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName),
 		serviceCapabilityFile:    cfg.MembershipCapabilityFile,
@@ -263,12 +267,15 @@ func (a *App) Start(ctx context.Context) error {
 			}
 		}()
 	}
-	go a.maintainRelayReservations(ctx)
+	if a.announcementReachability != nil && a.announcementRecoveryBus != nil {
+		go a.announcementRecoveryBus.Run(ctx, a.announcementReachability.Events())
+	}
+	go a.maintainRelayReservations(ctx, a.announcementRecoveryEvents())
 	if a.cfg.DiscoveryEnabled && a.discoveryMode == discovery.ModeNamespaceV3 {
 		if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok && reason != AnnouncementReady {
 			log.Printf("initial announcement deferred: %s", announcementBlockLogDetails(reason))
 		}
-		go a.runAnnouncementLoopV3(ctx)
+		go a.runAnnouncementLoopV3(ctx, a.announcementRecoveryEvents())
 	} else if a.cfg.DiscoveryEnabled {
 		if !a.hb.PublishNow(ctx) {
 			log.Printf("initial announcement deferred: reason=relay_not_ready message=%q", "relay reservation not ready yet")
@@ -482,11 +489,13 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 	if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
 		log.Printf("heartbeat relay sync failed: %v", err)
 	}
-	log.Printf("heartbeat published discovery v3 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
+	if a.shouldLogAnnouncementPublish(time.Now().UTC()) {
+		log.Printf("heartbeat published discovery v3 service %q (peer=%s)", a.cfg.ServiceName, ann.PeerID)
+	}
 	return AnnouncementReady, true
 }
 
-func (a *App) runAnnouncementLoopV3(ctx context.Context) {
+func (a *App) runAnnouncementLoopV3(ctx context.Context, recovery <-chan reachability.Event) {
 	log.Printf("heartbeat loop started (interval=%s)", a.cfg.HeartbeatInterval)
 	for {
 		if err := ctx.Err(); err != nil {
@@ -498,7 +507,7 @@ func (a *App) runAnnouncementLoopV3(ctx context.Context) {
 				log.Printf("heartbeat skipped: %s; service remains running but is not advertised", announcementBlockLogDetails(reason))
 			}
 		}
-		if recovered := reachability.WaitForRecovered(ctx, a.announcementRecoveryEvents(), a.cfg.HeartbeatInterval); !recovered && ctx.Err() != nil {
+		if recovered := reachability.WaitForRecovered(ctx, recovery, a.cfg.HeartbeatInterval); !recovered && ctx.Err() != nil {
 			log.Println("heartbeat loop: context cancelled, stopping")
 			return
 		}
@@ -524,11 +533,27 @@ func (a *App) recordAnnouncementReachabilitySuccess() {
 	a.announcementReachability.RecordSuccess(reachability.SuccessKindRelay)
 }
 
+func (a *App) shouldLogAnnouncementPublish(now time.Time) bool {
+	if a == nil {
+		return false
+	}
+	a.announcementLogMu.Lock()
+	defer a.announcementLogMu.Unlock()
+	if !a.lastAnnouncementLogAt.IsZero() && now.Sub(a.lastAnnouncementLogAt) < time.Second {
+		return false
+	}
+	a.lastAnnouncementLogAt = now
+	return true
+}
+
 func (a *App) announcementRecoveryEvents() <-chan reachability.Event {
 	if a == nil || a.announcementReachability == nil {
 		return nil
 	}
-	return a.announcementReachability.Events()
+	if a.announcementRecoveryBus == nil {
+		return a.announcementReachability.Events()
+	}
+	return a.announcementRecoveryBus.Subscribe(4)
 }
 
 func (a *App) cacheCurrentAnnouncementV3(payload discovery.AnnouncementV3Payload, ttl time.Duration) {
@@ -740,7 +765,7 @@ func (a *App) registerRelayNotifiee() {
 	})
 }
 
-func (a *App) maintainRelayReservations(ctx context.Context) {
+func (a *App) maintainRelayReservations(ctx context.Context, recovery <-chan reachability.Event) {
 	if !a.requireRelayReadyAnn || len(a.relayInfos) == 0 {
 		return
 	}
@@ -802,6 +827,7 @@ func (a *App) maintainRelayReservations(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-recovery:
 		}
 	}
 }

@@ -55,6 +55,28 @@ func TestAnnouncementReachabilityWakeOnRecovery(t *testing.T) {
 	}
 }
 
+func TestAnnouncementRecoveryBroadcastWakesSubscriber(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	app := &App{announcementReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4}), announcementRecoveryBus: reachability.NewBroadcaster()}
+	go app.announcementRecoveryBus.Run(ctx, app.announcementReachability.Events())
+	app.recordAnnouncementReachabilityFailure(AnnouncementBlockedRelayNotReady)
+	done := make(chan bool, 1)
+	go func() {
+		done <- reachability.WaitForRecovered(context.Background(), app.announcementRecoveryEvents(), time.Hour)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	app.recordAnnouncementReachabilitySuccess()
+	select {
+	case recovered := <-done:
+		if !recovered {
+			t.Fatal("expected recovery wake")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected recovery wake")
+	}
+}
+
 func testDiscoveryContext(t *testing.T, clusterID, namespaceID string) (string, *discovery.NamespaceDiscoveryContext) {
 	t.Helper()
 	secret, err := cfgpkg.GenerateSecretBytes(cfgpkg.NamespaceDiscoverySecretLength)
