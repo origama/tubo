@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -29,6 +29,7 @@ import (
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/reachability"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -76,31 +77,31 @@ type RuntimeStatus struct {
 }
 
 type App struct {
-	cfg                  Config
-	host                 host.Host
-	service              peer.AddrInfo
-	server               *http.Server
-	listener             net.Listener
-	listenAddr           string
-	stateMu              sync.RWMutex
-	connectMu            sync.Mutex
-	connectLease         *grantspkg.ConnectAccessLease
-	refreshingLease      bool
-	refreshDone          chan struct{}
-	lastRefreshError          string
-	nextRefreshRetryAt        time.Time
-	consecutiveRefreshFails   int
-	healthMu             sync.RWMutex
-	lastTunnelError      string
-	lastTunnelErrorAt    time.Time
-	lastTunnelHealthyAt  time.Time
-	statusReporter       func(RuntimeStatus)
-	openTunnelStream     func(context.Context) (network.Stream, error)
-	startClientTCPTunnel func(network.Stream, string, *protocol.ConnectProof) error
-	rebindServiceFn      func(context.Context) (peer.AddrInfo, string, string, error)
-	reconnectServiceFn   func(context.Context) error
-	selectedAddr         string
-	selectedPath         string
+	cfg                     Config
+	host                    host.Host
+	service                 peer.AddrInfo
+	server                  *http.Server
+	listener                net.Listener
+	listenAddr              string
+	stateMu                 sync.RWMutex
+	connectMu               sync.Mutex
+	connectLease            *grantspkg.ConnectAccessLease
+	refreshingLease         bool
+	refreshDone             chan struct{}
+	lastRefreshError        string
+	nextRefreshRetryAt      time.Time
+	consecutiveRefreshFails int
+	healthMu                sync.RWMutex
+	lastTunnelError         string
+	lastTunnelErrorAt       time.Time
+	lastTunnelHealthyAt     time.Time
+	statusReporter          func(RuntimeStatus)
+	openTunnelStream        func(context.Context) (network.Stream, error)
+	startClientTCPTunnel    func(network.Stream, string, *protocol.ConnectProof) error
+	rebindServiceFn         func(context.Context) (peer.AddrInfo, string, string, error)
+	reconnectServiceFn      func(context.Context) error
+	selectedAddr            string
+	selectedPath            string
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -668,13 +669,12 @@ func ConnectPathTransitionMessage(previous, current string) (string, bool) {
 }
 
 func connectLeaseFailureIsTerminal(err error) bool {
-	msg := strings.ToLower(strings.TrimSpace(err.Error()))
-	for _, needle := range []string{"denied", "revoked", "not authorized", "missing membership", "no connect grant service peers", "grant service unavailable"} {
-		if strings.Contains(msg, needle) {
-			return true
-		}
+	switch reachability.Classify(err).Class {
+	case reachability.ErrorAuth, reachability.ErrorConfig:
+		return true
+	default:
+		return false
 	}
-	return false
 }
 
 func (a *App) startConnectLeaseRenewal(ctx context.Context) {

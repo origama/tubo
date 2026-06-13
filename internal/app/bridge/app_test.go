@@ -714,7 +714,7 @@ func TestBridgeConnectLeaseRolloverTemporaryFailureBacksOff(t *testing.T) {
 	var requests int32
 	grantHost := newConnectLeaseGrantHost(t, authPriv, 10*time.Second, 20*time.Second, func(msg grantspkg.Message, requester string) error {
 		if atomic.AddInt32(&requests, 1) == 1 {
-			return errors.New("temporary grant endpoint failure")
+			return errors.New("grant service unavailable")
 		}
 		if msg.MembershipCapability == nil {
 			return errors.New("missing membership capability")
@@ -752,8 +752,8 @@ func TestBridgeConnectLeaseRolloverTemporaryFailureBacksOff(t *testing.T) {
 	if snap.NextRefreshRetryAt == nil {
 		t.Fatal("expected retry backoff to be scheduled")
 	}
-	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "temporary grant endpoint failure") {
-		t.Fatalf("expected degraded temporary failure, got %#v", snap)
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "grant service unavailable") {
+		t.Fatalf("expected degraded transient grant failure, got %#v", snap)
 	}
 	lease, err = app.ensureConnectAccessLease(context.Background())
 	if err != nil {
@@ -764,6 +764,27 @@ func TestBridgeConnectLeaseRolloverTemporaryFailureBacksOff(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&requests); got != 1 {
 		t.Fatalf("expected no retry before backoff, got %d requests", got)
+	}
+}
+
+func TestConnectLeaseFailureIsTerminalUsesReachabilityClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "grant service unavailable", err: errors.New("grant service unavailable"), want: false},
+		{name: "dial connection refused", err: errors.New("failed to dial grant endpoint: connection refused"), want: false},
+		{name: "auth denied", err: errors.New("membership capability is missing connect permission"), want: true},
+		{name: "config invalid", err: errors.New("publish lease service public key mismatch"), want: true},
+		{name: "unknown", err: errors.New("unexpected bridge renewal error"), want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := connectLeaseFailureIsTerminal(tc.err); got != tc.want {
+				t.Fatalf("connectLeaseFailureIsTerminal(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 
