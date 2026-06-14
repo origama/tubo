@@ -2,7 +2,8 @@
 set -eu
 
 REPO="${TUBO_REPO:-origama/tubo}"
-INSTALL_DIR="${TUBO_INSTALL_DIR:-$HOME/.local/bin}"
+INSTALL_DIR="${TUBO_INSTALL_DIR:-}"
+INSTALL_DIR_EXPLICIT=0
 VERSION="${TUBO_VERSION:-}"
 VERIFY_CHECKSUM="${TUBO_VERIFY_CHECKSUM:-1}"
 
@@ -16,7 +17,7 @@ Usage:
 Environment:
   TUBO_REPO              GitHub repository to install from. Default: origama/tubo
   TUBO_VERSION           Release tag to install, for example v0.1.3. Default: latest release
-  TUBO_INSTALL_DIR       Destination directory. Default: $HOME/.local/bin
+  TUBO_INSTALL_DIR       Destination directory. Default: writable tubo on PATH, otherwise $HOME/.local/bin
   TUBO_VERIFY_CHECKSUM   Set to 0 to skip SHA256SUMS verification. Default: 1
 EOF
 }
@@ -41,6 +42,7 @@ while [ "$#" -gt 0 ]; do
         echo "error: --install-dir requires a value" >&2
         exit 1
       fi
+      INSTALL_DIR_EXPLICIT=1
       shift 2
       ;;
     --no-verify)
@@ -85,6 +87,28 @@ case "$raw_arch" in
     exit 1
     ;;
 esac
+
+resolve_install_dir() {
+  if [ -n "$INSTALL_DIR" ]; then
+    return 0
+  fi
+  if [ "$INSTALL_DIR_EXPLICIT" -eq 0 ]; then
+    current_bin="$(command -v tubo 2>/dev/null || true)"
+    if [ -n "$current_bin" ]; then
+      current_dir="$(dirname "$current_bin")"
+      if [ -w "$current_bin" ] || [ -w "$current_dir" ]; then
+        INSTALL_DIR="$current_dir"
+        return 0
+      fi
+      echo "error: found existing tubo at $current_bin, but it is not writable" >&2
+      echo "hint: upgrade that installation in place, or rerun with --install-dir pointing to a writable PATH directory" >&2
+      exit 1
+    fi
+  fi
+  INSTALL_DIR="$HOME/.local/bin"
+}
+
+resolve_install_dir
 
 resolve_latest_version() {
   curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \

@@ -6,6 +6,27 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+## [v0.10.7] - 2026-06-14
+
+Patch release for installer UX, so fresh installs upgrade a writable existing `tubo` on `PATH` instead of silently leaving an older binary first.
+
+### Added
+- `install.sh` now auto-detects a writable existing `tubo` on `PATH` and upgrades it in place by default.
+- The website getting-started page and README now describe the actual install target and `PATH` requirement.
+
+### Changed
+- The installer now prefers the first writable existing `tubo` on `PATH`; if the current binary is not writable, it fails loudly instead of creating a second install that may not be used.
+- `TUBO_INSTALL_DIR` help text now reflects the new default install resolution.
+
+### Fixed
+- `curl -fsSL https://www.tubo.click/install.sh | sh` no longer appears to succeed while leaving an older `tubo` earlier on `PATH` when an in-place upgrade is possible.
+
+### Compatibility
+- Product version: v0.10.7
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none
+
 ## [v0.10.6] - 2026-06-14
 
 Patch release for reachability-aware runtime UX, with better process status reporting and recovery wakeups.

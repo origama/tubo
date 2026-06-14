@@ -56,11 +56,11 @@
     <div class="code-block" style="margin:16px 0 24px">
       <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> <span style="color:#86efac">-fsSL</span> https://www.tubo.click/install.sh | sh</pre>
     </div>
-    <p>This downloads and installs the latest <code>tubo</code> binary to <code>/usr/local/bin</code>.</p>
+    <p>By default this upgrades a writable existing <code>tubo</code> on <code>PATH</code>; otherwise it installs to <code>~/.local/bin</code>. If you use the default location, make sure that directory is on your <code>PATH</code>.</p>
 
     <p><strong>Install a specific version:</strong></p>
     <div class="code-block" style="margin:16px 0 24px">
-      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> <span style="color:#86efac">-fsSL</span> https://www.tubo.click/install.sh | sh <span style="color:#86efac">-s</span> <span style="color:#fde68a">-- --version v0.10.0</span></pre>
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> <span style="color:#86efac">-fsSL</span> https://www.tubo.click/install.sh | sh <span style="color:#86efac">-s</span> <span style="color:#fde68a">-- --version v0.10.7</span></pre>
     </div>
 
     <p><strong>Build from source:</strong></p>
@@ -72,7 +72,7 @@
     <p>Verify the installation:</p>
     <div class="code-block" style="margin:16px 0 24px">
       <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo version</span>
-<span style="color:#86efac">tubo v0.10.0  protocol 1.1</span></pre>
+<span style="color:#86efac">tubo v0.10.7  protocol 1.1</span></pre>
     </div>
 
     <h2>2. Join the public network</h2>

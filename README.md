@@ -8,6 +8,8 @@
 curl -fsSL https://www.tubo.click/install.sh | sh
 ```
 
+By default the installer upgrades a writable `tubo` already on your `PATH`; otherwise it installs to `~/.local/bin`.
+
 Build from source:
 
 ```bash
