@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -8,10 +9,13 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -529,6 +533,100 @@ func TestBridgeCurrentRuntimeStatusClearsStaleRefreshErrorAfterTrafficRecovery(t
 	}
 	if snap.LastRefreshError != "grant service unavailable" {
 		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+	}
+}
+
+func TestBridgeHTTPRequestMarksHealthyAfterRecovery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-http-recovery-service", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	serviceHost.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(upstream.URL, nil))
+	app, err := New(ctx, Config{Listen: "127.0.0.1:0", Seed: "bridge-http-recovery-client", P2PListen: "/ip4/127.0.0.1/tcp/0", ServiceAddr: p2p.PeerAddrs(serviceHost)[0], ServiceKind: "http"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.lastRefreshError = "grant service unavailable"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://bridge.local/", nil)
+	app.mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "ok" {
+		t.Fatalf("unexpected http response: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected running status after HTTP recovery, got %#v", snap)
+	}
+}
+
+func TestBridgeWebSocketUpgradeMarksHealthyAfterRecovery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			t.Fatalf("upstream upgrade missing websocket header: %#v", r.Header)
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("upstream writer must support hijacking")
+		}
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("upstream hijack: %v", err)
+		}
+		defer conn.Close()
+		if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"); err != nil {
+			t.Fatalf("upstream write handshake: %v", err)
+		}
+		if err := rw.Flush(); err != nil {
+			t.Fatalf("upstream flush handshake: %v", err)
+		}
+	}))
+	defer upstream.Close()
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-websocket-recovery-service", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	serviceHost.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(upstream.URL, nil))
+	app, err := New(ctx, Config{Listen: "127.0.0.1:0", Seed: "bridge-websocket-recovery-client", P2PListen: "/ip4/127.0.0.1/tcp/0", ServiceAddr: p2p.PeerAddrs(serviceHost)[0], ServiceKind: "http"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.lastRefreshError = "grant service unavailable"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	srv := httptest.NewServer(app.mux())
+	defer srv.Close()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: bridge.local\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line, "101 Switching Protocols") {
+		t.Fatalf("unexpected websocket response status: %q", line)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected running status after websocket recovery, got %#v", snap)
 	}
 }
 

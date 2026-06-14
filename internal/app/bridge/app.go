@@ -1033,8 +1033,12 @@ func (a *App) mux() *http.ServeMux {
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
-		_, _ = io.Copy(w, resp.Body)
-		a.markTunnelHealthy()
+		wrote, copyErr := io.Copy(w, resp.Body)
+		if copyErr == nil {
+			a.markTunnelHealthy()
+		} else {
+			log.Printf("bridge http response copy failed bytes=%d err=%v", wrote, copyErr)
+		}
 	})
 	return m
 }
