@@ -170,10 +170,12 @@ type attachPublishAuthorizationCoordinator struct {
 	servicePeerID string
 	backoff       time.Duration
 	nextAttempt   time.Time
+	now           func() time.Time
+	renew         func(string, cfgpkg.Config, cfgpkg.NamespaceService, string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error)
 }
 
 func newAttachPublishAuthorizationCoordinator(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) *attachPublishAuthorizationCoordinator {
-	return &attachPublishAuthorizationCoordinator{configPath: configPath, cfg: cfg, svc: svc, servicePeerID: servicePeerID, backoff: 5 * time.Second}
+	return &attachPublishAuthorizationCoordinator{configPath: configPath, cfg: cfg, svc: svc, servicePeerID: servicePeerID, backoff: 5 * time.Second, now: time.Now, renew: renewAttachPublishAuthorization}
 }
 
 func (c *attachPublishAuthorizationCoordinator) handle(ctx context.Context, req serviceapp.PublishAuthorizationRequest) serviceapp.PublishAuthorizationResult {
@@ -190,10 +192,18 @@ func (c *attachPublishAuthorizationCoordinator) handle(ctx context.Context, req 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now()
-	if !c.nextAttempt.IsZero() && now.Before(c.nextAttempt) {
-		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: fmt.Sprintf("retry backoff active until %s", c.nextAttempt.UTC().Format(time.RFC3339))}
+	if c.now != nil {
+		now = c.now()
 	}
-	cfg, svc, shareToken, err := renewAttachPublishAuthorization(c.configPath, c.cfg, c.svc, c.servicePeerID)
+	if !c.nextAttempt.IsZero() && now.Before(c.nextAttempt) {
+		nextAttempt := c.nextAttempt
+		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: fmt.Sprintf("retry backoff active until %s", nextAttempt.UTC().Format(time.RFC3339)), RetryAfter: &nextAttempt}
+	}
+	renew := c.renew
+	if renew == nil {
+		renew = renewAttachPublishAuthorization
+	}
+	cfg, svc, shareToken, err := renew(c.configPath, c.cfg, c.svc, c.servicePeerID)
 	if err == nil {
 		c.cfg = cfg
 		c.svc = svc
@@ -213,10 +223,13 @@ func (c *attachPublishAuthorizationCoordinator) handle(ctx context.Context, req 
 		c.nextAttempt = now.Add(30 * time.Second)
 	case serviceapp.PublishAuthorizationOutcomeUnreachable:
 		c.nextAttempt = now.Add(c.backoff)
+	case serviceapp.PublishAuthorizationOutcomeRetryable:
+		c.nextAttempt = now.Add(c.backoff)
 	default:
 		c.nextAttempt = now.Add(c.backoff)
 	}
-	return serviceapp.PublishAuthorizationResult{Outcome: outcome, Message: err.Error()}
+	nextAttempt := c.nextAttempt
+	return serviceapp.PublishAuthorizationResult{Outcome: outcome, Message: err.Error(), RetryAfter: &nextAttempt}
 }
 
 func (c *attachPublishAuthorizationCoordinator) run(ctx context.Context) {
@@ -276,14 +289,14 @@ func classifyPublishAuthorizationOutcome(err error) serviceapp.PublishAuthorizat
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "pending"):
+	case strings.Contains(msg, "pending") || strings.Contains(msg, "awaiting approval") || strings.Contains(msg, "request pending"):
 		return serviceapp.PublishAuthorizationOutcomePending
-	case strings.Contains(msg, "denied"):
+	case strings.Contains(msg, "denied") || strings.Contains(msg, "rejected") || strings.Contains(msg, "forbidden") || strings.Contains(msg, "revoked") || strings.Contains(msg, "permission denied"):
 		return serviceapp.PublishAuthorizationOutcomeDenied
-	case strings.Contains(msg, "grant service peer") || strings.Contains(msg, "failed to dial") || strings.Contains(msg, "dial backoff") || strings.Contains(msg, "unreachable") || strings.Contains(msg, "timed out"):
+	case strings.Contains(msg, "grant service peer") || strings.Contains(msg, "failed to dial") || strings.Contains(msg, "dial backoff") || strings.Contains(msg, "unreachable") || strings.Contains(msg, "timed out") || strings.Contains(msg, "timeout") || strings.Contains(msg, "connection refused") || strings.Contains(msg, "connection reset") || strings.Contains(msg, "i/o timeout") || strings.Contains(msg, "context deadline exceeded") || strings.Contains(msg, "temporary") || strings.Contains(msg, "expired") || strings.Contains(msg, "eof"):
 		return serviceapp.PublishAuthorizationOutcomeUnreachable
 	default:
-		return serviceapp.PublishAuthorizationOutcomeDenied
+		return serviceapp.PublishAuthorizationOutcomeRetryable
 	}
 }
 

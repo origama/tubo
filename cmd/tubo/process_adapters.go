@@ -8,6 +8,7 @@ import (
 	"time"
 
 	bridgeapp "github.com/origama/tubo/internal/app/bridge"
+	serviceapp "github.com/origama/tubo/internal/app/service"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	processes "github.com/origama/tubo/internal/processes"
@@ -39,7 +40,11 @@ func startDetachedProcessWithTimeout(spec detachedSpec, timeout time.Duration) (
 	if err != nil {
 		return detachedProcessState{}, err
 	}
-	return processes.StartDetached(spec, exe, append(os.Environ(), "TUBO_DETACHED_CHILD=1"), configureDetachedCommand, timeout)
+	env := append(os.Environ(), "TUBO_DETACHED_CHILD=1")
+	if strings.TrimSpace(spec.State.StateFile) != "" {
+		env = append(env, "TUBO_PROCESS_STATE_FILE="+spec.State.StateFile)
+	}
+	return processes.StartDetached(spec, exe, env, configureDetachedCommand, timeout)
 }
 
 func registerCurrentProcess(state detachedProcessState) (detachedProcessState, func() error, error) {
@@ -150,6 +155,22 @@ func updateProcessRuntimeState(stateFile string, runtime bridgeapp.RuntimeStatus
 			state.LastTunnelHealthyAt = runtime.LastTunnelHealthyAt.UTC().Format(time.RFC3339)
 		} else {
 			state.LastTunnelHealthyAt = ""
+		}
+	})
+}
+
+func updateAttachServiceRuntimeState(stateFile string, runtime serviceapp.RuntimeStatus) error {
+	if strings.TrimSpace(stateFile) == "" {
+		return nil
+	}
+	return processes.UpdateState(stateFile, func(state *detachedProcessState) {
+		state.RuntimeStatus = runtime.Status
+		state.DegradedReason = runtime.Reason
+		state.LastRefreshError = runtime.LastRefreshError
+		if runtime.NextRefreshRetryAt != nil {
+			state.NextRefreshRetryAt = runtime.NextRefreshRetryAt.UTC().Format(time.RFC3339)
+		} else {
+			state.NextRefreshRetryAt = ""
 		}
 	})
 }

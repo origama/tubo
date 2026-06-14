@@ -55,6 +55,7 @@ type Config struct {
 	ServiceClaimFile                                                                                               string
 	ServicePublishLeaseFile                                                                                        string
 	PublishAuthorizationHandler                                                                                    PublishAuthorizationHandler
+	StatusReporter                                                                                                 func(RuntimeStatus)
 	DiscoveryEnabled                                                                                               bool
 	Visibility                                                                                                     string
 }
@@ -65,6 +66,7 @@ const (
 	PublishAuthorizationOutcomePending     PublishAuthorizationOutcome = "pending"
 	PublishAuthorizationOutcomeDenied      PublishAuthorizationOutcome = "denied"
 	PublishAuthorizationOutcomeUnreachable PublishAuthorizationOutcome = "unreachable"
+	PublishAuthorizationOutcomeRetryable   PublishAuthorizationOutcome = "retryable"
 	PublishAuthorizationOutcomeSkipped     PublishAuthorizationOutcome = "skipped"
 )
 
@@ -73,16 +75,28 @@ type PublishAuthorizationRequest struct {
 }
 
 type PublishAuthorizationResult struct {
-	Outcome PublishAuthorizationOutcome `json:"outcome"`
-	Message string                      `json:"message,omitempty"`
+	Outcome    PublishAuthorizationOutcome `json:"outcome"`
+	Message    string                      `json:"message,omitempty"`
+	RetryAfter *time.Time                  `json:"retry_after,omitempty"`
 }
 
 type PublishAuthorizationHandler func(context.Context, PublishAuthorizationRequest) PublishAuthorizationResult
 
+type RuntimeStatus struct {
+	Status             string
+	Reason             string
+	LastRefreshError   string
+	NextRefreshRetryAt *time.Time
+}
+
+type announcementPublisher interface {
+	PublishV3(context.Context, discovery.AnnouncementV3) error
+}
+
 type App struct {
 	cfg                      Config
 	host                     host.Host
-	publisher                *discovery.Publisher
+	publisher                announcementPublisher
 	hb                       *discovery.HeartbeatLoop
 	discoveryMode            discovery.Mode
 	serviceID                string
@@ -105,6 +119,7 @@ type App struct {
 	announcementRecoveryBus  *reachability.Broadcaster
 	announcementLogMu        sync.Mutex
 	lastAnnouncementLogAt    time.Time
+	statusReporter           func(RuntimeStatus)
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -239,7 +254,6 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	app := &App{
 		cfg:                      cfg,
 		host:                     h,
-		publisher:                pub,
 		cache:                    cache,
 		subscriber:               subscriber,
 		stopSubscriber:           stopSubscriber,
@@ -256,10 +270,27 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		servicePublishLeaseFile:  cfg.ServicePublishLeaseFile,
 		grantEndpointEnabled:     grantEndpointEnabled,
 	}
+	if pub != nil {
+		app.publisher = pub
+	}
 	app.registerRelayNotifiee()
+	if cfg.StatusReporter != nil {
+		app.SetStatusReporter(cfg.StatusReporter)
+	}
 	return app, nil
 }
 func (a *App) Host() host.Host { return a.host }
+
+func (a *App) SetStatusReporter(report func(RuntimeStatus)) {
+	a.statusReporter = report
+	a.reportStatus(RuntimeStatus{Status: "running"})
+}
+
+func (a *App) reportStatus(status RuntimeStatus) {
+	if a.statusReporter != nil {
+		a.statusReporter(status)
+	}
+}
 
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
@@ -512,6 +543,7 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 		return AnnouncementBlockedPublisherUnavailable, false
 	}
 	ann, payload, reason, ok := a.currentAnnouncementV3()
+	recoveredAuth := false
 	if !ok {
 		blockedReason := reason
 		a.recordAnnouncementReachabilityFailure(blockedReason)
@@ -521,21 +553,26 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 			case PublishAuthorizationOutcomeReady:
 				if ann, payload, reason, ok = a.currentAnnouncementV3(); !ok {
 					a.recordAnnouncementReachabilityFailure(reason)
+					a.reportStatus(RuntimeStatus{Status: "degraded", Reason: announcementBlockDescription(reason), LastRefreshError: result.Message})
 					log.Printf("publish authorization refreshed but announcement still blocked reason=%s", announcementBlockLogDetails(reason))
 					return reason, false
 				}
+				recoveredAuth = true
 				log.Printf("publish authorization refreshed reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
 			case PublishAuthorizationOutcomePending:
-				log.Printf("publish authorization pending reason=%s message=%q", reason, result.Message)
+				log.Printf("publish authorization pending reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
 			case PublishAuthorizationOutcomeDenied:
-				log.Printf("publish authorization denied reason=%s message=%q", reason, result.Message)
+				log.Printf("publish authorization denied reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
 			case PublishAuthorizationOutcomeUnreachable:
-				log.Printf("publish authorization unreachable reason=%s message=%q", reason, result.Message)
+				log.Printf("publish authorization unreachable reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
+			case PublishAuthorizationOutcomeRetryable:
+				log.Printf("publish authorization retryable reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
 			case PublishAuthorizationOutcomeSkipped:
 				if strings.TrimSpace(result.Message) != "" {
-					log.Printf("publish authorization skipped reason=%s message=%q", reason, result.Message)
+					log.Printf("publish authorization skipped reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
 				}
 			}
+			a.reportPublishAuthorizationStatus(blockedReason, result)
 		}
 		if !ok {
 			return reason, false
@@ -544,9 +581,15 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 	if err := a.publisher.PublishV3(ctx, ann); err != nil {
 		log.Printf("heartbeat immediate publish failed: %v", err)
 		a.recordAnnouncementReachabilityFailure(AnnouncementBlockedRelayNotReady)
+		a.reportStatus(RuntimeStatus{Status: "degraded", Reason: announcementBlockDescription(AnnouncementBlockedRelayNotReady), LastRefreshError: err.Error()})
 		return AnnouncementReady, false
 	}
-	a.recordAnnouncementReachabilitySuccess()
+	if recoveredAuth {
+		a.recordAnnouncementReachabilitySuccess(reachability.SuccessKindGrant)
+	} else {
+		a.recordAnnouncementReachabilitySuccess(reachability.SuccessKindRelay)
+	}
+	a.reportStatus(RuntimeStatus{Status: "running"})
 	a.cacheCurrentAnnouncementV3(payload, ann.TTL)
 	if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
 		log.Printf("heartbeat relay sync failed: %v", err)
@@ -590,11 +633,22 @@ func (a *App) recordAnnouncementReachabilityFailure(reason AnnouncementBlockReas
 	}
 }
 
-func (a *App) recordAnnouncementReachabilitySuccess() {
+func (a *App) recordAnnouncementReachabilitySuccess(kind reachability.SuccessKind) {
 	if a.announcementReachability == nil {
 		return
 	}
-	a.announcementReachability.RecordSuccess(reachability.SuccessKindRelay)
+	a.announcementReachability.RecordSuccess(kind)
+}
+
+func (a *App) reportPublishAuthorizationStatus(reason AnnouncementBlockReason, result PublishAuthorizationResult) {
+	if a.statusReporter == nil {
+		return
+	}
+	status := RuntimeStatus{Status: "degraded", Reason: announcementBlockDescription(reason), LastRefreshError: result.Message, NextRefreshRetryAt: result.RetryAfter}
+	if result.Outcome == PublishAuthorizationOutcomeReady {
+		status = RuntimeStatus{Status: "running"}
+	}
+	a.reportStatus(status)
 }
 
 func (a *App) shouldLogAnnouncementPublish(now time.Time) bool {
