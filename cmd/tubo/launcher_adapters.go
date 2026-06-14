@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"os"
+	"strings"
 
 	bridge "github.com/origama/tubo/internal/app/bridge"
 	edge "github.com/origama/tubo/internal/app/edge"
@@ -9,6 +11,7 @@ import (
 	service "github.com/origama/tubo/internal/app/service"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	launcher "github.com/origama/tubo/internal/launcher"
+	logging "github.com/origama/tubo/internal/logging"
 )
 
 type runtimeLauncher struct{}
@@ -41,8 +44,8 @@ func (runtimeLauncher) PrintAttachShareHint(cfg cfgpkg.Config, auth launcher.Att
 	})
 }
 
-func (runtimeLauncher) StartAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) {
-	startAttachPublishLeaseRenewal(ctx, configPath, cfg, svc, servicePeerID)
+func (runtimeLauncher) StartAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) service.PublishAuthorizationHandler {
+	return startAttachPublishLeaseRenewal(ctx, configPath, cfg, svc, servicePeerID)
 }
 
 func (runtimeLauncher) NewEdge(ctx context.Context, cfg edge.Config) (launcher.Runner, error) {
@@ -50,6 +53,13 @@ func (runtimeLauncher) NewEdge(ctx context.Context, cfg edge.Config) (launcher.R
 }
 
 func (runtimeLauncher) NewService(ctx context.Context, cfg service.Config) (launcher.Runner, error) {
+	if stateFile := strings.TrimSpace(os.Getenv("TUBO_PROCESS_STATE_FILE")); stateFile != "" {
+		cfg.StatusReporter = func(status service.RuntimeStatus) {
+			if err := updateAttachServiceRuntimeState(stateFile, status); err != nil {
+				logging.Warnf("attach runtime status update failed: %v\n", err)
+			}
+		}
+	}
 	return service.New(ctx, cfg)
 }
 

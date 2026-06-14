@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,26 @@ import (
 	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
+
+type fakeAnnouncementPublisher struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *fakeAnnouncementPublisher) PublishV3(context.Context, discovery.AnnouncementV3) error {
+	p.mu.Lock()
+	p.calls++
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *fakeAnnouncementPublisher) CallCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.calls
+}
+
+func ptrTime(t time.Time) *time.Time { return &t }
 
 func mustParseMultiaddrs(t *testing.T, raw ...string) []multiaddr.Multiaddr {
 	t.Helper()
@@ -44,7 +65,7 @@ func TestAnnouncementReachabilityWakeOnRecovery(t *testing.T) {
 	go func() {
 		done <- reachability.WaitForRecovered(context.Background(), app.announcementRecoveryEvents(), time.Hour)
 	}()
-	app.recordAnnouncementReachabilitySuccess()
+	app.recordAnnouncementReachabilitySuccess(reachability.SuccessKindRelay)
 	select {
 	case recovered := <-done:
 		if !recovered {
@@ -52,6 +73,20 @@ func TestAnnouncementReachabilityWakeOnRecovery(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected recovered wake")
+	}
+}
+
+func TestAnnouncementReachabilitySuccessKinds(t *testing.T) {
+	app := &App{announcementReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
+	app.recordAnnouncementReachabilityFailure(AnnouncementBlockedPublishLeaseMissing)
+	app.recordAnnouncementReachabilitySuccess(reachability.SuccessKindGrant)
+	if got := app.announcementReachability.Snapshot().LastEvent; got == nil || got.Subject != string(reachability.SuccessKindGrant) {
+		t.Fatalf("expected grant recovery event, got %#v", got)
+	}
+	app.recordAnnouncementReachabilityFailure(AnnouncementBlockedRelayNotReady)
+	app.recordAnnouncementReachabilitySuccess(reachability.SuccessKindRelay)
+	if got := app.announcementReachability.Snapshot().LastEvent; got == nil || got.Subject != string(reachability.SuccessKindRelay) {
+		t.Fatalf("expected relay recovery event, got %#v", got)
 	}
 }
 
@@ -66,7 +101,7 @@ func TestAnnouncementRecoveryBroadcastWakesSubscriber(t *testing.T) {
 		done <- reachability.WaitForRecovered(context.Background(), app.announcementRecoveryEvents(), time.Hour)
 	}()
 	time.Sleep(50 * time.Millisecond)
-	app.recordAnnouncementReachabilitySuccess()
+	app.recordAnnouncementReachabilitySuccess(reachability.SuccessKindRelay)
 	select {
 	case recovered := <-done:
 		if !recovered {
@@ -726,6 +761,98 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	if resp.Metadata.ServedByRole != "attach" || resp.Service == nil || resp.Service.Name != "myapi" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
+}
+
+func TestPublishCurrentAnnouncementAuthorizationStatusAndRecovery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	seed := "service-publish-recovery-seed"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: servicePeerID.String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	leaseBytes, err := os.ReadFile(leasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(leasePath); err != nil {
+		t.Fatal(err)
+	}
+	topic, dctx := testDiscoveryContext(t, "cluster-123", "default")
+
+	t.Run("pending stays blocked", func(t *testing.T) {
+		var statuses []RuntimeStatus
+		app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath, PublishAuthorizationHandler: func(ctx context.Context, req PublishAuthorizationRequest) PublishAuthorizationResult {
+			return PublishAuthorizationResult{Outcome: PublishAuthorizationOutcomePending, Message: "pending approval", RetryAfter: ptrTime(time.Now().Add(5 * time.Second))}
+		}, StatusReporter: func(status RuntimeStatus) { statuses = append(statuses, status) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer app.host.Close()
+		app.publisher = &fakeAnnouncementPublisher{}
+		if reason, ok := app.publishCurrentAnnouncementV3(ctx); ok || reason != AnnouncementBlockedPublishLeaseMissing {
+			t.Fatalf("expected blocked publish, got (%q, %v)", reason, ok)
+		}
+		if got := app.publisher.(*fakeAnnouncementPublisher).CallCount(); got != 0 {
+			t.Fatalf("expected no publish calls, got %d", got)
+		}
+		if len(statuses) == 0 || statuses[len(statuses)-1].Status != "degraded" || !strings.Contains(strings.ToLower(statuses[len(statuses)-1].Reason), "publish lease missing") {
+			t.Fatalf("expected degraded status, got %#v", statuses)
+		}
+	})
+
+	t.Run("renewal restores publish", func(t *testing.T) {
+		var statuses []RuntimeStatus
+		publisher := &fakeAnnouncementPublisher{}
+		app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath, PublishAuthorizationHandler: func(ctx context.Context, req PublishAuthorizationRequest) PublishAuthorizationResult {
+			if err := os.WriteFile(leasePath, leaseBytes, 0600); err != nil {
+				t.Fatalf("restore lease: %v", err)
+			}
+			return PublishAuthorizationResult{Outcome: PublishAuthorizationOutcomeReady, Message: "renewed lease for recovery test"}
+		}, StatusReporter: func(status RuntimeStatus) { statuses = append(statuses, status) }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer app.host.Close()
+		app.publisher = publisher
+		if reason, ok := app.publishCurrentAnnouncementV3(ctx); !ok || reason != AnnouncementReady {
+			t.Fatalf("expected recovery publish to succeed, got (%q, %v)", reason, ok)
+		}
+		if publisher.CallCount() != 1 {
+			t.Fatalf("expected one publish call, got %d", publisher.CallCount())
+		}
+		if len(statuses) == 0 || statuses[len(statuses)-1].Status != "running" {
+			t.Fatalf("expected running status, got %#v", statuses)
+		}
+	})
 }
 
 func TestNewSkipsDiscoveryPublisherForUnlistedMode(t *testing.T) {

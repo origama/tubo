@@ -51,8 +51,9 @@ func (s *stubDeps) ResolveAttachAuthorization(_ string, cfg cfgpkg.Config) (Atta
 	return s.authz, nil
 }
 func (s *stubDeps) PrintAttachShareHint(cfg cfgpkg.Config, auth AttachAuthorization) { s.printCalls++ }
-func (s *stubDeps) StartAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) {
+func (s *stubDeps) StartAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) service.PublishAuthorizationHandler {
 	s.renewCalls++
+	return nil
 }
 func (s *stubDeps) NewEdge(_ context.Context, cfg edge.Config) (Runner, error) {
 	s.edgeRun = &stubRunner{}

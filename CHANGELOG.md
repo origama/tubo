@@ -6,6 +6,9 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+### Fixed
+- `tubo attach` now re-enters publish authorization after recovery when the publish lease is missing, expired, or invalid, instead of only retrying heartbeat publishes.
+
 ## [v0.10.7] - 2026-06-14
 
 Patch release for installer UX, so fresh installs upgrade a writable existing `tubo` on `PATH` instead of silently leaving an older binary first.

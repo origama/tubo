@@ -29,7 +29,7 @@ type AttachAuthorization struct {
 type Deps interface {
 	ResolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (AttachAuthorization, error)
 	PrintAttachShareHint(cfg cfgpkg.Config, auth AttachAuthorization)
-	StartAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string)
+	StartAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) service.PublishAuthorizationHandler
 	NewEdge(context.Context, edge.Config) (Runner, error)
 	NewService(context.Context, service.Config) (Runner, error)
 	NewRelay(context.Context, relay.Config) (Runner, error)
@@ -102,7 +102,7 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		cfg = authz.Config
 		cluster = cfg.Clusters[cfg.CurrentCluster]
 		deps.PrintAttachShareHint(cfg, authz)
-		deps.StartAttachPublishLeaseRenewal(ctx, configPath, cfg, authz.Service, authz.ServicePeerID)
+		publishAuthorizationHandler := deps.StartAttachPublishLeaseRenewal(ctx, configPath, cfg, authz.Service, authz.ServicePeerID)
 		serviceKind := string(cfgpkg.NormalizeServiceKind(authz.Service.Kind, cfg.Service.Target))
 		runner, err := deps.NewService(ctx, service.Config{
 			Listen:                   cfg.Node.P2PListen,
@@ -140,9 +140,10 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 				}
 				return "unlisted"
 			}(),
-			MembershipCapabilityFile: authz.MembershipCapabilityFile,
-			ServiceClaimFile:         authz.ServiceClaimFile,
-			ServicePublishLeaseFile:  authz.ServicePublishLeaseFile,
+			MembershipCapabilityFile:    authz.MembershipCapabilityFile,
+			ServiceClaimFile:            authz.ServiceClaimFile,
+			ServicePublishLeaseFile:     authz.ServicePublishLeaseFile,
+			PublishAuthorizationHandler: publishAuthorizationHandler,
 		})
 		if err != nil {
 			return err
