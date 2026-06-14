@@ -587,41 +587,64 @@ func TestBridgeConnectLeaseRenewalWakesOnRecoveredEventBeforeCooldown(t *testing
 	current.ExpiresAt = now.Add(2 * time.Second)
 	refresh := artifacts.RefreshLease
 	var refreshes int32
+	secondRefreshStarted := make(chan struct{})
+	allowSecondRefresh := make(chan struct{})
 	app := &App{host: h, connectLease: &current, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
-		if atomic.AddInt32(&refreshes, 1) == 1 {
+		switch atomic.AddInt32(&refreshes, 1) {
+		case 1:
 			return grantspkg.ConnectAccessLease{}, errors.New("grant service unavailable")
+		case 2:
+			close(secondRefreshStarted)
+			<-allowSecondRefresh
+			return grantspkg.RefreshConnectAccessLease(authPriv, refresh, 10*time.Minute)
+		default:
+			return grantspkg.ConnectAccessLease{}, errors.New("unexpected retry")
 		}
-		return grantspkg.RefreshConnectAccessLease(authPriv, refresh, 10*time.Minute)
 	}}, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
-	lease, err := app.ensureConnectAccessLease(context.Background())
-	if err != nil {
-		t.Fatalf("expected current lease to remain usable after transient failure, got %v", err)
-	}
-	if lease.JTI != current.JTI {
-		t.Fatalf("expected current lease to be reused, got %#v", lease)
-	}
-	if got := atomic.LoadInt32(&refreshes); got != 1 {
-		t.Fatalf("refresh calls = %d, want 1", got)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		app.startConnectLeaseRenewal(ctx)
+		close(done)
+	}()
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&refreshes) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("expected initial transient renewal failure")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 	snap := app.CurrentRuntimeStatus()
 	if snap.NextRefreshRetryAt == nil || !snap.NextRefreshRetryAt.After(now) {
 		t.Fatalf("expected retry backoff to be scheduled in the future, got %#v", snap.NextRefreshRetryAt)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	woke := make(chan bool, 1)
-	go func() {
-		woke <- app.waitForRenewalRetry(ctx, *snap.NextRefreshRetryAt)
-	}()
-	time.Sleep(50 * time.Millisecond)
 	app.recordRenewalReachabilitySuccess()
 	select {
-	case ok := <-woke:
-		if !ok {
-			t.Fatal("expected recovery wake before cooldown elapsed")
-		}
+	case <-secondRefreshStarted:
 	case <-time.After(time.Second):
-		t.Fatal("expected recovery wake before cooldown elapsed")
+		t.Fatal("expected recovery wake to trigger a retry before cooldown elapsed")
+	}
+	snap = app.CurrentRuntimeStatus()
+	if snap.NextRefreshRetryAt != nil {
+		t.Fatalf("expected recovery wake to clear nextRefreshRetryAt before retry, got %#v", snap.NextRefreshRetryAt)
+	}
+	close(allowSecondRefresh)
+	for atomic.LoadInt32(&refreshes) < 2 {
+		select {
+		case <-time.After(time.Second):
+			t.Fatal("expected second refresh attempt")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected renewal loop to stop after cancel")
 	}
 }
 

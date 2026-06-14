@@ -803,6 +803,19 @@ func (a *App) refreshRetryCanWakeOnRecovery() bool {
 	}
 }
 
+func (a *App) clearRefreshRetryAfterRecovery() bool {
+	if !a.refreshRetryCanWakeOnRecovery() {
+		return false
+	}
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	if a.lastRefreshErrorClass != reachability.ErrorTransient && a.lastRefreshErrorClass != reachability.ErrorUnknown {
+		return false
+	}
+	a.nextRefreshRetryAt = time.Time{}
+	return true
+}
+
 func (a *App) waitForRenewalRetry(ctx context.Context, nextRetry time.Time) bool {
 	wait := time.Until(nextRetry)
 	if wait <= 0 {
@@ -835,7 +848,7 @@ func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 		now := time.Now().UTC()
 		if nextRetry.After(now) {
 			if a.waitForRenewalRetry(ctx, nextRetry) {
-				now = time.Now().UTC()
+				a.clearRefreshRetryAfterRecovery()
 			}
 			if ctx.Err() != nil {
 				return
