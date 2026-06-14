@@ -95,6 +95,8 @@ type App struct {
 	refreshingLease         bool
 	refreshDone             chan struct{}
 	lastRefreshError        string
+	lastRefreshErrorAt      time.Time
+	lastRefreshHealthyAt    time.Time
 	lastRefreshErrorClass   reachability.ErrorClass
 	nextRefreshRetryAt      time.Time
 	consecutiveRefreshFails int
@@ -410,6 +412,9 @@ func (a *App) markTunnelHealthy() {
 	a.lastTunnelError = ""
 	a.lastTunnelErrorAt = time.Time{}
 	a.healthMu.Unlock()
+	a.connectMu.Lock()
+	a.lastRefreshHealthyAt = now
+	a.connectMu.Unlock()
 	if previousError != "" && (previousHealthyAt.IsZero() || previousHealthyAt.Before(previousErrorAt)) {
 		log.Printf("bridge network recovered reason=network_recovered message=%q", "network reachability recovered")
 		a.recordRenewalReachabilitySuccess()
@@ -702,8 +707,10 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 		}
 	}
 	if a.lastRefreshError != "" && snap.Reason == "" {
-		snap.Status = "degraded"
-		snap.Reason = a.lastRefreshError
+		if a.lastRefreshHealthyAt.IsZero() || a.lastRefreshHealthyAt.Before(a.lastRefreshErrorAt) {
+			snap.Status = "degraded"
+			snap.Reason = a.lastRefreshError
+		}
 	}
 	return snap
 }
@@ -747,7 +754,7 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	a.connectLease = &access
 	a.cfg.ConnectAccessLease = &access
 	a.cfg.ConnectRefreshLease = &refresh
-	a.lastRefreshError = ""
+	a.lastRefreshHealthyAt = time.Now().UTC()
 	a.lastRefreshErrorClass = reachability.ErrorNone
 	a.nextRefreshRetryAt = time.Time{}
 	a.consecutiveRefreshFails = 0
@@ -1027,6 +1034,7 @@ func (a *App) mux() *http.ServeMux {
 		}
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
+		a.markTunnelHealthy()
 	})
 	return m
 }
@@ -1073,6 +1081,7 @@ func (a *App) serveWebSocket(w http.ResponseWriter, r *http.Request, s network.S
 		return
 	}
 	log.Printf("bridge websocket upgraded path=%s", r.URL.Path)
+	a.markTunnelHealthy()
 	proxyRawClient(s, conn, rw.Reader)
 }
 
@@ -1140,12 +1149,14 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 				err := errors.New(connectRefreshLeaseFreshTokenReason(*refresh, now))
 				a.connectMu.Unlock()
 				a.recordRefreshFailureLocked(err, refresh.ExpiresAt.UTC())
+				a.reportStatus()
 				return grantspkg.ConnectAccessLease{}, err
 			}
 		}
 		if refresh == nil {
 			if current == nil || !now.Before(current.ExpiresAt.UTC()) {
 				a.connectMu.Unlock()
+				a.reportStatus()
 				return grantspkg.ConnectAccessLease{}, fmt.Errorf("connect access lease expired; ask the service owner for a fresh token/invite")
 			}
 			lease := *current
@@ -1158,12 +1169,14 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 			err := errors.New(connectRefreshLeaseFreshTokenReason(*refresh, now))
 			a.connectMu.Unlock()
 			a.recordRefreshFailureLocked(err, refresh.ExpiresAt.UTC())
+			a.reportStatus()
 			return grantspkg.ConnectAccessLease{}, err
 		}
 		if !a.nextRefreshRetryAt.IsZero() && now.Before(a.nextRefreshRetryAt) {
 			if current != nil && now.Before(current.ExpiresAt.UTC()) {
 				lease := *current
 				a.connectMu.Unlock()
+				a.reportStatus()
 				return lease, nil
 			}
 			errText := strings.TrimSpace(a.lastRefreshError)
@@ -1211,6 +1224,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 				a.recordRefreshFailureLocked(wrapped, retryAt)
 				log.Printf("bridge connect access lease refresh failed: %v", err)
 				a.connectMu.Unlock()
+				a.reportStatus()
 				return *current, nil
 			}
 			a.recordRefreshFailureLocked(wrapped, retryAt)
@@ -1227,6 +1241,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 				a.recordRefreshFailureLocked(wrapped, current.ExpiresAt.UTC())
 				log.Printf("bridge connect access lease refresh failed: %v", wrapped)
 				a.connectMu.Unlock()
+				a.reportStatus()
 				return *current, nil
 			}
 			a.recordRefreshFailureLocked(wrapped, refresh.ExpiresAt.UTC())
@@ -1283,6 +1298,7 @@ func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg
 			a.recordRefreshFailureLocked(wrapped, retryAt)
 			log.Printf("bridge member connect lease rollover failed: %v", err)
 			a.connectMu.Unlock()
+			a.reportStatus()
 			return *current, nil
 		}
 		a.recordRefreshFailureLocked(wrapped, retryAt)
@@ -1316,6 +1332,7 @@ func (a *App) recordRefreshFailure(err error, retryAt time.Time) {
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
 	a.lastRefreshError = err.Error()
+	a.lastRefreshErrorAt = time.Now().UTC()
 	a.lastRefreshErrorClass = reachability.Classify(err).Class
 	a.nextRefreshRetryAt = retryAt.UTC()
 }
@@ -1327,6 +1344,7 @@ func (a *App) recordRefreshFailureLocked(err error, retryAt time.Time) {
 	a.recordRenewalReachabilityFailure(err)
 	a.consecutiveRefreshFails++
 	a.lastRefreshError = err.Error()
+	a.lastRefreshErrorAt = time.Now().UTC()
 	a.lastRefreshErrorClass = reachability.Classify(err).Class
 	// Apply exponential backoff so rapid retries cannot perpetually renew the
 	// server-side deny-cache. If the caller's retryAt is further in the future

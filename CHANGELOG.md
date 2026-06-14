@@ -8,6 +8,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Fixed
 - `tubo attach` now re-enters publish authorization after recovery when the publish lease is missing, expired, or invalid, instead of only retrying heartbeat publishes.
+- `tubo connect` now clears stale degraded status after successful traffic or successful lease refresh/rollover, while keeping historical refresh errors available in detailed diagnostics.
 
 ## [v0.10.7] - 2026-06-14
 
