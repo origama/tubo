@@ -54,9 +54,31 @@ type Config struct {
 	MembershipCapabilityFile                                                                                       string
 	ServiceClaimFile                                                                                               string
 	ServicePublishLeaseFile                                                                                        string
+	PublishAuthorizationHandler                                                                                    PublishAuthorizationHandler
 	DiscoveryEnabled                                                                                               bool
 	Visibility                                                                                                     string
 }
+type PublishAuthorizationOutcome string
+
+const (
+	PublishAuthorizationOutcomeReady       PublishAuthorizationOutcome = "ready"
+	PublishAuthorizationOutcomePending     PublishAuthorizationOutcome = "pending"
+	PublishAuthorizationOutcomeDenied      PublishAuthorizationOutcome = "denied"
+	PublishAuthorizationOutcomeUnreachable PublishAuthorizationOutcome = "unreachable"
+	PublishAuthorizationOutcomeSkipped     PublishAuthorizationOutcome = "skipped"
+)
+
+type PublishAuthorizationRequest struct {
+	Reason AnnouncementBlockReason
+}
+
+type PublishAuthorizationResult struct {
+	Outcome PublishAuthorizationOutcome `json:"outcome"`
+	Message string                      `json:"message,omitempty"`
+}
+
+type PublishAuthorizationHandler func(context.Context, PublishAuthorizationRequest) PublishAuthorizationResult
+
 type App struct {
 	cfg                      Config
 	host                     host.Host
@@ -470,14 +492,54 @@ func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.Annou
 	return ann, payload, AnnouncementReady, true
 }
 
+func isPublishAuthorizationBlock(reason AnnouncementBlockReason) bool {
+	return reason == AnnouncementBlockedPublishLeaseMissing || reason == AnnouncementBlockedPublishLeaseExpired || reason == AnnouncementBlockedPublishLeaseInvalid
+}
+
+func (a *App) reconcilePublishAuthorization(ctx context.Context, reason AnnouncementBlockReason) PublishAuthorizationResult {
+	if a == nil || a.cfg.PublishAuthorizationHandler == nil {
+		return PublishAuthorizationResult{Outcome: PublishAuthorizationOutcomeSkipped}
+	}
+	result := a.cfg.PublishAuthorizationHandler(ctx, PublishAuthorizationRequest{Reason: reason})
+	if result.Outcome != PublishAuthorizationOutcomeReady {
+		return result
+	}
+	return result
+}
+
 func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlockReason, bool) {
 	if a.publisher == nil {
 		return AnnouncementBlockedPublisherUnavailable, false
 	}
 	ann, payload, reason, ok := a.currentAnnouncementV3()
 	if !ok {
-		a.recordAnnouncementReachabilityFailure(reason)
-		return reason, false
+		blockedReason := reason
+		a.recordAnnouncementReachabilityFailure(blockedReason)
+		if isPublishAuthorizationBlock(blockedReason) {
+			result := a.reconcilePublishAuthorization(ctx, blockedReason)
+			switch result.Outcome {
+			case PublishAuthorizationOutcomeReady:
+				if ann, payload, reason, ok = a.currentAnnouncementV3(); !ok {
+					a.recordAnnouncementReachabilityFailure(reason)
+					log.Printf("publish authorization refreshed but announcement still blocked reason=%s", announcementBlockLogDetails(reason))
+					return reason, false
+				}
+				log.Printf("publish authorization refreshed reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
+			case PublishAuthorizationOutcomePending:
+				log.Printf("publish authorization pending reason=%s message=%q", reason, result.Message)
+			case PublishAuthorizationOutcomeDenied:
+				log.Printf("publish authorization denied reason=%s message=%q", reason, result.Message)
+			case PublishAuthorizationOutcomeUnreachable:
+				log.Printf("publish authorization unreachable reason=%s message=%q", reason, result.Message)
+			case PublishAuthorizationOutcomeSkipped:
+				if strings.TrimSpace(result.Message) != "" {
+					log.Printf("publish authorization skipped reason=%s message=%q", reason, result.Message)
+				}
+			}
+		}
+		if !ok {
+			return reason, false
+		}
 	}
 	if err := a.publisher.PublishV3(ctx, ann); err != nil {
 		log.Printf("heartbeat immediate publish failed: %v", err)
@@ -521,6 +583,8 @@ func (a *App) recordAnnouncementReachabilityFailure(reason AnnouncementBlockReas
 	switch reason {
 	case AnnouncementBlockedRelayNotReady:
 		a.announcementReachability.RecordFailure(reachability.FailureKindRelay, errors.New(announcementBlockDescription(reason)))
+	case AnnouncementBlockedPublishLeaseMissing, AnnouncementBlockedPublishLeaseExpired, AnnouncementBlockedPublishLeaseInvalid:
+		a.announcementReachability.RecordFailure(reachability.FailureKindGrant, errors.New(announcementBlockDescription(reason)))
 	case AnnouncementBlockedPublisherUnavailable:
 		a.announcementReachability.RecordFailure(reachability.FailureKindNetwork, errors.New(announcementBlockDescription(reason)))
 	}

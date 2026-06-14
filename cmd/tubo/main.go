@@ -10,7 +10,7 @@ import (
 	"flag"
 	"fmt"
 	bridge "github.com/origama/tubo/internal/app/bridge"
-	attachauth "github.com/origama/tubo/internal/attachauth"
+	serviceapp "github.com/origama/tubo/internal/app/service"
 	catalog "github.com/origama/tubo/internal/catalog"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	connectflow "github.com/origama/tubo/internal/connectflow"
@@ -774,58 +774,13 @@ func printForegroundRuntimeNotice(commandName, role string, cfg cfgpkg.Config) {
 	}
 }
 
-func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) {
+func startAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) serviceapp.PublishAuthorizationHandler {
 	if strings.TrimSpace(svc.ServicePublishLeaseFile) == "" {
-		return
+		return nil
 	}
-	resolver := newAttachAuthResolver()
-	go func() {
-		backoff := 5 * time.Second
-		for {
-			lease, err := readPublishLeaseFile(svc.ServicePublishLeaseFile)
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				log.Printf("publish lease renewal: read failed: %v", err)
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(backoff):
-				}
-				continue
-			}
-			renewBefore := attachPublishLeaseRenewBefore(time.Until(lease.ExpiresAt.UTC()))
-			wait := time.Until(lease.ExpiresAt.UTC().Add(-renewBefore))
-			if wait > 0 {
-				timer := time.NewTimer(wait)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return
-				case <-timer.C:
-				}
-			}
-			result, err := resolver.Renew(ctx, attachauth.RenewRequest{ConfigPath: configPath, Config: cfg, Service: svc, ServicePeerID: servicePeerID})
-			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				log.Printf("publish lease renewal failed: %v", err)
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(backoff):
-				}
-				continue
-			}
-			cfg = result.Config
-			svc = result.Service
-			if result.ServiceShareToken != "" {
-				log.Printf("share invite refreshed for service %q", cfg.Service.Name)
-			}
-		}
-	}()
+	coordinator := newAttachPublishAuthorizationCoordinator(configPath, cfg, svc, servicePeerID)
+	go coordinator.run(ctx)
+	return coordinator.handle
 }
 
 type joinResult struct {

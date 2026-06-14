@@ -728,6 +728,73 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 	}
 }
 
+func TestPublishCurrentAnnouncementRecoversThroughHandler(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	seed := "service-publish-recovery-seed"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	signedCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: servicePeerID.String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(signedCap, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	leaseBytes, err := os.ReadFile(leasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(leasePath); err != nil {
+		t.Fatal(err)
+	}
+	topic, dctx := testDiscoveryContext(t, "cluster-123", "default")
+	var handlerCalls int
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath, PublishAuthorizationHandler: func(ctx context.Context, req PublishAuthorizationRequest) PublishAuthorizationResult {
+		handlerCalls++
+		if err := os.WriteFile(leasePath, leaseBytes, 0600); err != nil {
+			t.Fatalf("restore lease: %v", err)
+		}
+		return PublishAuthorizationResult{Outcome: PublishAuthorizationOutcomeReady, Message: "renewed lease for recovery test"}
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	if reason, ok := app.publishCurrentAnnouncementV3(ctx); !ok || reason != AnnouncementReady {
+		t.Fatalf("expected recovery publish to succeed, got (%q, %v)", reason, ok)
+	}
+	if handlerCalls != 1 {
+		t.Fatalf("expected one handler call, got %d", handlerCalls)
+	}
+	if _, ok := app.cache.Resolve("myapi"); !ok {
+		t.Fatal("expected cache entry after recovered publish")
+	}
+}
+
 func TestNewSkipsDiscoveryPublisherForUnlistedMode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

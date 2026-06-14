@@ -12,15 +12,17 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/peer"
+	serviceapp "github.com/origama/tubo/internal/app/service"
 	attachauth "github.com/origama/tubo/internal/attachauth"
-	logging "github.com/origama/tubo/internal/logging"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
 	workspace "github.com/origama/tubo/internal/workspace"
@@ -158,6 +160,131 @@ type attachAuthorization struct {
 	ShareRecoveryHint        string
 	PublishLeaseReused       bool
 	MintedServiceClaim       bool
+}
+
+type attachPublishAuthorizationCoordinator struct {
+	mu            sync.Mutex
+	configPath    string
+	cfg           cfgpkg.Config
+	svc           cfgpkg.NamespaceService
+	servicePeerID string
+	backoff       time.Duration
+	nextAttempt   time.Time
+}
+
+func newAttachPublishAuthorizationCoordinator(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) *attachPublishAuthorizationCoordinator {
+	return &attachPublishAuthorizationCoordinator{configPath: configPath, cfg: cfg, svc: svc, servicePeerID: servicePeerID, backoff: 5 * time.Second}
+}
+
+func (c *attachPublishAuthorizationCoordinator) handle(ctx context.Context, req serviceapp.PublishAuthorizationRequest) serviceapp.PublishAuthorizationResult {
+	if c == nil {
+		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: "coordinator unavailable"}
+	}
+	if ctx.Err() != nil {
+		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: ctx.Err().Error()}
+	}
+	reason := req.Reason
+	if reason != serviceapp.AnnouncementBlockedPublishLeaseMissing && reason != serviceapp.AnnouncementBlockedPublishLeaseExpired && reason != serviceapp.AnnouncementBlockedPublishLeaseInvalid {
+		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: "publish authorization not required for this announcement block"}
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	if !c.nextAttempt.IsZero() && now.Before(c.nextAttempt) {
+		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: fmt.Sprintf("retry backoff active until %s", c.nextAttempt.UTC().Format(time.RFC3339))}
+	}
+	cfg, svc, shareToken, err := renewAttachPublishAuthorization(c.configPath, c.cfg, c.svc, c.servicePeerID)
+	if err == nil {
+		c.cfg = cfg
+		c.svc = svc
+		c.nextAttempt = time.Time{}
+		if strings.TrimSpace(shareToken) != "" {
+			logging.Progressf("publish authorization refreshed for service %q\n", c.cfg.Service.Name)
+		}
+		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeReady, Message: "publish authorization refreshed"}
+	}
+	c.cfg = cfg
+	c.svc = svc
+	outcome := classifyPublishAuthorizationOutcome(err)
+	switch outcome {
+	case serviceapp.PublishAuthorizationOutcomePending:
+		c.nextAttempt = now.Add(c.backoff)
+	case serviceapp.PublishAuthorizationOutcomeDenied:
+		c.nextAttempt = now.Add(30 * time.Second)
+	case serviceapp.PublishAuthorizationOutcomeUnreachable:
+		c.nextAttempt = now.Add(c.backoff)
+	default:
+		c.nextAttempt = now.Add(c.backoff)
+	}
+	return serviceapp.PublishAuthorizationResult{Outcome: outcome, Message: err.Error()}
+}
+
+func (c *attachPublishAuthorizationCoordinator) run(ctx context.Context) {
+	if c == nil || strings.TrimSpace(c.svc.ServicePublishLeaseFile) == "" {
+		return
+	}
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		c.mu.Lock()
+		nextAttempt := c.nextAttempt
+		leasePath := c.svc.ServicePublishLeaseFile
+		c.mu.Unlock()
+		if !nextAttempt.IsZero() && time.Now().Before(nextAttempt) {
+			wait := time.Until(nextAttempt)
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			continue
+		}
+		lease, err := readPublishLeaseFile(leasePath)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			reason := serviceapp.AnnouncementBlockedPublishLeaseMissing
+			if !errors.Is(err, os.ErrNotExist) {
+				reason = serviceapp.AnnouncementBlockedPublishLeaseInvalid
+			}
+			_ = c.handle(ctx, serviceapp.PublishAuthorizationRequest{Reason: reason})
+			continue
+		}
+		renewBefore := attachPublishLeaseRenewBefore(time.Until(lease.ExpiresAt.UTC()))
+		wait := time.Until(lease.ExpiresAt.UTC().Add(-renewBefore))
+		if wait > 0 {
+			timer := time.NewTimer(wait)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+		}
+		_ = c.handle(ctx, serviceapp.PublishAuthorizationRequest{Reason: serviceapp.AnnouncementBlockedPublishLeaseExpired})
+		continue
+	}
+}
+
+func classifyPublishAuthorizationOutcome(err error) serviceapp.PublishAuthorizationOutcome {
+	if err == nil {
+		return serviceapp.PublishAuthorizationOutcomeReady
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "pending"):
+		return serviceapp.PublishAuthorizationOutcomePending
+	case strings.Contains(msg, "denied"):
+		return serviceapp.PublishAuthorizationOutcomeDenied
+	case strings.Contains(msg, "grant service peer") || strings.Contains(msg, "failed to dial") || strings.Contains(msg, "dial backoff") || strings.Contains(msg, "unreachable") || strings.Contains(msg, "timed out"):
+		return serviceapp.PublishAuthorizationOutcomeUnreachable
+	default:
+		return serviceapp.PublishAuthorizationOutcomeDenied
+	}
 }
 
 func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAuthorization, error) {

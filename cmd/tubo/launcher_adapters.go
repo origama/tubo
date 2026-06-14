@@ -41,8 +41,8 @@ func (runtimeLauncher) PrintAttachShareHint(cfg cfgpkg.Config, auth launcher.Att
 	})
 }
 
-func (runtimeLauncher) StartAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) {
-	startAttachPublishLeaseRenewal(ctx, configPath, cfg, svc, servicePeerID)
+func (runtimeLauncher) StartAttachPublishLeaseRenewal(ctx context.Context, configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) service.PublishAuthorizationHandler {
+	return startAttachPublishLeaseRenewal(ctx, configPath, cfg, svc, servicePeerID)
 }
 
 func (runtimeLauncher) NewEdge(ctx context.Context, cfg edge.Config) (launcher.Runner, error) {
