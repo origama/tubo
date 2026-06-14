@@ -259,12 +259,12 @@ Implemented today:
 - relayed traffic;
 - private swarm PSK;
 - per-service discovery and routing;
+- reachability-aware diagnostics and recovery wakeups;
 - multi-host smoke tests.
 
 Still target / in progress:
 
 - stronger peer authorization end-to-end;
-- better reachability diagnostics;
 - full hole punching robustness;
 - richer route introspection;
 - more complete error taxonomy for 502 cases;
@@ -295,6 +295,7 @@ Verify:
 - relay: bootstrap/relay readiness and health check success
 - edge: discovery add/remove events and route creation/removal
 - service: heartbeat sent and upstream forwarding successful
+- bridge/connect: network degraded/recovered notices and retry wakeups when reachability returns
 
 ### Hung GET or no-body request
 

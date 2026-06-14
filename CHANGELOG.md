@@ -6,14 +6,27 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+## [v0.10.6] - 2026-06-14
+
+Patch release for reachability-aware runtime UX, with better process status reporting and recovery wakeups.
+
 ### Added
-- Lightweight reachability manager and probe helpers in `internal/reachability` that emit state-transition and recovered events for future bridge/service recovery loops.
-- Bridge runtime status now includes network reachability state/reason and recovery timestamps, and detached `describe process/...` output surfaces them too.
+- Lightweight reachability manager and probe helpers in `internal/reachability` that emit state-transition and recovered events for bridge/service recovery loops.
+- Detached `describe process/...` and `inspect process/... --json` now surface network reachability state/reason, recovery timestamps, and next-refresh retry timing for bridge/connect children.
 
 ### Changed
 - Detached bridge logs now print one reachability transition line on degrade/recovery instead of repeating the same failure on every retry.
 - Service announcement and bridge lease-renewal retry loops now wake on recovered reachability events instead of waiting only for their fixed timers/backoffs.
 - `describe process/...` now formats historical network timestamps with `... ago` labels instead of expiry-style `in` labels.
+
+### Fixed
+- Recovery wakeups now clear the retry cooldown after a recovered network event, so bridge and service loops resume immediately instead of waiting out an old backoff.
+
+### Compatibility
+- Product version: v0.10.6
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none
 
 ## [v0.10.5] - 2026-06-13
 

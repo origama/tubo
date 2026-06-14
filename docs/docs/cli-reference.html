@@ -159,7 +159,7 @@
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe namespace/</span>default
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe secret/</span>namespace-discovery/myteam/default</pre>
     </div>
-    <p><code>describe process/...</code> and <code>inspect process/... --json</code> expose detached process runtime state. For attached services, <code>describe</code> also shows whether the service-scoped grant endpoint is enabled, plus the effective connect policy and grant protocol when available. In foreground <code>attach</code>, the running-in-foreground notice now waits until publish authorization is resolved, so missing grant-peer errors appear before any success-style hint.</p>
+    <p><code>describe process/...</code> and <code>inspect process/... --json</code> expose detached process runtime state, including network reachability state/reason, recovery timestamps, and next-refresh retry timing for bridge/connect children. Event timestamps use <code>... ago</code> labels, while lease expiry fields keep their existing <code>expires in</code> labels. For attached services, <code>describe</code> also shows whether the service-scoped grant endpoint is enabled, plus the effective connect policy and grant protocol when available. In foreground <code>attach</code>, the running-in-foreground notice now waits until publish authorization is resolved, so missing grant-peer errors appear before any success-style hint.</p>
 
     <h2>tubo create / use / share</h2>
     <div class="code-block" style="margin:12px 0 20px">
