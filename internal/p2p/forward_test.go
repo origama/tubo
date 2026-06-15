@@ -17,6 +17,7 @@ import (
 	libprotocol "github.com/libp2p/go-libp2p/core/protocol"
 
 	"github.com/origama/tubo/internal/protocol"
+	statspkg "github.com/origama/tubo/internal/runtime/stats"
 )
 
 func TestHandleClientRequestUsesContentLengthHeaderAsHint(t *testing.T) {
@@ -309,6 +310,46 @@ func (r *testStatsRecorder) Finish(err error) {
 		r.errors++
 	} else {
 		r.completed++
+	}
+}
+
+func TestProxyTCPStreamUpdatesRecorderDuringTransfer(t *testing.T) {
+	leftPeer, leftConn := net.Pipe()
+	defer leftPeer.Close()
+	reqReader, reqWriter := io.Pipe()
+	respReader, respWriter := io.Pipe()
+	stream := &memoryClientStream{reader: respReader, writer: reqWriter, protocolID: ProtocolID}
+	recorder := statspkg.New(statspkg.Snapshot{Role: "service", Kind: "tcp"})
+	recorder.Begin()
+	go func() { _, _ = io.Copy(io.Discard, reqReader) }()
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := ProxyTCPStream(leftConn, stream, recorder)
+		done <- err
+	}()
+	if _, err := leftPeer.Write([]byte("hello world")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snap := recorder.Snapshot()
+		if snap.Active == 1 && snap.TxBytesTotal > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected live tx update before completion, got %#v", snap)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	_ = leftPeer.Close()
+	_ = respWriter.Close()
+	if err := <-done; err != nil && !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("ProxyTCPStream: %v", err)
+	}
+	recorder.Finish(nil)
+	snap := recorder.Snapshot()
+	if snap.TxBytesTotal == 0 || snap.Completed != 1 || snap.Active != 0 {
+		t.Fatalf("unexpected final snapshot: %#v", snap)
 	}
 }
 
