@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/ed25519"
@@ -8,10 +9,13 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -514,6 +518,118 @@ func TestBridgeCurrentRuntimeStatusIncludesNetworkReachabilityState(t *testing.T
 	}
 }
 
+func TestBridgeCurrentRuntimeStatusClearsStaleRefreshErrorAfterTrafficRecovery(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}}
+	app.lastRefreshError = "grant service unavailable"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "grant service unavailable") {
+		t.Fatalf("expected degraded status before traffic recovery, got %#v", snap)
+	}
+	app.markTunnelHealthy()
+	snap = app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected running status after traffic recovery, got %#v", snap)
+	}
+	if snap.LastRefreshError != "grant service unavailable" {
+		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+	}
+}
+
+func TestBridgeHTTPRequestMarksHealthyAfterRecovery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-http-recovery-service", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	serviceHost.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(upstream.URL, nil))
+	app, err := New(ctx, Config{Listen: "127.0.0.1:0", Seed: "bridge-http-recovery-client", P2PListen: "/ip4/127.0.0.1/tcp/0", ServiceAddr: p2p.PeerAddrs(serviceHost)[0], ServiceKind: "http"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.lastRefreshError = "grant service unavailable"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://bridge.local/", nil)
+	app.mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "ok" {
+		t.Fatalf("unexpected http response: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected running status after HTTP recovery, got %#v", snap)
+	}
+}
+
+func TestBridgeWebSocketUpgradeMarksHealthyAfterRecovery(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			t.Fatalf("upstream upgrade missing websocket header: %#v", r.Header)
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("upstream writer must support hijacking")
+		}
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("upstream hijack: %v", err)
+		}
+		defer conn.Close()
+		if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"); err != nil {
+			t.Fatalf("upstream write handshake: %v", err)
+		}
+		if err := rw.Flush(); err != nil {
+			t.Fatalf("upstream flush handshake: %v", err)
+		}
+	}))
+	defer upstream.Close()
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-websocket-recovery-service", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	serviceHost.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(upstream.URL, nil))
+	app, err := New(ctx, Config{Listen: "127.0.0.1:0", Seed: "bridge-websocket-recovery-client", P2PListen: "/ip4/127.0.0.1/tcp/0", ServiceAddr: p2p.PeerAddrs(serviceHost)[0], ServiceKind: "http"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.lastRefreshError = "grant service unavailable"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	srv := httptest.NewServer(app.mux())
+	defer srv.Close()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if _, err := fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: bridge.local\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line, "101 Switching Protocols") {
+		t.Fatalf("unexpected websocket response status: %q", line)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected running status after websocket recovery, got %#v", snap)
+	}
+}
+
 func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
 	if err != nil {
@@ -815,6 +931,57 @@ func TestBridgeConnectLeaseRolloverRenewsAccessAndRefresh(t *testing.T) {
 	time.Sleep(350 * time.Millisecond)
 	if _, err := app.connectProof(); err != nil {
 		t.Fatalf("connect proof after rollover and old refresh expiry: %v", err)
+	}
+}
+
+func TestBridgeConnectLeaseRolloverClearsStaleRefreshErrorAfterSuccess(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-member-rollover-recovery-client", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeHost.Close()
+	grantHost := newConnectLeaseGrantHost(t, authPriv, 10*time.Second, 20*time.Second, func(msg grantspkg.Message, requester string) error {
+		if msg.MembershipCapability == nil {
+			return errors.New("missing membership capability")
+		}
+		if err := capability.VerifyMembershipCapability(*msg.MembershipCapability, authPriv.Public().(ed25519.PublicKey), "cluster-123", "default", requester); err != nil {
+			return err
+		}
+		if !strings.Contains(strings.Join(msg.MembershipCapability.Permissions, ","), capability.PermissionConnect) {
+			return errors.New("missing connect permission")
+		}
+		return nil
+	})
+	defer grantHost.Close()
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: bridgeHost.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientKey := bridgeHostAuthorizedKey(t, bridgeHost)
+	initial, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-member-rollover-recovery-initial", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 150*time.Millisecond, 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := &App{host: bridgeHost, connectLease: &initial.AccessLease, lastRefreshError: "grant service unavailable", lastRefreshErrorAt: time.Now().Add(-time.Minute), cfg: Config{ConnectRefreshLease: &initial.RefreshLease, ConnectGrantPeers: []string{p2p.PeerAddrs(grantHost)[0]}, ConnectClusterID: "cluster-123", ConnectNamespaceID: "default", ConnectServiceID: "svc-123", ConnectMembershipCapability: &memberCap, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		return grantspkg.RefreshConnectAccessLease(authPriv, initial.RefreshLease, 10*time.Minute)
+	}}}
+	rolled, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("rollover lease: %v", err)
+	}
+	if rolled.JTI == initial.AccessLease.JTI {
+		t.Fatalf("expected rollover to replace access lease: %#v", rolled)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected running status after rollover recovery, got %#v", snap)
+	}
+	if snap.LastRefreshError != "grant service unavailable" {
+		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
 	}
 }
 
