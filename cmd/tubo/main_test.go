@@ -590,8 +590,8 @@ func TestBuildDetachedConnectSpecUsesTokenServiceKindForTCP(t *testing.T) {
 	if spec.State.ServiceKind != "tcp" {
 		t.Fatalf("ServiceKind = %q", spec.State.ServiceKind)
 	}
-	if spec.State.StatusURL != "" || spec.HealthURL != "" {
-		t.Fatalf("expected tcp token connect to omit health url, got state=%q health=%q", spec.State.StatusURL, spec.HealthURL)
+	if spec.State.StatusURL == "" || spec.State.StatsURL == "" {
+		t.Fatalf("expected tcp token connect to expose admin urls, got state=%q stats=%q", spec.State.StatusURL, spec.State.StatsURL)
 	}
 }
 
@@ -938,6 +938,7 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 		LastNetworkError:        "failed to dial grant endpoint: connection refused",
 		LastNetworkErrorAt:      time.Now().Add(-90 * time.Second).UTC().Format(time.RFC3339),
 		LastNetworkRecoveredAt:  time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339),
+		StatsURL:                "http://127.0.0.1:8444/statsz",
 		LastPingError:           "peer ping timeout",
 		LastPingErrorAt:         time.Now().Add(-45 * time.Second).UTC().Format(time.RFC3339),
 	}
@@ -948,7 +949,7 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Network state: offline_suspected", "Network reason: offline_suspected", "Network since ago:", "Last network error: failed to dial grant endpoint: connection refused", "Last network error at:", "Last network error ago:", "Last network recovered at:", "Last network recovered ago:", "Last ping failure: peer ping timeout", "Last ping failure at:", "Last ping failure ago:", "Connect access expires in:", "Connect refresh expires in: expired"} {
+	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Network state: offline_suspected", "Network reason: offline_suspected", "Network since ago:", "Last network error: failed to dial grant endpoint: connection refused", "Last network error at:", "Last network error ago:", "Last network recovered at:", "Last network recovered ago:", "Stats URL: http://127.0.0.1:8444/statsz", "Last ping failure: peer ping timeout", "Last ping failure at:", "Last ping failure ago:", "Connect access expires in:", "Connect refresh expires in: expired"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
@@ -1476,8 +1477,8 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if !strings.Contains(out, "Public default happy path (invite-only)") || !strings.Contains(out, "tubo connect --token <share-invite>") {
 		t.Fatalf("top-level help missing invite-only flow: %s", out)
 	}
-	if !strings.Contains(out, "Collaboration namespace flow") || !strings.Contains(out, "tubo connect myapp") {
-		t.Fatalf("top-level help missing collaboration flow: %s", out)
+	if !strings.Contains(out, "Collaboration namespace flow") || !strings.Contains(out, "tubo connect myapp") || !strings.Contains(out, "tubo top") {
+		t.Fatalf("top-level help missing collaboration or top flow: %s", out)
 	}
 	if !strings.Contains(out, "--quiet") || !strings.Contains(out, "-v | -vv | -vvv") || !strings.Contains(out, "--log-level error|warn|info|debug|trace") {
 		t.Fatalf("top-level help missing global logging flags: %s", out)

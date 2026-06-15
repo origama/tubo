@@ -709,6 +709,69 @@ func TestBridgeHTTPRequestMarksHealthyAfterRecovery(t *testing.T) {
 	}
 }
 
+func TestBridgeWebSocketStatsAreRecorded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("upstream writer must support hijacking")
+		}
+		conn, rw, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("upstream hijack: %v", err)
+		}
+		defer conn.Close()
+		if _, err := rw.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"); err != nil {
+			t.Fatalf("upstream write handshake: %v", err)
+		}
+		if err := rw.Flush(); err != nil {
+			t.Fatalf("upstream flush handshake: %v", err)
+		}
+	}))
+	defer upstream.Close()
+	serviceHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-websocket-stats-service", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	serviceHost.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(upstream.URL, nil))
+	app, err := New(ctx, Config{Listen: "127.0.0.1:0", Seed: "bridge-websocket-stats-client", P2PListen: "/ip4/127.0.0.1/tcp/0", ServiceAddr: p2p.PeerAddrs(serviceHost)[0], ServiceKind: "http"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	srv := httptest.NewServer(app.mux())
+	defer srv.Close()
+	conn, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintf(conn, "GET /ws HTTP/1.1\r\nHost: bridge.local\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(line, "101 Switching Protocols") {
+		t.Fatalf("unexpected websocket response status: %q", line)
+	}
+	_ = conn.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snap := app.stats.Snapshot()
+		if snap.Completed >= 1 && snap.Active == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected websocket stats to complete, got %#v", snap)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestBridgeWebSocketUpgradeMarksHealthyAfterRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
