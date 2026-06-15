@@ -25,7 +25,9 @@ import (
 
 	hostpkg "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	corepeer "github.com/libp2p/go-libp2p/core/peer"
 	coreprotocol "github.com/libp2p/go-libp2p/core/protocol"
+	p2pping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	capability "github.com/origama/tubo/internal/capability"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
@@ -33,6 +35,21 @@ import (
 	"github.com/origama/tubo/internal/reachability"
 	"golang.org/x/crypto/ssh"
 )
+
+type fakePeerPinger struct {
+	results []p2pping.Result
+	calls   int32
+}
+
+func (f *fakePeerPinger) Ping(context.Context, corepeer.ID) <-chan p2pping.Result {
+	atomic.AddInt32(&f.calls, 1)
+	ch := make(chan p2pping.Result, len(f.results))
+	for _, res := range f.results {
+		ch <- res
+	}
+	close(ch)
+	return ch
+}
 
 func TestBridgeRefreshesConnectAccessLeaseBeforeExpiry(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
@@ -533,6 +550,73 @@ func TestBridgeCurrentRuntimeStatusClearsStaleRefreshErrorAfterTrafficRecovery(t
 	}
 	if snap.LastRefreshError != "grant service unavailable" {
 		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusTracksPeerPingFailures(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}, peerPingFailureThreshold: 3}
+	app.recordPeerPingFailure(errors.New("peer timeout"), 11*time.Millisecond)
+	app.recordPeerPingFailure(errors.New("peer timeout"), 11*time.Millisecond)
+	app.recordPeerPingFailure(errors.New("peer timeout"), 11*time.Millisecond)
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || snap.PeerLivenessState != "degraded" {
+		t.Fatalf("expected degraded ping status, got %#v", snap)
+	}
+	if snap.ConsecutivePingFailures != 3 || !strings.Contains(snap.PeerLivenessReason, "peer timeout") {
+		t.Fatalf("expected ping failure details, got %#v", snap)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusClearsPeerPingRecoveryAfterTraffic(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}, peerPingFailureThreshold: 3}
+	app.recordPeerPingFailure(errors.New("peer timeout"), 11*time.Millisecond)
+	app.recordPeerPingFailure(errors.New("peer timeout"), 11*time.Millisecond)
+	app.recordPeerPingFailure(errors.New("peer timeout"), 11*time.Millisecond)
+	app.markTunnelHealthy()
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.PeerLivenessState != "healthy" || snap.ConsecutivePingFailures != 0 {
+		t.Fatalf("expected ping recovery after traffic, got %#v", snap)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusKeepsRefreshFailureAheadOfPingSuccess(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}, lastRefreshError: "grant service unavailable", lastRefreshErrorAt: time.Now().Add(-time.Minute)}
+	app.recordPeerPingSuccess(9 * time.Millisecond)
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "grant service unavailable") {
+		t.Fatalf("expected refresh failure to keep status degraded, got %#v", snap)
+	}
+	if snap.PeerLivenessState != "healthy" {
+		t.Fatalf("expected ping success to still update liveness details, got %#v", snap)
+	}
+}
+
+func TestBridgePeerPingLoopRecordsResults(t *testing.T) {
+	pinger := &fakePeerPinger{results: []p2pping.Result{{RTT: 7 * time.Millisecond}}}
+	app := &App{
+		cfg:                      Config{ServiceKind: "tcp"},
+		service:                  corepeer.AddrInfo{ID: corepeer.ID("12D3KooWPingTarget")},
+		peerPing:                 pinger,
+		peerPingInterval:         5 * time.Millisecond,
+		peerPingTimeout:          50 * time.Millisecond,
+		peerPingFailureThreshold: 3,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go app.startPeerPingLoop(ctx)
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&pinger.calls) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected peer ping loop to run")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	cancel()
+	snap := app.CurrentRuntimeStatus()
+	if snap.PeerLivenessState != "healthy" || snap.LastPingRTT != "7ms" {
+		t.Fatalf("expected ping loop to record success, got %#v", snap)
 	}
 }
 

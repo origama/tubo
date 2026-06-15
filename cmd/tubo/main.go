@@ -1578,6 +1578,29 @@ func printProcessDescription(state detachedProcessState, status string) {
 	if state.LastRefreshError != "" {
 		fmt.Printf("Last refresh error: %s\n", state.LastRefreshError)
 	}
+	if state.PeerLivenessState != "" {
+		fmt.Printf("Peer liveness: %s\n", state.PeerLivenessState)
+	}
+	if state.PeerLivenessReason != "" {
+		fmt.Printf("Peer liveness reason: %s\n", state.PeerLivenessReason)
+	}
+	if state.LastPingRTT != "" {
+		fmt.Printf("Last ping RTT: %s\n", state.LastPingRTT)
+	}
+	if ts, rem := formatProcessEventTime(state.LastPingAt); ts != "" {
+		fmt.Printf("Last ping at: %s\n", ts)
+		fmt.Printf("Last ping ago: %s\n", rem)
+	}
+	if state.LastPingError != "" {
+		fmt.Printf("Last ping error: %s\n", state.LastPingError)
+	}
+	if ts, rem := formatProcessEventTime(state.LastPingErrorAt); ts != "" {
+		fmt.Printf("Last ping error at: %s\n", ts)
+		fmt.Printf("Last ping error ago: %s\n", rem)
+	}
+	if state.ConsecutivePingFailures > 0 {
+		fmt.Printf("Consecutive ping failures: %d\n", state.ConsecutivePingFailures)
+	}
 	if state.NetworkState != "" {
 		fmt.Printf("Network state: %s\n", state.NetworkState)
 	}

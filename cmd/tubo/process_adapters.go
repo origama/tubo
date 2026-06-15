@@ -123,6 +123,21 @@ func updateProcessRuntimeState(stateFile string, runtime bridgeapp.RuntimeStatus
 		}
 		state.LastTunnelError = runtime.LastTunnelError
 		state.LastRefreshError = runtime.LastRefreshError
+		state.PeerLivenessState = runtime.PeerLivenessState
+		state.PeerLivenessReason = runtime.PeerLivenessReason
+		state.LastPingRTT = runtime.LastPingRTT
+		if runtime.LastPingAt != nil {
+			state.LastPingAt = runtime.LastPingAt.UTC().Format(time.RFC3339)
+		} else {
+			state.LastPingAt = ""
+		}
+		state.LastPingError = runtime.LastPingError
+		if runtime.LastPingErrorAt != nil {
+			state.LastPingErrorAt = runtime.LastPingErrorAt.UTC().Format(time.RFC3339)
+		} else {
+			state.LastPingErrorAt = ""
+		}
+		state.ConsecutivePingFailures = runtime.ConsecutivePingFailures
 		state.NetworkState = runtime.NetworkState
 		state.NetworkReason = runtime.NetworkReason
 		if runtime.NetworkSince != nil {

@@ -24,6 +24,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	p2pping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
@@ -72,6 +73,13 @@ type RuntimeStatus struct {
 	LastTunnelError         string
 	LastTunnelErrorAt       *time.Time
 	LastTunnelHealthyAt     *time.Time
+	PeerLivenessState       string
+	PeerLivenessReason      string
+	LastPingRTT             string
+	LastPingAt              *time.Time
+	LastPingError           string
+	LastPingErrorAt         *time.Time
+	ConsecutivePingFailures int
 	NetworkState            string
 	NetworkReason           string
 	NetworkSince            *time.Time
@@ -82,36 +90,50 @@ type RuntimeStatus struct {
 	NextRefreshRetryAt      *time.Time
 }
 
+type peerPinger interface {
+	Ping(context.Context, peer.ID) <-chan p2pping.Result
+}
+
 type App struct {
-	cfg                     Config
-	host                    host.Host
-	service                 peer.AddrInfo
-	server                  *http.Server
-	listener                net.Listener
-	listenAddr              string
-	stateMu                 sync.RWMutex
-	connectMu               sync.Mutex
-	connectLease            *grantspkg.ConnectAccessLease
-	refreshingLease         bool
-	refreshDone             chan struct{}
-	lastRefreshError        string
-	lastRefreshErrorAt      time.Time
-	lastRefreshHealthyAt    time.Time
-	lastRefreshErrorClass   reachability.ErrorClass
-	nextRefreshRetryAt      time.Time
-	consecutiveRefreshFails int
-	healthMu                sync.RWMutex
-	lastTunnelError         string
-	lastTunnelErrorAt       time.Time
-	lastTunnelHealthyAt     time.Time
-	statusReporter          func(RuntimeStatus)
-	renewalReachability     *reachability.Manager
-	openTunnelStream        func(context.Context) (network.Stream, error)
-	startClientTCPTunnel    func(network.Stream, string, *protocol.ConnectProof) error
-	rebindServiceFn         func(context.Context) (peer.AddrInfo, string, string, error)
-	reconnectServiceFn      func(context.Context) error
-	selectedAddr            string
-	selectedPath            string
+	cfg                      Config
+	host                     host.Host
+	service                  peer.AddrInfo
+	server                   *http.Server
+	listener                 net.Listener
+	listenAddr               string
+	stateMu                  sync.RWMutex
+	connectMu                sync.Mutex
+	connectLease             *grantspkg.ConnectAccessLease
+	refreshingLease          bool
+	refreshDone              chan struct{}
+	lastRefreshError         string
+	lastRefreshErrorAt       time.Time
+	lastRefreshHealthyAt     time.Time
+	lastRefreshErrorClass    reachability.ErrorClass
+	nextRefreshRetryAt       time.Time
+	consecutiveRefreshFails  int
+	lastPeerPingRTT          time.Duration
+	lastPeerPingAt           time.Time
+	lastPeerPingError        string
+	lastPeerPingErrorAt      time.Time
+	lastPeerPingHealthyAt    time.Time
+	peerPingConsecutiveFails int
+	healthMu                 sync.RWMutex
+	lastTunnelError          string
+	lastTunnelErrorAt        time.Time
+	lastTunnelHealthyAt      time.Time
+	statusReporter           func(RuntimeStatus)
+	renewalReachability      *reachability.Manager
+	peerPing                 peerPinger
+	peerPingInterval         time.Duration
+	peerPingTimeout          time.Duration
+	peerPingFailureThreshold int
+	openTunnelStream         func(context.Context) (network.Stream, error)
+	startClientTCPTunnel     func(network.Stream, string, *protocol.ConnectProof) error
+	rebindServiceFn          func(context.Context) (peer.AddrInfo, string, string, error)
+	reconnectServiceFn       func(context.Context) error
+	selectedAddr             string
+	selectedPath             string
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -235,7 +257,8 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectLease = &artifacts.AccessLease
 		log.Printf("bridge discovery connect lease acquired cluster=%s namespace=%s service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ClusterID, artifacts.AccessLease.NamespaceID, artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
-	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease, rebindServiceFn: cfg.ConnectRebindResolver, selectedAddr: cfg.SelectedAddr, selectedPath: cfg.SelectedPath, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
+	pingService := p2pping.NewPingService(h)
+	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease, rebindServiceFn: cfg.ConnectRebindResolver, selectedAddr: cfg.SelectedAddr, selectedPath: cfg.SelectedPath, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4}), peerPing: pingService, peerPingInterval: 20 * time.Second, peerPingTimeout: 5 * time.Second, peerPingFailureThreshold: 3}
 	app.reportStatus()
 	return app, nil
 }
@@ -265,6 +288,9 @@ func (a *App) Start(ctx context.Context) error {
 	a.stateMu.Unlock()
 	if a.cfg.ConnectRefreshLease != nil {
 		go a.startConnectLeaseRenewal(ctx)
+	}
+	if a.peerPing != nil {
+		go a.startPeerPingLoop(ctx)
 	}
 	if a.connectPathTransitionMonitoringEnabled() {
 		go a.watchConnectPathTransitions(ctx)
@@ -414,12 +440,18 @@ func (a *App) markTunnelHealthy() {
 	a.healthMu.Unlock()
 	a.connectMu.Lock()
 	a.lastRefreshHealthyAt = now
+	a.clearPeerPingStateLocked(now)
 	a.connectMu.Unlock()
 	if previousError != "" && (previousHealthyAt.IsZero() || previousHealthyAt.Before(previousErrorAt)) {
 		log.Printf("bridge network recovered reason=network_recovered message=%q", "network reachability recovered")
 		a.recordRenewalReachabilitySuccess()
 	}
 	a.reportStatus()
+}
+
+func (a *App) clearPeerPingStateLocked(now time.Time) {
+	a.lastPeerPingHealthyAt = now
+	a.peerPingConsecutiveFails = 0
 }
 
 func (a *App) markTunnelDegraded(err error) {
@@ -438,6 +470,127 @@ func (a *App) markTunnelDegraded(err error) {
 	if previousError == "" || previousError != err.Error() || (!previousHealthyAt.IsZero() && previousHealthyAt.After(previousErrorAt)) {
 		log.Printf("bridge network degraded reason=%s message=%q", classification.Reason, err.Error())
 		a.recordRenewalReachabilityFailure(err)
+	}
+	a.reportStatus()
+}
+
+func (a *App) startPeerPingLoop(ctx context.Context) {
+	if a.peerPing == nil || a.peerPingInterval <= 0 || a.service.ID == "" {
+		return
+	}
+	interval := a.peerPingInterval
+	if interval < time.Second {
+		interval = time.Second
+	}
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		lastActivity := a.lastPeerActivityAt()
+		wait := interval
+		if !lastActivity.IsZero() {
+			next := lastActivity.Add(interval)
+			if d := time.Until(next); d > 0 {
+				wait = d
+			} else {
+				wait = 0
+			}
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if !a.shouldRunPeerPing() {
+			continue
+		}
+		a.runPeerPingOnce(ctx)
+	}
+}
+
+func (a *App) lastPeerActivityAt() time.Time {
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	latest := a.lastRefreshHealthyAt
+	if a.lastTunnelHealthyAt.After(latest) {
+		latest = a.lastTunnelHealthyAt
+	}
+	if a.lastPeerPingHealthyAt.After(latest) {
+		latest = a.lastPeerPingHealthyAt
+	}
+	return latest
+}
+
+func (a *App) shouldRunPeerPing() bool {
+	return a.peerPing != nil && a.service.ID != ""
+}
+
+func (a *App) runPeerPingOnce(ctx context.Context) {
+	timeout := a.peerPingTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	pingCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	results := a.peerPing.Ping(pingCtx, a.service.ID)
+	select {
+	case res, ok := <-results:
+		if !ok {
+			a.recordPeerPingFailure(errors.New("peer ping stream closed without result"), 0)
+			return
+		}
+		if res.Error != nil {
+			a.recordPeerPingFailure(res.Error, res.RTT)
+			return
+		}
+		a.recordPeerPingSuccess(res.RTT)
+	case <-pingCtx.Done():
+		a.recordPeerPingFailure(pingCtx.Err(), 0)
+	}
+}
+
+func (a *App) recordPeerPingSuccess(rtt time.Duration) {
+	now := time.Now().UTC()
+	a.connectMu.Lock()
+	previousFails := a.peerPingConsecutiveFails
+	a.lastPeerPingAt = now
+	a.lastPeerPingRTT = rtt
+	a.lastPeerPingHealthyAt = now
+	a.peerPingConsecutiveFails = 0
+	a.connectMu.Unlock()
+	if previousFails > 0 {
+		log.Printf("bridge peer ping recovered peer=%s rtt=%s", a.service.ID, rtt.Round(time.Millisecond))
+	}
+	a.reportStatus()
+}
+
+func (a *App) recordPeerPingFailure(err error, rtt time.Duration) {
+	if err == nil {
+		return
+	}
+	now := time.Now().UTC()
+	a.connectMu.Lock()
+	previousFails := a.peerPingConsecutiveFails
+	a.lastPeerPingAt = now
+	a.lastPeerPingError = err.Error()
+	a.lastPeerPingErrorAt = now
+	if rtt > 0 {
+		a.lastPeerPingRTT = rtt
+	}
+	a.peerPingConsecutiveFails++
+	count := a.peerPingConsecutiveFails
+	threshold := a.peerPingFailureThreshold
+	a.connectMu.Unlock()
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if count >= threshold && previousFails < threshold {
+		log.Printf("bridge peer ping degraded peer=%s reason=peer_unreachable message=%q", a.service.ID, err.Error())
 	}
 	a.reportStatus()
 }
@@ -601,6 +754,13 @@ type statusSnapshot struct {
 	LastTunnelError         string     `json:"last_tunnel_error,omitempty"`
 	LastTunnelErrorAt       *time.Time `json:"last_tunnel_error_at,omitempty"`
 	LastTunnelHealthyAt     *time.Time `json:"last_tunnel_healthy_at,omitempty"`
+	PeerLivenessState       string     `json:"peer_liveness_state,omitempty"`
+	PeerLivenessReason      string     `json:"peer_liveness_reason,omitempty"`
+	LastPingRTT             string     `json:"last_ping_rtt,omitempty"`
+	LastPingAt              *time.Time `json:"last_ping_at,omitempty"`
+	LastPingError           string     `json:"last_ping_error,omitempty"`
+	LastPingErrorAt         *time.Time `json:"last_ping_error_at,omitempty"`
+	ConsecutivePingFailures int        `json:"consecutive_ping_failures,omitempty"`
 	NetworkState            string     `json:"network_state,omitempty"`
 	NetworkReason           string     `json:"network_reason,omitempty"`
 	NetworkSince            *time.Time `json:"network_since,omitempty"`
@@ -712,6 +872,41 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 			snap.Reason = a.lastRefreshError
 		}
 	}
+	if !a.lastPeerPingAt.IsZero() {
+		t := a.lastPeerPingAt
+		snap.LastPingAt = &t
+	}
+	if !a.lastPeerPingErrorAt.IsZero() {
+		t := a.lastPeerPingErrorAt
+		snap.LastPingErrorAt = &t
+	}
+	snap.LastPingError = a.lastPeerPingError
+	snap.ConsecutivePingFailures = a.peerPingConsecutiveFails
+	if !a.lastPeerPingAt.IsZero() {
+		snap.LastPingRTT = a.lastPeerPingRTT.Round(time.Millisecond).String()
+	}
+	threshold := a.peerPingFailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if a.peerPingConsecutiveFails >= threshold && a.lastPeerPingError != "" && (a.lastPeerPingHealthyAt.IsZero() || a.lastPeerPingHealthyAt.Before(a.lastPeerPingErrorAt)) {
+		snap.PeerLivenessState = "degraded"
+		snap.PeerLivenessReason = fmt.Sprintf("peer_unreachable: %s after %d consecutive failures", a.lastPeerPingError, a.peerPingConsecutiveFails)
+	} else if a.peerPingConsecutiveFails > 0 && (a.lastPeerPingHealthyAt.IsZero() || a.lastPeerPingHealthyAt.Before(a.lastPeerPingErrorAt)) {
+		snap.PeerLivenessState = "suspect"
+		snap.PeerLivenessReason = fmt.Sprintf("peer_unreachable: %s after %d consecutive failures", a.lastPeerPingError, a.peerPingConsecutiveFails)
+	} else if !a.lastPeerPingAt.IsZero() {
+		snap.PeerLivenessState = "healthy"
+		if snap.LastPingRTT != "" {
+			snap.PeerLivenessReason = fmt.Sprintf("last ping RTT %s", snap.LastPingRTT)
+		}
+	} else {
+		snap.PeerLivenessState = "unknown"
+	}
+	if snap.Reason == "" && snap.PeerLivenessState == "degraded" {
+		snap.Status = "degraded"
+		snap.Reason = snap.PeerLivenessReason
+	}
 	return snap
 }
 
@@ -754,7 +949,9 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	a.connectLease = &access
 	a.cfg.ConnectAccessLease = &access
 	a.cfg.ConnectRefreshLease = &refresh
-	a.lastRefreshHealthyAt = time.Now().UTC()
+	now := time.Now().UTC()
+	a.lastRefreshHealthyAt = now
+	a.clearPeerPingStateLocked(now)
 	a.lastRefreshErrorClass = reachability.ErrorNone
 	a.nextRefreshRetryAt = time.Time{}
 	a.consecutiveRefreshFails = 0
@@ -920,6 +1117,13 @@ func (a *App) CurrentRuntimeStatus() RuntimeStatus {
 		LastTunnelError:         snap.LastTunnelError,
 		LastTunnelErrorAt:       snap.LastTunnelErrorAt,
 		LastTunnelHealthyAt:     snap.LastTunnelHealthyAt,
+		PeerLivenessState:       snap.PeerLivenessState,
+		PeerLivenessReason:      snap.PeerLivenessReason,
+		LastPingRTT:             snap.LastPingRTT,
+		LastPingAt:              snap.LastPingAt,
+		LastPingError:           snap.LastPingError,
+		LastPingErrorAt:         snap.LastPingErrorAt,
+		ConsecutivePingFailures: snap.ConsecutivePingFailures,
 		NetworkState:            snap.NetworkState,
 		NetworkReason:           snap.NetworkReason,
 		NetworkSince:            snap.NetworkSince,
