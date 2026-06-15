@@ -197,7 +197,7 @@ func TestHandleServiceStreamRecordsErrorOnUpstreamFailure(t *testing.T) {
 		defer close(done)
 		HandleServiceStream("http://127.0.0.1:0", nil, recorder)(stream)
 	}()
-	go io.Copy(io.Discard, reqReader)
+	go func() { _, _ = io.Copy(io.Discard, reqReader) }()
 	writer := protocol.NewStreamWriter(respWriter)
 	if err := writer.WriteHello(&protocol.Hello{ProtocolMajor: uint16(protocol.ProtocolMajor), ProtocolMinor: uint16(protocol.ProtocolMinor), Role: "bridge", Capabilities: protocol.SupportedCapabilities()}); err != nil {
 		t.Fatal(err)
@@ -226,7 +226,7 @@ func TestHandleServiceTCPStreamRecordsErrorOnTargetFailure(t *testing.T) {
 		defer close(done)
 		HandleServiceTCPStream("http://127.0.0.1:0", nil, recorder)(stream)
 	}()
-	go io.Copy(io.Discard, reqReader)
+	go func() { _, _ = io.Copy(io.Discard, reqReader) }()
 	writer := protocol.NewStreamWriter(respWriter)
 	if err := writer.WriteHello(&protocol.Hello{ProtocolMajor: uint16(protocol.ProtocolMajor), ProtocolMinor: uint16(protocol.ProtocolMinor), Role: "bridge", Capabilities: protocol.SupportedCapabilities()}); err != nil {
 		t.Fatal(err)
