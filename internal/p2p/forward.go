@@ -244,6 +244,7 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 		// Create upstream request — body will be streamed via BodyReader
 		upReq, err := http.NewRequest(reqHeader.Method, upURL, nil) // body set below
 		if err != nil {
+			opErr = err
 			log.Printf("service upstream build request failed peer=%s url=%s err=%v duration=%s", remotePeer, upURL, err, time.Since(start))
 			_ = writer.WriteError(&protocol.Error{Code: 500, Message: "build upstream request: " + err.Error()})
 			return
@@ -296,6 +297,7 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 		forwarding.StripHopByHopHeaders(respHeader.Headers)
 
 		if err := writer.WriteResponseHeader(respHeader); err != nil {
+			opErr = err
 			log.Printf("service stream write response header failed peer=%s status=%d err=%v duration=%s", remotePeer, resp.StatusCode, err, time.Since(start))
 			_ = writer.WriteError(&protocol.Error{Code: 500, Message: "write response header: " + err.Error()})
 			return
@@ -322,6 +324,7 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 				if readErr == io.EOF {
 					if !finalSent {
 						if err := writer.WriteBodyChunk(&protocol.BodyChunk{Data: []byte{}, IsFinal: true}); err != nil {
+							opErr = err
 							log.Printf("service stream write final empty chunk failed peer=%s status=%d bytes=%d err=%v duration=%s", remotePeer, resp.StatusCode, bytesWritten, err, time.Since(start))
 							_ = writer.WriteError(&protocol.Error{Code: 500, Message: "write final body chunk: " + err.Error()})
 							return
