@@ -1592,11 +1592,11 @@ func printProcessDescription(state detachedProcessState, status string) {
 		fmt.Printf("Last ping ago: %s\n", rem)
 	}
 	if state.LastPingError != "" {
-		fmt.Printf("Last ping error: %s\n", state.LastPingError)
+		fmt.Printf("Last ping failure: %s\n", state.LastPingError)
 	}
 	if ts, rem := formatProcessEventTime(state.LastPingErrorAt); ts != "" {
-		fmt.Printf("Last ping error at: %s\n", ts)
-		fmt.Printf("Last ping error ago: %s\n", rem)
+		fmt.Printf("Last ping failure at: %s\n", ts)
+		fmt.Printf("Last ping failure ago: %s\n", rem)
 	}
 	if state.ConsecutivePingFailures > 0 {
 		fmt.Printf("Consecutive ping failures: %d\n", state.ConsecutivePingFailures)
