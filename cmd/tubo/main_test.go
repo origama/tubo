@@ -938,6 +938,8 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 		LastNetworkError:        "failed to dial grant endpoint: connection refused",
 		LastNetworkErrorAt:      time.Now().Add(-90 * time.Second).UTC().Format(time.RFC3339),
 		LastNetworkRecoveredAt:  time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339),
+		LastPingError:           "peer ping timeout",
+		LastPingErrorAt:         time.Now().Add(-45 * time.Second).UTC().Format(time.RFC3339),
 	}
 	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
 	b, _ := json.Marshal(state)
@@ -946,7 +948,7 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Network state: offline_suspected", "Network reason: offline_suspected", "Network since ago:", "Last network error: failed to dial grant endpoint: connection refused", "Last network error at:", "Last network error ago:", "Last network recovered at:", "Last network recovered ago:", "Connect access expires in:", "Connect refresh expires in: expired"} {
+	for _, want := range []string{"Resource kind: pipe", "Service kind: tcp", "Peer ID: 12D3KooWServicePeer", "Selected addr:", "Selected path: relayed", "Path: relayed", "Runtime reason: connect refresh lease expired", "Network state: offline_suspected", "Network reason: offline_suspected", "Network since ago:", "Last network error: failed to dial grant endpoint: connection refused", "Last network error at:", "Last network error ago:", "Last network recovered at:", "Last network recovered ago:", "Last ping failure: peer ping timeout", "Last ping failure at:", "Last ping failure ago:", "Connect access expires in:", "Connect refresh expires in: expired"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}

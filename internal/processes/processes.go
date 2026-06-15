@@ -55,6 +55,13 @@ type State struct {
 	LastTunnelError         string   `json:"last_tunnel_error,omitempty"`
 	LastTunnelErrorAt       string   `json:"last_tunnel_error_at,omitempty"`
 	LastTunnelHealthyAt     string   `json:"last_tunnel_healthy_at,omitempty"`
+	PeerLivenessState       string   `json:"peer_liveness_state,omitempty"`
+	PeerLivenessReason      string   `json:"peer_liveness_reason,omitempty"`
+	LastPingRTT             string   `json:"last_ping_rtt,omitempty"`
+	LastPingAt              string   `json:"last_ping_at,omitempty"`
+	LastPingError           string   `json:"last_ping_error,omitempty"`
+	LastPingErrorAt         string   `json:"last_ping_error_at,omitempty"`
+	ConsecutivePingFailures int      `json:"consecutive_ping_failures,omitempty"`
 	NetworkState            string   `json:"network_state,omitempty"`
 	NetworkReason           string   `json:"network_reason,omitempty"`
 	NetworkSince            string   `json:"network_since,omitempty"`
@@ -100,6 +107,16 @@ type View struct {
 	DegradedReason          string   `json:"degraded_reason,omitempty"`
 	ConnectAccessExpiresAt  string   `json:"connect_access_expires_at,omitempty"`
 	ConnectRefreshExpiresAt string   `json:"connect_refresh_expires_at,omitempty"`
+	LastTunnelError         string   `json:"last_tunnel_error,omitempty"`
+	LastTunnelErrorAt       string   `json:"last_tunnel_error_at,omitempty"`
+	LastTunnelHealthyAt     string   `json:"last_tunnel_healthy_at,omitempty"`
+	PeerLivenessState       string   `json:"peer_liveness_state,omitempty"`
+	PeerLivenessReason      string   `json:"peer_liveness_reason,omitempty"`
+	LastPingRTT             string   `json:"last_ping_rtt,omitempty"`
+	LastPingAt              string   `json:"last_ping_at,omitempty"`
+	LastPingError           string   `json:"last_ping_error,omitempty"`
+	LastPingErrorAt         string   `json:"last_ping_error_at,omitempty"`
+	ConsecutivePingFailures int      `json:"consecutive_ping_failures,omitempty"`
 	NetworkState            string   `json:"network_state,omitempty"`
 	NetworkReason           string   `json:"network_reason,omitempty"`
 	NetworkSince            string   `json:"network_since,omitempty"`
@@ -763,6 +780,16 @@ func viewFromState(state State, status, confidence string) View {
 		DegradedReason:          state.DegradedReason,
 		ConnectAccessExpiresAt:  state.ConnectAccessExpiresAt,
 		ConnectRefreshExpiresAt: state.ConnectRefreshExpiresAt,
+		LastTunnelError:         state.LastTunnelError,
+		LastTunnelErrorAt:       state.LastTunnelErrorAt,
+		LastTunnelHealthyAt:     state.LastTunnelHealthyAt,
+		PeerLivenessState:       state.PeerLivenessState,
+		PeerLivenessReason:      state.PeerLivenessReason,
+		LastPingRTT:             state.LastPingRTT,
+		LastPingAt:              state.LastPingAt,
+		LastPingError:           state.LastPingError,
+		LastPingErrorAt:         state.LastPingErrorAt,
+		ConsecutivePingFailures: state.ConsecutivePingFailures,
 		NetworkState:            state.NetworkState,
 		NetworkReason:           state.NetworkReason,
 		NetworkSince:            state.NetworkSince,

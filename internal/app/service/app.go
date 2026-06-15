@@ -21,6 +21,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	circuitclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
+	p2pping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"github.com/multiformats/go-multiaddr"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
@@ -188,6 +189,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	if len(authorityPub) > 0 && strings.TrimSpace(cfg.DiscoveryClusterID) != "" && strings.TrimSpace(cfg.DiscoveryNamespaceID) != "" {
 		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), ServicePeerID: h.ID().String(), Replay: p2p.NewConnectProofReplayCache(1024)}
 	}
+	p2pping.NewPingService(h)
 	if cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
 		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceTCPStream(cfg.Target, connectAuth))
 	} else {

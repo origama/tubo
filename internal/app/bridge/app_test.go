@@ -19,13 +19,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	hostpkg "github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
+	corepeer "github.com/libp2p/go-libp2p/core/peer"
 	coreprotocol "github.com/libp2p/go-libp2p/core/protocol"
+	p2pping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	capability "github.com/origama/tubo/internal/capability"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
@@ -33,6 +36,33 @@ import (
 	"github.com/origama/tubo/internal/reachability"
 	"golang.org/x/crypto/ssh"
 )
+
+type fakePeerPinger struct {
+	mu       sync.Mutex
+	results  []p2pping.Result
+	calls    int32
+	lastPeer corepeer.ID
+}
+
+func (f *fakePeerPinger) Ping(_ context.Context, peerID corepeer.ID) <-chan p2pping.Result {
+	atomic.AddInt32(&f.calls, 1)
+	f.mu.Lock()
+	f.lastPeer = peerID
+	results := append([]p2pping.Result(nil), f.results...)
+	f.mu.Unlock()
+	ch := make(chan p2pping.Result, len(results))
+	for _, res := range results {
+		ch <- res
+	}
+	close(ch)
+	return ch
+}
+
+func (f *fakePeerPinger) peer() corepeer.ID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastPeer
+}
 
 func TestBridgeRefreshesConnectAccessLeaseBeforeExpiry(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
@@ -536,6 +566,116 @@ func TestBridgeCurrentRuntimeStatusClearsStaleRefreshErrorAfterTrafficRecovery(t
 	}
 }
 
+func TestBridgeCurrentRuntimeStatusTracksPeerPingFailures(t *testing.T) {
+	peerID := corepeer.ID("12D3KooWPeerPing")
+	app := &App{cfg: Config{ServiceKind: "tcp"}, service: corepeer.AddrInfo{ID: peerID}, peerPingFailureThreshold: 3}
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || snap.PeerLivenessState != "degraded" {
+		t.Fatalf("expected degraded ping status, got %#v", snap)
+	}
+	if snap.ConsecutivePingFailures != 3 || !strings.Contains(snap.PeerLivenessReason, "peer timeout") {
+		t.Fatalf("expected ping failure details, got %#v", snap)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusClearsPeerPingRecoveryAfterTraffic(t *testing.T) {
+	peerID := corepeer.ID("12D3KooWPeerPing")
+	app := &App{cfg: Config{ServiceKind: "tcp"}, service: corepeer.AddrInfo{ID: peerID}, peerPingFailureThreshold: 3}
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.markTunnelHealthy()
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.PeerLivenessState != "healthy" || snap.ConsecutivePingFailures != 0 {
+		t.Fatalf("expected ping recovery after traffic, got %#v", snap)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusKeepsRefreshFailureAheadOfPingSuccess(t *testing.T) {
+	peerID := corepeer.ID("12D3KooWPeerPing")
+	app := &App{cfg: Config{ServiceKind: "tcp"}, service: corepeer.AddrInfo{ID: peerID}, lastRefreshError: "grant service unavailable", lastRefreshErrorAt: time.Now().Add(-time.Minute)}
+	app.recordPeerPingSuccess(peerID, 9*time.Millisecond)
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "grant service unavailable") {
+		t.Fatalf("expected refresh failure to keep status degraded, got %#v", snap)
+	}
+	if snap.PeerLivenessState != "healthy" {
+		t.Fatalf("expected ping success to still update liveness details, got %#v", snap)
+	}
+}
+
+func TestBridgePeerPingUsesSnapshotPeerID(t *testing.T) {
+	pinger := &fakePeerPinger{results: []p2pping.Result{{RTT: 7 * time.Millisecond}}}
+	oldPeerID := corepeer.ID("12D3KooWOldPeer")
+	newPeerID := corepeer.ID("12D3KooWNewPeer")
+	app := &App{
+		cfg:             Config{ServiceKind: "tcp"},
+		service:         corepeer.AddrInfo{ID: oldPeerID},
+		peerPing:        pinger,
+		peerPingTimeout: 50 * time.Millisecond,
+	}
+	peerID, ok := app.selectedPeerID()
+	if !ok {
+		t.Fatal("expected selected peer id")
+	}
+	app.connectMu.Lock()
+	app.service.ID = newPeerID
+	app.connectMu.Unlock()
+	app.runPeerPingOnce(context.Background(), peerID)
+	if got := pinger.peer(); got != oldPeerID {
+		t.Fatalf("ping peer id = %s, want %s", got, oldPeerID)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusKeepsLastSuccessfulPingRTTAfterFailure(t *testing.T) {
+	peerID := corepeer.ID("12D3KooWPeerPing")
+	app := &App{cfg: Config{ServiceKind: "tcp"}, service: corepeer.AddrInfo{ID: peerID}, peerPingFailureThreshold: 3}
+	app.recordPeerPingSuccess(peerID, 9*time.Millisecond)
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	snap := app.CurrentRuntimeStatus()
+	if snap.LastPingRTT != "9ms" {
+		t.Fatalf("expected last successful RTT to remain visible, got %#v", snap)
+	}
+	if snap.PeerLivenessState != "suspect" {
+		t.Fatalf("expected ping failure to mark suspect, got %#v", snap)
+	}
+}
+
+func TestBridgePeerPingLoopRecordsResults(t *testing.T) {
+	pinger := &fakePeerPinger{results: []p2pping.Result{{RTT: 7 * time.Millisecond}}}
+	app := &App{
+		cfg:                      Config{ServiceKind: "tcp"},
+		service:                  corepeer.AddrInfo{ID: corepeer.ID("12D3KooWPingTarget")},
+		peerPing:                 pinger,
+		peerPingInterval:         5 * time.Millisecond,
+		peerPingTimeout:          50 * time.Millisecond,
+		peerPingFailureThreshold: 3,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go app.startPeerPingLoop(ctx)
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&pinger.calls) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("expected peer ping loop to run")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	cancel()
+	snap := app.CurrentRuntimeStatus()
+	if snap.PeerLivenessState != "healthy" || snap.LastPingRTT != "7ms" {
+		t.Fatalf("expected ping loop to record success, got %#v", snap)
+	}
+	if got := pinger.peer(); got != corepeer.ID("12D3KooWPingTarget") {
+		t.Fatalf("expected ping loop peer id %q, got %q", "12D3KooWPingTarget", got)
+	}
+}
+
 func TestBridgeHTTPRequestMarksHealthyAfterRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -624,9 +764,16 @@ func TestBridgeWebSocketUpgradeMarksHealthyAfterRecovery(t *testing.T) {
 	if !strings.Contains(line, "101 Switching Protocols") {
 		t.Fatalf("unexpected websocket response status: %q", line)
 	}
-	snap := app.CurrentRuntimeStatus()
-	if snap.Status != "running" || snap.Reason != "" {
-		t.Fatalf("expected running status after websocket recovery, got %#v", snap)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snap := app.CurrentRuntimeStatus()
+		if snap.Status == "running" && snap.Reason == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected running status after websocket recovery, got %#v", snap)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
