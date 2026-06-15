@@ -475,7 +475,7 @@ func (a *App) markTunnelDegraded(err error) {
 }
 
 func (a *App) startPeerPingLoop(ctx context.Context) {
-	if a.peerPing == nil || a.peerPingInterval <= 0 || a.service.ID == "" {
+	if a.peerPing == nil || a.peerPingInterval <= 0 {
 		return
 	}
 	interval := a.peerPingInterval
@@ -506,55 +506,66 @@ func (a *App) startPeerPingLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !a.shouldRunPeerPing() {
+		peerID, ok := a.selectedPeerID()
+		if !ok {
 			continue
 		}
-		a.runPeerPingOnce(ctx)
+		a.runPeerPingOnce(ctx, peerID)
 	}
 }
 
-func (a *App) lastPeerActivityAt() time.Time {
+func (a *App) selectedPeerID() (peer.ID, bool) {
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
-	latest := a.lastRefreshHealthyAt
-	if a.lastTunnelHealthyAt.After(latest) {
-		latest = a.lastTunnelHealthyAt
+	if a.service.ID == "" {
+		return "", false
 	}
-	if a.lastPeerPingHealthyAt.After(latest) {
-		latest = a.lastPeerPingHealthyAt
+	return a.service.ID, true
+}
+
+func (a *App) lastPeerActivityAt() time.Time {
+	a.healthMu.RLock()
+	lastTunnelHealthyAt := a.lastTunnelHealthyAt
+	a.healthMu.RUnlock()
+	a.connectMu.Lock()
+	lastRefreshHealthyAt := a.lastRefreshHealthyAt
+	lastPeerPingHealthyAt := a.lastPeerPingHealthyAt
+	a.connectMu.Unlock()
+	latest := lastRefreshHealthyAt
+	if lastTunnelHealthyAt.After(latest) {
+		latest = lastTunnelHealthyAt
+	}
+	if lastPeerPingHealthyAt.After(latest) {
+		latest = lastPeerPingHealthyAt
 	}
 	return latest
 }
 
-func (a *App) shouldRunPeerPing() bool {
-	return a.peerPing != nil && a.service.ID != ""
-}
-
-func (a *App) runPeerPingOnce(ctx context.Context) {
+func (a *App) runPeerPingOnce(ctx context.Context, peerID peer.ID) {
 	timeout := a.peerPingTimeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	results := a.peerPing.Ping(pingCtx, a.service.ID)
+	results := a.peerPing.Ping(pingCtx, peerID)
 	select {
 	case res, ok := <-results:
 		if !ok {
-			a.recordPeerPingFailure(errors.New("peer ping stream closed without result"), 0)
+			a.recordPeerPingFailure(peerID, errors.New("peer ping stream closed without result"))
 			return
 		}
 		if res.Error != nil {
-			a.recordPeerPingFailure(res.Error, res.RTT)
+			a.recordPeerPingFailure(peerID, res.Error)
 			return
 		}
-		a.recordPeerPingSuccess(res.RTT)
+		a.recordPeerPingSuccess(peerID, res.RTT)
 	case <-pingCtx.Done():
-		a.recordPeerPingFailure(pingCtx.Err(), 0)
+		a.recordPeerPingFailure(peerID, pingCtx.Err())
 	}
 }
 
-func (a *App) recordPeerPingSuccess(rtt time.Duration) {
+func (a *App) recordPeerPingSuccess(peerID peer.ID, rtt time.Duration) {
 	now := time.Now().UTC()
 	a.connectMu.Lock()
 	previousFails := a.peerPingConsecutiveFails
@@ -564,12 +575,12 @@ func (a *App) recordPeerPingSuccess(rtt time.Duration) {
 	a.peerPingConsecutiveFails = 0
 	a.connectMu.Unlock()
 	if previousFails > 0 {
-		log.Printf("bridge peer ping recovered peer=%s rtt=%s", a.service.ID, rtt.Round(time.Millisecond))
+		log.Printf("bridge peer ping recovered peer=%s rtt=%s", peerID, rtt.Round(time.Millisecond))
 	}
 	a.reportStatus()
 }
 
-func (a *App) recordPeerPingFailure(err error, rtt time.Duration) {
+func (a *App) recordPeerPingFailure(peerID peer.ID, err error) {
 	if err == nil {
 		return
 	}
@@ -579,9 +590,6 @@ func (a *App) recordPeerPingFailure(err error, rtt time.Duration) {
 	a.lastPeerPingAt = now
 	a.lastPeerPingError = err.Error()
 	a.lastPeerPingErrorAt = now
-	if rtt > 0 {
-		a.lastPeerPingRTT = rtt
-	}
 	a.peerPingConsecutiveFails++
 	count := a.peerPingConsecutiveFails
 	threshold := a.peerPingFailureThreshold
@@ -590,7 +598,7 @@ func (a *App) recordPeerPingFailure(err error, rtt time.Duration) {
 		threshold = 3
 	}
 	if count >= threshold && previousFails < threshold {
-		log.Printf("bridge peer ping degraded peer=%s reason=peer_unreachable message=%q", a.service.ID, err.Error())
+		log.Printf("bridge peer ping degraded peer=%s reason=peer_unreachable message=%q", peerID, err.Error())
 	}
 	a.reportStatus()
 }
@@ -673,7 +681,11 @@ func (a *App) openServiceTunnelStream(ctx context.Context) (network.Stream, erro
 	if a.openTunnelStream != nil {
 		return a.openTunnelStream(ctx)
 	}
-	return a.host.NewStream(ctx, a.service.ID, p2p.ProtocolID)
+	peerID, ok := a.selectedPeerID()
+	if !ok {
+		return nil, fmt.Errorf("bridge service peer unavailable")
+	}
+	return a.host.NewStream(ctx, peerID, p2p.ProtocolID)
 }
 
 func (a *App) startTCPTunnelStream(s network.Stream, proof *protocol.ConnectProof) error {
@@ -882,7 +894,7 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 	}
 	snap.LastPingError = a.lastPeerPingError
 	snap.ConsecutivePingFailures = a.peerPingConsecutiveFails
-	if !a.lastPeerPingAt.IsZero() {
+	if a.lastPeerPingRTT > 0 {
 		snap.LastPingRTT = a.lastPeerPingRTT.Round(time.Millisecond).String()
 	}
 	threshold := a.peerPingFailureThreshold
@@ -1102,14 +1114,15 @@ func (a *App) CurrentRuntimeStatus() RuntimeStatus {
 	lastRefreshError := a.lastRefreshError
 	nextRefreshRetryAt := a.nextRefreshRetryAt
 	a.connectMu.Unlock()
+	selectedPeerID, _ := a.selectedPeerID()
 	return RuntimeStatus{
 		Status:                  snap.Status,
 		Reason:                  snap.Reason,
 		ServiceKind:             snap.ServiceKind,
 		Path:                    snap.Path,
-		SelectedAddr:            a.selectedAddr,
-		SelectedPath:            a.selectedPath,
-		SelectedPeerID:          a.service.ID.String(),
+		SelectedAddr:            snap.SelectedAddr,
+		SelectedPath:            snap.SelectedPath,
+		SelectedPeerID:          selectedPeerID.String(),
 		ConnectAccessExpiresAt:  snap.ConnectAccessExpiresAt,
 		ConnectAccessExpiresIn:  snap.ConnectAccessExpiresIn,
 		ConnectRefreshExpiresAt: snap.ConnectRefreshExpiresAt,
@@ -1206,7 +1219,12 @@ func (a *App) mux() *http.ServeMux {
 	})
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tunnel stream")
-		s, err := a.host.NewStream(streamCtx, a.service.ID, p2p.SupportedProtocolIDs()...)
+		peerID, ok := a.selectedPeerID()
+		if !ok {
+			http.Error(w, "bridge service peer unavailable", 502)
+			return
+		}
+		s, err := a.host.NewStream(streamCtx, peerID, p2p.SupportedProtocolIDs()...)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return
