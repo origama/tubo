@@ -86,15 +86,20 @@ func collectTopReport(ctx context.Context, includeAll bool, prev map[string]topS
 			} else {
 				row.StatsAvailable = true
 				row.Stats = snap
-				if prevSnap, ok := prev[item.ID]; ok && snap.CollectedAt.After(prevSnap.At) {
-					dt := snap.CollectedAt.Sub(prevSnap.At).Seconds()
-					if dt > 0 {
-						row.RxBytesPerSec = float64(snap.RxBytesTotal-prevSnap.Snap.RxBytesTotal) / dt
-						row.TxBytesPerSec = float64(snap.TxBytesTotal-prevSnap.Snap.TxBytesTotal) / dt
-						row.RequestsPerSec = float64(snap.RequestsTotal-prevSnap.Snap.RequestsTotal) / dt
+				if prevSnap, ok := prev[item.ID]; ok {
+					sampleAt := time.Now().UTC()
+					if sampleAt.After(prevSnap.At) {
+						dt := sampleAt.Sub(prevSnap.At).Seconds()
+						if dt > 0 {
+							row.RxBytesPerSec = float64(snap.RxBytesTotal-prevSnap.Snap.RxBytesTotal) / dt
+							row.TxBytesPerSec = float64(snap.TxBytesTotal-prevSnap.Snap.TxBytesTotal) / dt
+							row.RequestsPerSec = float64(snap.RequestsTotal-prevSnap.Snap.RequestsTotal) / dt
+						}
 					}
+					prev[item.ID] = topSample{At: sampleAt, Snap: snap}
+				} else {
+					prev[item.ID] = topSample{At: time.Now().UTC(), Snap: snap}
 				}
-				prev[item.ID] = topSample{At: snap.CollectedAt, Snap: snap}
 			}
 		} else {
 			row.StatsError = "stats endpoint unavailable"
@@ -133,44 +138,61 @@ func printTopReport(report topReport) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tROLE\tKIND\tPATH\tRX/s\tTX/s\tRX TOTAL\tTX TOTAL\tACTIVE\tDONE\tERR\tREQ/s\tSTATUS")
 	for _, item := range report.Items {
-		status := item.ProcessView.Status
-		if item.Stats.Status != "" {
-			status = item.Stats.Status
-		}
-		path := item.ProcessView.Path
-		if path == "" {
-			path = item.Stats.Path
-		}
-		kind := item.ProcessView.ServiceKind
-		if kind == "" {
-			kind = item.Stats.Kind
-		}
-		rxTotal := humanizeBytes(item.Stats.RxBytesTotal)
-		txTotal := humanizeBytes(item.Stats.TxBytesTotal)
-		if item.StatsAvailable {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				item.ProcessView.Name,
-				defaultTopValue(item.ProcessView.Command),
-				defaultTopValue(kind),
-				defaultTopValue(path),
-				humanizeBytesPerSecond(item.RxBytesPerSec),
-				humanizeBytesPerSecond(item.TxBytesPerSec),
-				defaultTopValue(rxTotal),
-				defaultTopValue(txTotal),
-				defaultTopValue(fmt.Sprintf("%d", item.Stats.Active)),
-				defaultTopValue(fmt.Sprintf("%d", item.Stats.Completed)),
-				defaultTopValue(fmt.Sprintf("%d", item.Stats.Errors)),
-				humanizeRate(item.RequestsPerSec),
-				defaultTopValue(status),
-			)
-			continue
-		}
-		if item.StatsError != "" {
-			status = defaultTopValue(status) + " (stats unavailable)"
-		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t-\t-\t-\t-\t-\t-\t%s\n", item.ProcessView.Name, defaultTopValue(item.ProcessView.Command), defaultTopValue(kind), defaultTopValue(path), defaultTopValue(status))
+		fmt.Fprintln(w, strings.Join(topRowCells(item), "\t"))
 	}
 	_ = w.Flush()
+}
+
+func topRowCells(item topRow) []string {
+	status := item.ProcessView.Status
+	if item.Stats.Status != "" {
+		status = item.Stats.Status
+	}
+	path := item.ProcessView.Path
+	if path == "" {
+		path = item.Stats.Path
+	}
+	kind := item.ProcessView.ServiceKind
+	if kind == "" {
+		kind = item.Stats.Kind
+	}
+	rxTotal := humanizeBytes(item.Stats.RxBytesTotal)
+	txTotal := humanizeBytes(item.Stats.TxBytesTotal)
+	if item.StatsAvailable {
+		return []string{
+			defaultTopValue(item.ProcessView.Name),
+			defaultTopValue(item.ProcessView.Command),
+			defaultTopValue(kind),
+			defaultTopValue(path),
+			humanizeBytesPerSecond(item.RxBytesPerSec),
+			humanizeBytesPerSecond(item.TxBytesPerSec),
+			defaultTopValue(rxTotal),
+			defaultTopValue(txTotal),
+			defaultTopValue(fmt.Sprintf("%d", item.Stats.Active)),
+			defaultTopValue(fmt.Sprintf("%d", item.Stats.Completed)),
+			defaultTopValue(fmt.Sprintf("%d", item.Stats.Errors)),
+			humanizeRate(item.RequestsPerSec),
+			defaultTopValue(status),
+		}
+	}
+	if item.StatsError != "" {
+		status = defaultTopValue(status) + " (stats unavailable)"
+	}
+	return []string{
+		defaultTopValue(item.ProcessView.Name),
+		defaultTopValue(item.ProcessView.Command),
+		defaultTopValue(kind),
+		defaultTopValue(path),
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		"-",
+		defaultTopValue(status),
+	}
 }
 
 func defaultTopValue(v string) string {

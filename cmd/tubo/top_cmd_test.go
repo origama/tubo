@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,6 +83,27 @@ func TestCollectTopReportComputesRatesFromDeltas(t *testing.T) {
 	}
 	if report2.Items[0].RxBytesPerSec <= 0 || report2.Items[0].TxBytesPerSec <= 0 {
 		t.Fatalf("expected positive rates, got %#v", report2.Items[0])
+	}
+}
+
+func TestTopReportFallbackKeepsColumnAlignment(t *testing.T) {
+	out, err := capture(func() error {
+		printTopReport(topReport{GeneratedAt: time.Now().UTC(), Items: []topRow{{ProcessView: processView{Name: "connect-lms-1234", Command: "connect", ServiceKind: "tcp", Path: "direct"}, StatsError: "stats endpoint unavailable"}}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("unexpected output: %q", out)
+	}
+	row := topRowCells(topRow{ProcessView: processView{Name: "connect-lms-1234", Command: "connect", ServiceKind: "tcp", Path: "direct"}, StatsError: "stats endpoint unavailable"})
+	if len(row) != 13 {
+		t.Fatalf("expected 13 columns in fallback row, got %d: %#v", len(row), row)
+	}
+	if row[4] != "-" || row[12] != "- (stats unavailable)" {
+		t.Fatalf("unexpected fallback cells: %#v", row)
 	}
 }
 

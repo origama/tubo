@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -284,6 +285,21 @@ func serviceAddrUsesRelay(addr string) bool {
 	return strings.Contains(addr, "/p2p-circuit")
 }
 
+func tcpConnectAdminListenAddr(listenAddr string) (string, bool) {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return "", false
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p >= 65535 {
+		return "", false
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, strconv.Itoa(p+1)), true
+}
+
 func serviceStreamContext(serviceAddr, reason string) context.Context {
 	ctx := context.Background()
 	if serviceAddrUsesRelay(serviceAddr) {
@@ -313,8 +329,27 @@ func (a *App) Start(ctx context.Context) error {
 		go a.watchConnectPathTransitions(ctx)
 	}
 	if a.cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
+		adminAddr, ok := tcpConnectAdminListenAddr(listenAddr)
+		if !ok {
+			adminAddr = "127.0.0.1:0"
+		}
+		adminLn, err := net.Listen("tcp", adminAddr)
+		if err != nil {
+			return fmt.Errorf("listen bridge admin: %w", err)
+		}
+		adminServer := &http.Server{Handler: a.mux()}
+		go func() {
+			log.Printf("client bridge admin listening on %s", adminLn.Addr().String())
+			if err := adminServer.Serve(adminLn); err != nil && err != http.ErrServerClosed {
+				log.Printf("bridge admin server: %v", err)
+			}
+		}()
 		go a.serveTCP(ctx, ln)
 		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = adminServer.Shutdown(shutdownCtx)
+		_ = adminLn.Close()
 		return ln.Close()
 	}
 	server := &http.Server{Addr: a.cfg.Listen, Handler: a.mux()}
@@ -1332,23 +1367,33 @@ func (a *App) mux() *http.ServeMux {
 	return m
 }
 func (a *App) serveWebSocket(w http.ResponseWriter, r *http.Request, s network.Stream, headers map[string][]string) {
+	start := time.Now()
+	var opErr error
+	if a.stats != nil {
+		a.stats.Begin()
+		defer func() { a.stats.Finish(opErr) }()
+	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {
+		opErr = fmt.Errorf("websocket hijack unsupported")
 		http.Error(w, "websocket hijack unsupported", http.StatusInternalServerError)
 		return
 	}
 	proof, err := a.connectProof()
 	if err != nil {
+		opErr = err
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	respHeader, err := p2p.StartClientWebSocketUpgrade(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, proof)
 	if err != nil {
+		opErr = err
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	conn, rw, err := hj.Hijack()
 	if err != nil {
+		opErr = err
 		return
 	}
 	defer conn.Close()
@@ -1365,26 +1410,39 @@ func (a *App) serveWebSocket(w http.ResponseWriter, r *http.Request, s network.S
 	}
 	bw := bufio.NewWriter(conn)
 	if err := resp.Write(bw); err != nil {
+		opErr = err
 		return
 	}
 	if err := bw.Flush(); err != nil {
+		opErr = err
 		return
 	}
 	if respHeader.StatusCode != http.StatusSwitchingProtocols {
+		if a.stats != nil {
+			a.stats.Observe(respHeader.StatusCode, time.Since(start))
+		}
 		return
 	}
 	log.Printf("bridge websocket upgraded path=%s", r.URL.Path)
 	a.markTunnelHealthy()
-	proxyRawClient(s, conn, rw.Reader)
+	proxyRawClient(s, conn, rw.Reader, a.stats, start)
 }
 
-func proxyRawClient(s network.Stream, conn net.Conn, clientReader io.Reader) {
+func proxyRawClient(s network.Stream, conn net.Conn, clientReader io.Reader, recorder *statspkg.Collector, start time.Time) {
 	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(s, clientReader); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(conn, s); done <- struct{}{} }()
+	var tx int64
+	var rx int64
+	go func() { n, _ := io.Copy(s, clientReader); tx = n; done <- struct{}{} }()
+	go func() { n, _ := io.Copy(conn, s); rx = n; done <- struct{}{} }()
 	<-done
 	_ = s.Close()
 	_ = conn.Close()
+	<-done
+	if recorder != nil {
+		recorder.AddTx(tx)
+		recorder.AddRx(rx)
+		recorder.Observe(http.StatusSwitchingProtocols, time.Since(start))
+	}
 }
 
 func (a *App) connectProof() (*protocol.ConnectProof, error) {

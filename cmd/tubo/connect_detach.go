@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,7 +115,12 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 	name := detachedConnectProcessName(result.ServiceName, localAddr)
 	statusURL := ""
 	statsURL := ""
-	if !strings.EqualFold(strings.TrimSpace(result.ServiceKind), "tcp") {
+	if strings.EqualFold(strings.TrimSpace(result.ServiceKind), "tcp") {
+		if adminHostPort, ok := connectAdminHostPort(localAddr); ok {
+			statusURL = "http://" + adminHostPort + "/healthz"
+			statsURL = "http://" + adminHostPort + "/statsz"
+		}
+	} else {
 		statusURL = "http://" + connectStatusHostPort(localAddr) + "/healthz"
 		statsURL = "http://" + connectStatusHostPort(localAddr) + "/statsz"
 	}
@@ -239,6 +245,19 @@ func connectStatusHostPort(local string) string {
 		return "127.0.0.1" + local
 	}
 	return local
+}
+
+func connectAdminHostPort(local string) (string, bool) {
+	local = connectStatusHostPort(local)
+	host, port, err := net.SplitHostPort(local)
+	if err != nil {
+		return "", false
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p >= 65535 {
+		return "", false
+	}
+	return net.JoinHostPort(host, strconv.Itoa(p+1)), true
 }
 
 func normalizeConnectProcessLocal(localURL string) string {

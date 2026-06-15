@@ -171,6 +171,80 @@ func TestSupportedProtocolIDsUsesOnlyPreferredID(t *testing.T) {
 	}
 }
 
+type testStatsRecorder struct {
+	begin, tx, rx, completed, errors int64
+}
+
+func (r *testStatsRecorder) Begin()                     { r.begin++ }
+func (r *testStatsRecorder) AddRx(n int64)              { r.rx += n }
+func (r *testStatsRecorder) AddTx(n int64)              { r.tx += n }
+func (r *testStatsRecorder) Observe(int, time.Duration) {}
+func (r *testStatsRecorder) Finish(err error) {
+	if err != nil {
+		r.errors++
+	} else {
+		r.completed++
+	}
+}
+
+func TestHandleServiceStreamRecordsErrorOnUpstreamFailure(t *testing.T) {
+	reqReader, reqWriter := io.Pipe()
+	respReader, respWriter := io.Pipe()
+	stream := &memoryClientStream{reader: respReader, writer: reqWriter, protocolID: ProtocolID}
+	recorder := &testStatsRecorder{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		HandleServiceStream("http://127.0.0.1:0", nil, recorder)(stream)
+	}()
+	go io.Copy(io.Discard, reqReader)
+	writer := protocol.NewStreamWriter(respWriter)
+	if err := writer.WriteHello(&protocol.Hello{ProtocolMajor: uint16(protocol.ProtocolMajor), ProtocolMinor: uint16(protocol.ProtocolMinor), Role: "bridge", Capabilities: protocol.SupportedCapabilities()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteRequestHeader(&protocol.RequestHeader{Method: "GET", Path: "/x", ContentLengthHint: 0}); err != nil {
+		t.Fatal(err)
+	}
+	_ = respWriter.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler timed out")
+	}
+	if recorder.begin != 1 || recorder.errors != 1 || recorder.completed != 0 {
+		t.Fatalf("unexpected recorder state: %+v", recorder)
+	}
+}
+
+func TestHandleServiceTCPStreamRecordsErrorOnTargetFailure(t *testing.T) {
+	reqReader, reqWriter := io.Pipe()
+	respReader, respWriter := io.Pipe()
+	stream := &memoryClientStream{reader: respReader, writer: reqWriter, protocolID: ProtocolID}
+	recorder := &testStatsRecorder{}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		HandleServiceTCPStream("http://127.0.0.1:0", nil, recorder)(stream)
+	}()
+	go io.Copy(io.Discard, reqReader)
+	writer := protocol.NewStreamWriter(respWriter)
+	if err := writer.WriteHello(&protocol.Hello{ProtocolMajor: uint16(protocol.ProtocolMajor), ProtocolMinor: uint16(protocol.ProtocolMinor), Role: "bridge", Capabilities: protocol.SupportedCapabilities()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteTunnelRequest(&protocol.TunnelRequest{Kind: "tcp"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = respWriter.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handler timed out")
+	}
+	if recorder.begin != 1 || recorder.errors != 1 || recorder.completed != 0 {
+		t.Fatalf("unexpected recorder state: %+v", recorder)
+	}
+}
+
 func TestHandleClientRequestRejectsIncompatibleProtocolMajor(t *testing.T) {
 	reqReader, reqWriter := io.Pipe()
 	respReader, respWriter := io.Pipe()

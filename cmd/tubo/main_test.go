@@ -590,8 +590,8 @@ func TestBuildDetachedConnectSpecUsesTokenServiceKindForTCP(t *testing.T) {
 	if spec.State.ServiceKind != "tcp" {
 		t.Fatalf("ServiceKind = %q", spec.State.ServiceKind)
 	}
-	if spec.State.StatusURL != "" || spec.HealthURL != "" {
-		t.Fatalf("expected tcp token connect to omit health url, got state=%q health=%q", spec.State.StatusURL, spec.HealthURL)
+	if spec.State.StatusURL == "" || spec.State.StatsURL == "" {
+		t.Fatalf("expected tcp token connect to expose admin urls, got state=%q stats=%q", spec.State.StatusURL, spec.State.StatsURL)
 	}
 }
 
