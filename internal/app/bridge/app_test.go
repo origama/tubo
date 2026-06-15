@@ -764,9 +764,16 @@ func TestBridgeWebSocketUpgradeMarksHealthyAfterRecovery(t *testing.T) {
 	if !strings.Contains(line, "101 Switching Protocols") {
 		t.Fatalf("unexpected websocket response status: %q", line)
 	}
-	snap := app.CurrentRuntimeStatus()
-	if snap.Status != "running" || snap.Reason != "" {
-		t.Fatalf("expected running status after websocket recovery, got %#v", snap)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snap := app.CurrentRuntimeStatus()
+		if snap.Status == "running" && snap.Reason == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected running status after websocket recovery, got %#v", snap)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
