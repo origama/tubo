@@ -32,9 +32,26 @@ func TestCollectorTracksBytesAndActivity(t *testing.T) {
 	}
 }
 
+func TestCollectorBytesDoNotTouchActivityTimestamp(t *testing.T) {
+	c := New(Snapshot{Role: "service"})
+	first := c.Snapshot()
+	if first.LastActivityAt != nil {
+		t.Fatalf("unexpected initial activity timestamp: %#v", first)
+	}
+	c.AddTx(1)
+	c.AddRx(2)
+	second := c.Snapshot()
+	if second.TxBytesTotal != 1 || second.RxBytesTotal != 2 {
+		t.Fatalf("unexpected byte counters: %#v", second)
+	}
+	if second.LastActivityAt != nil {
+		t.Fatalf("byte-only updates should not stamp activity, got %#v", second.LastActivityAt)
+	}
+}
+
 func TestCollectorCopiesSnapshot(t *testing.T) {
 	c := New(Snapshot{Role: "service"})
-	c.AddTx(1)
+	c.Begin()
 	first := c.Snapshot()
 	if first.LastActivityAt == nil {
 		t.Fatal("expected activity timestamp")
