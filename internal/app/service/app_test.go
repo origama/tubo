@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,6 +23,7 @@ import (
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/reachability"
+	statspkg "github.com/origama/tubo/internal/runtime/stats"
 	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/ssh"
 )
@@ -56,6 +59,32 @@ func mustParseMultiaddrs(t *testing.T, raw ...string) []multiaddr.Multiaddr {
 		out = append(out, m)
 	}
 	return out
+}
+
+func TestServiceStatsEndpointExposesCollectorSnapshot(t *testing.T) {
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "service-stats-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	collector := statspkg.New(statspkg.Snapshot{Role: "service", Kind: "http", Service: "demo", ServiceID: h.ID().String(), Status: "running"})
+	collector.AddRx(100)
+	collector.AddTx(200)
+	collector.Observe(http.StatusOK, 15*time.Millisecond)
+	server := httptest.NewServer(healthMux(h, collector))
+	defer server.Close()
+	resp, err := http.Get(server.URL + "/statsz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var snap statspkg.Snapshot
+	if err := json.NewDecoder(resp.Body).Decode(&snap); err != nil {
+		t.Fatal(err)
+	}
+	if snap.Role != "service" || snap.ServiceID != h.ID().String() || snap.RxBytesTotal != 100 || snap.TxBytesTotal != 200 || snap.LastLatencyMS != 15 {
+		t.Fatalf("unexpected stats snapshot: %#v", snap)
+	}
 }
 
 func TestAnnouncementReachabilityWakeOnRecovery(t *testing.T) {

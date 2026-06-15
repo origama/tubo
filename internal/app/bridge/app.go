@@ -31,6 +31,7 @@ import (
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/protocol"
 	"github.com/origama/tubo/internal/reachability"
+	statspkg "github.com/origama/tubo/internal/runtime/stats"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -94,6 +95,21 @@ type peerPinger interface {
 	Ping(context.Context, peer.ID) <-chan p2pping.Result
 }
 
+type countingReadCloser struct {
+	rc     io.ReadCloser
+	onRead func(int64)
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := c.rc.Read(p)
+	if n > 0 && c.onRead != nil {
+		c.onRead(int64(n))
+	}
+	return n, err
+}
+
+func (c *countingReadCloser) Close() error { return c.rc.Close() }
+
 type App struct {
 	cfg                      Config
 	host                     host.Host
@@ -123,6 +139,7 @@ type App struct {
 	lastTunnelErrorAt        time.Time
 	lastTunnelHealthyAt      time.Time
 	statusReporter           func(RuntimeStatus)
+	stats                    *statspkg.Collector
 	renewalReachability      *reachability.Manager
 	peerPing                 peerPinger
 	peerPingInterval         time.Duration
@@ -258,7 +275,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		log.Printf("bridge discovery connect lease acquired cluster=%s namespace=%s service=%s access_expires_at=%s refresh_expires_at=%s", artifacts.AccessLease.ClusterID, artifacts.AccessLease.NamespaceID, artifacts.AccessLease.ServiceID, artifacts.AccessLease.ExpiresAt.UTC().Format(time.RFC3339), artifacts.RefreshLease.ExpiresAt.UTC().Format(time.RFC3339))
 	}
 	pingService := p2pping.NewPingService(h)
-	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease, rebindServiceFn: cfg.ConnectRebindResolver, selectedAddr: cfg.SelectedAddr, selectedPath: cfg.SelectedPath, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4}), peerPing: pingService, peerPingInterval: 20 * time.Second, peerPingTimeout: 5 * time.Second, peerPingFailureThreshold: 3}
+	app := &App{cfg: cfg, host: h, service: si, connectLease: connectLease, rebindServiceFn: cfg.ConnectRebindResolver, selectedAddr: cfg.SelectedAddr, selectedPath: cfg.SelectedPath, stats: statspkg.New(statspkg.Snapshot{Role: "connect", Kind: cfg.ServiceKind, Service: cfg.ConnectServiceID, ServiceID: si.ID.String(), Path: cfg.SelectedPath, Status: "running"}), renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4}), peerPing: pingService, peerPingInterval: 20 * time.Second, peerPingTimeout: 5 * time.Second, peerPingFailureThreshold: 3}
 	app.reportStatus()
 	return app, nil
 }
@@ -347,15 +364,27 @@ func (a *App) serveTCP(ctx context.Context, ln net.Listener) {
 func (a *App) handleTCPConn(conn net.Conn) {
 	defer conn.Close()
 	start := time.Now()
+	var opErr error
+	if a.stats != nil {
+		a.stats.Begin()
+		defer func() { a.stats.Finish(opErr) }()
+	}
 	s, err := a.establishTCPTunnel(conn.RemoteAddr().String())
 	if err != nil {
+		opErr = err
 		a.markTunnelDegraded(err)
 		log.Printf("bridge tcp establish tunnel local=%s err=%v", conn.RemoteAddr(), err)
 		return
 	}
 	defer s.Close()
 	sent, received, err := p2p.ProxyTCPStream(conn, s)
+	if a.stats != nil {
+		a.stats.AddTx(sent)
+		a.stats.AddRx(received)
+		a.stats.Observe(0, time.Since(start))
+	}
 	if err != nil {
+		opErr = err
 		a.markTunnelDegraded(err)
 		log.Printf("bridge tcp proxy closed local=%s bytes_in=%d bytes_out=%d err=%v duration=%s", conn.RemoteAddr(), received, sent, err, time.Since(start))
 		return
@@ -1160,8 +1189,12 @@ func (a *App) SetStatusReporter(report func(RuntimeStatus)) {
 }
 
 func (a *App) reportStatus() {
+	snap := a.CurrentRuntimeStatus()
+	if a.stats != nil {
+		a.stats.SetMeta(statspkg.Snapshot{Role: "connect", Kind: snap.ServiceKind, Service: a.cfg.ConnectServiceID, ServiceID: snap.SelectedPeerID, Path: snap.Path, Status: snap.Status, Reason: snap.Reason})
+	}
 	if a.statusReporter != nil {
-		a.statusReporter(a.CurrentRuntimeStatus())
+		a.statusReporter(snap)
 	}
 }
 
@@ -1217,6 +1250,22 @@ func (a *App) mux() *http.ServeMux {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(a.statusSnapshot(time.Now().UTC()))
 	})
+	m.HandleFunc("/statsz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if a.stats == nil {
+			_ = json.NewEncoder(w).Encode(statspkg.Snapshot{CollectedAt: time.Now().UTC(), Role: "connect", Kind: a.cfg.ServiceKind, Service: a.cfg.ConnectServiceID, Path: a.currentPath(), Status: "unknown", Reason: "stats unavailable"})
+			return
+		}
+		snap := a.stats.Snapshot()
+		snap.Path = a.currentPath()
+		if snap.Status == "" {
+			snap.Status = a.CurrentRuntimeStatus().Status
+		}
+		if snap.Reason == "" {
+			snap.Reason = a.CurrentRuntimeStatus().Reason
+		}
+		_ = json.NewEncoder(w).Encode(snap)
+	})
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tunnel stream")
 		peerID, ok := a.selectedPeerID()
@@ -1243,8 +1292,20 @@ func (a *App) mux() *http.ServeMux {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
-		resp, err := p2p.HandleClientRequest(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, r.Body, proof)
+		start := time.Now()
+		reqBody := io.Reader(r.Body)
+		var reqBytes int64
+		if r.Body != nil {
+			reqBody = &countingReadCloser{rc: r.Body, onRead: func(n int64) { reqBytes += n }}
+		}
+		var opErr error
+		if a.stats != nil {
+			a.stats.Begin()
+			defer func() { a.stats.Finish(opErr) }()
+		}
+		resp, err := p2p.HandleClientRequest(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, reqBody, proof)
 		if err != nil {
+			opErr = err
 			http.Error(w, err.Error(), 502)
 			return
 		}
@@ -1256,9 +1317,15 @@ func (a *App) mux() *http.ServeMux {
 		}
 		w.WriteHeader(resp.StatusCode)
 		wrote, copyErr := io.Copy(w, resp.Body)
+		if a.stats != nil {
+			a.stats.AddTx(reqBytes)
+			a.stats.AddRx(wrote)
+			a.stats.Observe(resp.StatusCode, time.Since(start))
+		}
 		if copyErr == nil {
 			a.markTunnelHealthy()
 		} else {
+			opErr = copyErr
 			log.Printf("bridge http response copy failed bytes=%d err=%v", wrote, copyErr)
 		}
 	})

@@ -31,6 +31,7 @@ import (
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/protocol"
 	"github.com/origama/tubo/internal/reachability"
+	statspkg "github.com/origama/tubo/internal/runtime/stats"
 )
 
 type Config struct {
@@ -121,6 +122,7 @@ type App struct {
 	announcementLogMu        sync.Mutex
 	lastAnnouncementLogAt    time.Time
 	statusReporter           func(RuntimeStatus)
+	stats                    *statspkg.Collector
 }
 
 func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
@@ -190,10 +192,11 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		connectAuth = &p2p.ConnectProofValidation{Require: true, AuthorityPublicKey: authorityPub, ClusterID: cfg.DiscoveryClusterID, NamespaceID: cfg.DiscoveryNamespaceID, ServiceID: resolveServiceID(cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.ServiceID, cfg.ServiceName), ServicePeerID: h.ID().String(), Replay: p2p.NewConnectProofReplayCache(1024)}
 	}
 	p2pping.NewPingService(h)
+	stats := statspkg.New(statspkg.Snapshot{Role: "service", Kind: cfg.ServiceKind, Service: cfg.ServiceName, ServiceID: h.ID().String(), Status: "running"})
 	if cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
-		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceTCPStream(cfg.Target, connectAuth))
+		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceTCPStream(cfg.Target, connectAuth, stats))
 	} else {
-		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth))
+		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth, stats))
 	}
 	grantEndpointEnabled := false
 	if len(authorityPub) > 0 && strings.TrimSpace(cfg.DiscoveryClusterID) != "" && strings.TrimSpace(cfg.DiscoveryNamespaceID) != "" {
@@ -258,6 +261,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		host:                     h,
 		cache:                    cache,
 		subscriber:               subscriber,
+		stats:                    stats,
 		stopSubscriber:           stopSubscriber,
 		relayInfos:               relays,
 		announcementTTL:          computeAnnouncementTTL(cfg.HeartbeatInterval),
@@ -289,6 +293,9 @@ func (a *App) SetStatusReporter(report func(RuntimeStatus)) {
 }
 
 func (a *App) reportStatus(status RuntimeStatus) {
+	if a.stats != nil {
+		a.stats.SetMeta(statspkg.Snapshot{Role: "service", Kind: a.cfg.ServiceKind, Service: a.cfg.ServiceName, ServiceID: a.host.ID().String(), Status: status.Status, Reason: status.Reason})
+	}
 	if a.statusReporter != nil {
 		a.statusReporter(status)
 	}
@@ -314,7 +321,7 @@ func (a *App) Start(ctx context.Context) error {
 		}()
 	}
 	if a.cfg.HealthListen != "" {
-		a.health = &http.Server{Addr: a.cfg.HealthListen, Handler: healthMux(a.host)}
+		a.health = &http.Server{Addr: a.cfg.HealthListen, Handler: healthMux(a.host, a.stats)}
 		go func() {
 			log.Printf("service health listening on %s", a.cfg.HealthListen)
 			if err := a.health.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -952,9 +959,27 @@ func (a *App) maintainRelayReservations(ctx context.Context, recovery <-chan rea
 	}
 }
 
-func healthMux(h host.Host) *http.ServeMux {
+func healthMux(h host.Host, stats *statspkg.Collector) *http.ServeMux {
 	m := http.NewServeMux()
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
+	m.HandleFunc("/statsz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if stats == nil {
+			_ = json.NewEncoder(w).Encode(statspkg.Snapshot{CollectedAt: time.Now().UTC(), Role: "service", ServiceID: h.ID().String(), Status: "unknown", Reason: "stats unavailable"})
+			return
+		}
+		snap := stats.Snapshot()
+		if snap.Role == "" {
+			snap.Role = "service"
+		}
+		if snap.ServiceID == "" {
+			snap.ServiceID = h.ID().String()
+		}
+		if snap.Status == "" {
+			snap.Status = "running"
+		}
+		_ = json.NewEncoder(w).Encode(snap)
+	})
 	m.HandleFunc("/debug/peer", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("peer_id=" + h.ID().String() + "\n"))
 		for _, a := range p2p.PeerAddrs(h) {

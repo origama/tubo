@@ -260,6 +260,7 @@ Implemented today:
 - private swarm PSK;
 - per-service discovery and routing;
 - reachability-aware diagnostics and recovery wakeups;
+- `tubo top` live local traffic stats for registered processes;
 - multi-host smoke tests.
 
 Still target / in progress:

@@ -113,8 +113,10 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 	}
 	name := detachedConnectProcessName(result.ServiceName, localAddr)
 	statusURL := ""
+	statsURL := ""
 	if !strings.EqualFold(strings.TrimSpace(result.ServiceKind), "tcp") {
 		statusURL = "http://" + connectStatusHostPort(localAddr) + "/healthz"
+		statsURL = "http://" + connectStatusHostPort(localAddr) + "/statsz"
 	}
 	return detachedProcessState{
 		ID:           "process/" + name,
@@ -134,6 +136,7 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 		SelectedAddr: result.SelectedAddr,
 		SelectedPath: result.Path,
 		StatusURL:    statusURL,
+		StatsURL:     statsURL,
 	}
 }
 

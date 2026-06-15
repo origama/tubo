@@ -45,6 +45,7 @@ type State struct {
 	StateFile               string   `json:"state_file"`
 	PIDFile                 string   `json:"pid_file"`
 	StatusURL               string   `json:"status_url,omitempty"`
+	StatsURL                string   `json:"stats_url,omitempty"`
 	Source                  string   `json:"source,omitempty"`
 	CommandLine             []string `json:"command_line,omitempty"`
 	StatusConfidence        string   `json:"status_confidence,omitempty"`
@@ -101,6 +102,7 @@ type View struct {
 	StateFile               string   `json:"state_file"`
 	PIDFile                 string   `json:"pid_file"`
 	StatusURL               string   `json:"status_url,omitempty"`
+	StatsURL                string   `json:"stats_url,omitempty"`
 	StartedAt               string   `json:"started_at,omitempty"`
 	Source                  string   `json:"source,omitempty"`
 	CommandLine             []string `json:"command_line,omitempty"`
@@ -165,8 +167,10 @@ func BuildSpec(commandName string, cfg cfgpkg.Config, args []string, dataRoot st
 	logPath := filepath.Join(LogDir(dataRoot), name+".log")
 	pidPath := filepath.Join(RunDir(dataRoot), name+".pid")
 	statusURL := ""
+	statsURL := ""
 	if statusAddr != "" {
 		statusURL = "http://" + hostPortForHTTP(statusAddr) + "/healthz"
+		statsURL = "http://" + hostPortForHTTP(statusAddr) + "/statsz"
 	}
 	return DetachedSpec{
 		State: State{
@@ -184,6 +188,7 @@ func BuildSpec(commandName string, cfg cfgpkg.Config, args []string, dataRoot st
 			StateFile:    statePath,
 			PIDFile:      pidPath,
 			StatusURL:    statusURL,
+			StatsURL:     statsURL,
 		},
 		ChildArgs: append([]string{commandName}, args...),
 		HealthURL: statusURL,
@@ -774,6 +779,7 @@ func viewFromState(state State, status, confidence string) View {
 		StateFile:               state.StateFile,
 		PIDFile:                 state.PIDFile,
 		StatusURL:               state.StatusURL,
+		StatsURL:                state.StatsURL,
 		StartedAt:               state.StartedAt,
 		Source:                  state.Source,
 		CommandLine:             append([]string(nil), state.CommandLine...),

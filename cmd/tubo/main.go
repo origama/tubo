@@ -133,6 +133,8 @@ func run(args []string) error {
 		return connectCmd(cleanArgs)
 	case "ps":
 		return psCmd(args[1:])
+	case "top":
+		return topCmd(args[1:])
 	case "get":
 		cleanArgs, noInit := stripNoInitArgs(args[1:])
 		if err := ensureJoinedPublicNetwork("get", noInit); err != nil {
@@ -470,6 +472,7 @@ Discovery and process management:
   tubo use overlay/public
   tubo share cluster/home --role member
   tubo ps
+  tubo top
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
 
@@ -646,6 +649,11 @@ Manage publish-grant requests on the authority node.`)
   tubo peers alias <peer-id> --name <label> [--note <note>] [--json]
 
 Save a local operator-only label for a peer ID.`)
+	case "top":
+		fmt.Println(`Usage:
+  tubo top [--all] [--interval 2s] [--json]
+
+Show live local traffic stats for registered Tubo processes.`)
 	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
@@ -1557,6 +1565,9 @@ func printProcessDescription(state detachedProcessState, status string) {
 	fmt.Printf("PID file: %s\n", state.PIDFile)
 	if state.StatusURL != "" {
 		fmt.Printf("Status URL: %s\n", state.StatusURL)
+	}
+	if state.StatsURL != "" {
+		fmt.Printf("Stats URL: %s\n", state.StatsURL)
 	}
 	if state.RuntimeStatus != "" && state.RuntimeStatus != status {
 		fmt.Printf("Runtime health: %s\n", state.RuntimeStatus)
