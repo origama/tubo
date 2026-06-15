@@ -6,6 +6,9 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+### Fixed
+- `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
+
 ## [v0.11.0] - 2026-06-15
 
 Minor release with live runtime traffic stats and `tubo top`, plus recovery improvements for publish authorization, connect status, and ping-based liveness.

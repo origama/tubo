@@ -111,6 +111,19 @@ func (c *countingReadCloser) Read(p []byte) (int, error) {
 
 func (c *countingReadCloser) Close() error { return c.rc.Close() }
 
+type countingWriter struct {
+	w       io.Writer
+	onWrite func(int64)
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	if n > 0 && c.onWrite != nil {
+		c.onWrite(int64(n))
+	}
+	return n, err
+}
+
 type App struct {
 	cfg                      Config
 	host                     host.Host
@@ -412,10 +425,8 @@ func (a *App) handleTCPConn(conn net.Conn) {
 		return
 	}
 	defer s.Close()
-	sent, received, err := p2p.ProxyTCPStream(conn, s)
+	sent, received, err := p2p.ProxyTCPStream(conn, s, a.stats)
 	if a.stats != nil {
-		a.stats.AddTx(sent)
-		a.stats.AddRx(received)
 		a.stats.Observe(0, time.Since(start))
 	}
 	if err != nil {
@@ -1329,9 +1340,8 @@ func (a *App) mux() *http.ServeMux {
 		}
 		start := time.Now()
 		reqBody := io.Reader(r.Body)
-		var reqBytes int64
-		if r.Body != nil {
-			reqBody = &countingReadCloser{rc: r.Body, onRead: func(n int64) { reqBytes += n }}
+		if r.Body != nil && a.stats != nil {
+			reqBody = &countingReadCloser{rc: r.Body, onRead: a.stats.AddTx}
 		}
 		var opErr error
 		if a.stats != nil {
@@ -1351,10 +1361,12 @@ func (a *App) mux() *http.ServeMux {
 			}
 		}
 		w.WriteHeader(resp.StatusCode)
-		wrote, copyErr := io.Copy(w, resp.Body)
+		respWriter := io.Writer(w)
 		if a.stats != nil {
-			a.stats.AddTx(reqBytes)
-			a.stats.AddRx(wrote)
+			respWriter = &countingWriter{w: w, onWrite: a.stats.AddRx}
+		}
+		wrote, copyErr := io.Copy(respWriter, resp.Body)
+		if a.stats != nil {
 			a.stats.Observe(resp.StatusCode, time.Since(start))
 		}
 		if copyErr == nil {
@@ -1430,17 +1442,27 @@ func (a *App) serveWebSocket(w http.ResponseWriter, r *http.Request, s network.S
 
 func proxyRawClient(s network.Stream, conn net.Conn, clientReader io.Reader, recorder *statspkg.Collector, start time.Time) {
 	done := make(chan struct{}, 2)
-	var tx int64
-	var rx int64
-	go func() { n, _ := io.Copy(s, clientReader); tx = n; done <- struct{}{} }()
-	go func() { n, _ := io.Copy(conn, s); rx = n; done <- struct{}{} }()
+	go func() {
+		dst := io.Writer(s)
+		if recorder != nil {
+			dst = &countingWriter{w: s, onWrite: recorder.AddTx}
+		}
+		_, _ = io.Copy(dst, clientReader)
+		done <- struct{}{}
+	}()
+	go func() {
+		dst := io.Writer(conn)
+		if recorder != nil {
+			dst = &countingWriter{w: conn, onWrite: recorder.AddRx}
+		}
+		_, _ = io.Copy(dst, s)
+		done <- struct{}{}
+	}()
 	<-done
 	_ = s.Close()
 	_ = conn.Close()
 	<-done
 	if recorder != nil {
-		recorder.AddTx(tx)
-		recorder.AddRx(rx)
 		recorder.Observe(http.StatusSwitchingProtocols, time.Since(start))
 	}
 }

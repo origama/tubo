@@ -85,6 +85,19 @@ func (c *countingReadCloser) Close() error {
 	return c.rc.Close()
 }
 
+type countingWriter struct {
+	w       io.Writer
+	onWrite func(int64)
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	if n > 0 && c.onWrite != nil {
+		c.onWrite(int64(n))
+	}
+	return n, err
+}
+
 func tcpTargetAddress(localTarget string) (string, error) {
 	u, err := url.Parse(localTarget)
 	if err != nil {
@@ -114,17 +127,25 @@ func firstStatsRecorder(recorders ...StreamStatsRecorder) StreamStatsRecorder {
 	return recorders[0]
 }
 
-func ProxyTCPStream(left net.Conn, right network.Stream) (int64, int64, error) {
+func ProxyTCPStream(left net.Conn, right network.Stream, recorder StreamStatsRecorder) (int64, int64, error) {
 	errCh := make(chan error, 1)
 	var sent int64
 	go func() {
 		var err error
-		sent, err = io.Copy(right, left)
+		dst := io.Writer(right)
+		if recorder != nil {
+			dst = &countingWriter{w: right, onWrite: recorder.AddTx}
+		}
+		sent, err = io.Copy(dst, left)
 		closeErr := closeWriteIfPossible(right)
 		log.Printf("tcp proxy left->right done left=%T right=%T bytes=%d copy_err=%v close_write_err=%v", left, right, sent, err, closeErr)
 		errCh <- err
 	}()
-	received, recvErr := io.Copy(left, right)
+	dst := io.Writer(left)
+	if recorder != nil {
+		dst = &countingWriter{w: left, onWrite: recorder.AddRx}
+	}
+	received, recvErr := io.Copy(dst, right)
 	closeErr := closeWriteIfPossible(left)
 	log.Printf("tcp proxy right->left done left=%T right=%T bytes=%d copy_err=%v close_write_err=%v", left, right, received, recvErr, closeErr)
 	sendErr := <-errCh
@@ -233,7 +254,7 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 		log.Printf("service upstream request peer=%s method=%s path=%s query=%q url=%s content_length_hint=%d", remotePeer, reqHeader.Method, reqHeader.Path, reqHeader.Query, upURL, reqHeader.ContentLengthHint)
 
 		if isWebSocketUpgrade(reqHeader.Headers) {
-			if err := handleServiceWebSocketUpgrade(s, reader, writer, reqHeader, upURL, recorder); err != nil {
+			if err := handleServiceWebSocketUpgrade(s, reader, writer, reqHeader, upURL, recorder, start); err != nil {
 				opErr = err
 				log.Printf("service websocket upgrade failed peer=%s url=%s err=%v duration=%s", remotePeer, upURL, err, time.Since(start))
 				_ = writer.WriteError(&protocol.Error{Code: 502, Message: "websocket upgrade failed: " + err.Error()})
@@ -318,6 +339,9 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 					return
 				}
 				bytesWritten += int64(n)
+				if recorder != nil {
+					recorder.AddTx(int64(n))
+				}
 				finalSent = isFinal
 			}
 			if readErr != nil {
@@ -340,7 +364,6 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 		}
 		log.Printf("service stream completed peer=%s method=%s path=%s status=%d bytes=%d duration=%s", remotePeer, reqHeader.Method, reqHeader.Path, resp.StatusCode, bytesWritten, time.Since(start))
 		if recorder != nil {
-			recorder.AddTx(bytesWritten)
 			recorder.Observe(resp.StatusCode, time.Since(start))
 		}
 		if err := s.CloseWrite(); err != nil {
@@ -450,10 +473,8 @@ func HandleServiceTCPStream(localTarget string, connectAuth *ConnectProofValidat
 			opErr = err
 			return
 		}
-		sent, received, err := ProxyTCPStream(upstream, s)
+		sent, received, err := ProxyTCPStream(upstream, s, recorder)
 		if recorder != nil {
-			recorder.AddRx(received)
-			recorder.AddTx(sent)
 			recorder.Observe(http.StatusOK, time.Since(start))
 		}
 		if err != nil {
@@ -676,7 +697,7 @@ func isWebSocketUpgrade(headers map[string][]string) bool {
 	return upgrade && connectionUpgrade
 }
 
-func handleServiceWebSocketUpgrade(s network.Stream, _ *protocol.StreamReader, writer *protocol.StreamWriter, reqHeader *protocol.RequestHeader, upURL string, recorder StreamStatsRecorder) error {
+func handleServiceWebSocketUpgrade(s network.Stream, _ *protocol.StreamReader, writer *protocol.StreamWriter, reqHeader *protocol.RequestHeader, upURL string, recorder StreamStatsRecorder, start time.Time) error {
 	upReq, conn, br, err := dialUpgradeUpstream(reqHeader, upURL)
 	if err != nil {
 		return err
@@ -698,7 +719,7 @@ func handleServiceWebSocketUpgrade(s network.Stream, _ *protocol.StreamReader, w
 		return nil
 	}
 	log.Printf("service websocket upgraded url=%s", upURL)
-	proxyRawStream(s, conn, br, recorder)
+	proxyRawStream(s, conn, br, recorder, start)
 	return nil
 }
 
@@ -743,18 +764,28 @@ func dialUpgradeUpstream(reqHeader *protocol.RequestHeader, upURL string) (*http
 	return upReq, conn, bufio.NewReader(conn), nil
 }
 
-func proxyRawStream(s network.Stream, conn net.Conn, upstreamReader io.Reader, recorder StreamStatsRecorder) {
+func proxyRawStream(s network.Stream, conn net.Conn, upstreamReader io.Reader, recorder StreamStatsRecorder, start time.Time) {
 	done := make(chan struct{}, 2)
-	var sent int64
-	var received int64
-	go func() { n, _ := io.Copy(conn, s); sent = n; done <- struct{}{} }()
-	go func() { n, _ := io.Copy(s, upstreamReader); received = n; done <- struct{}{} }()
+	go func() {
+		dst := io.Writer(conn)
+		if recorder != nil {
+			dst = &countingWriter{w: conn, onWrite: recorder.AddRx}
+		}
+		_, _ = io.Copy(dst, s)
+		done <- struct{}{}
+	}()
+	go func() {
+		dst := io.Writer(s)
+		if recorder != nil {
+			dst = &countingWriter{w: s, onWrite: recorder.AddTx}
+		}
+		_, _ = io.Copy(dst, upstreamReader)
+		done <- struct{}{}
+	}()
 	<-done
 	<-done
 	if recorder != nil {
-		recorder.AddRx(received)
-		recorder.AddTx(sent)
-		recorder.Observe(http.StatusOK, 0)
+		recorder.Observe(http.StatusSwitchingProtocols, time.Since(start))
 	}
 	_ = conn.Close()
 	_ = s.Close()
