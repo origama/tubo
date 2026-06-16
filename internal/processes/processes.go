@@ -1,6 +1,7 @@
 package processes
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -385,23 +386,98 @@ func Status(state State, system System) string {
 }
 
 func ReadLogTail(path string, lines int) ([]string, error) {
-	b, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
-	parts := strings.Split(string(b), "\n")
-	filtered := make([]string, 0, len(parts))
-	for _, line := range parts {
-		if line == "" {
-			continue
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	size := info.Size()
+	if size == 0 {
+		return nil, nil
+	}
+
+	const chunkSize = 32 * 1024
+	const maxScanBytes = 8 * 1024 * 1024
+
+	// A non-positive tail count means "no line limit" within the bounded scan
+	// window below; it does not mean "read the whole file".
+	wantAll := lines <= 0
+	remaining := lines
+	tailCap := 64
+	if lines > 0 && lines < tailCap {
+		tailCap = lines
+	}
+	collectedRev := make([]string, 0, tailCap)
+	var carry []byte
+	var scanned int64
+	offset := size
+	for offset > 0 && scanned < maxScanBytes {
+		if !wantAll && remaining <= 0 {
+			break
 		}
-		filtered = append(filtered, line)
+		readSize := chunkSize
+		if int64(readSize) > offset {
+			readSize = int(offset)
+		}
+		budgetLeft := maxScanBytes - scanned
+		if budgetLeft <= 0 {
+			break
+		}
+		if int64(readSize) > budgetLeft {
+			readSize = int(budgetLeft)
+		}
+		if readSize <= 0 {
+			break
+		}
+		offset -= int64(readSize)
+		buf := make([]byte, readSize)
+		n, err := f.ReadAt(buf, offset)
+		if err != nil && !errors.Is(err, io.EOF) {
+			return nil, err
+		}
+		if n <= 0 {
+			break
+		}
+		shortRead := n < readSize
+		buf = buf[:n]
+		scanned += int64(n)
+		segment := make([]byte, 0, len(buf)+len(carry))
+		segment = append(segment, buf...)
+		segment = append(segment, carry...)
+		carry = carry[:0]
+		for {
+			idx := bytes.LastIndexByte(segment, '\n')
+			if idx < 0 {
+				carry = append(carry[:0], segment...)
+				break
+			}
+			if line := segment[idx+1:]; len(line) > 0 {
+				collectedRev = append(collectedRev, string(line))
+				if !wantAll {
+					remaining--
+					if remaining <= 0 {
+						break
+					}
+				}
+			}
+			segment = segment[:idx]
+		}
+		if shortRead {
+			break
+		}
 	}
-	start := 0
-	if lines > 0 && len(filtered) > lines {
-		start = len(filtered) - lines
+	if len(carry) > 0 && (offset == 0 || len(collectedRev) == 0) {
+		collectedRev = append(collectedRev, string(carry))
 	}
-	return append([]string(nil), filtered[start:]...), nil
+	for i, j := 0, len(collectedRev)-1; i < j; i, j = i+1, j-1 {
+		collectedRev[i], collectedRev[j] = collectedRev[j], collectedRev[i]
+	}
+	return collectedRev, nil
 }
 
 func FollowLog(ctx context.Context, path string, out io.Writer) error {
