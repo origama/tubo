@@ -566,6 +566,25 @@ func TestBridgeCurrentRuntimeStatusClearsStaleRefreshErrorAfterTrafficRecovery(t
 	}
 }
 
+func TestBridgeCurrentRuntimeStatusExplainsPublishLeaseExpiry(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}}
+	app.lastRefreshError = "rollover connect lease: request connect lease from advertised grant endpoint(s): publish lease expired"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" {
+		t.Fatalf("status = %q", snap.Status)
+	}
+	if !strings.Contains(snap.Reason, "remote service grant endpoint cannot issue a new connect lease") {
+		t.Fatalf("reason = %q", snap.Reason)
+	}
+	if !strings.Contains(strings.ToLower(snap.Reason), "renew service publication") {
+		t.Fatalf("reason missing action hint: %q", snap.Reason)
+	}
+	if snap.LastRefreshError != app.lastRefreshError {
+		t.Fatalf("expected raw refresh error to remain visible, got %#v", snap)
+	}
+}
+
 func TestBridgeCurrentRuntimeStatusTracksPeerPingFailures(t *testing.T) {
 	peerID := corepeer.ID("12D3KooWPeerPing")
 	app := &App{cfg: Config{ServiceKind: "tcp"}, service: corepeer.AddrInfo{ID: peerID}, peerPingFailureThreshold: 3}
