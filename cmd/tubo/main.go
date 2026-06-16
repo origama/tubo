@@ -642,8 +642,11 @@ Rotate the managed namespace discovery secret using the current/previous model.`
   tubo grants approve <request-id> --ttl 7d
   tubo grants deny <request-id> --reason <reason>
   tubo grants request service/<name> --peer <multiaddr>
+  tubo grants serve --cluster <name> --namespace <name> [--public-auto-approve] [--claim-ttl 24h]
 
-Manage publish-grant requests on the authority node.`)
+Manage publish-grant requests and the grant service on authority nodes.
+
+Manual approval is the safest default. --public-auto-approve is the current legacy auto-approval switch and should only be used on tightly controlled private clusters. The desired future policy vocabulary is documented in the member publish-grants runbook; those future policy flags are not implemented yet.`)
 	case "peers":
 		fmt.Println(`Usage:
   tubo peers alias <peer-id> --name <label> [--note <note>] [--json]

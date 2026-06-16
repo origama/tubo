@@ -1525,6 +1525,15 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if !strings.Contains(connectHelp, "connect --token") || !strings.Contains(connectHelp, "collaboration path") || !strings.Contains(connectHelp, "--detach") || !strings.Contains(connectHelp, "tubo ps") {
 		t.Fatalf("connect help missing detached/mode guidance: %s", connectHelp)
 	}
+	grantsHelp, err := capture(func() error { return run([]string{"help", "grants"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tubo grants serve", "--public-auto-approve", "--claim-ttl", "legacy auto-approval switch"} {
+		if !strings.Contains(grantsHelp, want) {
+			t.Fatalf("grants help missing %q: %s", want, grantsHelp)
+		}
+	}
 }
 
 func writeLocalResourceConfig(t *testing.T) string {

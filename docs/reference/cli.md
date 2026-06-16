@@ -307,7 +307,7 @@ tubo rm --stale
 `ps` / `get processes` refer to local processes registered on this machine. By default they now show a compact operational summary; `--wide` restores the technical table with `SERVICE KIND`, `SERVICE ID`, `SCOPE`, `PID`, `LOCAL`, and `TARGET`. Degraded/stale rows also print a short `describe`/`logs` hint instead of dumping a full diagnostic card. `top` is the matching live view: it reads each process’ local stats endpoint when available and reports observed throughput, active streams, and request rates. `tubo logs` tails local process files by reading from the end in bounded chunks, so `--tail` stays memory-safe on large logs. `stop` accepts live degraded processes too. `rm --stale` ignores live degraded processes and removes a stale process once even if older and newer on-disk aliases exist for the same connect runtime.
 `get services`, instead, refers to discovery resources advertised in the swarm. The default view is now compact too: service name, kind, access policy, status, route, peer summary, and expiry. When a local peer alias exists (`tubo peers alias <peer-id> --name <label>`), compact service views show the alias and otherwise fall back to an abbreviated peer ID. `--wide` restores the technical table with `SERVICE ID`, `SCOPE`, `ACCESS`, `PATH`, and `CAPABILITIES`, while `--json` remains complete. System resources such as the cluster `grant-service` are hidden by default and are shown with `tubo get services --system`; their compact view summarizes address counts, and `--wide` shows full multiaddrs. Unscoped legacy control-plane records are ignored, and system resources must carry matching `cluster_id` / `namespace_id` metadata before they are listed or selected. `get service/<service_id>`, `describe service/<service_id>`, and `inspect service/<service_id>` perform exact lookup. When the local config contains `current_cluster` / `current_namespace`, these values are reported in the command’s resolved scope; you can override them with `--cluster`, `-n/--namespace`, and, for lists only, `-A/--all-namespaces`. In cluster mode, the query and list are allowed only if the namespace membership capability allows it; `-A` requires a capability for each namespace or a broad capability with namespace `*`.
 
-`describe process/...` and `inspect process/... --json` expose the process runtime state for local registrations, including network reachability state/reason, recovery timestamps, ping liveness/RTT/failure counters, the local stats endpoint URL, and next-refresh retry timing for bridge/connect children. Event timestamps are shown with `... ago` labels, while lease expiry fields keep their existing `expires in` labels. `attach` rows now include the service kind and resolved service/peer identity; when publish authorization is blocked, detached attach reports a degraded runtime with a publication-blocked reason until recovery; when the attached service has a service-scoped grant endpoint, `describe` also shows `Grant endpoint: enabled`, the effective connect policy, and the grant protocol (`/tubo/grants/1.0`). In foreground `attach`, the "running in foreground" notice appears only after publish authorization is resolved, so missing grant-peer errors surface before any success-style hint. `connect` rows also expose the selected peer/address/path alongside degraded runtime state and remaining lease lifetime, so you can tell whether a tunnel is direct or relayed. `Last ping failure` in `describe process/...` is a historical/debug field: it records the most recent ping error even after `peer liveness` has recovered to `healthy`. After a successful HTTP/WebSocket/tunnel recovery or a successful lease refresh/rollover, stale refresh errors no longer keep the process in `degraded`.
+`describe process/...` and `inspect process/... --json` expose the process runtime state for local registrations, including network reachability state/reason, recovery timestamps, ping liveness/RTT/failure counters, the local stats endpoint URL, and next-refresh retry timing for bridge/connect children. Event timestamps are shown with `... ago` labels, while lease expiry fields keep their existing `expires in` labels. `attach` rows now include the service kind and resolved service/peer identity; when publish authorization is blocked, detached attach reports a degraded runtime with a publication-blocked reason until recovery; when the attached service has a service-scoped grant endpoint, `describe` also shows `Grant endpoint: enabled`, the effective connect policy, and the grant protocol (`/tubo/grants/1.0`). In foreground `attach`, the "running in foreground" notice appears only after publish authorization is resolved, so missing grant-peer errors surface before any success-style hint. `connect` rows also expose the selected peer/address/path alongside degraded runtime state and remaining lease lifetime, so you can tell whether a tunnel is direct or relayed. If `connect` reports that the remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired, fix the service publication path on the publisher side: check the running `attach`, inspect pending publish-grant requests on the authority, renew or approve publish authorization, and then let connect retry or restart it if needed. `Last ping failure` in `describe process/...` is a historical/debug field: it records the most recent ping error even after `peer liveness` has recovered to `healthy`. After a successful HTTP/WebSocket/tunnel recovery or a successful lease refresh/rollover, stale refresh errors no longer keep the process in `degraded`.
 
 ## Resource discovery
 
@@ -556,11 +556,11 @@ Notes:
 
 ## Publish Grants
 
-Authority nodes can start the grant protocol listener and review local requests. For the public bundle, `grants serve --public-auto-approve` uses the public cluster authority key and automatically approves publish requests for the simplified attach/connect flow:
+Authority nodes can start the grant protocol listener and review local requests. Manual approval remains the safest default. `--public-auto-approve` is the current legacy auto-approval switch: it can be useful for tightly controlled private clusters, but it should not be used on public or weakly controlled grant services. The long-term policy vocabulary is expected to move toward `--approve-policy-*` names; those are target/future direction only and are not implemented yet.
 
 ```bash
 tubo grants serve --cluster home --namespace default --public-auto-approve \
-  --connect-access-ttl 10m --connect-refresh-ttl 48h
+  --claim-ttl 24h --connect-access-ttl 10m --connect-refresh-ttl 48h
 # prints direct addr plus relay addr when relay peers are configured
 tubo grants pending
 # compact action cards; add --verbose for extra peer details
@@ -568,7 +568,7 @@ tubo grants pending
 tubo grants pending --wide
 tubo grants describe gr_123
 tubo grants describe gr_123 --json
-tubo grants approve gr_123 --ttl 168h
+tubo grants approve gr_123 --ttl 24h
 tubo grants deny gr_123
 
 tubo grants request service/myapi --peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
@@ -584,7 +584,31 @@ tubo grants history --json
 tubo peers alias 12D3KooW... --name oripi --note "verified via SSH"
 ```
 
+`--claim-ttl` sets the approved publish authorization lifetime. Keep it separate from share invite lifetime and connect access/refresh lease lifetimes. `TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish-lease TTLs and may change. For most trusted private long-running services, `--claim-ttl 24h` is a good default; for dev/test, shorter TTLs such as `1h` are fine; for semi-public or weakly controlled environments, prefer manual approval plus shorter TTLs.
+
 The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and now publishes a system `grant-service` discovery record when namespace discovery is enabled, so members can discover the grant endpoint even without local `grant_service_peers`. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, reuses an existing pending request for equivalent service/requester/service-peer retries, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed.
+
+Manual review flow:
+
+```bash
+tubo grants pending
+tubo grants describe <request-id>
+tubo grants approve <request-id> --ttl 24h
+```
+
+Use `--wide` for raw per-request debugging. After #256, duplicate pending groups are surfaced explicitly; prefer approving the latest request shown by `grants pending` unless `describe` shows a reason not to.
+
+The recommended future policy shape is:
+
+```text
+--approve-policy-cluster-members
+--approve-policy-namespace-members
+--approve-policy-auto
+--approve-policy-manual
+--approve-policy-whitelist
+```
+
+Those names are target/future direction only and are not implemented yet.
 
 The default operator view is now review-oriented: `grants pending` shows action cards with approve/deny/inspect hints, and when multiple pending requests share the same cluster/namespace/requester/service/service-peer group it makes that explicit with latest/oldest request IDs and an `approve latest` hint instead of implying one approval clears the whole group. `grants history` groups repeated attempts into compact status sections, and if a newer approval still has pending duplicates in the same group it surfaces that explicitly without suggesting `approve latest` from history. It omits full service IDs and RFC3339 timestamps by default, and hides older expired groups unless `--all` is set. Both keep the raw table with `--wide` and machine output with `--json`. `grants describe` shows the same review card plus local history and approval/denial suggestions; `tubo peers alias <peer-id> --name <label>` stores a local operator-only label that the grant review views will display when available.
 
