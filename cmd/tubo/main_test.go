@@ -4198,7 +4198,7 @@ func TestRequestPublishGrantReusesPendingRequestIDWithoutSubmittingDuplicates(t 
 	if len(pending) != 1 {
 		t.Fatalf("expected one pending request after first submit, got %d", len(pending))
 	}
-	updatedCfg, updatedSvc, _, err = requestPublishGrantForAttach(configPath, updatedCfg, updatedSvc, servicePeerID.String())
+	_, updatedSvc, _, err = requestPublishGrantForAttach(configPath, updatedCfg, updatedSvc, servicePeerID.String())
 	if err == nil || !strings.Contains(err.Error(), "is pending") {
 		t.Fatalf("expected pending error from retry, got %v", err)
 	}
