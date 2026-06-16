@@ -945,7 +945,7 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 	if a.lastRefreshError != "" && snap.Reason == "" {
 		if a.lastRefreshHealthyAt.IsZero() || a.lastRefreshHealthyAt.Before(a.lastRefreshErrorAt) {
 			snap.Status = "degraded"
-			snap.Reason = a.lastRefreshError
+			snap.Reason = connectRefreshFailureDisplayReason(a.lastRefreshError)
 		}
 	}
 	if !a.lastPeerPingAt.IsZero() {
@@ -1069,6 +1069,17 @@ func connectLeaseFailureRetryAt(err error, current *grantspkg.ConnectAccessLease
 		}
 	}
 	return retryAt
+}
+
+func connectRefreshFailureDisplayReason(errText string) string {
+	s := strings.TrimSpace(strings.ToLower(errText))
+	if s == "" {
+		return errText
+	}
+	if strings.Contains(s, "publish lease expired") {
+		return "remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired; renew service publication or resolve pending publish grant on the service publisher side"
+	}
+	return errText
 }
 
 func (a *App) refreshRetryCanWakeOnRecovery() bool {

@@ -961,6 +961,34 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 	}
 }
 
+func TestDescribeProcessShowsPublishLeaseExpiryRuntimeReason(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmdline, ok := processCommandLine(os.Getpid())
+	if !ok || len(cmdline) == 0 {
+		t.Fatal("expected current process cmdline")
+	}
+	raw := "rollover connect lease: request connect lease from advertised grant endpoint(s): publish lease expired"
+	state := detachedProcessState{ID: "process/connect-lms-5678", Kind: "process", ResourceKind: "pipe", Command: "connect", Name: "connect-lms-5678", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "connect-lms-5678.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-5678.json"), Source: "foreground", CommandLine: cmdline, ServiceKind: "tcp", RuntimeStatus: "degraded", DegradedReason: "remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired; renew service publication or resolve pending publish grant on the service publisher side", LastRefreshError: raw}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return describeCmd([]string{state.ID}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Runtime reason: remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired", "renew service publication", "Last refresh error: " + raw} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("describe output missing %q: %s", want, out)
+		}
+	}
+}
+
 func TestDescribeProcessShowsGrantEndpointStatusAndPolicy(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
