@@ -2,11 +2,19 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
+	logging "github.com/origama/tubo/internal/logging"
 	processes "github.com/origama/tubo/internal/processes"
 	workspace "github.com/origama/tubo/internal/workspace"
+)
+
+type stopMatchStrength int
+
+const (
+	stopMatchNone stopMatchStrength = iota
+	stopMatchWeak
+	stopMatchExact
 )
 
 func stopLifecycleResource(kind, name, configPath string, force bool) (detachedProcessState, error) {
@@ -33,44 +41,98 @@ func stopServiceLifecycle(serviceName, configPath string, force bool) (detachedP
 	if err != nil {
 		return detachedProcessState{}, err
 	}
-	var live []processView
-	var stale bool
+	var exactLive []processView
+	var exactStale []processView
+	var weakLive []processView
+	var weakStale []processView
 	for _, view := range views {
-		if !serviceStopMatches(view, ctx) {
+		strength, ok := serviceStopMatch(view, ctx)
+		if !ok {
 			continue
 		}
-		if view.Status == "running" || view.Status == "degraded" {
-			live = append(live, view)
-			continue
+		switch strength {
+		case stopMatchExact:
+			if view.Status == "running" || view.Status == "degraded" {
+				exactLive = append(exactLive, view)
+			} else {
+				exactStale = append(exactStale, view)
+			}
+		case stopMatchWeak:
+			if view.Status == "running" || view.Status == "degraded" {
+				weakLive = append(weakLive, view)
+			} else {
+				weakStale = append(weakStale, view)
+			}
 		}
-		stale = true
 	}
 	switch {
-	case len(live) > 1:
-		return detachedProcessState{}, fmt.Errorf("service %s matches multiple live runtimes; stop a specific process instead", serviceName)
-	case len(live) == 1:
-		state, err := stopView(live[0], force)
+	case len(exactLive) > 1:
+		return detachedProcessState{}, fmt.Errorf("service %s matches multiple live runtimes by service_id; stop a specific process instead", serviceName)
+	case len(exactLive) == 1:
+		state, err := stopView(exactLive[0], force)
 		if err != nil {
 			return detachedProcessState{}, err
 		}
 		return state, nil
-	case stale:
+	case len(exactStale) > 0:
+		return detachedProcessState{}, fmt.Errorf("service %s has stale process state with matching service_id; no live runtime process exists", serviceName)
+	case len(weakLive) > 1:
+		return detachedProcessState{}, fmt.Errorf("service %s matches multiple legacy name-based runtimes; stop a specific process instead", serviceName)
+	case len(weakLive) == 1 && len(weakStale) == 0:
+		logging.Warnf("stopping service/%s via legacy name-based process state; add service_id to avoid cross-scope ambiguity\n", serviceName)
+		state, err := stopView(weakLive[0], force)
+		if err != nil {
+			return detachedProcessState{}, err
+		}
+		return state, nil
+	case len(weakLive) == 0 && len(weakStale) > 0:
 		return detachedProcessState{}, fmt.Errorf("service %s is stale; no matching live runtime process exists", serviceName)
+	case len(weakLive) == 1 && len(weakStale) > 0:
+		return detachedProcessState{}, fmt.Errorf("service %s has multiple legacy name-based matches; stop a specific process instead", serviceName)
 	default:
 		return detachedProcessState{}, fmt.Errorf("no matching runtime process exists for service/%s", serviceName)
 	}
 }
 
-func serviceStopMatches(view processView, ctx workspace.ServiceContext) bool {
+func serviceStopMatch(view processView, ctx workspace.ServiceContext) (stopMatchStrength, bool) {
 	if view.Command != "attach" {
+		return stopMatchNone, false
+	}
+	serviceID := strings.TrimSpace(ctx.Service.ServiceID)
+	viewServiceID := strings.TrimSpace(view.ServiceID)
+	if serviceID != "" {
+		if viewServiceID != "" {
+			if viewServiceID == serviceID {
+				return stopMatchExact, true
+			}
+			return stopMatchNone, false
+		}
+		if !serviceNameMatches(view, ctx) {
+			return stopMatchNone, false
+		}
+		return stopMatchWeak, true
+	}
+	if viewServiceID != "" {
+		return stopMatchNone, false
+	}
+	if !serviceNameMatches(view, ctx) {
+		return stopMatchNone, false
+	}
+	return stopMatchWeak, true
+}
+
+func serviceNameMatches(view processView, ctx workspace.ServiceContext) bool {
+	name := strings.TrimSpace(view.Service)
+	if name == "" {
+		name = strings.TrimPrefix(strings.TrimSpace(view.Name), "attach-")
+	}
+	if name != ctx.Name {
 		return false
 	}
-	if strings.TrimSpace(view.Service) != "" && strings.TrimSpace(view.Service) != ctx.Name {
-		return false
-	}
-	if strings.TrimSpace(view.ServiceID) != "" && strings.TrimSpace(ctx.Service.ServiceID) != "" && strings.TrimSpace(view.ServiceID) != strings.TrimSpace(ctx.Service.ServiceID) {
-		return false
-	}
+	return serviceScopeMatches(view, ctx)
+}
+
+func serviceScopeMatches(view processView, ctx workspace.ServiceContext) bool {
 	if strings.TrimSpace(view.Cluster) != "" && strings.TrimSpace(view.Cluster) != ctx.ClusterName {
 		return false
 	}
@@ -81,32 +143,36 @@ func serviceStopMatches(view processView, ctx workspace.ServiceContext) bool {
 }
 
 func stopPipeLifecycle(name string, force bool) (detachedProcessState, error) {
+	// Initial stop-only slice: pipe/<name> resolves the registered connect
+	// process state, not a persistent pipe definition yet.
 	views, err := listProcessViews(true)
 	if err != nil {
 		return detachedProcessState{}, err
 	}
 	var live []processView
-	var stale bool
+	var stale []processView
 	for _, view := range views {
 		if !pipeStopMatches(view, name) {
 			continue
 		}
 		if view.Status == "running" || view.Status == "degraded" {
 			live = append(live, view)
-			continue
+		} else {
+			stale = append(stale, view)
 		}
-		stale = true
 	}
 	switch {
 	case len(live) > 1:
 		return detachedProcessState{}, fmt.Errorf("pipe/%s matches multiple live runtimes; stop a specific process instead", name)
-	case len(live) == 1:
+	case len(live) == 1 && len(stale) == 0:
 		state, err := stopView(live[0], force)
 		if err != nil {
 			return detachedProcessState{}, err
 		}
 		return state, nil
-	case stale:
+	case len(live) == 1 && len(stale) > 0:
+		return detachedProcessState{}, fmt.Errorf("pipe/%s has multiple matches; stop a specific process instead", name)
+	case len(live) == 0 && len(stale) > 0:
 		return detachedProcessState{}, fmt.Errorf("pipe/%s is stale; no matching live runtime process exists", name)
 	default:
 		return detachedProcessState{}, fmt.Errorf("no matching runtime process exists for pipe/%s", name)
@@ -117,10 +183,11 @@ func pipeStopMatches(view processView, name string) bool {
 	if view.Command != "connect" || view.ResourceKind != "pipe" {
 		return false
 	}
-	if strings.TrimSpace(view.Name) == name {
+	trimmed := strings.TrimSpace(view.Name)
+	if trimmed == name {
 		return true
 	}
-	if strings.TrimPrefix(strings.TrimSpace(view.Name), "connect-") == name {
+	if strings.TrimPrefix(trimmed, "connect-") == name {
 		return true
 	}
 	if strings.TrimSpace(view.Service) == name {
@@ -168,39 +235,4 @@ func stopView(view processView, force bool) (detachedProcessState, error) {
 		return detachedProcessState{}, err
 	}
 	return state, nil
-}
-
-func livePIDForState(state detachedProcessState) (int, bool, error) {
-	if state.PID > 0 && pidRunning(state.PID) {
-		return state.PID, true, nil
-	}
-	if strings.TrimSpace(state.PIDFile) == "" {
-		return 0, false, nil
-	}
-	raw, err := os.ReadFile(state.PIDFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, false, nil
-		}
-		return 0, false, err
-	}
-	pid := strings.TrimSpace(string(raw))
-	if pid == "" {
-		return 0, false, nil
-	}
-	if !pidRunning(mustAtoi(pid)) {
-		return 0, false, nil
-	}
-	return mustAtoi(pid), true, nil
-}
-
-func mustAtoi(s string) int {
-	var n int
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return 0
-		}
-		n = n*10 + int(r-'0')
-	}
-	return n
 }

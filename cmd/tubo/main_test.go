@@ -920,6 +920,55 @@ func TestStopCmdStopsServiceLifecycleRuntime(t *testing.T) {
 	}
 }
 
+func TestStopCmdPrefersExactServiceIDOverLegacyNameMatch(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := cfg.Clusters["home"].Namespaces["default"].Services["myapi"].ServiceID
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	start := func(id, name, serviceID string) *exec.Cmd {
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		state := detachedProcessState{ID: id, Kind: "process", ResourceKind: "service", Command: "attach", Name: name, Service: "myapi", ServiceID: serviceID, PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), name+".pid"), StateFile: filepath.Join(processStateDir(), name+".json"), LogFile: filepath.Join(processLogDir(), name+".log")}
+		_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+		b, _ := json.Marshal(state)
+		_ = os.WriteFile(state.StateFile, b, 0600)
+		return cmd
+	}
+	exact := start("process/attach-myapi-exact", "attach-myapi-exact", serviceID)
+	weak := start("process/attach-myapi-legacy", "attach-myapi-legacy", "")
+	out, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped process/attach-myapi-exact") {
+		t.Fatalf("unexpected stop output: %s", out)
+	}
+	if pidRunning(exact.Process.Pid) {
+		t.Fatal("expected exact service_id match to stop")
+	}
+	if !pidRunning(weak.Process.Pid) {
+		t.Fatal("expected legacy weak match to remain running")
+	}
+}
+
 func TestStopCmdStopsPipeLifecycleRuntime(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
@@ -961,7 +1010,7 @@ func TestStopCmdFailsForMissingServiceDefinition(t *testing.T) {
 	}
 }
 
-func TestStopCmdFailsForAmbiguousServiceRuntime(t *testing.T) {
+func TestStopCmdFailsForAmbiguousLegacyServiceRuntime(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -970,11 +1019,6 @@ func TestStopCmdFailsForAmbiguousServiceRuntime(t *testing.T) {
 	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := cfgpkg.LoadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serviceID := cfg.Clusters["home"].Namespaces["default"].Services["myapi"].ServiceID
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -987,17 +1031,17 @@ func TestStopCmdFailsForAmbiguousServiceRuntime(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
-		state := detachedProcessState{ID: "process/" + name, Kind: "process", ResourceKind: "service", Command: "attach", Name: name, Service: "myapi", ServiceID: serviceID, Cluster: "home", Namespace: "default", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), name+".pid"), StateFile: filepath.Join(processStateDir(), name+".json"), LogFile: filepath.Join(processLogDir(), name+".log")}
+		state := detachedProcessState{ID: "process/" + name, Kind: "process", ResourceKind: "service", Command: "attach", Name: name, Service: "myapi", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), name+".pid"), StateFile: filepath.Join(processStateDir(), name+".json"), LogFile: filepath.Join(processLogDir(), name+".log")}
 		_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
 		b, _ := json.Marshal(state)
 		_ = os.WriteFile(state.StateFile, b, 0600)
 		return cmd
 	}
-	_ = startState("attach-myapi")
-	_ = startState("attach-myapi-backup")
-	_, err = capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
-	if err == nil || !strings.Contains(err.Error(), "multiple live runtimes") {
-		t.Fatalf("expected ambiguous runtime error, got %v", err)
+	_ = startState("attach-myapi-left")
+	_ = startState("attach-myapi-right")
+	_, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
+	if err == nil || !strings.Contains(err.Error(), "legacy name-based") {
+		t.Fatalf("expected ambiguous legacy match error, got %v", err)
 	}
 }
 
@@ -1692,6 +1736,15 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	for _, want := range []string{"tubo grants serve", "--public-auto-approve", "--claim-ttl", "legacy auto-approval switch"} {
 		if !strings.Contains(grantsHelp, want) {
 			t.Fatalf("grants help missing %q: %s", want, grantsHelp)
+		}
+	}
+	stopHelp, err := capture(func() error { return run([]string{"help", "stop"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>", "persistent service definition", "legacy name-only matches", "process-backed"} {
+		if !strings.Contains(stopHelp, want) {
+			t.Fatalf("stop help missing %q: %s", want, stopHelp)
 		}
 	}
 }

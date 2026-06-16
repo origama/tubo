@@ -659,7 +659,14 @@ Save a local operator-only label for a peer ID.`)
   tubo top [--all] [--interval 2s] [--json]
 
 Show live local traffic stats for registered Tubo processes.`)
-	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init":
+	case "stop":
+		fmt.Println(`Usage:
+  tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>
+
+Stop a local runtime process without deleting the persistent service definition.
+service/<name> prefers an exact service_id match when the service is defined that way; legacy name-only matches are allowed only when unambiguous.
+pipe/<name> is an initial stop-only, process-backed slice and does not imply a persistent pipe definition yet.`)
+	case "watch", "inspect", "ps", "logs", "rm", "version", "doctor", "config", "keygen", "id", "init":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
 		return fmt.Errorf("unknown help topic %q", command)
