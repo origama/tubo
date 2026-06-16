@@ -58,6 +58,47 @@ mints publish leases locally without any grant protocol round-trip.
 
 ---
 
+## Approval modes and TTLs
+
+Manual approval is the safest default. `--public-auto-approve` is the current
+legacy auto-approval switch: it can be convenient for tightly controlled private
+clusters, but it should not be used on public or weakly controlled grant
+services.
+
+The desired future policy vocabulary is:
+
+```text
+--approve-policy-cluster-members
+--approve-policy-namespace-members
+--approve-policy-auto
+--approve-policy-manual
+--approve-policy-whitelist
+```
+
+Those names are target/future direction only and are not implemented yet.
+
+`grants serve --claim-ttl` sets the approved publish authorization lifetime.
+Use it as the main publish authorization TTL knob:
+
+- dev/test: short TTLs such as `1h` are fine;
+- trusted private long-running service: `24h` is a good default;
+- semi-public or weakly controlled environment: manual approval + shorter TTL.
+
+`TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish authorization TTLs and is
+subject to change.
+
+Keep these separate:
+
+- publish authorization lifetime: `grants serve --claim-ttl` or
+  `TUBO_PUBLISH_LEASE_TTL`;
+- share invite lifetime: `tubo share ... --expires ...`;
+- connect access lease lifetime: the short-lived access lease minted for
+  `connect`;
+- connect refresh lease lifetime: the longer-lived refresh lease used for
+  renewal.
+
+---
+
 ## Step 1 — Start the Grant Service on the authority node
 
 Run this on the **authority node** (the machine that holds `authority_private_key_file`):
@@ -161,12 +202,12 @@ Inspect the request if needed:
 tubo grants describe gr_a0f4b0d61b77d0f1
 ```
 
-`describe` now prints a readable review card with requester, service, verification hints, and approve/deny suggestions.
+`describe` now prints a readable review card with requester, service, verification hints, and approve/deny suggestions. Use `--wide` for raw per-request debugging, and after #256 duplicate pending groups are surfaced explicitly; prefer approving the latest request shown by `tubo grants pending` unless `describe` gives you a reason not to.
 
 Approve with a TTL:
 
 ```bash
-tubo grants approve gr_a0f4b0d61b77d0f1 --ttl 168h   # 7 days
+tubo grants approve gr_a0f4b0d61b77d0f1 --ttl 24h
 ```
 
 To deny:
@@ -317,15 +358,32 @@ Normal: the request was submitted successfully but not yet approved. Run
 `tubo grants pending` on the authority and approve it (step 3), then re-run
 `attach` on the member.
 
+### `connect` says the remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired
+
+This is not primarily a connect-client problem. The connect client reached the
+remote service grant endpoint, but that endpoint cannot mint a new connect lease
+because the service publisher no longer has a valid publish authorization.
+Fix the service publication path:
+
+1. check the service publisher running `attach`;
+2. check pending publish-grant requests on the authority with `tubo grants pending`;
+3. approve or renew the publish authorization;
+4. then let connect retry, or restart the connect process if needed.
+
 ---
 
 ## Security notes
 
 - The authority never signs a `PublishLease` without explicit `tubo grants approve`.
-  Use `--public-auto-approve` **only** on fully public clusters (`home/default`)
-  where any peer may publish without review.
-- Approved `PublishLease` TTLs are bounded by `grants serve --claim-ttl` (default
-  24 h). Approve with a TTL that matches your rotation policy.
+  Manual approval is the safest default. Use `--public-auto-approve` only on
+  tightly controlled private clusters; do not use it on public or weakly
+  controlled grant services.
+- Approved `PublishLease` TTLs are bounded by `grants serve --claim-ttl`.
+  Keep that separate from share invite lifetimes and connect access/refresh
+  lease lifetimes. For trusted private long-running services, `24h` is a good
+  default; use shorter TTLs for dev/test or semi-public environments.
+- `TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish authorization TTLs and
+  may change.
 - The grant service peer address exposed in discovery only allows reaching the
   grants protocol listener; it does not grant network access to the authority
   node beyond `/tubo/grants/1.0` streams.
