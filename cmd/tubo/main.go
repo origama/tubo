@@ -475,6 +475,8 @@ Discovery and process management:
   tubo top
   tubo logs process/attach-myapp
   tubo stop process/attach-myapp
+  tubo stop service/myapp
+  tubo stop pipe/myapp-1234
 
 Notes:
   - First run auto-joins the signed public network bundle.
@@ -657,7 +659,14 @@ Save a local operator-only label for a peer ID.`)
   tubo top [--all] [--interval 2s] [--json]
 
 Show live local traffic stats for registered Tubo processes.`)
-	case "watch", "inspect", "ps", "logs", "stop", "rm", "version", "doctor", "config", "keygen", "id", "init":
+	case "stop":
+		fmt.Println(`Usage:
+  tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>
+
+Stop a local runtime process without deleting the persistent service definition.
+service/<name> prefers an exact service_id match when the service is defined that way; legacy name-only matches are allowed only when unambiguous.
+pipe/<name> is an initial stop-only, process-backed slice and does not imply a persistent pipe definition yet.`)
+	case "watch", "inspect", "ps", "logs", "rm", "version", "doctor", "config", "keygen", "id", "init":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
 		return fmt.Errorf("unknown help topic %q", command)
@@ -1682,30 +1691,67 @@ func logsCmd(args []string) error {
 }
 
 func stopCmd(args []string) error {
-	fs := flag.NewFlagSet("stop", flag.ContinueOnError)
-	force := fs.Bool("force", false, "")
-	if err := fs.Parse(args); err != nil {
-		return err
+	force := false
+	configPath := defaultTuboConfigPath()
+	positionals := make([]string, 0, 1)
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--force":
+			force = true
+		case "--config":
+			i++
+			if i >= len(args) {
+				return errors.New("usage: tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>")
+			}
+			configPath = args[i]
+		default:
+			if strings.HasPrefix(arg, "--config=") {
+				configPath = strings.TrimPrefix(arg, "--config=")
+				continue
+			}
+			if strings.HasPrefix(arg, "-") {
+				return fmt.Errorf("unknown flag %s", arg)
+			}
+			positionals = append(positionals, arg)
+		}
 	}
-	if fs.NArg() != 1 {
-		return errors.New("usage: tubo stop [--force] <process/name>")
+	if len(positionals) != 1 {
+		return errors.New("usage: tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>")
 	}
-	preview, status, err := loadProcessState(fs.Arg(0))
+	resource := positionals[0]
+	kind, name, err := parseLocalResourceRef(resource)
 	if err != nil {
 		return err
 	}
-	if status != "running" && status != "degraded" {
-		return fmt.Errorf("process %s is not running", preview.ID)
+	switch kind {
+	case "process":
+		preview, status, err := loadProcessState(resource)
+		if err != nil {
+			return err
+		}
+		if status != "running" && status != "degraded" {
+			return fmt.Errorf("process %s is not running", preview.ID)
+		}
+		if preview.Source != "" && preview.Source != "tubo-detached" {
+			logging.Warnf("stopping externally managed Tubo runtime %s via SIGTERM; use your supervisor to restart it\n", preview.ID)
+		}
+		state, err := stopProcess(resource, force)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("stopped %s\n", state.ID)
+		return nil
+	case "service", "pipe":
+		state, err := stopLifecycleResource(kind, name, configPath, force)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("stopped %s\n", state.ID)
+		return nil
+	default:
+		return fmt.Errorf("unsupported stop resource %q", resource)
 	}
-	if preview.Source != "" && preview.Source != "tubo-detached" {
-		logging.Warnf("stopping externally managed Tubo runtime %s via SIGTERM; use your supervisor to restart it\n", preview.ID)
-	}
-	state, err := stopProcess(fs.Arg(0), *force)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("stopped %s\n", state.ID)
-	return nil
 }
 
 func rmCmd(args []string) error {

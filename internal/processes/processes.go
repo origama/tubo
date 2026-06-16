@@ -592,22 +592,63 @@ func Stop(dataRoot, ref string, system System, force bool) (State, error) {
 	if !isLiveStatus(status) {
 		return State{}, fmt.Errorf("process %s is not running", state.ID)
 	}
-	if err := system.TerminatePID(state.PID); err != nil {
+	if err := StopState(state, system, force); err != nil {
 		return State{}, err
 	}
-	if err := waitForExit(system, state.PID, 5*time.Second); err != nil {
+	return state, nil
+}
+
+func StopState(state State, system System, force bool) error {
+	pid, ok, err := runningPIDForState(state, system)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("process %s is not running", state.ID)
+	}
+	if err := system.TerminatePID(pid); err != nil {
+		return err
+	}
+	if err := waitForExit(system, pid, 5*time.Second); err != nil {
 		if !force {
-			return State{}, err
+			return err
 		}
-		if err := system.KillPID(state.PID); err != nil {
-			return State{}, err
+		if err := system.KillPID(pid); err != nil {
+			return err
 		}
-		if err := waitForExit(system, state.PID, 2*time.Second); err != nil {
-			return State{}, err
+		if err := waitForExit(system, pid, 2*time.Second); err != nil {
+			return err
 		}
 	}
 	_ = os.Remove(state.PIDFile)
-	return state, nil
+	return nil
+}
+
+func runningPIDForState(state State, system System) (int, bool, error) {
+	if system == nil {
+		return 0, false, errors.New("process system unavailable")
+	}
+	if state.PID > 0 && system.PIDRunning(state.PID) {
+		return state.PID, true, nil
+	}
+	if strings.TrimSpace(state.PIDFile) == "" {
+		return 0, false, nil
+	}
+	raw, err := os.ReadFile(state.PIDFile)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		return 0, false, nil
+	}
+	if system.PIDRunning(pid) {
+		return pid, true, nil
+	}
+	return 0, false, nil
 }
 
 func RemoveStale(dataRoot string, system System) (int, error) {
