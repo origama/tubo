@@ -127,7 +127,8 @@ On first run (no existing `PublishLease`), `attach` will:
 2. connect to it through the relay circuit;
 3. submit a `PublishLease` grant request;
 4. receive `TypePending` and save the `grant_request_id` locally;
-5. exit with:
+5. later retries poll the same saved request id instead of submitting duplicates;
+6. exit with:
 
 ```
 tubo: publish grant request "gr_..." is pending; publication requires an approved publish lease
@@ -188,7 +189,7 @@ This time:
 
 1. `attach` polls the grant service with the saved `grant_request_id`;
 2. receives `TypeApproved` with the signed `PublishLease`;
-3. saves the lease locally;
+3. saves the lease locally and clears the saved request id;
 4. starts publishing the service to the swarm.
 
 Expected output:
@@ -209,7 +210,8 @@ until it expires (after the TTL approved in step 3).
 
 When the `PublishLease` expires, `attach` automatically submits a new request to
 the grant service and the flow repeats from step 2. The saved `grant_request_id`
-is reused for polling if the request is already pending.
+is reused for polling while the request is pending, and it is cleared once the
+approved lease is written.
 
 To renew manually before expiry:
 

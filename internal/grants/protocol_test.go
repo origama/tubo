@@ -92,7 +92,7 @@ func TestDecodeRejectsOversizedPayload(t *testing.T) {
 
 func validSubmit() Message { return signedSubmit("default", "myapi", "12D3-service") }
 
-func signedSubmit(label, serviceName, servicePeerID string) Message {
+func signedSubmitWithNonce(label, serviceName, servicePeerID, nonce string) Message {
 	ownerPriv, ownerPub := testOwnerKey(label)
 	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
 	req, err := SignPublishLeaseRequest(PublishLeaseRequest{
@@ -102,7 +102,7 @@ func signedSubmit(label, serviceName, servicePeerID string) Message {
 		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
 		PublisherPeerID:       servicePeerID,
 		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
-		Nonce:                 label + "-nonce",
+		Nonce:                 nonce,
 	}, ownerPriv)
 	if err != nil {
 		panic(err)
@@ -110,6 +110,9 @@ func signedSubmit(label, serviceName, servicePeerID string) Message {
 	return Message{Type: TypeSubmit, Version: VersionV1, Token: "tubo-invite-v1.token", ClusterID: "cluster-123", NamespaceID: "default", ServiceName: serviceName, ServiceID: serviceID, ServicePublicKey: req.ServicePublicKey, ServiceOwnerSignature: req.ServiceOwnerSignature, ServicePeerID: servicePeerID, RequestNonce: req.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce}, RequestedTTLSeconds: int64((7 * 24 * time.Hour).Seconds())}
 }
 
+func signedSubmit(label, serviceName, servicePeerID string) Message {
+	return signedSubmitWithNonce(label, serviceName, servicePeerID, label+"-nonce")
+}
 func testOwnerKey(label string) (ed25519.PrivateKey, ed25519.PublicKey) {
 	seed := sha256.Sum256([]byte(label))
 	priv := ed25519.NewKeyFromSeed(seed[:])

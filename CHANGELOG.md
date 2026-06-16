@@ -6,6 +6,9 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+### Fixed
+- `attach` now clears a consumed `grant_request_id` after an approved publish lease is written, and the grant store reuses an existing pending request for equivalent retries instead of creating duplicate pending requests.
+
 ## [v0.11.0] - 2026-06-15
 
 Minor release with live runtime traffic stats and `tubo top`, plus recovery improvements for publish authorization, connect status, and ping-based liveness.

@@ -223,6 +223,7 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			}
 		}
 		svc.GrantServicePeer = grantPeer
+		svc.GrantRequestID = ""
 		namespace.Services[cfg.Service.Name] = svc
 		cluster.Namespaces[cfg.CurrentNamespace] = namespace
 		cfg.Clusters[cfg.CurrentCluster] = cluster
@@ -242,19 +243,36 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			if mode == grantClientResponsePrimary {
 				logging.Resultf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\nShare invite token: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile, resp.ServiceShareToken)
 			} else {
-				logging.Progressf("publish authorization refreshed for service %q\n", cfg.Service.Name)
+				logging.Progressf("publish authorization request approved: %s; publish authorization refreshed for service %q\n", resp.RequestID, cfg.Service.Name)
 			}
 		} else {
 			if mode == grantClientResponsePrimary {
 				logging.Resultf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile)
 			} else {
-				logging.Progressf("publish authorization refreshed for service %q\n", cfg.Service.Name)
+				logging.Progressf("publish authorization request approved: %s; publish authorization refreshed for service %q\n", resp.RequestID, cfg.Service.Name)
 			}
 		}
 		return resp.ServiceShareToken, nil
 	case grantspkg.TypeDenied:
+		if mode == grantClientResponsePrimary {
+			logging.Progressf("publish authorization request denied: %s (%s)\n", resp.RequestID, resp.Reason)
+		} else {
+			logging.Progressf("publish authorization request denied: %s (%s)\n", resp.RequestID, resp.Reason)
+		}
 		return "", fmt.Errorf("grant request %s denied: %s", resp.RequestID, resp.Reason)
 	case grantspkg.TypeExpired:
+		svc.GrantRequestID = ""
+		namespace.Services[cfg.Service.Name] = svc
+		cluster.Namespaces[cfg.CurrentNamespace] = namespace
+		cfg.Clusters[cfg.CurrentCluster] = cluster
+		if err := saveLocalConfig(configPath, cfg); err != nil {
+			return "", err
+		}
+		if mode == grantClientResponsePrimary {
+			logging.Progressf("publish authorization request expired and cleared: %s\n", resp.RequestID)
+		} else {
+			logging.Progressf("publish authorization request expired and cleared: %s\n", resp.RequestID)
+		}
 		return "", fmt.Errorf("grant request %s expired: %s", resp.RequestID, resp.Reason)
 	default:
 		return "", fmt.Errorf("unexpected grant response type %q", resp.Type)

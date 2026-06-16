@@ -72,18 +72,22 @@ func TestGrantsPendingHumanOutputCardsUseAliasAndActionCommands(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := grantspkg.NewStore(storePath)
-	if _, err := store.CreatePending(fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-1", now.Add(-5*time.Minute), now.Add(time.Hour))); err != nil {
+	req1, err := store.CreatePending(fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-1", now.Add(-5*time.Minute), now.Add(time.Hour)))
+	if err != nil {
 		t.Fatal(err)
 	}
 	req2, err := store.CreatePending(fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-2", now.Add(-4*time.Minute), now.Add(time.Hour)))
 	if err != nil {
 		t.Fatal(err)
 	}
+	if req1.ID != req2.ID {
+		t.Fatalf("expected duplicate pending requests to reuse the same id: %q vs %q", req1.ID, req2.ID)
+	}
 	out, err := capture(func() error { return grantsPendingCmd([]string{"--store", storePath}) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Pending grant requests", "source: authority/local store", "oripi wants to publish myapi (http) in home/default", "requester: 12D3KooWRequester", "attempts: 2", "approve:", "deny:", "inspect:"} {
+	for _, want := range []string{"Pending grant requests", "source: authority/local store", "oripi wants to publish myapi (http) in home/default", "requester: 12D3KooWRequester", "attempts: 1", "approve:", "deny:", "inspect:"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pending output missing %q: %s", want, out)
 		}

@@ -381,6 +381,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 	}
 	var resp grantspkg.Message
 	if svc.GrantRequestID != "" {
+		logging.Progressf("grants-client: polling existing request=%s\n", svc.GrantRequestID)
 		resp, err = grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
 		if err == nil && resp.Type == grantspkg.TypeExpired {
 			// The pending request expired on the authority side. Clear the stored
@@ -401,6 +402,7 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 		}
 	}
 	if resp.Type == "" && svc.GrantRequestID == "" {
+		logging.Progressf("grants-client: submitting new request for service=%q\n", cfg.Service.Name)
 		leaseReq, err := buildServicePublishLeaseRequest(configPath, cfg, svc, servicePeerID)
 		if err != nil {
 			return cfg, svc, "", err
