@@ -66,7 +66,7 @@ ps        = show locally registered processes
 top       = show live local traffic stats for registered processes
 peers     = manage local peer display aliases
 logs      = follow or tail local logs when Tubo knows the file
-stop      = stop a locally registered process
+stop      = stop a local process or an initial service/pipe lifecycle runtime
 rm --stale = clean up state/logs for terminated processes
 ```
 
