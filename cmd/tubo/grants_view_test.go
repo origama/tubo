@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -61,7 +62,21 @@ func (fx grantRequestFixture) request(t *testing.T, serviceName, servicePeerID, 
 	}
 }
 
-func TestGrantsPendingHumanOutputCardsUseAliasAndActionCommands(t *testing.T) {
+func writeGrantStoreRequests(t *testing.T, path string, requests ...grantspkg.Request) {
+	t.Helper()
+	payload := struct {
+		Requests []grantspkg.Request `json:"requests"`
+	}{Requests: requests}
+	out, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(out, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGrantsPendingHumanOutputShowsGroupedDuplicatesExplicitly(t *testing.T) {
 	now := time.Now().UTC()
 	fx := newGrantRequestFixture(t)
 	storePath := filepath.Join(t.TempDir(), "requests.json")
@@ -71,29 +86,51 @@ func TestGrantsPendingHumanOutputCardsUseAliasAndActionCommands(t *testing.T) {
 	if _, err := aliasStore.Upsert("12D3KooWRequester", "oripi", "verified via SSH"); err != nil {
 		t.Fatal(err)
 	}
-	store := grantspkg.NewStore(storePath)
-	req1, err := store.CreatePending(fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-1", now.Add(-5*time.Minute), now.Add(time.Hour)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	req2, err := store.CreatePending(fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-2", now.Add(-4*time.Minute), now.Add(time.Hour)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if req1.ID != req2.ID {
-		t.Fatalf("expected duplicate pending requests to reuse the same id: %q vs %q", req1.ID, req2.ID)
-	}
+	reqOld := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-1", now.Add(-10*time.Minute), now.Add(time.Hour))
+	reqOld.ID = "gr_old"
+	reqOld.Status = grantspkg.StatusPending
+	reqNew := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-2", now.Add(-4*time.Minute), now.Add(time.Hour))
+	reqNew.ID = "gr_new"
+	reqNew.Status = grantspkg.StatusPending
+	writeGrantStoreRequests(t, storePath, reqOld, reqNew)
+
 	out, err := capture(func() error { return grantsPendingCmd([]string{"--store", storePath}) })
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Pending grant requests", "source: authority/local store", "oripi wants to publish myapi (http) in home/default", "requester: 12D3KooWRequester", "attempts: 1", "approve:", "deny:", "inspect:"} {
+	for _, want := range []string{"Pending grant requests", "source: authority/local store", "oripi wants to publish myapi (http) in home/default", "2 pending requests for same requester/service/service_peer", "latest: gr_new", "oldest: gr_old", "requester:", "service peer:", "approve latest: tubo grants approve gr_new --ttl 168h", "inspect group: tubo grants describe gr_new", "show all: tubo grants pending --wide"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pending output missing %q: %s", want, out)
 		}
 	}
-	if !strings.Contains(out, req2.ID) {
-		t.Fatalf("expected pending card to include latest request id: %s", out)
+	if strings.Contains(out, "\napprove: tubo grants approve") {
+		t.Fatalf("duplicate-group output should not use the single-request approve wording: %s", out)
+	}
+}
+
+func TestGrantsPendingWideKeepsRawRowsForDuplicateRequests(t *testing.T) {
+	now := time.Now().UTC()
+	fx := newGrantRequestFixture(t)
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	reqOld := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-1", now.Add(-10*time.Minute), now.Add(time.Hour))
+	reqOld.ID = "gr_old"
+	reqOld.Status = grantspkg.StatusPending
+	reqNew := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-2", now.Add(-4*time.Minute), now.Add(time.Hour))
+	reqNew.ID = "gr_new"
+	reqNew.Status = grantspkg.StatusPending
+	writeGrantStoreRequests(t, storePath, reqOld, reqNew)
+
+	out, err := capture(func() error { return grantsPendingCmd([]string{"--store", storePath, "--wide"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Pending grant requests", "ID", "STATUS", "SERVICE_ID", "gr_old", "gr_new"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("wide pending output missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "2 pending requests for same requester/service/service_peer") {
+		t.Fatalf("wide output should remain raw rows only: %s", out)
 	}
 }
 
@@ -114,6 +151,32 @@ func TestGrantsPendingHumanOutputFallsBackToAbbreviatedPeerID(t *testing.T) {
 	}
 	if !strings.Contains(out, "…") {
 		t.Fatalf("expected abbreviated peer id in output: %s", out)
+	}
+}
+
+func TestGrantsHistoryCompactShowsDuplicatePendingGroupsExplicitly(t *testing.T) {
+	now := time.Now().UTC()
+	fx := newGrantRequestFixture(t)
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	reqOld := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-1", now.Add(-10*time.Minute), now.Add(time.Hour))
+	reqOld.ID = "gr_old"
+	reqOld.Status = grantspkg.StatusPending
+	reqNew := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-2", now.Add(-4*time.Minute), now.Add(time.Hour))
+	reqNew.ID = "gr_new"
+	reqNew.Status = grantspkg.StatusPending
+	writeGrantStoreRequests(t, storePath, reqOld, reqNew)
+
+	out, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Grant history", "source: authority/local store", "Pending requests", "2 pending requests for same requester/service/service_peer", "latest: gr_new", "oldest: gr_old", "inspect latest: tubo grants describe gr_new"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact history missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "approve latest:") {
+		t.Fatalf("history output should not suggest approve latest: %s", out)
 	}
 }
 
@@ -244,11 +307,13 @@ func TestGrantsPendingJSONIsMachineReadable(t *testing.T) {
 	now := time.Now().UTC()
 	fx := newGrantRequestFixture(t)
 	storePath := filepath.Join(t.TempDir(), "requests.json")
-	store := grantspkg.NewStore(storePath)
-	req, err := store.CreatePending(fx.request(t, "myapi", "12D3-service-peer", "12D3-requester", "nonce-json", now.Add(-5*time.Minute), now.Add(time.Hour)))
-	if err != nil {
-		t.Fatal(err)
-	}
+	reqOld := fx.request(t, "myapi", "12D3-service-peer", "12D3-requester", "nonce-old", now.Add(-6*time.Minute), now.Add(time.Hour))
+	reqOld.ID = "gr_old"
+	reqOld.Status = grantspkg.StatusPending
+	reqNew := fx.request(t, "myapi", "12D3-service-peer", "12D3-requester", "nonce-new", now.Add(-5*time.Minute), now.Add(time.Hour))
+	reqNew.ID = "gr_new"
+	reqNew.Status = grantspkg.StatusPending
+	writeGrantStoreRequests(t, storePath, reqOld, reqNew)
 	out, err := capture(func() error { return grantsPendingCmd([]string{"--store", storePath, "--json"}) })
 	if err != nil {
 		t.Fatal(err)
@@ -257,8 +322,11 @@ func TestGrantsPendingJSONIsMachineReadable(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &payload); err != nil {
 		t.Fatalf("pending json is not parseable: %v\n%s", err, out)
 	}
-	if payload.Mode != "pending" || len(payload.Requests) != 1 || len(payload.Groups) != 1 || payload.Requests[0].ID != req.ID {
+	if payload.Mode != "pending" || len(payload.Requests) != 2 || len(payload.Groups) != 1 {
 		t.Fatalf("unexpected pending json payload: %#v", payload)
+	}
+	if payload.Groups[0].Pending != 2 || payload.Groups[0].LatestRequestID != "gr_new" || payload.Groups[0].OldestRequestID != "gr_old" {
+		t.Fatalf("unexpected pending json group summary: %#v", payload.Groups[0])
 	}
 }
 

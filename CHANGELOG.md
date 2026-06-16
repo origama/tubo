@@ -8,6 +8,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Fixed
 - `attach` now clears a consumed `grant_request_id` after an approved publish lease is written, and the grant store reuses an existing pending request for equivalent retries instead of creating duplicate pending requests.
+- `tubo grants pending` now makes grouped duplicate pending requests explicit in compact output with latest/oldest request IDs and an `approve latest` hint.
 
 ## [v0.11.0] - 2026-06-15
 

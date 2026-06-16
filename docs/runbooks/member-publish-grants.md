@@ -147,7 +147,7 @@ On the **authority node**, list pending requests:
 tubo grants pending
 ```
 
-Default output is now a compact action-oriented list that groups repeated attempts by requester/service identity and shows the local alias when available. Use `--wide` for the full technical table:
+Default output is now a compact action-oriented list that groups repeated attempts by requester/service identity and, when multiple pending requests share the same cluster/namespace/requester/service/service-peer, makes that explicit with latest/oldest request IDs and an `approve latest` hint. It still shows the local alias when available. Use `--wide` for the full technical table:
 
 ```bash
 tubo grants pending --wide
