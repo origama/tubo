@@ -212,13 +212,21 @@ func StartDetached(spec DetachedSpec, executable string, env []string, system Sy
 		if conflict := detachedStateConflict(existing, spec.State); conflict != "" {
 			return State{}, fmt.Errorf("detached process state conflict for %s: %s", spec.State.ID, conflict)
 		}
-		if system != nil && existing.PID > 0 && system.PIDRunning(existing.PID) {
+		pidToCheck := existing.PID
+		if pidToCheck <= 0 {
+			if pidFromFile, pidErr := readPIDFile(spec.State.ID, spec.State.PIDFile); pidErr != nil {
+				return State{}, pidErr
+			} else if pidFromFile > 0 {
+				pidToCheck = pidFromFile
+			}
+		}
+		if system != nil && pidToCheck > 0 && system.PIDRunning(pidToCheck) {
 			if len(existing.CommandLine) > 0 {
-				if actual, ok := system.CommandLine(existing.PID); ok && !commandLinesMatch(existing.CommandLine, actual) {
+				if actual, ok := system.CommandLine(pidToCheck); ok && !commandLinesMatch(existing.CommandLine, actual) {
 					return State{}, fmt.Errorf("detached process state conflict for %s: running process command line mismatch", spec.State.ID)
 				}
 			}
-			return State{}, fmt.Errorf("detached process already running for %s (pid %d)", spec.State.ID, existing.PID)
+			return State{}, fmt.Errorf("detached process already running for %s (pid %d)", spec.State.ID, pidToCheck)
 		}
 	}
 	logFile, err := os.OpenFile(spec.State.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -273,6 +281,18 @@ func readDetachedStateForStart(id, statePath, pidPath string) (State, bool, erro
 		return State{}, false, err
 	}
 	return State{}, false, nil
+}
+
+func readPIDFile(id, path string) (int, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("detached process state already exists for %s (invalid pid file; run 'tubo rm --stale' or 'tubo stop' to clear it)", id)
+	}
+	return pid, nil
 }
 
 func detachedStateConflict(existing, desired State) string {

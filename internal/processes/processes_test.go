@@ -322,6 +322,30 @@ func TestStartDetachedRejectsStaleIncompatibleState(t *testing.T) {
 	}
 }
 
+func TestStartDetachedRejectsZeroPidStateWhenPidFileIsLive(t *testing.T) {
+	root := t.TempDir()
+	spec := DetachedSpec{State: State{ID: "process/connect-myapi-1234", Kind: "process", ResourceKind: "pipe", Command: "connect", Name: "connect-myapi-1234", Service: "myapi", ServiceKind: "tcp", ServiceID: "service-123", Cluster: "home", Namespace: "default", Local: "127.0.0.1:1234", Target: "myapi", LogFile: filepath.Join(LogDir(root), "connect-myapi-1234.log"), StateFile: filepath.Join(StateDir(root), "connect-myapi-1234.json"), PIDFile: filepath.Join(RunDir(root), "connect-myapi-1234.pid")}, ChildArgs: []string{"-c", "sleep 2"}}
+	stale := spec.State
+	stale.PID = 0
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale.PIDFile, []byte("4321\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale.StateFile, mustJSON(t, stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	system := &stubSystem{running: map[int]bool{4321: true}, cmdlines: map[int][]string{4321: {"/bin/sh", "-c", "sleep 2"}}}
+	_, err := StartDetached(spec, "/bin/sh", []string{"PATH=/usr/bin:/bin"}, system, nil, 2*time.Second)
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected already-running error, got %v", err)
+	}
+}
+
 func TestReadLogTailReturnsLastNLines(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "tail.log")
