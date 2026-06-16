@@ -7,7 +7,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 ## [Unreleased]
 
 ### Added
-- `tubo start service/<name>` now starts a service runtime from the stored local definition without retyping the target, and refuses to start when the matching service runtime is already running.
+- `tubo start service/<name>` now starts a service runtime from the stored local definition without retyping the target; the service target is persisted with the service definition, and start refuses when the matching service runtime is already running.
 
 ### Fixed
 - `attach` now clears a consumed `grant_request_id` after an approved publish lease is written, and the grant store reuses an existing pending request for equivalent retries instead of creating duplicate pending requests.

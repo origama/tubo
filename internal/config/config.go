@@ -149,6 +149,7 @@ type Namespace struct {
 type NamespaceService struct {
 	ServiceID               string      `yaml:"service_id,omitempty" json:"service_id,omitempty"`
 	Kind                    ServiceKind `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Target                  string      `yaml:"target,omitempty" json:"target,omitempty"`
 	ServiceSeed             string      `yaml:"service_seed,omitempty" json:"service_seed,omitempty"`
 	ServiceOwnerKeyFile     string      `yaml:"service_owner_key_file,omitempty" json:"service_owner_key_file,omitempty"`
 	ServiceClaimFile        string      `yaml:"service_claim_file,omitempty" json:"service_claim_file,omitempty"`

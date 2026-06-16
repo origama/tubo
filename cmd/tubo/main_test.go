@@ -998,25 +998,42 @@ func TestStopCmdStopsPipeLifecycleRuntime(t *testing.T) {
 	}
 }
 
-func TestStartCmdStartsServiceLifecycleRuntime(t *testing.T) {
+func TestStartCmdUsesPersistedServiceTargetAfterAttachStop(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()
+	if _, err := capture(func() error { return run([]string{"attach", srv.URL, "--name", "myapi", "-d", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Service.Name = "myapi"
-	cfg.Service.Target = srv.URL
+	svc := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if svc.Target != srv.URL {
+		t.Fatalf("service target not persisted: got %q want %q", svc.Target, srv.URL)
+	}
+	state, status, err := loadProcessState("process/attach-myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" && status != "degraded" {
+		t.Fatalf("expected running or degraded state, got %s", status)
+	}
+	if state.PID <= 0 || !pidRunning(state.PID) {
+		t.Fatalf("expected running pid, got %#v", state)
+	}
+	if out, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatalf("stop failed: %v output=%s", err, out)
+	}
+	cfg.Service.Target = ""
+	cfg.Service.Kind = ""
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
 	}
@@ -1027,45 +1044,18 @@ func TestStartCmdStartsServiceLifecycleRuntime(t *testing.T) {
 	if !strings.Contains(out, "started service \"myapi\"") {
 		t.Fatalf("unexpected start output: %s", out)
 	}
-	state, status, err := loadProcessState("process/attach-myapi")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
-	})
-	if status != "running" && status != "degraded" {
-		t.Fatalf("expected running or degraded state, got %s", status)
-	}
-	if state.PID <= 0 || !pidRunning(state.PID) {
-		t.Fatalf("expected running pid, got %#v", state)
-	}
-	if _, err := capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) }); err == nil || !strings.Contains(err.Error(), "already running") {
-		t.Fatalf("expected already-running error, got %v", err)
-	}
-	out, err = capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "stopped "+state.ID) {
-		t.Fatalf("unexpected stop output: %s", out)
-	}
-	if pidRunning(state.PID) {
-		t.Fatal("expected service runtime to stop")
-	}
-	out, err = capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) })
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out, "started service \"myapi\"") {
-		t.Fatalf("unexpected restart output: %s", out)
-	}
 	state2, _, err := loadProcessState("process/attach-myapi")
 	if err != nil {
 		t.Fatal(err)
 	}
+	if state2.Target != srv.URL {
+		t.Fatalf("expected target from persisted service definition, got %q want %q", state2.Target, srv.URL)
+	}
 	if state2.PID <= 0 || !pidRunning(state2.PID) {
 		t.Fatalf("expected restarted pid, got %#v", state2)
+	}
+	if _, err := capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) }); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected already-running error, got %v", err)
 	}
 	if _, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) }); err != nil {
 		t.Fatal(err)

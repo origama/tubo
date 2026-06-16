@@ -192,6 +192,16 @@ func (w *Workspace) ensureServiceState(configPath string, cfg cfgpkg.Config, ser
 		svc.Kind = kind
 		changed = true
 	}
+	currentTarget := strings.TrimSpace(cfg.Service.Target)
+	if isPlaceholderServiceTarget(currentTarget) {
+		currentTarget = ""
+	}
+	if svc.Target == "" && currentTarget != "" {
+		svc.Target = currentTarget
+		changed = true
+	} else if svc.Target != "" && currentTarget != "" && svc.Target != currentTarget {
+		return cfg, ServiceContext{}, false, false, fmt.Errorf("service %q target mismatch in cluster %q namespace %q: target=%q want %q", serviceName, cfg.CurrentCluster, cfg.CurrentNamespace, currentTarget, svc.Target)
+	}
 	if svc.ServiceID != "" && svc.ServiceOwnerKeyFile == "" {
 		return cfg, ServiceContext{}, false, false, fmt.Errorf("service %q is missing service_owner_key_file", serviceName)
 	}
@@ -256,8 +266,15 @@ func (w *Workspace) ensureServiceState(configPath string, cfg cfgpkg.Config, ser
 		cluster.Namespaces[cfg.CurrentNamespace] = namespace
 		cfg.Clusters[cfg.CurrentCluster] = cluster
 	}
+	cfg.Service.Target = svc.Target
+	cfg.Service.Kind = svc.Kind
 	ctx := ServiceContext{Config: cfg, ClusterName: cfg.CurrentCluster, Namespace: cfg.CurrentNamespace, Name: serviceName, Cluster: cluster, Service: svc}
 	return cfg, ctx, created, changed, nil
+}
+
+func isPlaceholderServiceTarget(target string) bool {
+	target = strings.TrimSpace(target)
+	return target == "http://127.0.0.1:1" || target == "http://127.0.0.1:1/"
 }
 
 func (w *Workspace) resolveServiceContext(cfg cfgpkg.Config, clusterName, namespaceName, serviceRef string) (ServiceContext, error) {

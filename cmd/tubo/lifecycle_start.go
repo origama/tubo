@@ -64,8 +64,8 @@ func startServiceLifecycle(serviceName, configPath string) (detachedProcessState
 	if storedName := strings.TrimSpace(cfg.Service.Name); storedName != "" && storedName != serviceName {
 		return detachedProcessState{}, fmt.Errorf("service/%s does not match saved service.name %q", serviceName, storedName)
 	}
-	if strings.TrimSpace(cfg.Service.Target) == "" {
-		return detachedProcessState{}, fmt.Errorf("service/%s is missing service.target; set the target in the saved config before starting", serviceName)
+	if strings.TrimSpace(ctx.Service.Target) == "" {
+		return detachedProcessState{}, fmt.Errorf("service/%s is missing service.target; set the target in the saved service definition before starting", serviceName)
 	}
 	if strings.TrimSpace(ctx.Service.ServiceID) == "" {
 		return detachedProcessState{}, fmt.Errorf("service/%s is missing service_id", serviceName)
@@ -90,13 +90,13 @@ func startServiceLifecycle(serviceName, configPath string) (detachedProcessState
 			return detachedProcessState{}, err
 		}
 	}
-	if err := cfgpkg.Validate(cfgpkg.Config{Role: "service", Service: cfgpkg.Service{Name: serviceName, Target: cfg.Service.Target, Kind: cfg.Service.Kind}}); err != nil {
+	if err := cfgpkg.Validate(cfgpkg.Config{Role: "service", Service: cfgpkg.Service{Name: serviceName, Target: ctx.Service.Target, Kind: ctx.Service.Kind}}); err != nil {
 		return detachedProcessState{}, fmt.Errorf("service/%s is not startable: %w", serviceName, err)
 	}
 	attachCfg := cfg
 	attachCfg.Service.Name = serviceName
-	attachCfg.Service.Target = cfg.Service.Target
-	attachCfg.Service.Kind = cfg.Service.Kind
+	attachCfg.Service.Target = ctx.Service.Target
+	attachCfg.Service.Kind = ctx.Service.Kind
 	authz, err := resolveAttachAuthorization(configPath, attachCfg)
 	if err != nil {
 		return detachedProcessState{}, err
