@@ -998,6 +998,104 @@ func TestStopCmdStopsPipeLifecycleRuntime(t *testing.T) {
 	}
 }
 
+func TestStartCmdStartsServiceLifecycleRuntime(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = srv.URL
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "started service \"myapi\"") {
+		t.Fatalf("unexpected start output: %s", out)
+	}
+	state, status, err := loadProcessState("process/attach-myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
+	})
+	if status != "running" && status != "degraded" {
+		t.Fatalf("expected running or degraded state, got %s", status)
+	}
+	if state.PID <= 0 || !pidRunning(state.PID) {
+		t.Fatalf("expected running pid, got %#v", state)
+	}
+	if _, err := capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) }); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("expected already-running error, got %v", err)
+	}
+	out, err = capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped "+state.ID) {
+		t.Fatalf("unexpected stop output: %s", out)
+	}
+	if pidRunning(state.PID) {
+		t.Fatal("expected service runtime to stop")
+	}
+	out, err = capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "started service \"myapi\"") {
+		t.Fatalf("unexpected restart output: %s", out)
+	}
+	state2, _, err := loadProcessState("process/attach-myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state2.PID <= 0 || !pidRunning(state2.PID) {
+		t.Fatalf("expected restarted pid, got %#v", state2)
+	}
+	if _, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStartCmdFailsWhenServiceTargetMissing(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = ""
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) })
+	if err == nil || !strings.Contains(err.Error(), "missing service.target") {
+		t.Fatalf("expected missing target error, got %v", err)
+	}
+}
+
 func TestStopCmdFailsForMissingServiceDefinition(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := writeCreateClusterConfig(t)
@@ -1745,6 +1843,15 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	for _, want := range []string{"tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>", "persistent service definition", "legacy name-only matches", "process-backed"} {
 		if !strings.Contains(stopHelp, want) {
 			t.Fatalf("stop help missing %q: %s", want, stopHelp)
+		}
+	}
+	startHelp, err := capture(func() error { return run([]string{"help", "start"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tubo start [--config <path>] service/<name>", "stored local service definition", "already running"} {
+		if !strings.Contains(startHelp, want) {
+			t.Fatalf("start help missing %q: %s", want, startHelp)
 		}
 	}
 }
