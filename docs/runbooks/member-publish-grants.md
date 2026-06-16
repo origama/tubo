@@ -78,13 +78,13 @@ The desired future policy vocabulary is:
 Those names are target/future direction only and are not implemented yet.
 
 `grants serve --claim-ttl` sets the approved publish authorization lifetime.
-Use it as the main publish-lease TTL knob:
+Use it as the main publish authorization TTL knob:
 
 - dev/test: short TTLs such as `1h` are fine;
 - trusted private long-running service: `24h` is a good default;
 - semi-public or weakly controlled environment: manual approval + shorter TTL.
 
-`TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish-lease TTLs and is
+`TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish authorization TTLs and is
 subject to change.
 
 Keep these separate:
@@ -382,7 +382,7 @@ Fix the service publication path:
   Keep that separate from share invite lifetimes and connect access/refresh
   lease lifetimes. For trusted private long-running services, `24h` is a good
   default; use shorter TTLs for dev/test or semi-public environments.
-- `TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish-lease TTLs and
+- `TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish authorization TTLs and
   may change.
 - The grant service peer address exposed in discovery only allows reaching the
   grants protocol listener; it does not grant network access to the authority
