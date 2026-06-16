@@ -304,7 +304,9 @@ func (s *fileState) sort() {
 }
 
 func equivalentActive(a, b Request) bool {
-	return a.ClusterID == b.ClusterID && a.NamespaceID == b.NamespaceID && a.RequesterPeerID == b.RequesterPeerID && a.ServiceID == b.ServiceID && a.ServicePeerID == b.ServicePeerID && a.RequestNonce == b.RequestNonce
+	// Retry submissions for the same logical request should reuse the existing
+	// pending record even if the client generated a new nonce.
+	return a.ClusterID == b.ClusterID && a.NamespaceID == b.NamespaceID && a.RequesterPeerID == b.RequesterPeerID && a.ServiceID == b.ServiceID && a.ServicePeerID == b.ServicePeerID
 }
 
 func validateStoreRequest(req Request) error {

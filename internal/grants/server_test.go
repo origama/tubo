@@ -124,10 +124,17 @@ func TestGrantServerDuplicateRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	requester := peer.ID("12D3-requester")
-	first := server.HandleMessage(validSubmit(), requester)
-	second := server.HandleMessage(validSubmit(), requester)
+	first := server.HandleMessage(signedSubmitWithNonce("default", "myapi", "12D3-service", "nonce-a"), requester)
+	second := server.HandleMessage(signedSubmitWithNonce("default", "myapi", "12D3-service", "nonce-b"), requester)
 	if first.RequestID == "" || first.RequestID != second.RequestID {
 		t.Fatalf("duplicate requests not deduped: first=%#v second=%#v", first, second)
+	}
+	pending, err := store.ListPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending request after dedupe, got %d", len(pending))
 	}
 }
 

@@ -110,7 +110,7 @@ Current storage: `~/.local/share/tubo/processes`, `~/.local/share/tubo/logs`, `~
 
 ## Current gaps
 
-- `grant_request_id` is already stored in the service definition, but approval handling still does not consistently clear it after the lease is consumed.
+- `grant_request_id` is stored in the service definition and is cleared once an approved lease is consumed; the remaining work is mostly around duplicate-grouped grant review UX (#256).
 - Detached `connect` currently persists only runtime process state; there is not yet a first-class persistent `pipe/<name>` config resource.
 - The running service process does not watch config changes; it relies on the publish-authorization handler and lease files, so any future request-id clearing must stay file-backed and deterministic.
 - `grant_service_peer` may be seeded or refreshed from discovery at runtime, but the persisted service definition remains the source of truth for durable identity and pending-request tracking; #249 can still rediscover and update a stale peer field.

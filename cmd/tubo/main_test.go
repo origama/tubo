@@ -4014,6 +4014,16 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	updated, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := updated.Clusters["home"].Namespaces["default"].Services["myapi"].GrantRequestID; got != "" {
+		t.Fatalf("approved grant request id was not cleared, got %q", got)
+	}
+	if authz.Service.GrantRequestID != "" {
+		t.Fatalf("approved authz returned stale grant request id: %#v", authz.Service)
+	}
 	if authz.ServiceClaimFile == "" || authz.ServicePeerID != servicePeerID.String() {
 		t.Fatalf("unexpected approved authz: %#v", authz)
 	}
@@ -4122,6 +4132,92 @@ func TestRequestPublishGrantClearsExpiredRequestIDAndResubmits(t *testing.T) {
 	}
 	if pending[0].ID != updatedSvc.GrantRequestID {
 		t.Fatalf("store request ID %q does not match saved %q", pending[0].ID, updatedSvc.GrantRequestID)
+	}
+}
+
+func TestRequestPublishGrantReusesPendingRequestIDWithoutSubmittingDuplicates(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-pending-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	grantServer, err := grantspkg.NewServer(grantspkg.ServerConfig{
+		AuthorityPrivateKey: authorityPriv,
+		ClusterName:         "home",
+		ClusterID:           cluster.ClusterID,
+		NamespaceID:         "default",
+		Store:               store,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverHost.SetStreamHandler(grantspkg.ProtocolID, grantServer.HandleStream)
+	grantPeer := p2p.PeerAddrs(serverHost)[0]
+	svc.GrantServicePeer = grantPeer
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	ns.Services["myapi"] = svc
+	cl := cfg.Clusters["home"]
+	cl.Namespaces["default"] = ns
+	cfg.Clusters["home"] = cl
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedCfg, updatedSvc, _, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
+	if err == nil || !strings.Contains(err.Error(), "is pending") {
+		t.Fatalf("expected pending error from first request, got %v", err)
+	}
+	firstID := updatedSvc.GrantRequestID
+	if firstID == "" {
+		t.Fatal("first pending request id was not saved")
+	}
+	pending, err := store.ListPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending request after first submit, got %d", len(pending))
+	}
+	updatedCfg, updatedSvc, _, err = requestPublishGrantForAttach(configPath, updatedCfg, updatedSvc, servicePeerID.String())
+	if err == nil || !strings.Contains(err.Error(), "is pending") {
+		t.Fatalf("expected pending error from retry, got %v", err)
+	}
+	if updatedSvc.GrantRequestID != firstID {
+		t.Fatalf("expected retry to reuse request id %q, got %q", firstID, updatedSvc.GrantRequestID)
+	}
+	pending, err = store.ListPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending request after retry, got %d", len(pending))
+	}
+	loaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := loaded.Clusters["home"].Namespaces["default"].Services["myapi"].GrantRequestID; got != firstID {
+		t.Fatalf("saved grant_request_id = %q, want %q", got, firstID)
 	}
 }
 
