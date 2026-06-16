@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"net"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -187,13 +186,6 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 	statePath := filepath.Join(processStateDir(), name+".json")
 	logPath := filepath.Join(processLogDir(), name+".log")
 	pidPath := filepath.Join(processRunDir(), name+".pid")
-	for _, path := range []string{statePath, pidPath} {
-		if _, statErr := os.Stat(path); statErr == nil {
-			return detachedSpec{}, errors.New("detached process state already exists for process/" + name)
-		} else if !os.IsNotExist(statErr) {
-			return detachedSpec{}, statErr
-		}
-	}
 	resolved := connectflow.Result{ServiceName: displayService, ServiceID: serviceID}
 	if strings.TrimSpace(req.Token) == "" {
 		if preflight, resolveErr := connectflow.Resolve(context.Background(), newConnectWorkflow(), connectflow.Request{ConfigPath: req.ConfigPath, ServiceRef: req.ServiceRef, Token: req.Token, Cluster: req.Cluster, Namespace: req.Namespace, Local: localAddr, Timeout: req.Timeout, CachedOnly: req.CachedOnly, Live: req.Live}); resolveErr == nil {
