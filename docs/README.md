@@ -8,6 +8,7 @@ Project work, planning, implementation scope, and acceptance criteria are tracke
 
 - `reference/` — technical references
 - `runbooks/` — operational guides
+- `design/` — lifecycle and architecture design slices
 - `reports/` — time-bound reports
 - `comparisons/` — comparison notes
 - `archive/obsoletes/` — historical or superseded material
