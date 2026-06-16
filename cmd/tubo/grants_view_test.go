@@ -180,6 +180,35 @@ func TestGrantsHistoryCompactShowsDuplicatePendingGroupsExplicitly(t *testing.T)
 	}
 }
 
+func TestGrantsHistoryCompactSurfacesMixedGroupsWithPendingDuplicates(t *testing.T) {
+	now := time.Now().UTC()
+	fx := newGrantRequestFixture(t)
+	storePath := filepath.Join(t.TempDir(), "requests.json")
+	reqOld := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-1", now.Add(-12*time.Minute), now.Add(time.Hour))
+	reqOld.ID = "gr_old"
+	reqOld.Status = grantspkg.StatusPending
+	reqOlder := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-2", now.Add(-10*time.Minute), now.Add(time.Hour))
+	reqOlder.ID = "gr_older"
+	reqOlder.Status = grantspkg.StatusPending
+	reqApproved := fx.request(t, "myapi", "12D3KooWServicePeer", "12D3KooWRequester", "nonce-3", now.Add(-2*time.Minute), now.Add(time.Hour))
+	reqApproved.ID = "gr_new"
+	reqApproved.Status = grantspkg.StatusApproved
+	writeGrantStoreRequests(t, storePath, reqOld, reqOlder, reqApproved)
+
+	out, err := capture(func() error { return grantsHistoryCmd([]string{"--store", storePath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Active approvals", "2 pending requests for same requester/service/service_peer", "latest: gr_new", "oldest: gr_old", "inspect latest: tubo grants describe gr_new"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("mixed history missing %q: %s", want, out)
+		}
+	}
+	if strings.Contains(out, "approve latest:") {
+		t.Fatalf("mixed history should not suggest approve latest: %s", out)
+	}
+}
+
 func TestGrantsHistoryCompactSeparatesSectionsAndHidesOlderExpiredGroups(t *testing.T) {
 	now := time.Now().UTC()
 	fx := newGrantRequestFixture(t)

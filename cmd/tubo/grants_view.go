@@ -242,6 +242,16 @@ func printGrantPendingDuplicateSummary(group grantRequestGroup, verbose bool) {
 	fmt.Printf("   show all: tubo grants pending --wide\n")
 }
 
+func printGrantHistoryDuplicateSummary(group grantRequestGroup, verbose bool) {
+	fmt.Printf("    %d pending requests for same requester/service/service_peer\n", group.Pending)
+	fmt.Printf("    latest: %s · oldest: %s\n", group.LatestRequestID, group.OldestRequestID)
+	fmt.Printf("    requester: %s · service peer: %s\n", abbreviatePeerID(group.RequesterPeerID), abbreviatePeerID(group.ServicePeerID))
+	if verbose {
+		fmt.Printf("    service id: %s\n", abbreviateID(group.ServiceID))
+	}
+	fmt.Printf("    inspect latest: tubo grants describe %s\n", group.LatestRequestID)
+}
+
 func splitGrantHistorySections(groups []grantRequestGroup, all bool) (approved, pending, denied, expired []grantRequestGroup, hiddenExpired int) {
 	for _, group := range groups {
 		switch group.LatestStatus {
@@ -303,11 +313,8 @@ func printGrantHistoryHuman(requests []grantspkg.Request, title, storePath strin
 		fmt.Println(header)
 		for _, group := range items {
 			fmt.Printf("  %s %s  %s  %s\n", grantHistoryBullet(group), group.ServiceName, grantspkg.NormalizeServiceShareKind(group.ServiceKind), grantHistoryStatusPhrase(group))
-			if group.LatestStatus == grantspkg.StatusPending && group.Pending > 1 {
-				fmt.Printf("    %d pending requests for same requester/service/service_peer\n", group.Pending)
-				fmt.Printf("    latest: %s · oldest: %s\n", group.LatestRequestID, group.OldestRequestID)
-				fmt.Printf("    requester: %s · service peer: %s\n", abbreviatePeerID(group.RequesterPeerID), abbreviatePeerID(group.ServicePeerID))
-				fmt.Printf("    inspect latest: tubo grants describe %s\n", group.LatestRequestID)
+			if group.Pending > 1 {
+				printGrantHistoryDuplicateSummary(group, verbose)
 			} else if group.LatestRequestID != "" {
 				fmt.Printf("    inspect: tubo grants describe %s\n", group.LatestRequestID)
 			}

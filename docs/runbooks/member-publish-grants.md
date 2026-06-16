@@ -153,7 +153,7 @@ Default output is now a compact action-oriented list that groups repeated attemp
 tubo grants pending --wide
 ```
 
-History uses compact sections too; `tubo grants history --all` shows older expired groups and `--wide` shows the raw table.
+History uses compact sections too; if a newer approval still has pending duplicates in the same group, the compact history view surfaces that explicitly without implying `approve latest`. `tubo grants history --all` shows older expired groups and `--wide` shows the raw table.
 
 Inspect the request if needed:
 
