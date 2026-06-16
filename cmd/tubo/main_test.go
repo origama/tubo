@@ -873,6 +873,152 @@ func TestStopCmdWarnsForExternallyManagedProcess(t *testing.T) {
 	}
 }
 
+func TestStopCmdStopsServiceLifecycleRuntime(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-myapi", Service: "myapi", ServiceID: cfg.Clusters["home"].Namespaces["default"].Services["myapi"].ServiceID, Cluster: "home", Namespace: "default", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), LogFile: filepath.Join(processLogDir(), "attach-myapi.log")}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped "+state.ID) {
+		t.Fatalf("unexpected stop output: %s", out)
+	}
+	if pidRunning(state.PID) {
+		t.Fatal("expected service runtime to stop")
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]; !ok {
+		t.Fatal("expected service definition to remain")
+	}
+}
+
+func TestStopCmdStopsPipeLifecycleRuntime(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	state := detachedProcessState{ID: "process/connect-lms-1234", Kind: "process", ResourceKind: "pipe", Command: "connect", Name: "connect-lms-1234", Service: "lms", ServiceKind: "tcp", ServiceID: "service-123", Cluster: "home", Namespace: "default", Local: "127.0.0.1:1234", Target: "lms", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "connect-lms-1234.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-1234.json"), LogFile: filepath.Join(processLogDir(), "connect-lms-1234.log")}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	out, err := capture(func() error { return stopCmd([]string{"pipe/lms-1234"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped "+state.ID) {
+		t.Fatalf("unexpected stop output: %s", out)
+	}
+	if pidRunning(state.PID) {
+		t.Fatal("expected pipe runtime to stop")
+	}
+}
+
+func TestStopCmdFailsForMissingServiceDefinition(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	_, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected missing definition error, got %v", err)
+	}
+}
+
+func TestStopCmdFailsForAmbiguousServiceRuntime(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := cfg.Clusters["home"].Namespaces["default"].Services["myapi"].ServiceID
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	startState := func(name string) *exec.Cmd {
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		state := detachedProcessState{ID: "process/" + name, Kind: "process", ResourceKind: "service", Command: "attach", Name: name, Service: "myapi", ServiceID: serviceID, Cluster: "home", Namespace: "default", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), name+".pid"), StateFile: filepath.Join(processStateDir(), name+".json"), LogFile: filepath.Join(processLogDir(), name+".log")}
+		_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+		b, _ := json.Marshal(state)
+		_ = os.WriteFile(state.StateFile, b, 0600)
+		return cmd
+	}
+	_ = startState("attach-myapi")
+	_ = startState("attach-myapi-backup")
+	_, err = capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) })
+	if err == nil || !strings.Contains(err.Error(), "multiple live runtimes") {
+		t.Fatalf("expected ambiguous runtime error, got %v", err)
+	}
+}
+
+func TestStopCmdFailsForStalePipeRuntime(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	state := detachedProcessState{ID: "process/connect-lms-1234", Kind: "process", ResourceKind: "pipe", Command: "connect", Name: "connect-lms-1234", Service: "lms", ServiceKind: "tcp", ServiceID: "service-123", Cluster: "home", Namespace: "default", Local: "127.0.0.1:1234", Target: "lms", PID: 0, PIDFile: filepath.Join(processRunDir(), "connect-lms-1234.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-1234.json"), LogFile: filepath.Join(processLogDir(), "connect-lms-1234.log")}
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	_ = os.WriteFile(state.PIDFile, []byte("0\n"), 0600)
+	_, err := capture(func() error { return stopCmd([]string{"pipe/lms-1234"}) })
+	if err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("expected stale pipe error, got %v", err)
+	}
+}
+
 func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {

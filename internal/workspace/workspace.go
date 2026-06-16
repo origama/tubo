@@ -28,7 +28,7 @@ func ParseRef(resource string) (Ref, error) {
 		return Ref{}, fmt.Errorf("unsupported resource %q", resource)
 	}
 	switch parts[0] {
-	case "overlay", "cluster", "namespace", "service", "secret":
+	case "overlay", "cluster", "namespace", "service", "pipe", "process", "secret":
 		return Ref{Kind: parts[0], Name: parts[1]}, nil
 	default:
 		return Ref{}, fmt.Errorf("unsupported resource %q", resource)
