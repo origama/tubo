@@ -44,7 +44,7 @@ func startDetachedProcessWithTimeout(spec detachedSpec, timeout time.Duration) (
 	if strings.TrimSpace(spec.State.StateFile) != "" {
 		env = append(env, "TUBO_PROCESS_STATE_FILE="+spec.State.StateFile)
 	}
-	return processes.StartDetached(spec, exe, env, configureDetachedCommand, timeout)
+	return processes.StartDetached(spec, exe, env, processSystemAdapter{}, configureDetachedCommand, timeout)
 }
 
 func registerCurrentProcess(state detachedProcessState) (detachedProcessState, func() error, error) {

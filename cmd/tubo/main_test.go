@@ -607,7 +607,7 @@ func TestConnectForegroundUsesNormalizedLocalForProcessState(t *testing.T) {
 	}
 }
 
-func TestBuildDetachedConnectSpecFailsBeforeResolveWhenStateExists(t *testing.T) {
+func TestBuildDetachedConnectSpecAllowsCompatibleStaleState(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "team", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"team": {}}}}}
@@ -618,7 +618,18 @@ func TestBuildDetachedConnectSpecFailsBeforeResolveWhenStateExists(t *testing.T)
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(processStateDir(), name+".json"), []byte(`{"id":"process/`+name+`"}`), 0600); err != nil {
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	stale := detachedProcessState{ID: "process/" + name, Kind: "process", ResourceKind: "pipe", Command: "connect", Name: name, Service: "myapi", ServiceKind: "tcp", ServiceID: "service-123", Cluster: "home", Namespace: "team", Local: "127.0.0.1:1234", Target: "myapi"}
+	b, err := json.Marshal(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processStateDir(), name+".json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(processRunDir(), name+".pid"), []byte("999999\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	args := []string{"service/myapi", "--config", configPath, "--local", "127.0.0.1:1234"}
@@ -626,9 +637,12 @@ func TestBuildDetachedConnectSpecFailsBeforeResolveWhenStateExists(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = buildDetachedConnectSpec(req, args)
-	if err == nil || !strings.Contains(err.Error(), "detached process state already exists") {
-		t.Fatalf("expected early state-exists error, got %v", err)
+	spec, err := buildDetachedConnectSpec(req, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.State.Name != name || spec.State.Local != "127.0.0.1:1234" {
+		t.Fatalf("unexpected detached connect state: %#v", spec.State)
 	}
 }
 
@@ -3394,8 +3408,8 @@ func TestDetachedAttachFailureDoesNotPrintSuccessSummary(t *testing.T) {
 	out, errOut, err := captureOutputs(func() error {
 		return run([]string{"attach", "tcp://127.0.0.1:1234", "--name", "lms", "-d", "--config", configPath})
 	})
-	if err == nil || !strings.Contains(err.Error(), "detached process state already exists") {
-		t.Fatalf("expected detached state error, got err=%v out=%q errOut=%q", err, out, errOut)
+	if err == nil || !strings.Contains(err.Error(), "detached process state conflict") {
+		t.Fatalf("expected detached state conflict, got err=%v out=%q errOut=%q", err, out, errOut)
 	}
 	combined := out + errOut
 	if strings.Contains(combined, "attached service \"lms\"") {

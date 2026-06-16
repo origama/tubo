@@ -12,6 +12,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo grants history` now also surfaces mixed groups where the latest row is approved but pending duplicates still exist, without suggesting `approve latest` from history.
 - `tubo connect` now reports a clearer runtime reason when a remote service grant endpoint cannot mint a new connect lease because service publish authorization is expired, while keeping the raw failure in detailed diagnostics.
 - `tubo logs` now reads tail output from the end of the file in bounded chunks, so large process logs no longer require loading the full file into memory.
+- Detached `attach -d` / `connect -d` can now recover from compatible stale process state instead of forcing `tubo rm --stale`, while still failing closed on conflicts or live processes.
 - `tubo grants serve` help/docs now clarify that `--public-auto-approve` is the current legacy auto-approval switch, and document the `--claim-ttl` publish-authorization TTL knob separately from share/connect lifetimes.
 
 ## [v0.11.0] - 2026-06-15

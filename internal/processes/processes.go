@@ -196,7 +196,7 @@ func BuildSpec(commandName string, cfg cfgpkg.Config, args []string, dataRoot st
 	}, nil
 }
 
-func StartDetached(spec DetachedSpec, executable string, env []string, configure CommandConfigurer, timeout time.Duration) (State, error) {
+func StartDetached(spec DetachedSpec, executable string, env []string, system System, configure CommandConfigurer, timeout time.Duration) (State, error) {
 	if err := os.MkdirAll(filepath.Dir(spec.State.StateFile), 0o700); err != nil {
 		return State{}, err
 	}
@@ -206,18 +206,19 @@ func StartDetached(spec DetachedSpec, executable string, env []string, configure
 	if err := os.MkdirAll(filepath.Dir(spec.State.PIDFile), 0o700); err != nil {
 		return State{}, err
 	}
-	for _, path := range []string{spec.State.StateFile, spec.State.PIDFile} {
-		if _, err := os.Stat(path); err == nil {
-			hint := ""
-			if path == spec.State.PIDFile {
-				// PID file exists but no state file: likely an orphan from a
-				// previous run whose state was lost. Run 'tubo rm --stale' or
-				// 'tubo stop' to clear it.
-				hint = " (orphan pid file found without state; run 'tubo rm --stale' or 'tubo stop' to clear it)"
+	if existing, ok, err := readDetachedStateForStart(spec.State.ID, spec.State.StateFile, spec.State.PIDFile); err != nil {
+		return State{}, err
+	} else if ok {
+		if conflict := detachedStateConflict(existing, spec.State); conflict != "" {
+			return State{}, fmt.Errorf("detached process state conflict for %s: %s", spec.State.ID, conflict)
+		}
+		if system != nil && existing.PID > 0 && system.PIDRunning(existing.PID) {
+			if len(existing.CommandLine) > 0 {
+				if actual, ok := system.CommandLine(existing.PID); ok && !commandLinesMatch(existing.CommandLine, actual) {
+					return State{}, fmt.Errorf("detached process state conflict for %s: running process command line mismatch", spec.State.ID)
+				}
 			}
-			return State{}, fmt.Errorf("detached process state already exists for %s%s", spec.State.ID, hint)
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return State{}, err
+			return State{}, fmt.Errorf("detached process already running for %s (pid %d)", spec.State.ID, existing.PID)
 		}
 	}
 	logFile, err := os.OpenFile(spec.State.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
@@ -258,6 +259,57 @@ func StartDetached(spec DetachedSpec, executable string, env []string, configure
 		return State{}, err
 	}
 	return state, nil
+}
+
+func readDetachedStateForStart(id, statePath, pidPath string) (State, bool, error) {
+	if state, err := readStateIfExists(statePath); err == nil {
+		return state, true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return State{}, false, err
+	}
+	if _, err := os.Stat(pidPath); err == nil {
+		return State{}, false, fmt.Errorf("detached process state already exists for %s (orphan pid file found without state; run 'tubo rm --stale' or 'tubo stop' to clear it)", id)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return State{}, false, err
+	}
+	return State{}, false, nil
+}
+
+func detachedStateConflict(existing, desired State) string {
+	checks := []struct {
+		label string
+		have  string
+		want  string
+	}{
+		{label: "command", have: existing.Command, want: desired.Command},
+		{label: "name", have: existing.Name, want: desired.Name},
+		{label: "resource kind", have: existing.ResourceKind, want: desired.ResourceKind},
+		{label: "cluster", have: existing.Cluster, want: desired.Cluster},
+		{label: "namespace", have: existing.Namespace, want: desired.Namespace},
+		{label: "service", have: existing.Service, want: desired.Service},
+		{label: "service kind", have: existing.ServiceKind, want: desired.ServiceKind},
+		{label: "service id", have: existing.ServiceID, want: desired.ServiceID},
+		{label: "local address", have: normalizeConnectLocal(existing.Local), want: normalizeConnectLocal(desired.Local)},
+		{label: "target", have: strings.TrimSpace(existing.Target), want: strings.TrimSpace(desired.Target)},
+	}
+	for _, check := range checks {
+		if conflict := exactStringFieldConflict(check.label, check.have, check.want); conflict != "" {
+			return conflict
+		}
+	}
+	return ""
+}
+
+func exactStringFieldConflict(label, have, want string) string {
+	have = strings.TrimSpace(have)
+	want = strings.TrimSpace(want)
+	if want == "" {
+		return ""
+	}
+	if have == want {
+		return ""
+	}
+	return fmt.Sprintf("%s mismatch: have %q want %q", label, have, want)
 }
 
 func RegisterCurrentProcess(dataRoot string, state State, system System) (State, func() error, error) {
