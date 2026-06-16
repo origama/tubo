@@ -404,6 +404,8 @@ func ReadLogTail(path string, lines int) ([]string, error) {
 	const chunkSize = 32 * 1024
 	const maxScanBytes = 8 * 1024 * 1024
 
+	// A non-positive tail count means "no line limit" within the bounded scan
+	// window below; it does not mean "read the whole file".
 	wantAll := lines <= 0
 	remaining := lines
 	tailCap := 64
