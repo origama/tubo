@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/host"
 	capability "github.com/origama/tubo/internal/capability"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
@@ -3078,6 +3079,99 @@ func TestGrantsRequestSubmitsPollsAndSavesApprovedClaim(t *testing.T) {
 	}
 }
 
+func newStaleGrantPeerRecoveryFixture(t *testing.T) (string, cfgpkg.Config, cfgpkg.NamespaceService, string, string) {
+	t.Helper()
+	configPath, cfg, grantPeer, _, _, discoveryHost := newSystemGrantServiceDiscoveryFixture(t)
+	cfg.CurrentCluster = "home"
+	cfg.CurrentNamespace = "observability"
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	if strings.TrimSpace(svc.ServicePublishLeaseFile) != "" {
+		if err := os.Remove(svc.ServicePublishLeaseFile); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	stalePeer := "/ip4/127.0.0.1/tcp/65535/p2p/12D3KooWStaleGrant"
+	cluster := cfg.Clusters["home"]
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = stalePeer
+	ns := cluster.Namespaces[cfg.CurrentNamespace]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces[cfg.CurrentNamespace] = ns
+	cfg.Clusters["home"] = cluster
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(discoveryHost)
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	return configPath, cfg, svc, stalePeer, grantPeer
+}
+
+func TestRequestPublishGrantForAttachRecoversFromStaleGrantPeer(t *testing.T) {
+	configPath, cfg, svc, stalePeer, grantPeer := newStaleGrantPeerRecoveryFixture(t)
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedCfg, updatedSvc, _, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
+	if err == nil || !strings.Contains(err.Error(), "is pending; publication requires an approved publish lease") {
+		t.Fatalf("expected pending grant error, got %v", err)
+	}
+	if updatedSvc.GrantServicePeer != grantPeer {
+		t.Fatalf("grant service peer = %q, want %q", updatedSvc.GrantServicePeer, grantPeer)
+	}
+	if updatedSvc.GrantServicePeer == stalePeer {
+		t.Fatal("stale grant service peer was not replaced")
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := reloaded.Clusters["home"].Namespaces["observability"].Services["myapi"]
+	if saved.GrantServicePeer != grantPeer || saved.GrantRequestID == "" {
+		t.Fatalf("recovery did not persist updated grant metadata: %#v", saved)
+	}
+	if updatedCfg.Clusters["home"].Namespaces["observability"].Services["myapi"].GrantServicePeer != grantPeer {
+		t.Fatalf("updated config did not capture recovered peer: %#v", updatedCfg.Clusters["home"].Namespaces["observability"].Services["myapi"])
+	}
+}
+
+func TestGrantsRequestRecoversFromStaleConfiguredGrantPeer(t *testing.T) {
+	configPath, _, _, stalePeer, grantPeer := newStaleGrantPeerRecoveryFixture(t)
+	out, err := capture(func() error {
+		return run([]string{"grants", "request", "service/myapi", "--config", configPath, "--ttl", "168h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Status: pending") {
+		t.Fatalf("unexpected request output: %s", out)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := cfg.Clusters["home"].Namespaces["observability"].Services["myapi"]
+	if svc.GrantServicePeer != grantPeer {
+		t.Fatalf("grant service peer = %q, want %q", svc.GrantServicePeer, grantPeer)
+	}
+	if svc.GrantServicePeer == stalePeer {
+		t.Fatal("stale grant service peer was not replaced")
+	}
+	if svc.GrantRequestID == "" {
+		t.Fatal("grant request id was not saved after recovery")
+	}
+}
+
 func TestGrantsRequestIgnoresExpiredApprovedGrantCollision(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
@@ -5447,7 +5541,7 @@ func TestPrintSystemServicesTableIncludesGrantServiceMetadata(t *testing.T) {
 	}
 }
 
-func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config, string, string, string) {
+func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config, string, string, string, host.Host) {
 	t.Helper()
 	keyPath := filepath.Join(t.TempDir(), "swarm.key")
 	keyData, err := newSwarmKeyData()
@@ -5512,18 +5606,18 @@ func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config,
 	if err := saveLocalConfig(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	return configPath, cfg, addr, wrongPeer, legacyPeer
+	return configPath, cfg, addr, wrongPeer, legacyPeer, server
 }
 
 func TestDiscoverGrantServicePeerUsesSystemDiscovery(t *testing.T) {
-	configPath, cfg, addr, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	configPath, cfg, addr, _, _, _ := newSystemGrantServiceDiscoveryFixture(t)
 	if got := discoverGrantServicePeer(configPath, cfg); got != addr {
 		t.Fatalf("grant service peer = %q, want %q", got, addr)
 	}
 }
 
 func TestGetServicesSystemFiltersGrantServiceByActualScope(t *testing.T) {
-	configPath, _, addr, wrongPeer, legacyPeer := newSystemGrantServiceDiscoveryFixture(t)
+	configPath, _, addr, wrongPeer, legacyPeer, _ := newSystemGrantServiceDiscoveryFixture(t)
 	out, err := capture(func() error {
 		return run([]string{"get", "services", "--no-init", "--system", "--config", configPath, "--timeout", "5s"})
 	})
@@ -5640,7 +5734,7 @@ func TestGetServicesCommandPathsUsePeerAliases(t *testing.T) {
 }
 
 func TestGetSystemServicesCommandPathsUsePeerAliases(t *testing.T) {
-	configPath, _, addr, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	configPath, _, addr, _, _, _ := newSystemGrantServiceDiscoveryFixture(t)
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	peerID := peerIDFromMultiaddr(t, addr)
 	if _, err := capture(func() error { return run([]string{"peers", "alias", peerID, "--name", "grant-relay"}) }); err != nil {

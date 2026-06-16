@@ -335,28 +335,15 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 	}
 }
 
-func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
-	cluster := cfg.Clusters[cfg.CurrentCluster]
+type grantClientAttempt func(ctx context.Context, overlay *p2p.OverlayHost, info peer.AddrInfo) (grantspkg.Message, error)
+
+func requestGrantWithFallback(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, clusterName, namespaceName, serviceName string, servicePeerID string, explicitGrantPeer string, allowDiscoveryFallback bool, mode grantClientResponseMode, attempt grantClientAttempt) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
 	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), PrivateKeyFile: cfg.Network.PrivateKeyFile, PrivateKeyB64: cfg.Network.PrivateKeyB64, BootstrapPeers: cfg.Network.BootstrapPeers, RelayPeers: cfg.Network.RelayPeers, Autorelay: cfg.Network.Autorelay, HolePunching: cfg.Network.HolePunching, ForceReachability: cfg.Network.ForceReachability, Component: "grants-client"})
 	if err != nil {
 		return cfg, svc, "", err
 	}
 	defer overlay.Close()
-	grantPeer := strings.TrimSpace(svc.GrantServicePeer)
-	if grantPeer == "" {
-		grantPeer = clusterGrantServicePeer(cluster)
-	}
-	if grantPeer == "" {
-		grantPeer = discoverGrantServicePeer(configPath, cfg)
-	}
-	if grantPeer == "" {
-		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
-	}
-	logging.Progressf("grants-client: selected peer=%s source=requestPublishGrant\n", grantPeer)
-	info, err := p2p.AddrInfoFromString(grantPeer)
-	if err != nil {
-		return cfg, svc, "", fmt.Errorf("failed to parse multiaddr %q: %w", grantPeer, err)
-	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	overlay.StartBootstrapRetry(ctx, 5*time.Second)
@@ -379,76 +366,132 @@ func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgp
 			logging.Progressf("grants-client: relay reservation ready\n")
 		}
 	}
-	var resp grantspkg.Message
-	if svc.GrantRequestID != "" {
-		resp, err = grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
-		if err == nil && resp.Type == grantspkg.TypeExpired {
-			// The pending request expired on the authority side. Clear the stored
-			// request ID so the next iteration submits a fresh request instead of
-			// polling a request that will never be approved.
-			logging.Progressf("grants-client: pending request %s expired; clearing and resubmitting\n", svc.GrantRequestID)
-			svc.GrantRequestID = ""
-			cluster2 := cfg.Clusters[cfg.CurrentCluster]
-			ns2 := cluster2.Namespaces[cfg.CurrentNamespace]
-			if svc2, ok := ns2.Services[cfg.Service.Name]; ok {
-				svc2.GrantRequestID = ""
-				ns2.Services[cfg.Service.Name] = svc2
-				cluster2.Namespaces[cfg.CurrentNamespace] = ns2
-				cfg.Clusters[cfg.CurrentCluster] = cluster2
-				_ = saveLocalConfig(configPath, cfg)
-			}
-			resp = grantspkg.Message{} // fall through to submit
-		}
+
+	grantPeers := []string{}
+	if strings.TrimSpace(explicitGrantPeer) != "" {
+		grantPeers = []string{strings.TrimSpace(explicitGrantPeer)}
+	} else {
+		grantPeers = grantServicePeerCandidates(configPath, cfg, svc, allowDiscoveryFallback)
 	}
-	if resp.Type == "" && svc.GrantRequestID == "" {
-		leaseReq, err := buildServicePublishLeaseRequest(configPath, cfg, svc, servicePeerID)
+	if len(grantPeers) == 0 {
+		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
+	}
+
+	var lastErr error
+	for i, grantPeer := range grantPeers {
+		if i == 0 {
+			logging.Progressf("grants-client: selected peer=%s source=requestPublishGrant\n", grantPeer)
+		} else {
+			logging.Progressf("grants-client: retrying with discovered peer=%s\n", grantPeer)
+		}
+		info, err := p2p.AddrInfoFromString(grantPeer)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to parse multiaddr %q: %w", grantPeer, err)
+			if allowDiscoveryFallback && strings.TrimSpace(explicitGrantPeer) == "" && i+1 < len(grantPeers) {
+				continue
+			}
+			return cfg, svc, "", lastErr
+		}
+		resp, err := attempt(ctx, overlay, info)
+		if err != nil {
+			lastErr = err
+			if allowDiscoveryFallback && strings.TrimSpace(explicitGrantPeer) == "" && i+1 < len(grantPeers) && isRecoverableGrantServicePeerError(err) {
+				logging.Progressf("grants-client: grant service peer %s failed: %v; retrying with discovered peer\n", grantPeer, err)
+				continue
+			}
+			return cfg, svc, "", err
+		}
+		shareToken, err := handleGrantClientResponse(configPath, cfg, svc, clusterName, namespaceName, serviceName, grantPeer, resp, servicePeerID, mode)
 		if err != nil {
 			return cfg, svc, "", err
 		}
-		submitResp, submitErr := grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{
-			Type:                  grantspkg.TypeSubmit,
-			Version:               grantspkg.VersionV1,
-			ClusterID:             cluster.ClusterID,
-			NamespaceID:           cfg.CurrentNamespace,
-			ServiceName:           cfg.Service.Name,
-			ServiceID:             svc.ServiceID,
-			ServiceKind:           string(cfgpkg.NormalizeServiceKind(svc.Kind, "")),
-			ServicePublicKey:      leaseReq.ServicePublicKey,
-			ServiceOwnerSignature: leaseReq.ServiceOwnerSignature,
-			ServicePeerID:         servicePeerID,
-			ServiceAddresses:      serviceEndpointAddrsForTokens(cfg, servicePeerID),
-			RequestNonce:          leaseReq.Nonce,
-			RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
-			RequestedTTLSeconds:   int64(attachPublishLeaseTTL().Seconds()),
-		})
-		if submitErr != nil {
-			return cfg, svc, "", submitErr
+		updated, err := cfgpkg.LoadFile(configPath)
+		if err != nil {
+			return cfg, svc, "", err
 		}
-		resp = submitResp
+		name := strings.TrimSpace(serviceName)
+		if name == "" {
+			name = strings.TrimSpace(updated.Service.Name)
+		}
+		updatedSvc := updated.Clusters[clusterName].Namespaces[namespaceName].Services[name]
+		return updated, updatedSvc, shareToken, nil
 	}
+	if lastErr != nil {
+		return cfg, svc, "", lastErr
+	}
+	return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
+}
+
+func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	updatedCfg, updatedSvc, shareToken, err := requestGrantWithFallback(configPath, cfg, svc, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, servicePeerID, "", true, grantClientResponseInternal, func(ctx context.Context, overlay *p2p.OverlayHost, info peer.AddrInfo) (grantspkg.Message, error) {
+		var resp grantspkg.Message
+		var err error
+		if svc.GrantRequestID != "" {
+			resp, err = grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
+			if err == nil && resp.Type == grantspkg.TypeExpired {
+				// The pending request expired on the authority side. Clear the stored
+				// request ID so the next iteration submits a fresh request instead of
+				// polling a request that will never be approved.
+				logging.Progressf("grants-client: pending request %s expired; clearing and resubmitting\n", svc.GrantRequestID)
+				svc.GrantRequestID = ""
+				cluster2 := cfg.Clusters[cfg.CurrentCluster]
+				ns2 := cluster2.Namespaces[cfg.CurrentNamespace]
+				if svc2, ok := ns2.Services[cfg.Service.Name]; ok {
+					svc2.GrantRequestID = ""
+					ns2.Services[cfg.Service.Name] = svc2
+					cluster2.Namespaces[cfg.CurrentNamespace] = ns2
+					cfg.Clusters[cfg.CurrentCluster] = cluster2
+					_ = saveLocalConfig(configPath, cfg)
+				}
+				resp = grantspkg.Message{} // fall through to submit
+			}
+		}
+		if resp.Type == "" && svc.GrantRequestID == "" {
+			leaseReq, err := buildServicePublishLeaseRequest(configPath, cfg, svc, servicePeerID)
+			if err != nil {
+				return grantspkg.Message{}, err
+			}
+			submitResp, submitErr := grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{
+				Type:                  grantspkg.TypeSubmit,
+				Version:               grantspkg.VersionV1,
+				ClusterID:             cluster.ClusterID,
+				NamespaceID:           cfg.CurrentNamespace,
+				ServiceName:           cfg.Service.Name,
+				ServiceID:             svc.ServiceID,
+				ServiceKind:           string(cfgpkg.NormalizeServiceKind(svc.Kind, "")),
+				ServicePublicKey:      leaseReq.ServicePublicKey,
+				ServiceOwnerSignature: leaseReq.ServiceOwnerSignature,
+				ServicePeerID:         servicePeerID,
+				ServiceAddresses:      serviceEndpointAddrsForTokens(cfg, servicePeerID),
+				RequestNonce:          leaseReq.Nonce,
+				RequestedPermissions:  []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
+				RequestedTTLSeconds:   int64(attachPublishLeaseTTL().Seconds()),
+			})
+			if submitErr != nil {
+				return grantspkg.Message{}, submitErr
+			}
+			resp = submitResp
+		}
+		if err != nil {
+			return grantspkg.Message{}, err
+		}
+		return resp, nil
+	})
 	if err != nil {
-		return cfg, svc, "", err
+		return updatedCfg, updatedSvc, shareToken, err
 	}
-	shareToken, err := handleGrantClientResponse(configPath, cfg, svc, grantPeer, resp, servicePeerID, grantClientResponseInternal)
+	authorityPub, err := discovery.ParseAuthorityPublicKey(updatedCfg.Clusters[updatedCfg.CurrentCluster].AuthorityPublicKey)
 	if err != nil {
-		return cfg, svc, "", err
+		return updatedCfg, updatedSvc, shareToken, err
 	}
-	updated, err := cfgpkg.LoadFile(configPath)
-	if err != nil {
-		return cfg, svc, "", err
-	}
-	updatedSvc := updated.Clusters[updated.CurrentCluster].Namespaces[updated.CurrentNamespace].Services[updated.Service.Name]
-	authorityPub, err := discovery.ParseAuthorityPublicKey(updated.Clusters[updated.CurrentCluster].AuthorityPublicKey)
-	if err != nil {
-		return updated, updatedSvc, shareToken, err
-	}
-	if err := verifyPublishLeaseFile(updatedSvc.ServicePublishLeaseFile, authorityPub, updated.Clusters[updated.CurrentCluster].ClusterID, updated.CurrentNamespace, updatedSvc.ServiceID, servicePeerID); err != nil {
+	if err := verifyPublishLeaseFile(updatedSvc.ServicePublishLeaseFile, authorityPub, updatedCfg.Clusters[updatedCfg.CurrentCluster].ClusterID, updatedCfg.CurrentNamespace, updatedSvc.ServiceID, servicePeerID); err != nil {
 		if updatedSvc.GrantRequestID != "" {
-			return updated, updatedSvc, shareToken, fmt.Errorf("publish grant request %q is pending; publication requires an approved publish lease", updatedSvc.GrantRequestID)
+			return updatedCfg, updatedSvc, shareToken, fmt.Errorf("publish grant request %q is pending; publication requires an approved publish lease", updatedSvc.GrantRequestID)
 		}
-		return updated, updatedSvc, shareToken, err
+		return updatedCfg, updatedSvc, shareToken, err
 	}
-	return updated, updatedSvc, shareToken, nil
+	return updatedCfg, updatedSvc, shareToken, nil
 }
 
 func renewAttachPublishAuthorization(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
@@ -700,17 +743,56 @@ func seedDiscoveredGrantServicePeer(configPath string, cfg cfgpkg.Config) cfgpkg
 	return cfg
 }
 
-func discoverGrantServicePeer(configPath string, cfg cfgpkg.Config) string {
+func grantServicePeerCandidates(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, allowDiscoveryFallback bool) []string {
+	peers := make([]string, 0, 3)
+	seen := map[string]struct{}{}
+	add := func(peer string) {
+		peer = strings.TrimSpace(peer)
+		if peer == "" {
+			return
+		}
+		if _, ok := seen[peer]; ok {
+			return
+		}
+		seen[peer] = struct{}{}
+		peers = append(peers, peer)
+	}
+	add(svc.GrantServicePeer)
+	if cluster, ok := cfg.Clusters[cfg.CurrentCluster]; ok {
+		add(clusterGrantServicePeer(cluster))
+	}
+	if allowDiscoveryFallback {
+		for _, peer := range discoverGrantServicePeers(configPath, cfg) {
+			add(peer)
+		}
+	}
+	return peers
+}
+
+func discoverGrantServicePeers(configPath string, cfg cfgpkg.Config) []string {
 	scope := serviceScope{Cluster: cfg.CurrentCluster, Namespace: cfg.CurrentNamespace}
 	result, err := discoverServices(configPath, 5*time.Second, false, false, scope)
 	if err != nil {
 		logging.Progressf("grant service discovery: discovery query failed: %v\n", err)
-		return ""
+		return nil
 	}
 	logging.Progressf("grant service discovery: query returned %d services (mode=%s)\n", len(result.Services), result.Mode)
 	clusterID := ""
 	if cluster, ok := cfg.Clusters[cfg.CurrentCluster]; ok {
 		clusterID = strings.TrimSpace(cluster.ClusterID)
+	}
+	peers := make([]string, 0, len(result.Services))
+	seen := map[string]struct{}{}
+	add := func(peer string) {
+		peer = strings.TrimSpace(peer)
+		if peer == "" {
+			return
+		}
+		if _, ok := seen[peer]; ok {
+			return
+		}
+		seen[peer] = struct{}{}
+		peers = append(peers, peer)
 	}
 	for _, service := range result.Services {
 		if !isSystemServiceResource(service) || !hasStrictSystemServiceScope(service) {
@@ -726,9 +808,18 @@ func discoverGrantServicePeer(configPath string, cfg cfgpkg.Config) string {
 			continue
 		}
 		if peer := grantServicePeerFromResource(service); peer != "" {
-			return peer
+			add(peer)
+			continue
 		}
 		logging.Progressf("grant service discovery: grant-service record found but has no usable peer address (cluster=%q namespace=%q kind=%q grantService=%v addrs=%v)\n", service.ClusterID, service.NamespaceID, service.Kind, service.GrantService, service.Addresses)
+	}
+	return peers
+}
+
+func discoverGrantServicePeer(configPath string, cfg cfgpkg.Config) string {
+	peers := discoverGrantServicePeers(configPath, cfg)
+	if len(peers) > 0 {
+		return peers[0]
 	}
 	return ""
 }
@@ -747,6 +838,19 @@ func grantServicePeerFromResource(service serviceResource) string {
 		}
 	}
 	return ""
+}
+
+func isRecoverableGrantServicePeerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "grant service peer"), strings.Contains(msg, "failed to dial"), strings.Contains(msg, "dial backoff"), strings.Contains(msg, "unreachable"), strings.Contains(msg, "timed out"), strings.Contains(msg, "timeout"), strings.Contains(msg, "connection refused"), strings.Contains(msg, "connection reset"), strings.Contains(msg, "i/o timeout"), strings.Contains(msg, "context deadline exceeded"), strings.Contains(msg, "temporary"), strings.Contains(msg, "expired"), strings.Contains(msg, "eof"):
+		return true
+	default:
+		return false
+	}
 }
 
 func noServicePublishGrantError(clusterName, namespaceName, serviceName string) error {

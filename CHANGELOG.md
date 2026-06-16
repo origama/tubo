@@ -8,6 +8,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Fixed
 - `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
+- `tubo attach` and `tubo grants request` now re-discover a fresh grant-service peer when the stored `grant_service_peer` is stale or unreachable, instead of failing immediately.
 
 ## [v0.11.0] - 2026-06-15
 
