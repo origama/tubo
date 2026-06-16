@@ -212,6 +212,114 @@ func TestStatusDetailsUsesHealthEndpointForDegradedProcess(t *testing.T) {
 	}
 }
 
+func TestReadLogTailReturnsLastNLines(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "tail.log")
+	if err := os.WriteFile(path, []byte("line1\nline2\nline3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadLogTail(path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "line2" || lines[1] != "line3" {
+		t.Fatalf("unexpected log tail: %#v", lines)
+	}
+}
+
+func TestReadLogTailHandlesEmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.log")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadLogTail(path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 0 {
+		t.Fatalf("expected empty tail, got %#v", lines)
+	}
+}
+
+func TestReadLogTailHandlesNoTrailingNewline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-trailing-newline.log")
+	if err := os.WriteFile(path, []byte("line1\nline2\nlast line"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadLogTail(path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "line2" || lines[1] != "last line" {
+		t.Fatalf("unexpected log tail: %#v", lines)
+	}
+}
+
+func TestReadLogTailHandlesTailLargerThanAvailableLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "short.log")
+	if err := os.WriteFile(path, []byte("line1\nline2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadLogTail(path, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "line1" || lines[1] != "line2" {
+		t.Fatalf("unexpected log tail: %#v", lines)
+	}
+}
+
+func TestReadLogTailHandlesNonPositiveTailCount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "all.log")
+	if err := os.WriteFile(path, []byte("line1\nline2\nline3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadLogTail(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 3 || lines[0] != "line1" || lines[1] != "line2" || lines[2] != "line3" {
+		t.Fatalf("unexpected all-lines tail: %#v", lines)
+	}
+}
+
+func TestReadLogTailReadsLargeSparseFileSafely(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sparse.log")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("start\n"); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if _, err := f.Seek(64*1024*1024, 0); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("tail-1\ntail-2\ntail-3\n"); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	lines, err := ReadLogTail(path, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(lines) != 2 || lines[0] != "tail-2" || lines[1] != "tail-3" {
+		t.Fatalf("unexpected sparse tail: %#v", lines)
+	}
+}
+
+func TestReadLogTailMissingFile(t *testing.T) {
+	_, err := ReadLogTail(filepath.Join(t.TempDir(), "missing.log"), 2)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}
+
 func TestReadLogTailAndRemoveStale(t *testing.T) {
 	root := t.TempDir()
 	system := &stubSystem{running: map[int]bool{}, cmdlines: map[int][]string{}}

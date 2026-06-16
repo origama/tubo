@@ -11,6 +11,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo grants pending` now makes grouped duplicate pending requests explicit in compact output with latest/oldest request IDs and an `approve latest` hint.
 - `tubo grants history` now also surfaces mixed groups where the latest row is approved but pending duplicates still exist, without suggesting `approve latest` from history.
 - `tubo connect` now reports a clearer runtime reason when a remote service grant endpoint cannot mint a new connect lease because service publish authorization is expired, while keeping the raw failure in detailed diagnostics.
+- `tubo logs` now reads tail output from the end of the file in bounded chunks, so large process logs no longer require loading the full file into memory.
 
 ## [v0.11.0] - 2026-06-15
 
