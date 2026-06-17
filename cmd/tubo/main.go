@@ -177,6 +177,8 @@ func run(args []string) error {
 		return logsCmd(args[1:])
 	case "start":
 		return startCmd(args[1:])
+	case "restart":
+		return restartCmd(args[1:])
 	case "stop":
 		return stopCmd(args[1:])
 	case "rm":
@@ -477,6 +479,7 @@ Discovery and process management:
   tubo top
   tubo logs process/attach-myapp
   tubo start service/myapp
+  tubo restart service/myapp
   tubo stop process/attach-myapp
   tubo stop service/myapp
   tubo stop pipe/myapp-1234
@@ -668,6 +671,12 @@ Show live local traffic stats for registered Tubo processes.`)
 
 Start a service runtime from the stored local service definition.
 This initial slice only covers service/<name>; it reuses the saved target and identity material and refuses to start if the service is already running.`)
+	case "restart":
+		fmt.Println(`Usage:
+  tubo restart [--config <path>] service/<name>
+
+Restart a service runtime from the stored local service definition.
+It stops a live degraded/running service runtime first when present; if no live runtime exists, it starts directly from the stored definition.`)
 	case "stop":
 		fmt.Println(`Usage:
   tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>

@@ -11,6 +11,19 @@ import (
 
 type stopMatchStrength int
 
+type noLiveServiceRuntimeError struct {
+	message string
+}
+
+func (e noLiveServiceRuntimeError) Error() string {
+	return e.message
+}
+
+func (e noLiveServiceRuntimeError) Is(target error) bool {
+	_, ok := target.(noLiveServiceRuntimeError)
+	return ok
+}
+
 const (
 	stopMatchNone stopMatchStrength = iota
 	stopMatchWeak
@@ -75,7 +88,7 @@ func stopServiceLifecycle(serviceName, configPath string, force bool) (detachedP
 		}
 		return state, nil
 	case len(exactStale) > 0:
-		return detachedProcessState{}, fmt.Errorf("service %s has stale process state with matching service_id; no live runtime process exists", serviceName)
+		return detachedProcessState{}, noLiveServiceRuntimeError{message: fmt.Sprintf("service %s has stale process state with matching service_id; no live runtime process exists", serviceName)}
 	case len(weakLive) > 1:
 		return detachedProcessState{}, fmt.Errorf("service %s matches multiple legacy name-based runtimes; stop a specific process instead", serviceName)
 	case len(weakLive) == 1 && len(weakStale) == 0:
@@ -86,11 +99,11 @@ func stopServiceLifecycle(serviceName, configPath string, force bool) (detachedP
 		}
 		return state, nil
 	case len(weakLive) == 0 && len(weakStale) > 0:
-		return detachedProcessState{}, fmt.Errorf("service %s is stale; no matching live runtime process exists", serviceName)
+		return detachedProcessState{}, noLiveServiceRuntimeError{message: fmt.Sprintf("service %s is stale; no matching live runtime process exists", serviceName)}
 	case len(weakLive) == 1 && len(weakStale) > 0:
 		return detachedProcessState{}, fmt.Errorf("service %s has multiple legacy name-based matches; stop a specific process instead", serviceName)
 	default:
-		return detachedProcessState{}, fmt.Errorf("no matching runtime process exists for service/%s", serviceName)
+		return detachedProcessState{}, noLiveServiceRuntimeError{message: fmt.Sprintf("no matching runtime process exists for service/%s", serviceName)}
 	}
 }
 

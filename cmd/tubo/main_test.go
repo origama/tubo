@@ -1155,6 +1155,81 @@ func TestStartCmdFailsWhenServiceTargetMissing(t *testing.T) {
 	}
 }
 
+func TestRestartCmdRestartsRunningServiceAndStartsWhenStopped(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if _, err := capture(func() error { return run([]string{"attach", srv.URL, "--name", "myapi", "-d", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := loadProcessState("process/attach-myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialPID := state.PID
+	finalPID := initialPID
+	t.Cleanup(func() {
+		_, _ = capture(func() error { return stopCmd([]string{"--force", "service/myapi", "--config", configPath}) })
+		if finalPID > 0 {
+			_ = killPID(finalPID)
+		}
+	})
+	out, err := capture(func() error { return restartCmd([]string{"service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatalf("restart while running failed: %v output=%s", err, out)
+	}
+	if !strings.Contains(out, "stopped process/attach-myapi") || !strings.Contains(out, "started service \"myapi\"") {
+		t.Fatalf("unexpected restart output: %s", out)
+	}
+	state2, _, err := loadProcessState("process/attach-myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state2.PID <= 0 || state2.PID == initialPID {
+		t.Fatalf("expected restarted pid, got %#v", state2)
+	}
+	finalPID = state2.PID
+	if _, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	out, err = capture(func() error { return restartCmd([]string{"service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatalf("restart without runtime failed: %v output=%s", err, out)
+	}
+	if strings.Contains(out, "stopped process/attach-myapi") {
+		t.Fatalf("unexpected stop output when no runtime was running: %s", out)
+	}
+	if !strings.Contains(out, "started service \"myapi\"") {
+		t.Fatalf("unexpected restart output when no runtime was running: %s", out)
+	}
+	state3, _, err := loadProcessState("process/attach-myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state3.PID <= 0 || state3.PID == state2.PID {
+		t.Fatalf("expected fresh pid after direct restart, got %#v", state3)
+	}
+	finalPID = state3.PID
+}
+
+func TestRestartCmdFailsForMissingServiceDefinition(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	_, err := capture(func() error { return restartCmd([]string{"service/myapi", "--config", configPath}) })
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected missing definition error, got %v", err)
+	}
+}
+
 func TestStopCmdFailsForMissingServiceDefinition(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := writeCreateClusterConfig(t)
@@ -1911,6 +1986,15 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	for _, want := range []string{"tubo start [--config <path>] service/<name>", "stored local service definition", "already running"} {
 		if !strings.Contains(startHelp, want) {
 			t.Fatalf("start help missing %q: %s", want, startHelp)
+		}
+	}
+	restartHelp, err := capture(func() error { return run([]string{"help", "restart"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tubo restart [--config <path>] service/<name>", "stops a live degraded/running service runtime first", "starts directly from the stored definition"} {
+		if !strings.Contains(restartHelp, want) {
+			t.Fatalf("restart help missing %q: %s", want, restartHelp)
 		}
 	}
 }
