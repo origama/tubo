@@ -564,7 +564,7 @@ Path selection:
   - for raw TCP services, connect may do one short inline self-heal attempt before failing a new local connection when pre-stream setup breaks`)
 	case "get":
 		fmt.Println(`Usage:
-  tubo get services [--json]
+  tubo get services [-a|--all] [--json]
   tubo get service/<name> [--json]
   tubo get overlays [--json]
   tubo get clusters [--json]
@@ -1802,6 +1802,7 @@ type serviceResource struct {
 	DirectAddresses  []string                        `json:"direct_addresses"`
 	RelayedAddresses []string                        `json:"relayed_addresses"`
 	Status           string                          `json:"status"`
+	Source           string                          `json:"source,omitempty"`
 	Path             string                          `json:"path"`
 	TTLSeconds       int64                           `json:"ttl_seconds"`
 	ExpiresInSeconds int64                           `json:"expires_in_seconds"`
@@ -1974,6 +1975,8 @@ func getCmd(args []string) error {
 	wide := fs.Bool("wide", false, "")
 	cachedOnly := fs.Bool("cached-only", false, "")
 	live := fs.Bool("live", false, "")
+	all := fs.Bool("all", false, "")
+	allShort := fs.Bool("a", false, "")
 	cluster := fs.String("cluster", "", "")
 	namespace := fs.String("namespace", "", "")
 	namespaceShort := fs.String("n", "", "")
@@ -1987,6 +1990,7 @@ func getCmd(args []string) error {
 		*namespace = *namespaceShort
 	}
 	useAllNamespaces := *allNamespaces || *allNamespacesShort
+	useAllServices := *all || *allShort
 	switch {
 	case resource == "processes":
 		items, err := listProcessViews(false)
@@ -2013,6 +2017,9 @@ func getCmd(args []string) error {
 		scopes, err := resolveAuthorizedServiceScopes(cfg, *cluster, *namespace, useAllNamespaces)
 		if err != nil {
 			return err
+		}
+		if useAllServices && useAllNamespaces {
+			return errors.New("--all is only supported with the current namespace scope")
 		}
 		if useAllNamespaces {
 			if *cachedOnly {
@@ -2043,6 +2050,13 @@ func getCmd(args []string) error {
 			return err
 		}
 		result := fromCatalogLookupResult(catalogResult)
+		if useAllServices {
+			inventory, err := buildServiceInventory(cfg, scope, result.Services)
+			if err != nil {
+				return err
+			}
+			result.Services = inventory
+		}
 		result.Services = filterListedServices(result.Services, *systemOnly)
 		if *jsonOut {
 			return printJSON(struct {
@@ -2349,30 +2363,57 @@ func printServiceList(services []serviceResource, wide bool, systemOnly bool, sc
 }
 
 func printServicesCompactTable(services []serviceResource, aliasIdx peerAliasIndex) {
+	showSource := anyServiceHasSource(services)
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "SERVICE\tKIND\tACCESS\tSTATUS\tROUTE\tPEER\tEXPIRES")
+	if showSource {
+		fmt.Fprintln(w, "SERVICE\tKIND\tACCESS\tSTATUS\tSOURCE\tROUTE\tPEER\tEXPIRES")
+	} else {
+		fmt.Fprintln(w, "SERVICE\tKIND\tACCESS\tSTATUS\tROUTE\tPEER\tEXPIRES")
+	}
 	for _, service := range services {
+		if showSource {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayServiceKind(service), displayServiceConnectPolicy(service), displayValue(service.Status), displayServiceSource(service), serviceRouteSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceExpiresSummary(service))
+			continue
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayServiceKind(service), displayServiceConnectPolicy(service), displayValue(service.Status), serviceRouteSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceExpiresSummary(service))
 	}
 	_ = w.Flush()
 }
 
 func printSystemServicesCompactTable(services []serviceResource, aliasIdx peerAliasIndex) {
+	showSource := anyServiceHasSource(services)
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tPROTOCOL\tPEER\tADDRS")
+	if showSource {
+		fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tSOURCE\tPROTOCOL\tPEER\tADDRS")
+	} else {
+		fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tPROTOCOL\tPEER\tADDRS")
+	}
 	for _, service := range services {
+		if showSource {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), displayServiceSource(service), serviceProtocolSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceAddressSummary(service))
+			continue
+		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), serviceProtocolSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceAddressSummary(service))
 	}
 	_ = w.Flush()
 }
 
 func printServicesTable(services []serviceResource) {
+	showSource := anyServiceHasSource(services)
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSERVICE KIND\tSTATUS\tACCESS\tPATH\tPEER\tCAPABILITIES")
+	if showSource {
+		fmt.Fprintln(w, "NAME\tSERVICE ID\tSOURCE\tSCOPE\tSERVICE KIND\tSTATUS\tACCESS\tPATH\tPEER\tCAPABILITIES")
+	} else {
+		fmt.Fprintln(w, "NAME\tSERVICE ID\tSCOPE\tSERVICE KIND\tSTATUS\tACCESS\tPATH\tPEER\tCAPABILITIES")
+	}
 	for _, service := range services {
 		caps := "-"
 		if len(service.Capabilities) > 0 {
 			caps = strings.Join(service.Capabilities, ",")
+		}
+		if showSource {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayServiceID(service.ServiceID), displayServiceSource(service), displayServiceScope(service), displayServiceKind(service), service.Status, displayServiceConnectPolicy(service), service.Path, service.PeerID, caps)
+			continue
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayServiceID(service.ServiceID), displayServiceScope(service), displayServiceKind(service), service.Status, displayServiceConnectPolicy(service), service.Path, service.PeerID, caps)
 	}
@@ -2380,8 +2421,13 @@ func printServicesTable(services []serviceResource) {
 }
 
 func printSystemServicesTable(services []serviceResource) {
+	showSource := anyServiceHasSource(services)
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tKIND\tSCOPE\tPROTOCOL\tSTATUS\tPEER\tADDRS")
+	if showSource {
+		fmt.Fprintln(w, "NAME\tKIND\tSOURCE\tSCOPE\tPROTOCOL\tSTATUS\tPEER\tADDRS")
+	} else {
+		fmt.Fprintln(w, "NAME\tKIND\tSCOPE\tPROTOCOL\tSTATUS\tPEER\tADDRS")
+	}
 	for _, service := range services {
 		protocol := "-"
 		if service.GrantService != nil && strings.TrimSpace(service.GrantService.Protocol) != "" {
@@ -2390,6 +2436,10 @@ func printSystemServicesTable(services []serviceResource) {
 		addrs := "-"
 		if len(service.Addresses) > 0 {
 			addrs = strings.Join(service.Addresses, ",")
+		}
+		if showSource {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayValue(service.Kind), displayServiceSource(service), displayServiceScope(service), protocol, service.Status, displayValue(service.PeerID), addrs)
+			continue
 		}
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayValue(service.Kind), displayServiceScope(service), protocol, service.Status, displayValue(service.PeerID), addrs)
 	}
@@ -2514,9 +2564,28 @@ func displayServiceScope(service serviceResource) string {
 
 func displayServiceKind(service serviceResource) string {
 	if strings.TrimSpace(service.ServiceKind) == "" {
+		if strings.TrimSpace(service.Source) != "" {
+			return "-"
+		}
 		return string(cfgpkg.ServiceKindHTTP)
 	}
 	return service.ServiceKind
+}
+
+func displayServiceSource(service serviceResource) string {
+	if strings.TrimSpace(service.Source) == "" {
+		return "-"
+	}
+	return service.Source
+}
+
+func anyServiceHasSource(services []serviceResource) bool {
+	for _, service := range services {
+		if strings.TrimSpace(service.Source) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func displayServiceConnectPolicy(service serviceResource) string {

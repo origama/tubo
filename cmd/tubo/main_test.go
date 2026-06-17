@@ -6212,10 +6212,245 @@ func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config,
 	return configPath, cfg, addr, wrongPeer, legacyPeer
 }
 
+func newLocalServiceInventoryFixture(t *testing.T) string {
+	t.Helper()
+	configRoot := filepath.Join(t.TempDir(), "xdg-config")
+	dataRoot := filepath.Join(t.TempDir(), "xdg-data")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	t.Setenv("XDG_DATA_HOME", dataRoot)
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(configPath, cfgpkg.Config{}, true); err != nil {
+		t.Fatal(err)
+	}
+	ws := localWorkspace()
+	if _, err := ws.CreateCluster(configPath, "home"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clusterID := cfg.Clusters["home"].ClusterID
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "local-service-inventory-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	t.Cleanup(cache.Stop)
+	addr := p2p.PeerAddrs(server)[0]
+	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
+	cfg.Network.PrivateKeyFile = keyPath
+	cfg.Network.BootstrapPeers = []string{addr}
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	createService := func(name, target string) {
+		cfg, err := cfgpkg.LoadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Service = cfgpkg.Service{Name: name, Target: target, Kind: cfgpkg.ServiceKindHTTP}
+		if err := saveLocalConfig(configPath, cfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ws.CreateService(configPath, name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createService("shared-api", "http://127.0.0.1:10080")
+	createService("stopped-api", "http://127.0.0.1:10081")
+	createService("running-api", "http://127.0.0.1:10082")
+	createService("degraded-api", "http://127.0.0.1:10083")
+	createService("stale-api", "http://127.0.0.1:10084")
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ns := cfg.Clusters["home"].Namespaces["default"]
+	ns.Services["incomplete-api"] = cfgpkg.NamespaceService{}
+	cfg.Clusters["home"].Namespaces["default"] = ns
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceIDs := map[string]string{}
+	for name, svc := range cfg.Clusters["home"].Namespaces["default"].Services {
+		serviceIDs[name] = svc.ServiceID
+	}
+	pubShared, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(server.ID(), clusterID, "default", serviceIDs["shared-api"], "shared-api", "service", "http", serviceidentity.EncodePublicKey(pubShared), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	pubNetworkOnly, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(server.ID(), clusterID, "default", "service-network-only", "network-only", "service", "http", serviceidentity.EncodePublicKey(pubNetworkOnly), "", nil, []string{addr}, nil, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	startState := func(name, statusURL string) *exec.Cmd {
+		cmd := exec.Command("sleep", "30")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		state := detachedProcessState{ID: "process/attach-" + name, Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-" + name, Service: name, ServiceID: serviceIDs[name], ServiceKind: "http", Cluster: "home", Namespace: "default", Path: "direct", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "attach-"+name+".pid"), StateFile: filepath.Join(processStateDir(), "attach-"+name+".json"), LogFile: filepath.Join(processLogDir(), "attach-"+name+".log"), StatusURL: statusURL}
+		if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(processLogDir(), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(state.StateFile, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+		return cmd
+	}
+	degradedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte("degraded"))
+	}))
+	t.Cleanup(degradedServer.Close)
+	_ = startState("running-api", "")
+	_ = startState("degraded-api", degradedServer.URL)
+	staleState := detachedProcessState{ID: "process/attach-stale-api", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-stale-api", Service: "stale-api", ServiceID: serviceIDs["stale-api"], ServiceKind: "http", Cluster: "home", Namespace: "default", Path: "direct", PID: 999999, PIDFile: filepath.Join(processRunDir(), "attach-stale-api.pid"), StateFile: filepath.Join(processStateDir(), "attach-stale-api.json"), LogFile: filepath.Join(processLogDir(), "attach-stale-api.log")}
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processLogDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleState.PIDFile, []byte("999999\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(staleState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleState.StateFile, b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	return configPath
+}
+
 func TestDiscoverGrantServicePeerUsesSystemDiscovery(t *testing.T) {
 	configPath, cfg, addr, _, _ := newSystemGrantServiceDiscoveryFixture(t)
 	if got := discoverGrantServicePeer(configPath, cfg); got != addr {
 		t.Fatalf("grant service peer = %q, want %q", got, addr)
+	}
+}
+
+func TestGetServicesWithoutAllRemainsNetworkOnly(t *testing.T) {
+	configPath := newLocalServiceInventoryFixture(t)
+	out, err := capture(func() error {
+		return run([]string{"get", "services", "--no-init", "--config", configPath, "--timeout", "5s"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"shared-api", "network-only"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected discovered service %q in default get services output: %s", want, out)
+		}
+	}
+	for _, want := range []string{"SOURCE", "available", "stopped-api", "incomplete-api", "running-api", "degraded-api", "stale-api", "local+network"} {
+		if strings.Contains(out, want) {
+			t.Fatalf("default get services output should not include %q: %s", want, out)
+		}
+	}
+}
+
+func TestGetServicesAllIncludesLocalInventoryRows(t *testing.T) {
+	configPath := newLocalServiceInventoryFixture(t)
+	out, err := capture(func() error {
+		return run([]string{"get", "services", "-a", "--no-init", "--config", configPath, "--timeout", "5s"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Services in home/default", "SOURCE", "local+network", "local", "network", "available", "stopped", "incomplete", "running", "degraded", "stale"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("all-services output missing %q: %s", want, out)
+		}
+	}
+	jsonOut, err := capture(func() error {
+		return run([]string{"get", "services", "-a", "--no-init", "--config", configPath, "--timeout", "5s", "--json"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		Count int               `json:"count"`
+		Items []serviceResource `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(jsonOut), &payload); err != nil {
+		t.Fatalf("json parse: %v\nout=%s", err, jsonOut)
+	}
+	if payload.Count != 7 || len(payload.Items) != 7 {
+		t.Fatalf("unexpected inventory count: %#v", payload)
+	}
+	byName := map[string]serviceResource{}
+	for _, item := range payload.Items {
+		byName[item.Name] = item
+	}
+	checks := map[string]struct {
+		source string
+		status string
+	}{
+		"shared-api":     {source: "local+network", status: "stopped"},
+		"stopped-api":    {source: "local", status: "stopped"},
+		"incomplete-api": {source: "local", status: "incomplete"},
+		"running-api":    {source: "local", status: "running"},
+		"degraded-api":   {source: "local", status: "degraded"},
+		"stale-api":      {source: "local", status: "stale"},
+		"network-only":   {source: "network", status: "available"},
+	}
+	for name, want := range checks {
+		item, ok := byName[name]
+		if !ok {
+			t.Fatalf("missing inventory row %q: %#v", name, payload)
+		}
+		if item.Source != want.source || item.Status != want.status {
+			t.Fatalf("row %q = source=%q status=%q want %q/%q", name, item.Source, item.Status, want.source, want.status)
+		}
+	}
+	if item := byName["incomplete-api"]; item.PeerID != "" || item.Path != "" || item.ExpiresInSeconds != 0 {
+		t.Fatalf("incomplete row should not show runtime metadata: %#v", item)
 	}
 }
 
