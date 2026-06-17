@@ -186,15 +186,26 @@ func (w *Workspace) ensureServiceState(configPath string, cfg cfgpkg.Config, ser
 	svc, existed := namespace.Services[serviceName]
 	created := !existed
 	changed := false
-	kind := cfgpkg.NormalizeServiceKind(cfg.Service.Kind, cfg.Service.Target)
-	cfg.Service.Kind = kind
-	if svc.Kind != kind {
-		svc.Kind = kind
-		changed = true
-	}
 	currentTarget := strings.TrimSpace(cfg.Service.Target)
 	if isPlaceholderServiceTarget(currentTarget) {
 		currentTarget = ""
+	}
+	if currentTarget == "" {
+		currentTarget = strings.TrimSpace(svc.Target)
+	}
+	kind := strings.TrimSpace(string(cfg.Service.Kind))
+	if kind == "" {
+		if svc.Kind != "" {
+			kind = string(svc.Kind)
+		} else {
+			kind = string(cfgpkg.NormalizeServiceKind("", currentTarget))
+		}
+	}
+	cfg.Service.Kind = cfgpkg.ServiceKind(kind)
+	cfg.Service.Target = currentTarget
+	if svc.Kind != cfgpkg.ServiceKind(kind) {
+		svc.Kind = cfgpkg.ServiceKind(kind)
+		changed = true
 	}
 	if svc.Target == "" && currentTarget != "" {
 		svc.Target = currentTarget

@@ -33,6 +33,17 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func TestMain(m *testing.M) {
+	if os.Getenv("TUBO_DETACHED_CHILD") == "1" {
+		if err := run(os.Args[1:]); err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func captureOutputs(f func() error) (string, string, error) {
 	oldOut := os.Stdout
 	oldErr := os.Stderr
@@ -1004,20 +1015,47 @@ func TestStartCmdUsesPersistedServiceTargetAfterAttachStop(t *testing.T) {
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer srv.Close()
-	if _, err := capture(func() error { return run([]string{"attach", srv.URL, "--name", "myapi", "-d", "--config", configPath}) }); err != nil {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	target := "tcp://" + ln.Addr().String()
+	if _, err := capture(func() error { return run([]string{"attach", target, "--name", "myapi", "-d", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := loadProcessState("process/attach-myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialPID := state.PID
+	t.Cleanup(func() {
+		_, _ = capture(func() error { return stopCmd([]string{"--force", "service/myapi", "--config", configPath}) })
+	})
+	t.Cleanup(func() {
+		if initialPID > 0 {
+			_ = killPID(initialPID)
+		}
+	})
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
 	svc := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
-	if svc.Target != srv.URL {
-		t.Fatalf("service target not persisted: got %q want %q", svc.Target, srv.URL)
+	if svc.Target != target {
+		t.Fatalf("service target not persisted: got %q want %q", svc.Target, target)
+	}
+	if svc.Kind != cfgpkg.ServiceKindTCP {
+		t.Fatalf("service kind not persisted: got %q want tcp", svc.Kind)
 	}
 	state, status, err := loadProcessState("process/attach-myapi")
 	if err != nil {
@@ -1032,6 +1070,7 @@ func TestStartCmdUsesPersistedServiceTargetAfterAttachStop(t *testing.T) {
 	if out, err := capture(func() error { return stopCmd([]string{"service/myapi", "--config", configPath}) }); err != nil {
 		t.Fatalf("stop failed: %v output=%s", err, out)
 	}
+	cfg.Service.Name = "other"
 	cfg.Service.Target = ""
 	cfg.Service.Kind = ""
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
@@ -1048,10 +1087,19 @@ func TestStartCmdUsesPersistedServiceTargetAfterAttachStop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state2.Target != srv.URL {
-		t.Fatalf("expected target from persisted service definition, got %q want %q", state2.Target, srv.URL)
+	restartedPID := state2.PID
+	t.Cleanup(func() {
+		if restartedPID > 0 {
+			_ = killPID(restartedPID)
+		}
+	})
+	if state2.Target != target {
+		t.Fatalf("expected target from persisted service definition, got %q want %q", state2.Target, target)
 	}
-	if state2.PID <= 0 || !pidRunning(state2.PID) {
+	if state2.ServiceKind != string(cfgpkg.ServiceKindTCP) {
+		t.Fatalf("expected persisted tcp kind, got %q", state2.ServiceKind)
+	}
+	if state2.PID <= 0 {
 		t.Fatalf("expected restarted pid, got %#v", state2)
 	}
 	if _, err := capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) }); err == nil || !strings.Contains(err.Error(), "already running") {
@@ -1068,15 +1116,36 @@ func TestStartCmdFailsWhenServiceTargetMissing(t *testing.T) {
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	if _, err := capture(func() error { return run([]string{"attach", srv.URL, "--name", "myapi", "-d", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
+	state, _, err := loadProcessState("process/attach-myapi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialPID := state.PID
+	t.Cleanup(func() {
+		_, _ = capture(func() error { return stopCmd([]string{"--force", "service/myapi", "--config", configPath}) })
+	})
+	t.Cleanup(func() {
+		if initialPID > 0 {
+			_ = killPID(initialPID)
+		}
+	})
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Service.Name = "myapi"
+	svc := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
+	svc.Target = ""
+	cfg.Clusters["home"].Namespaces["default"].Services["myapi"] = svc
+	cfg.Service.Name = "other"
 	cfg.Service.Target = ""
+	cfg.Service.Kind = ""
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
 	}

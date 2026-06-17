@@ -61,9 +61,6 @@ func startServiceLifecycle(serviceName, configPath string) (detachedProcessState
 	if err != nil {
 		return detachedProcessState{}, fmt.Errorf("service/%s not found: %w", serviceName, err)
 	}
-	if storedName := strings.TrimSpace(cfg.Service.Name); storedName != "" && storedName != serviceName {
-		return detachedProcessState{}, fmt.Errorf("service/%s does not match saved service.name %q", serviceName, storedName)
-	}
 	if strings.TrimSpace(ctx.Service.Target) == "" {
 		return detachedProcessState{}, fmt.Errorf("service/%s is missing service.target; set the target in the saved service definition before starting", serviceName)
 	}
