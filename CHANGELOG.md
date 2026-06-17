@@ -7,6 +7,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 ## [Unreleased]
 
 ### Added
+- `tubo get services -a/--all` now adds a local service inventory projection for the current cluster/namespace, merging local definitions with discovery results and showing a `SOURCE` column plus synthetic statuses for local-only rows.
 - `tubo start service/<name>` now starts a service runtime from the stored local definition without retyping the target; the service target is persisted with the service definition, and start refuses when the matching service runtime is already running.
 - `tubo restart service/<name>` now stops a live running/degraded service runtime first when present, then starts it again from the stored local definition; if no live runtime exists, restart starts directly from the stored definition.
 - `tubo rm service/<name>` now removes the stored service definition and its service-scoped artifacts from the current cluster/namespace; with `--force`, it stops a live runtime first, while `tubo rm --stale` still handles stale process cleanup.
