@@ -422,6 +422,8 @@ clusters:
         services:
           myapi:
             service_id: ${service_a_id}
+            kind: http
+            target: http://tubo-dummy-api-server:8000
             service_seed: ${service_a_seed}
             service_owner_key_file: ${service_a_owner_key_file_container}
             service_claim_file: ${service_a_claim_file}
@@ -497,6 +499,8 @@ clusters:
         services:
           myapi:
             service_id: ${service_b_id}
+            kind: http
+            target: http://tubo-dummy-api-server:8000
             service_seed: ${service_b_seed}
             service_owner_key_file: ${service_b_owner_key_file_container}
             service_claim_file: ${service_b_claim_file}
