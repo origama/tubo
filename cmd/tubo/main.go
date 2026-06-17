@@ -428,7 +428,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|peers|create|rotate|ps|start> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|peers|create|rotate|ps|start|restart|stop|rm> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -480,6 +480,7 @@ Discovery and process management:
   tubo logs process/attach-myapp
   tubo start service/myapp
   tubo restart service/myapp
+  tubo rm service/myapp
   tubo stop process/attach-myapp
   tubo stop service/myapp
   tubo stop pipe/myapp-1234
@@ -684,7 +685,14 @@ It stops a live degraded/running service runtime first when present; if no live 
 Stop a local runtime process without deleting the persistent service definition.
 service/<name> prefers an exact service_id match when the service is defined that way; legacy name-only matches are allowed only when unambiguous.
 pipe/<name> is an initial stop-only, process-backed slice and does not imply a persistent pipe definition yet.`)
-	case "watch", "inspect", "ps", "logs", "rm", "version", "doctor", "config", "keygen", "id", "init":
+	case "rm":
+		fmt.Println(`Usage:
+  tubo rm --stale
+  tubo rm [--config <path>] [--force] service/<name>
+
+Remove stale process artifacts or a service definition from the current cluster/namespace.
+Without --force, service removal fails when a matching runtime is running or degraded; with --force, Tubo stops the runtime first, then removes the definition and service-scoped artifacts.`)
+	case "watch", "inspect", "ps", "logs", "version", "doctor", "config", "keygen", "id", "init":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:
 		return fmt.Errorf("unknown help topic %q", command)
@@ -1775,23 +1783,6 @@ func stopCmd(args []string) error {
 	default:
 		return fmt.Errorf("unsupported stop resource %q", resource)
 	}
-}
-
-func rmCmd(args []string) error {
-	fs := flag.NewFlagSet("rm", flag.ContinueOnError)
-	stale := fs.Bool("stale", false, "")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if !*stale {
-		return errors.New("usage: tubo rm --stale")
-	}
-	removed, err := removeStaleProcesses()
-	if err != nil {
-		return err
-	}
-	fmt.Printf("removed %d stale process artifacts\n", removed)
-	return nil
 }
 
 type serviceResource struct {
