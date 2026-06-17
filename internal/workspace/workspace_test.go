@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -231,6 +232,19 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	}
 }
 
+type saveFailStore struct {
+	FSStore
+	saveErr error
+	removed []string
+}
+
+func (s *saveFailStore) Save(string, cfgpkg.Config) error { return s.saveErr }
+
+func (s *saveFailStore) Remove(path string) error {
+	s.removed = append(s.removed, path)
+	return s.FSStore.Remove(path)
+}
+
 func TestEnsureAndCreateService(t *testing.T) {
 	path := writeTestConfig(t, cfgpkg.Config{})
 	ws := Open(FSStore{})
@@ -267,6 +281,42 @@ func TestEnsureAndCreateService(t *testing.T) {
 	}
 	if !again.AlreadyExists {
 		t.Fatalf("again=%#v", again)
+	}
+}
+
+func TestRemoveServiceDoesNotRemoveArtifactsWhenSaveFails(t *testing.T) {
+	path := writeTestConfig(t, cfgpkg.Config{})
+	ws := Open(FSStore{})
+	if _, err := ws.CreateCluster(path, "home"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ws.CreateService(path, "myapi"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
+	store := &saveFailStore{saveErr: errors.New("save failed")}
+	wsFail := Open(store)
+	if _, err := wsFail.RemoveService(path, "myapi"); err == nil || !strings.Contains(err.Error(), "save failed") {
+		t.Fatalf("expected save failure, got %v", err)
+	}
+	reloaded, err := cfgpkg.LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]; !ok {
+		t.Fatal("service definition should remain when config save fails")
+	}
+	if len(store.removed) != 0 {
+		t.Fatalf("expected no artifact cleanup on save failure, got %v", store.removed)
+	}
+	for _, artifact := range []string{svc.ServiceOwnerKeyFile, svc.ServiceClaimFile, svc.ServicePublishLeaseFile} {
+		if _, err := os.Stat(artifact); err != nil {
+			t.Fatalf("expected artifact to remain after save failure: %s err=%v", artifact, err)
+		}
 	}
 }
 
