@@ -1230,6 +1230,98 @@ func TestRestartCmdFailsForMissingServiceDefinition(t *testing.T) {
 	}
 }
 
+func TestRmCmdRemovesServiceDefinitionAndArtifacts(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"create", "service/myapi", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := cfg.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if svc.ServiceOwnerKeyFile == "" || svc.ServiceClaimFile == "" || svc.ServicePublishLeaseFile == "" {
+		t.Fatalf("expected service artifacts to be present: %#v", svc)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-myapi", Service: "myapi", ServiceID: svc.ServiceID, ServiceKind: string(svc.Kind), Cluster: "home", Namespace: "default", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), LogFile: filepath.Join(processLogDir(), "attach-myapi.log")}
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	if out, err := capture(func() error { return run([]string{"rm", "service/myapi", "--config", configPath}) }); err == nil || !strings.Contains(err.Error(), "use --force") {
+		t.Fatalf("expected running-service error, got %v output=%s", err, out)
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]; !ok {
+		t.Fatal("service should remain after failed rm without force")
+	}
+	for _, path := range []string{svc.ServiceOwnerKeyFile, svc.ServiceClaimFile, svc.ServicePublishLeaseFile} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("service artifact should remain after failed rm without force: %s err=%v", path, err)
+		}
+	}
+	out, err := capture(func() error { return run([]string{"rm", "--force", "service/myapi", "--config", configPath}) })
+	if err != nil {
+		t.Fatalf("force rm failed: %v output=%s", err, out)
+	}
+	if !strings.Contains(out, "stopped process/attach-myapi") || !strings.Contains(out, "removed service/myapi") {
+		t.Fatalf("unexpected rm output: %s", out)
+	}
+	for i := 0; i < 50 && pidRunning(cmd.Process.Pid); i++ {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if pidRunning(cmd.Process.Pid) {
+		t.Fatal("expected running service runtime to be stopped")
+	}
+	reloaded, err = cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]; ok {
+		t.Fatal("expected service definition to be removed")
+	}
+	if reloaded.Service.Name != "" {
+		t.Fatalf("expected top-level service selection to be cleared, got %#v", reloaded.Service)
+	}
+	for _, path := range []string{svc.ServiceOwnerKeyFile, svc.ServiceClaimFile, svc.ServicePublishLeaseFile} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected service artifact removed: %s err=%v", path, err)
+		}
+	}
+	if _, err := capture(func() error { return startCmd([]string{"service/myapi", "--config", configPath}) }); err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected start after rm to fail, got %v", err)
+	}
+}
+
+func TestRmCmdFailsForMissingServiceDefinition(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	_, err := capture(func() error { return run([]string{"rm", "service/myapi", "--config", configPath}) })
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected missing definition error, got %v", err)
+	}
+}
+
 func TestStopCmdFailsForMissingServiceDefinition(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := writeCreateClusterConfig(t)
@@ -1941,8 +2033,8 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if !strings.Contains(out, "Public default happy path (invite-only)") || !strings.Contains(out, "tubo connect --token <share-invite>") {
 		t.Fatalf("top-level help missing invite-only flow: %s", out)
 	}
-	if !strings.Contains(out, "Collaboration namespace flow") || !strings.Contains(out, "tubo connect myapp") || !strings.Contains(out, "tubo top") {
-		t.Fatalf("top-level help missing collaboration or top flow: %s", out)
+	if !strings.Contains(out, "Collaboration namespace flow") || !strings.Contains(out, "tubo connect myapp") || !strings.Contains(out, "tubo top") || !strings.Contains(out, "tubo rm service/myapp") {
+		t.Fatalf("top-level help missing collaboration, rm, or top flow: %s", out)
 	}
 	if !strings.Contains(out, "--quiet") || !strings.Contains(out, "-v | -vv | -vvv") || !strings.Contains(out, "--log-level error|warn|info|debug|trace") {
 		t.Fatalf("top-level help missing global logging flags: %s", out)
@@ -1995,6 +2087,15 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	for _, want := range []string{"tubo restart [--config <path>] service/<name>", "stops a live degraded/running service runtime first", "starts directly from the stored definition"} {
 		if !strings.Contains(restartHelp, want) {
 			t.Fatalf("restart help missing %q: %s", want, restartHelp)
+		}
+	}
+	rmHelp, err := capture(func() error { return run([]string{"help", "rm"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"tubo rm --stale", "tubo rm [--config <path>] [--force] service/<name>", "service-scoped artifacts"} {
+		if !strings.Contains(rmHelp, want) {
+			t.Fatalf("rm help missing %q: %s", want, rmHelp)
 		}
 	}
 }
