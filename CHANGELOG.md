@@ -12,6 +12,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo rm service/<name>` now removes the stored service definition and its service-scoped artifacts from the current cluster/namespace; with `--force`, it stops a live runtime first, while `tubo rm --stale` still handles stale process cleanup.
 
 ### Fixed
+- `tubo rm service/<name>` now saves the updated service config before deleting service-scoped artifacts, so a config save failure no longer leaves artifacts deleted while the service definition remains in place.
 - `attach` now clears a consumed `grant_request_id` after an approved publish lease is written, and the grant store reuses an existing pending request for equivalent retries instead of creating duplicate pending requests.
 - `tubo grants pending` now makes grouped duplicate pending requests explicit in compact output with latest/oldest request IDs and an `approve latest` hint.
 - `tubo grants history` now also surfaces mixed groups where the latest row is approved but pending duplicates still exist, without suggesting `approve latest` from history.

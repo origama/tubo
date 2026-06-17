@@ -33,6 +33,9 @@ func (w *Workspace) RemoveService(configPath, serviceName string) (RemoveService
 	if strings.TrimSpace(updated.Service.Name) == ctx.Name {
 		updated.Service = cfgpkg.Service{}
 	}
+	if err := w.SaveConfig(configPath, updated); err != nil {
+		return RemoveServiceResult{}, err
+	}
 	removedPaths := make([]string, 0, 3)
 	seen := map[string]struct{}{}
 	for _, path := range []string{svc.ServiceOwnerKeyFile, svc.ServiceClaimFile, svc.ServicePublishLeaseFile} {
@@ -45,12 +48,9 @@ func (w *Workspace) RemoveService(configPath, serviceName string) (RemoveService
 		}
 		seen[path] = struct{}{}
 		if err := removePathIfExists(w.store, path); err != nil {
-			return RemoveServiceResult{}, fmt.Errorf("remove service artifact %s: %w", path, err)
+			return RemoveServiceResult{Config: updated, Context: ctx, RemovedPaths: removedPaths}, fmt.Errorf("saved updated service config, but partial cleanup failed removing %s: %w", path, err)
 		}
 		removedPaths = append(removedPaths, path)
-	}
-	if err := w.SaveConfig(configPath, updated); err != nil {
-		return RemoveServiceResult{}, err
 	}
 	return RemoveServiceResult{Config: updated, Context: ctx, RemovedPaths: removedPaths}, nil
 }
