@@ -175,6 +175,8 @@ func run(args []string) error {
 		return localRotateCmd(args[1:])
 	case "logs":
 		return logsCmd(args[1:])
+	case "start":
+		return startCmd(args[1:])
 	case "stop":
 		return stopCmd(args[1:])
 	case "rm":
@@ -424,7 +426,7 @@ func stripDetachArgs(args []string) ([]string, bool) {
 }
 
 func usage() error {
-	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|peers|create|rotate|ps> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
+	return errors.New("usage: tubo <attach|connect|gateway|relay|join|get|describe|inspect|watch|use|share|revoke|peers|create|rotate|ps|start> [flags]; run `tubo help` or `tubo help <command>` for details; bundle-url is supported by `tubo join`")
 }
 
 func printTopLevelHelp() {
@@ -474,6 +476,7 @@ Discovery and process management:
   tubo ps
   tubo top
   tubo logs process/attach-myapp
+  tubo start service/myapp
   tubo stop process/attach-myapp
   tubo stop service/myapp
   tubo stop pipe/myapp-1234
@@ -659,6 +662,12 @@ Save a local operator-only label for a peer ID.`)
   tubo top [--all] [--interval 2s] [--json]
 
 Show live local traffic stats for registered Tubo processes.`)
+	case "start":
+		fmt.Println(`Usage:
+  tubo start [--config <path>] service/<name>
+
+Start a service runtime from the stored local service definition.
+This initial slice only covers service/<name>; it reuses the saved target and identity material and refuses to start if the service is already running.`)
 	case "stop":
 		fmt.Println(`Usage:
   tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>
@@ -1338,6 +1347,11 @@ func printDetachedSummary(commandName string, state detachedProcessState) {
 		logging.Resultf("gateway running\n")
 	case "relay":
 		logging.Resultf("relay running\n")
+	case "start":
+		logging.Resultf("started service %q\n", state.Service)
+		if state.ServiceID != "" {
+			logging.Resultf("service id: %s\n", state.ServiceID)
+		}
 	default:
 		logging.Resultf("started %s\n", commandName)
 	}
