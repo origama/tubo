@@ -118,54 +118,11 @@ func grantsRequestCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	cluster := cfg.Clusters[cfg.CurrentCluster]
-	if *grantPeer == "" {
-		*grantPeer = svc.GrantServicePeer
-	}
-	if *grantPeer == "" {
-		*grantPeer = clusterGrantServicePeer(cluster)
-	}
-	if *grantPeer == "" {
-		return errors.New("missing grant service peer; pass --peer <multiaddr>")
-	}
 	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
 	if err != nil {
 		return err
 	}
-	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: grantsFirstNonEmpty(cfg.Node.Seed, "grant-client-"+svc.ServiceSeed), PrivateKeyFile: cfg.Network.PrivateKeyFile, PrivateKeyB64: cfg.Network.PrivateKeyB64, BootstrapPeers: cfg.Network.BootstrapPeers, RelayPeers: cfg.Network.RelayPeers, Autorelay: cfg.Network.Autorelay, HolePunching: cfg.Network.HolePunching, ForceReachability: cfg.Network.ForceReachability, Component: "grants-client"})
-	if err != nil {
-		return err
-	}
-	defer overlay.Close()
-	info, err := p2p.AddrInfoFromString(*grantPeer)
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	overlay.StartBootstrapRetry(ctx, 5*time.Second)
-	overlay.StartRelayReservations(ctx)
-	var resp grantspkg.Message
-	if *pollOnly {
-		if svc.GrantRequestID == "" {
-			return errors.New("no local grant request id recorded for service")
-		}
-		resp, err = grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
-	} else {
-		leaseReq, err := buildServicePublishLeaseRequest(*configPath, cfg, svc, servicePeerID.String())
-		if err != nil {
-			return err
-		}
-		submitResp, submitErr := grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cluster.ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServiceKind: string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, ServicePeerID: servicePeerID.String(), ServiceAddresses: serviceEndpointAddrsForTokens(cfg, servicePeerID.String()), RequestNonce: leaseReq.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedTTLSeconds: int64(ttl.Seconds())})
-		if submitErr != nil {
-			return submitErr
-		}
-		resp = submitResp
-	}
-	if err != nil {
-		return err
-	}
-	_, err = handleGrantClientResponse(*configPath, cfg, svc, *grantPeer, resp, servicePeerID.String(), grantClientResponsePrimary)
+	_, _, _, err = requestPublishGrant(*configPath, cfg, svc, servicePeerID.String(), grantRequestOptions{explicitPeer: strings.TrimSpace(*grantPeer), pollOnly: *pollOnly, requestedTTL: *ttl, responseMode: grantClientResponsePrimary})
 	return err
 }
 

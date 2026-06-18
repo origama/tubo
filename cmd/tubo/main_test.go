@@ -4346,7 +4346,7 @@ func TestServiceShareMissingPublishLeaseRequestsGrantAndSurfacesPending(t *testi
 	_, err = capture(func() error {
 		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
 	})
-	if err == nil || !strings.Contains(err.Error(), "is pending; publication requires an approved publish lease") {
+	if err == nil || err.Error() != "grant request pending; approve it, then rerun tubo start service/myapi" {
 		t.Fatalf("expected pending renewal guidance, got %v", err)
 	}
 	reloaded, err := cfgpkg.LoadFile(configPath)
@@ -4581,7 +4581,7 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	}
 
 	_, err = resolveAttachAuthorization(configPath, cfg)
-	if err == nil || !strings.Contains(err.Error(), "is pending") {
+	if err == nil || !strings.Contains(err.Error(), "grant request pending") {
 		t.Fatalf("expected pending error, got %v", err)
 	}
 	reloaded, err := cfgpkg.LoadFile(configPath)
@@ -4709,12 +4709,12 @@ func TestRequestPublishGrantClearsExpiredRequestIDAndResubmits(t *testing.T) {
 	//   1. Poll gr_expired_does_not_exist → TypeExpired from server
 	//   2. Clear grant_request_id from config
 	//   3. Submit a fresh request → TypePending
-	//   4. Return with err containing "is pending"
+	//   4. Return with err containing "grant request pending"
 	_, updatedSvc, _, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
 	if err == nil {
 		t.Fatal("expected pending error, got nil")
 	}
-	if !strings.Contains(err.Error(), "is pending") {
+	if !strings.Contains(err.Error(), "grant request pending") {
 		t.Fatalf("expected pending error, got: %v", err)
 	}
 	if updatedSvc.GrantRequestID == "gr_expired_does_not_exist" {
@@ -4733,6 +4733,139 @@ func TestRequestPublishGrantClearsExpiredRequestIDAndResubmits(t *testing.T) {
 	}
 	if pending[0].ID != updatedSvc.GrantRequestID {
 		t.Fatalf("store request ID %q does not match saved %q", pending[0].ID, updatedSvc.GrantRequestID)
+	}
+}
+
+func newStaleGrantPeerRecoveryFixture(t *testing.T) (string, cfgpkg.Config, cfgpkg.NamespaceService, string, string) {
+	t.Helper()
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	psk, _, err := p2p.LoadPrivateNetworkPSK(keyPath, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverHost, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "grant-peer-recovery-server", psk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = serverHost.Close() })
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	t.Cleanup(cache.Stop)
+	addr := p2p.PeerAddrs(serverHost)[0]
+	grantPub, grantPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := mustWriteMembershipCapability(t, grantPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	if err := cache.AddV2(serverHost.ID(), "cluster-123", "observability", serviceidentity.ServiceIDFromPublicKey(grantPub), "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPub), "system", &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{addr}}, []string{addr}, nil, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	serverHost.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(serverHost, "relay", cache))
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSHKey, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configRoot := filepath.Join(t.TempDir(), "xdg-config")
+	t.Setenv("XDG_CONFIG_HOME", configRoot)
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "observability", Service: cfgpkg.Service{Name: "myapi", Target: "http://127.0.0.1:8080"}, Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSHKey))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	grantServer, err := grantspkg.NewServer(grantspkg.ServerConfig{AuthorityPrivateKey: authorityPriv, ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "observability", Store: grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json")), AutoApprove: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverHost.SetStreamHandler(grantspkg.ProtocolID, grantServer.HandleStream)
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(svc.ServicePublishLeaseFile) != "" {
+		if err := os.Remove(svc.ServicePublishLeaseFile); err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+	}
+	stalePeer := "/ip4/127.0.0.1/tcp/65535/p2p/12D3KooWStaleGrant"
+	cluster := cfg.Clusters["home"]
+	cluster.AuthorityPrivateKeyFile = ""
+	svc.GrantServicePeer = stalePeer
+	ns := cluster.Namespaces[cfg.CurrentNamespace]
+	ns.Services["myapi"] = svc
+	cluster.Namespaces[cfg.CurrentNamespace] = ns
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	return configPath, cfg, svc, stalePeer, addr
+}
+
+func TestRequestPublishGrantForAttachRecoversFromStaleGrantPeer(t *testing.T) {
+	configPath, cfg, svc, stalePeer, grantPeer := newStaleGrantPeerRecoveryFixture(t)
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedCfg, updatedSvc, _, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
+	if err == nil || err.Error() != "grant request pending; approve it, then rerun tubo start service/myapi" {
+		t.Fatalf("expected pending grant error, got %v", err)
+	}
+	if updatedSvc.GrantServicePeer != grantPeer {
+		t.Fatalf("grant service peer = %q, want %q", updatedSvc.GrantServicePeer, grantPeer)
+	}
+	if updatedSvc.GrantServicePeer == stalePeer {
+		t.Fatal("stale grant service peer was not replaced")
+	}
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := reloaded.Clusters["home"].Namespaces["observability"].Services["myapi"]
+	if saved.GrantServicePeer != grantPeer || saved.GrantRequestID == "" {
+		t.Fatalf("recovery did not persist updated grant metadata: %#v", saved)
+	}
+	if updatedCfg.Clusters["home"].Namespaces["observability"].Services["myapi"].GrantServicePeer != grantPeer {
+		t.Fatalf("updated config did not capture recovered peer: %#v", updatedCfg.Clusters["home"].Namespaces["observability"].Services["myapi"])
+	}
+}
+
+func TestGrantsRequestRecoversFromStaleConfiguredGrantPeer(t *testing.T) {
+	configPath, _, _, stalePeer, grantPeer := newStaleGrantPeerRecoveryFixture(t)
+	out, err := capture(func() error {
+		return run([]string{"grants", "request", "service/myapi", "--config", configPath, "--ttl", "168h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Status: pending") {
+		t.Fatalf("unexpected request output: %s", out)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := cfg.Clusters["home"].Namespaces["observability"].Services["myapi"]
+	if svc.GrantServicePeer != grantPeer {
+		t.Fatalf("grant service peer = %q, want %q", svc.GrantServicePeer, grantPeer)
+	}
+	if svc.GrantServicePeer == stalePeer {
+		t.Fatal("stale grant service peer was not replaced")
+	}
+	if svc.GrantRequestID == "" {
+		t.Fatal("grant request id was not saved after recovery")
 	}
 }
 
@@ -4785,7 +4918,7 @@ func TestRequestPublishGrantReusesPendingRequestIDWithoutSubmittingDuplicates(t 
 		t.Fatal(err)
 	}
 	updatedCfg, updatedSvc, _, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
-	if err == nil || !strings.Contains(err.Error(), "is pending") {
+	if err == nil || !strings.Contains(err.Error(), "grant request pending") {
 		t.Fatalf("expected pending error from first request, got %v", err)
 	}
 	firstID := updatedSvc.GrantRequestID
@@ -4800,7 +4933,7 @@ func TestRequestPublishGrantReusesPendingRequestIDWithoutSubmittingDuplicates(t 
 		t.Fatalf("expected one pending request after first submit, got %d", len(pending))
 	}
 	_, updatedSvc, _, err = requestPublishGrantForAttach(configPath, updatedCfg, updatedSvc, servicePeerID.String())
-	if err == nil || !strings.Contains(err.Error(), "is pending") {
+	if err == nil || !strings.Contains(err.Error(), "grant request pending") {
 		t.Fatalf("expected pending error from retry, got %v", err)
 	}
 	if updatedSvc.GrantRequestID != firstID {
