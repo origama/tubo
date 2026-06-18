@@ -3,6 +3,7 @@ package edge
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,24 +33,26 @@ import (
 
 // Config captures the runtime configuration of the edge gateway.
 type Config struct {
-	HTTPListen               string
-	P2PListen                string
-	Seed                     string
-	AdminListen              string
-	BootstrapPeers           []string
-	RelayPeers               []string
-	BootstrapRetryInterval   time.Duration
-	DirectStreamTimeout      time.Duration
-	PrivateKeyFile           string
-	PrivateKeyB64            string
-	AuthorityPublicKey       string
-	DiscoveryTopic           string
-	DiscoveryPreviousTopic   string
-	DiscoveryMode            string
-	DiscoveryClusterID       string
-	DiscoveryNamespaceID     string
-	DiscoveryContext         *discovery.NamespaceDiscoveryContext
-	DiscoveryPreviousContext *discovery.NamespaceDiscoveryContext
+	HTTPListen                      string
+	P2PListen                       string
+	Seed                            string
+	AdminListen                     string
+	BootstrapPeers                  []string
+	RelayPeers                      []string
+	BootstrapRetryInterval          time.Duration
+	DirectStreamTimeout             time.Duration
+	PrivateKeyFile                  string
+	PrivateKeyB64                   string
+	AuthorityPublicKey              string
+	DiscoveryTopic                  string
+	DiscoveryPreviousTopic          string
+	DiscoveryMode                   string
+	DiscoveryClusterID              string
+	DiscoveryNamespaceID            string
+	DiscoveryContext                *discovery.NamespaceDiscoveryContext
+	DiscoveryPreviousContext        *discovery.NamespaceDiscoveryContext
+	ConnectMembershipCapabilityFile string
+	ConnectMembershipGrantToken     string
 }
 
 // LoadConfigFromEnv loads edge configuration from environment variables.
@@ -93,18 +96,21 @@ type App struct {
 
 // Gateway holds all the components of the edge gateway.
 type Gateway struct {
-	host                host.Host
-	pubsub              *pubsub.PubSub
-	cache               *discovery.Cache
-	subscriber          *discovery.PubSubSubscriber
-	routes              *routing.RouteTable
-	relayPeers          []peer.AddrInfo
-	directStreamTimeout time.Duration
-	openStream          func(context.Context, peer.ID) (network.Stream, string, error)
-	relayRecoveryMu     sync.Mutex
-	relayRecoveryAfter  map[string]time.Time
-	relayRecoveryActive map[string]*relayRecoveryState
-	lastKnownEntries    map[string]*discovery.ServiceEntry
+	host                            host.Host
+	pubsub                          *pubsub.PubSub
+	cache                           *discovery.Cache
+	subscriber                      *discovery.PubSubSubscriber
+	routes                          *routing.RouteTable
+	relayPeers                      []peer.AddrInfo
+	directStreamTimeout             time.Duration
+	openStream                      func(context.Context, peer.ID) (network.Stream, string, error)
+	connectMembershipCapabilityFile string
+	connectMembershipGrantToken     string
+	authorityPublicKey              ed25519.PublicKey
+	relayRecoveryMu                 sync.Mutex
+	relayRecoveryAfter              map[string]time.Time
+	relayRecoveryActive             map[string]*relayRecoveryState
+	lastKnownEntries                map[string]*discovery.ServiceEntry
 }
 
 // relayRecoveryState coordinates edge-side relay recovery so concurrent
@@ -121,7 +127,7 @@ const (
 
 // New constructs a new edge runtime.
 func New(ctx context.Context, cfg Config) (*App, error) {
-	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64, cfg.AuthorityPublicKey, cfg.DiscoveryTopic, cfg.DiscoveryPreviousTopic, cfg.DiscoveryMode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.DiscoveryContext, cfg.DiscoveryPreviousContext)
+	gw, stopSubscriber, err := newGateway(ctx, cfg.P2PListen, cfg.Seed, cfg.RelayPeers, cfg.DirectStreamTimeout, cfg.PrivateKeyFile, cfg.PrivateKeyB64, cfg.AuthorityPublicKey, cfg.DiscoveryTopic, cfg.DiscoveryPreviousTopic, cfg.DiscoveryMode, cfg.DiscoveryClusterID, cfg.DiscoveryNamespaceID, cfg.DiscoveryContext, cfg.DiscoveryPreviousContext, cfg.ConnectMembershipCapabilityFile, cfg.ConnectMembershipGrantToken)
 	if err != nil {
 		return nil, err
 	}
@@ -235,7 +241,7 @@ func adminMux(gw *Gateway) *http.ServeMux {
 	return mux
 }
 
-func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64, authorityPublicKey, discoveryTopic, discoveryPreviousTopic, discoveryMode, discoveryClusterID, discoveryNamespaceID string, discoveryContext, discoveryPreviousContext *discovery.NamespaceDiscoveryContext) (*Gateway, chan struct{}, error) {
+func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string, directStreamTimeout time.Duration, privateKeyFile, privateKeyB64, authorityPublicKey, discoveryTopic, discoveryPreviousTopic, discoveryMode, discoveryClusterID, discoveryNamespaceID string, discoveryContext, discoveryPreviousContext *discovery.NamespaceDiscoveryContext, connectMembershipCapabilityFile, connectMembershipGrantToken string) (*Gateway, chan struct{}, error) {
 	psk, usingPrivateNetwork, err := p2p.LoadPrivateNetworkPSK(privateKeyFile, privateKeyB64)
 	if err != nil {
 		return nil, nil, fmt.Errorf("load private network key: %w", err)
@@ -287,8 +293,10 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		contexts = append(contexts, *discoveryPreviousContext)
 	}
 	sub := discovery.NewPubSubSubscriberV3(topics, cache, contexts)
+	var authorityPub ed25519.PublicKey
 	if authorityPublicKey != "" {
 		if raw, err := discovery.ParseAuthorityPublicKey(authorityPublicKey); err == nil {
+			authorityPub = raw
 			sub.SetAuthorityPublicKey(raw)
 		} else {
 			return nil, nil, fmt.Errorf("parse authority public key: %w", err)
@@ -310,16 +318,19 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 	}
 
 	gw := &Gateway{
-		host:                h,
-		pubsub:              ps,
-		cache:               cache,
-		subscriber:          sub,
-		routes:              routing.NewRouteTable(),
-		relayPeers:          parsedRelayPeers,
-		directStreamTimeout: directStreamTimeout,
-		relayRecoveryAfter:  make(map[string]time.Time),
-		relayRecoveryActive: make(map[string]*relayRecoveryState),
-		lastKnownEntries:    make(map[string]*discovery.ServiceEntry),
+		host:                            h,
+		pubsub:                          ps,
+		cache:                           cache,
+		subscriber:                      sub,
+		routes:                          routing.NewRouteTable(),
+		relayPeers:                      parsedRelayPeers,
+		directStreamTimeout:             directStreamTimeout,
+		connectMembershipCapabilityFile: connectMembershipCapabilityFile,
+		connectMembershipGrantToken:     connectMembershipGrantToken,
+		authorityPublicKey:              authorityPub,
+		relayRecoveryAfter:              make(map[string]time.Time),
+		relayRecoveryActive:             make(map[string]*relayRecoveryState),
+		lastKnownEntries:                make(map[string]*discovery.ServiceEntry),
 	}
 	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "gateway", cache))
 	if len(gw.relayPeers) > 0 {
@@ -1000,6 +1011,12 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	log.Printf("resolved service=%q peer=%s addrs=%v", route.ServiceName, entry.PeerID, entry.Addresses)
+	connectProof, err := gw.connectProofForService(r.Context(), entry)
+	if err != nil {
+		log.Printf("connect authorization failed service=%q peer=%s err=%v duration=%s", route.ServiceName, entry.PeerID, err, time.Since(start))
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
 	gw.seedPeerstoreFromDiscoveryEntry(entry)
 	if gw.waitingForFreshRelayAnnouncement(entry) {
 		log.Printf("proxy waiting for fresh relay announcement service=%q peer=%s registered=%s", route.ServiceName, entry.PeerID, entry.Registered.Format(time.RFC3339Nano))
@@ -1070,7 +1087,7 @@ func (gw *Gateway) handleProxy(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		resp, err = p2p.HandleClientRequest(stream, "edge", r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader, nil)
+		resp, err = p2p.HandleClientRequest(stream, "edge", r.Method, r.URL.Path, r.URL.RawQuery, headers, bodyReader, connectProof)
 		if err == nil {
 			defer stream.Close()
 			break

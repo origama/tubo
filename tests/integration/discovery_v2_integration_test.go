@@ -5,8 +5,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
@@ -31,7 +33,6 @@ import (
 )
 
 func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
-	t.Skip("TODO #264: gateway still opens proof-less edge streams; migrate to authorized connect sessions")
 	dummy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -57,6 +58,14 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 	authorityKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH)))
 	serviceOwnerPub, serviceOwnerPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		t.Fatal(err)
+	}
+	serviceOwnerKeyDer, err := x509.MarshalPKCS8PrivateKey(serviceOwnerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceOwnerKeyPath := filepath.Join(t.TempDir(), "service-owner.key")
+	if err := os.WriteFile(serviceOwnerKeyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: serviceOwnerKeyDer}), 0600); err != nil {
 		t.Fatal(err)
 	}
 	serviceID := serviceidentity.ServiceIDFromPublicKey(serviceOwnerPub)
@@ -88,6 +97,29 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 	if err := os.WriteFile(capPath, append(membershipBytes, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
+	gatewayMembership, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   namespaceName,
+		SubjectPeerID: "cluster-123",
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+			capability.PermissionConnect,
+		},
+		ExpiresAt: time.Now().Add(time.Hour),
+	}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayMembershipBytes, err := json.MarshalIndent(gatewayMembership, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayCapPath := filepath.Join(t.TempDir(), "gateway.membership.cap.json")
+	if err := os.WriteFile(gatewayCapPath, append(gatewayMembershipBytes, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
 	claim, err := capability.SignServiceClaim(capability.ServiceClaim{
 		ClusterID:     "cluster-123",
 		NamespaceID:   namespaceName,
@@ -113,7 +145,7 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 		ServiceID:             serviceID,
 		ServicePublicKey:      serviceidentity.EncodePublicKey(serviceOwnerPub),
 		PublisherPeerID:       servicePeerID.String(),
-		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
 		Nonce:                 "discovery-v2-integration-lease",
 	}, serviceOwnerPriv)
 	if err != nil {
@@ -159,19 +191,20 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 	serviceHealth := freePort(t)
 
 	edgeApp, err := edge.New(context.Background(), edge.Config{
-		HTTPListen:               fmt.Sprintf("127.0.0.1:%d", edgeHTTP),
-		AdminListen:              fmt.Sprintf("127.0.0.1:%d", edgeAdmin),
-		P2PListen:                fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P),
-		Seed:                     "edge-discovery-v2-seed",
-		BootstrapRetryInterval:   500 * time.Millisecond,
-		DirectStreamTimeout:      250 * time.Millisecond,
-		AuthorityPublicKey:       authorityKey,
-		DiscoveryTopic:           runtime.Topic,
-		DiscoveryMode:            runtime.Mode.String(),
-		DiscoveryClusterID:       runtime.ClusterID,
-		DiscoveryNamespaceID:     runtime.NamespaceID,
-		DiscoveryContext:         runtime.Context,
-		DiscoveryPreviousContext: runtime.PreviousContext,
+		HTTPListen:                      fmt.Sprintf("127.0.0.1:%d", edgeHTTP),
+		AdminListen:                     fmt.Sprintf("127.0.0.1:%d", edgeAdmin),
+		P2PListen:                       fmt.Sprintf("/ip4/127.0.0.1/tcp/%d", edgeP2P),
+		Seed:                            "edge-discovery-v2-seed",
+		BootstrapRetryInterval:          500 * time.Millisecond,
+		DirectStreamTimeout:             250 * time.Millisecond,
+		AuthorityPublicKey:              authorityKey,
+		DiscoveryTopic:                  runtime.Topic,
+		DiscoveryMode:                   runtime.Mode.String(),
+		DiscoveryClusterID:              runtime.ClusterID,
+		DiscoveryNamespaceID:            runtime.NamespaceID,
+		DiscoveryContext:                runtime.Context,
+		DiscoveryPreviousContext:        runtime.PreviousContext,
+		ConnectMembershipCapabilityFile: gatewayCapPath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -193,8 +226,10 @@ func TestClusterModeDiscoveryV2EndToEnd(t *testing.T) {
 		DiscoveryContext:         runtime.Context,
 		DiscoveryPreviousContext: runtime.PreviousContext,
 		AuthorityPublicKey:       authorityKey,
+		ConnectPolicy:            string(cfgpkg.ConnectPolicyNamespaceMember),
 		MembershipCapabilityFile: capPath,
 		ServiceClaimFile:         claimPath,
+		ServiceOwnerKeyFile:      serviceOwnerKeyPath,
 		ServicePublishLeaseFile:  leasePath,
 	})
 	if err != nil {
@@ -329,7 +364,7 @@ func TestClusterModeDiscoveryV2PublishesReachableGrantEndpoint(t *testing.T) {
 		ServiceID:             serviceID,
 		ServicePublicKey:      serviceidentity.EncodePublicKey(serviceOwnerPub),
 		PublisherPeerID:       servicePeerID.String(),
-		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce},
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
 		Nonce:                 "discovery-v2-grant-endpoint-lease",
 	}, serviceOwnerPriv)
 	if err != nil {

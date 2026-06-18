@@ -3,6 +3,8 @@ package launcher
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	bridge "github.com/origama/tubo/internal/app/bridge"
@@ -36,6 +38,28 @@ type Deps interface {
 	NewBridge(context.Context, bridge.Config) (Runner, error)
 }
 
+func edgeConnectAuthorization(cluster cfgpkg.Cluster, namespace string) (string, string) {
+	if ns, ok := cluster.Namespaces[strings.TrimSpace(namespace)]; ok && strings.TrimSpace(ns.MembershipCapabilityFile) != "" {
+		return ns.MembershipCapabilityFile, edgeMembershipGrantToken(cluster)
+	}
+	return cluster.MembershipCapabilityFile, edgeMembershipGrantToken(cluster)
+}
+
+func edgeMembershipGrantToken(cluster cfgpkg.Cluster) string {
+	if cluster.MembershipGrant == nil {
+		return ""
+	}
+	if token := strings.TrimSpace(cluster.MembershipGrant.InviteToken); token != "" {
+		return token
+	}
+	if path := strings.TrimSpace(cluster.MembershipGrant.InviteTokenFile); path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
 func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Config) error {
 	cluster := cfg.Clusters[cfg.CurrentCluster]
 	switch role {
@@ -44,25 +68,28 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		if err != nil {
 			return err
 		}
+		connectMembershipCapabilityFile, connectMembershipGrantToken := edgeConnectAuthorization(cluster, cfg.CurrentNamespace)
 		runner, err := deps.NewEdge(ctx, edge.Config{
-			HTTPListen:               cfg.Edge.Listen,
-			P2PListen:                cfg.Node.P2PListen,
-			Seed:                     cfg.Node.Seed,
-			AdminListen:              cfg.Edge.AdminListen,
-			BootstrapPeers:           cfg.Network.BootstrapPeers,
-			RelayPeers:               cfg.Network.RelayPeers,
-			BootstrapRetryInterval:   5 * time.Second,
-			DirectStreamTimeout:      cfg.Edge.DirectStreamTimeout.Duration(),
-			PrivateKeyFile:           cfg.Network.PrivateKeyFile,
-			PrivateKeyB64:            cfg.Network.PrivateKeyB64,
-			AuthorityPublicKey:       cluster.AuthorityPublicKey,
-			DiscoveryTopic:           runtime.Topic,
-			DiscoveryPreviousTopic:   runtime.PreviousTopic,
-			DiscoveryMode:            runtime.Mode.String(),
-			DiscoveryClusterID:       runtime.ClusterID,
-			DiscoveryNamespaceID:     runtime.NamespaceID,
-			DiscoveryContext:         runtime.Context,
-			DiscoveryPreviousContext: runtime.PreviousContext,
+			HTTPListen:                      cfg.Edge.Listen,
+			P2PListen:                       cfg.Node.P2PListen,
+			Seed:                            cfg.Node.Seed,
+			AdminListen:                     cfg.Edge.AdminListen,
+			BootstrapPeers:                  cfg.Network.BootstrapPeers,
+			RelayPeers:                      cfg.Network.RelayPeers,
+			BootstrapRetryInterval:          5 * time.Second,
+			DirectStreamTimeout:             cfg.Edge.DirectStreamTimeout.Duration(),
+			PrivateKeyFile:                  cfg.Network.PrivateKeyFile,
+			PrivateKeyB64:                   cfg.Network.PrivateKeyB64,
+			AuthorityPublicKey:              cluster.AuthorityPublicKey,
+			DiscoveryTopic:                  runtime.Topic,
+			DiscoveryPreviousTopic:          runtime.PreviousTopic,
+			DiscoveryMode:                   runtime.Mode.String(),
+			DiscoveryClusterID:              runtime.ClusterID,
+			DiscoveryNamespaceID:            runtime.NamespaceID,
+			DiscoveryContext:                runtime.Context,
+			DiscoveryPreviousContext:        runtime.PreviousContext,
+			ConnectMembershipCapabilityFile: connectMembershipCapabilityFile,
+			ConnectMembershipGrantToken:     connectMembershipGrantToken,
 		})
 		if err != nil {
 			return err
