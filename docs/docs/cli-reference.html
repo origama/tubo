@@ -159,7 +159,7 @@
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe namespace/</span>default
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo describe secret/</span>namespace-discovery/myteam/default</pre>
     </div>
-    <p><code>describe process/...</code> and <code>inspect process/... --json</code> expose detached process runtime state, including network reachability state/reason, recovery timestamps, and next-refresh retry timing for bridge/connect children. Event timestamps use <code>... ago</code> labels, while lease expiry fields keep their existing <code>expires in</code> labels. For attached services, <code>describe</code> also shows whether the service-scoped grant endpoint is enabled, plus the effective connect policy and grant protocol when available. In foreground <code>attach</code>, the running-in-foreground notice now waits until publish authorization is resolved, so missing grant-peer errors appear before any success-style hint.</p>
+    <p><code>describe process/...</code> and <code>inspect process/... --json</code> expose detached process runtime state, including network reachability state/reason, recovery timestamps, and next-refresh retry timing for bridge/connect children. <code>describe pipe/...</code> and <code>inspect pipe/... --json</code> expose the saved pipe definition for detached <code>connect</code>. Event timestamps use <code>... ago</code> labels, while lease expiry fields keep their existing <code>expires in</code> labels. For attached services, <code>describe</code> also shows whether the service-scoped grant endpoint is enabled, plus the effective connect policy and grant protocol when available. In foreground <code>attach</code>, the running-in-foreground notice now waits until publish authorization is resolved, so missing grant-peer errors appear before any success-style hint.</p>
 
     <h2>tubo create / use / share</h2>
     <div class="code-block" style="margin:12px 0 20px">
@@ -178,11 +178,15 @@
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo rotate secret/</span>namespace-discovery/myteam/default <span style="color:#86efac">--grace</span> 24h</pre>
     </div>
 
-    <h2>tubo ps / logs / stop / rm</h2>
+    <h2>tubo ps / logs / start / restart / stop / rm</h2>
     <div class="code-block" style="margin:12px 0 20px">
       <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo ps</span>                              <span style="color:#6b7280"># list local detached processes</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo logs process/</span>attach-myapi        <span style="color:#6b7280"># follow logs</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo start pipe/</span>connect-myapi-1234    <span style="color:#6b7280"># start from saved pipe definition</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo restart pipe/</span>connect-myapi-1234  <span style="color:#6b7280"># restart from saved pipe definition</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo stop process/</span>attach-myapi        <span style="color:#6b7280"># stop a process</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo stop pipe/</span>connect-myapi-1234     <span style="color:#6b7280"># stop the runtime only</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo rm pipe/</span>connect-myapi-1234 <span style="color:#86efac">--force</span>  <span style="color:#6b7280"># remove saved pipe definition</span>
 <span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo rm</span> <span style="color:#86efac">--stale</span>                        <span style="color:#6b7280"># remove terminated process state</span></pre>
     </div>
 

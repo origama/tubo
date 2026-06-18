@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
-## [Unreleased]
+## [v0.12.0] - 2026-06-17
 
 ### Added
 - `tubo get services -a/--all` now adds a local service inventory projection for the current cluster/namespace, merging local definitions with discovery results and showing a `SOURCE` column plus synthetic statuses for local-only rows.
@@ -14,6 +14,9 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo start pipe/<name>`, `tubo restart pipe/<name>`, and `tubo rm pipe/<name>` now use the persistent pipe definition added for detached connect, while `tubo stop pipe/<name>` remains process-backed and preserves that definition.
 - Detached `connect -d` now persists a first-class `pipe/<name>` definition with saved scope, service reference/ID, local listener, and selected route fields, and `tubo inspect pipe/<name>` can show that stored definition.
 - Detached `connect --token ... -d` now preserves the token scope for pipe persistence and rolls the saved pipe definition back from the exact persisted scope if startup fails.
+
+### Changed
+- Pipe lifecycle commands now operate from the saved pipe definition instead of requiring a retyped connect command, and detached connect now records enough scope metadata for `pipe/<name>` start/restart/rm to work cleanly.
 
 ### Fixed
 - Protected service data-plane streams now require a valid connect proof regardless of client-supplied `Hello.Role`, so non-bridge roles can no longer bypass authorization before the HTTP upstream is called or the TCP target is dialed.
@@ -28,6 +31,14 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo logs` now reads tail output from the end of the file in bounded chunks, so large process logs no longer require loading the full file into memory.
 - Detached `attach -d` / `connect -d` can now recover from compatible stale process state instead of forcing `tubo rm --stale`, while still failing closed on conflicts or live processes, including the case where a zero-PID state file still has a live pid file.
 - `tubo grants serve` help/docs now clarify that `--public-auto-approve` is the current legacy auto-approval switch, and document the `--claim-ttl` publish-authorization TTL knob separately from share/connect lifetimes.
+
+### Compatibility
+- Product version: v0.12.0
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none
+
+## [Unreleased]
 
 ## [v0.11.0] - 2026-06-15
 

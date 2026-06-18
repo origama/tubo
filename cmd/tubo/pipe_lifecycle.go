@@ -41,7 +41,7 @@ func pipeLifecycleRequest(configPath string, scope serviceScope, def cfgpkg.Name
 
 func pipeLifecycleChildArgs(configPath string, scope serviceScope, def cfgpkg.NamespacePipe) []string {
 	serviceRef := firstNonEmpty(strings.TrimSpace(def.ServiceRef), strings.TrimSpace(def.ServiceID))
-	args := []string{"connect"}
+	args := make([]string, 0, 8)
 	if serviceRef != "" {
 		args = append(args, serviceRef)
 	}
