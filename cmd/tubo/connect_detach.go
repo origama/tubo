@@ -92,8 +92,13 @@ func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
 	if err != nil {
 		return err
 	}
+	previousPipe, pipeExisted, err := persistPipeDefinitionFromConnect(req.ConfigPath, req, spec.State)
+	if err != nil {
+		return err
+	}
 	state, err := startDetachedProcessWithTimeout(spec, 5*time.Second)
 	if err != nil {
+		_ = restorePipeDefinition(req.ConfigPath, spec.State.Cluster, spec.State.Namespace, spec.State.Name, previousPipe, pipeExisted)
 		return err
 	}
 	if req.JSONOut {

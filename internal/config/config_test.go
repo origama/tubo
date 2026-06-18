@@ -677,6 +677,52 @@ func TestConfigRoundTripWithDiscoverySecretRefs(t *testing.T) {
 	}
 }
 
+func TestConfigRoundTripPreservesNamespacePipes(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{
+		Clusters: map[string]Cluster{
+			"home": {
+				ClusterID: "cluster-123",
+				Namespaces: map[string]Namespace{
+					"team": {
+						Pipes: map[string]NamespacePipe{
+							"connect-myapi-1234": {
+								Name:         "connect-myapi-1234",
+								ServiceRef:   "myapi",
+								ServiceID:    "service-123",
+								ServiceKind:  ServiceKindTCP,
+								ClusterID:    "cluster-123",
+								NamespaceID:  "team",
+								Local:        "127.0.0.1:1234",
+								Path:         "relayed",
+								SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/peer",
+								SelectedPath: "relayed",
+								CreatedAt:    time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC),
+								UpdatedAt:    time.Date(2026, 6, 2, 10, 5, 0, 0, time.UTC),
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	path := filepath.Join(dir, "config.yaml")
+	if err := WriteFile(path, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipe, ok := loaded.Clusters["home"].Namespaces["team"].Pipes["connect-myapi-1234"]
+	if !ok {
+		t.Fatal("pipe definition missing after roundtrip")
+	}
+	if pipe.ServiceRef != "myapi" || pipe.ServiceID != "service-123" || pipe.Local != "127.0.0.1:1234" || pipe.SelectedAddr == "" || pipe.CreatedAt.IsZero() || pipe.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected pipe roundtrip: %#v", pipe)
+	}
+}
+
 func TestLoadLegacyTimeFormatsInConfig(t *testing.T) {
 	y := `role: relay
 clusters:

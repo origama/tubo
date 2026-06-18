@@ -40,10 +40,11 @@ Persistent local consumer definition. Owns local listener intent and the pinned 
 Fields:
 - name
 - service_ref
-- pinned_service_id after first successful resolution
+- pinned service_id when known
 - scope: cluster/namespace
 - local address
 - service_kind
+- selected addr/path when known
 - connect mode: discovery/share-token/direct where applicable
 
 Suggested storage: a peer resource tree beside services, e.g. `clusters/<cluster>/namespaces/<namespace>/pipes/<name>`.
@@ -86,6 +87,7 @@ Current storage: `~/.local/share/tubo/processes`, `~/.local/share/tubo/logs`, `~
 ## D. Connect semantics
 
 - `tubo connect ...` = define pipe if missing + start pipe.
+- Detached `connect -d` also writes the persistent pipe definition so future pipe lifecycle commands can reuse the saved scope, service ref, service ID, and local listener.
 - After first successful resolution, pipe should pin the resolved `service_id`.
 - Runtime-selected peer/path is process state, not pipe definition.
 - Rebind behavior is out of scope here and belongs to #208.
@@ -111,7 +113,7 @@ Current storage: `~/.local/share/tubo/processes`, `~/.local/share/tubo/logs`, `~
 ## Current gaps
 
 - `grant_request_id` is stored in the service definition and is cleared once an approved lease is consumed; the remaining work is mostly around duplicate-grouped grant review UX (#256).
-- Detached `connect` currently persists only runtime process state; there is not yet a first-class persistent `pipe/<name>` config resource.
+- Detached `connect` now persists a first-class `pipe/<name>` config resource alongside runtime process state; the remaining work is the full pipe lifecycle command set.
 - The running service process does not watch config changes; it relies on the publish-authorization handler and lease files, so any future request-id clearing must stay file-backed and deterministic.
 - `grant_service_peer` may be seeded or refreshed from discovery at runtime, but the persisted service definition remains the source of truth for durable identity and pending-request tracking; #249 can still rediscover and update a stale peer field.
 

@@ -144,6 +144,7 @@ type Namespace struct {
 	DiscoverySecretPrevious  *ManagedSecretRef           `yaml:"discovery_secret_previous,omitempty" json:"discovery_secret_previous,omitempty"`
 	ConnectPolicy            ConnectPolicy               `yaml:"connect_policy,omitempty" json:"connect_policy,omitempty"`
 	Services                 map[string]NamespaceService `yaml:"services,omitempty" json:"services,omitempty"`
+	Pipes                    map[string]NamespacePipe    `yaml:"pipes,omitempty" json:"pipes,omitempty"`
 }
 
 type NamespaceService struct {
@@ -156,6 +157,21 @@ type NamespaceService struct {
 	ServicePublishLeaseFile string      `yaml:"service_publish_lease_file,omitempty" json:"service_publish_lease_file,omitempty"`
 	GrantRequestID          string      `yaml:"grant_request_id,omitempty" json:"grant_request_id,omitempty"`
 	GrantServicePeer        string      `yaml:"grant_service_peer,omitempty" json:"grant_service_peer,omitempty"`
+}
+
+type NamespacePipe struct {
+	Name         string      `yaml:"name,omitempty" json:"name,omitempty"`
+	ServiceRef   string      `yaml:"service_ref,omitempty" json:"service_ref,omitempty"`
+	ServiceID    string      `yaml:"service_id,omitempty" json:"service_id,omitempty"`
+	ServiceKind  ServiceKind `yaml:"service_kind,omitempty" json:"service_kind,omitempty"`
+	ClusterID    string      `yaml:"cluster_id,omitempty" json:"cluster_id,omitempty"`
+	NamespaceID  string      `yaml:"namespace_id,omitempty" json:"namespace_id,omitempty"`
+	Local        string      `yaml:"local,omitempty" json:"local,omitempty"`
+	Path         string      `yaml:"path,omitempty" json:"path,omitempty"`
+	SelectedAddr string      `yaml:"selected_addr,omitempty" json:"selected_addr,omitempty"`
+	SelectedPath string      `yaml:"selected_path,omitempty" json:"selected_path,omitempty"`
+	CreatedAt    time.Time   `yaml:"created_at,omitempty" json:"created_at,omitempty"`
+	UpdatedAt    time.Time   `yaml:"updated_at,omitempty" json:"updated_at,omitempty"`
 }
 
 type DiscoveryMode string
@@ -587,6 +603,12 @@ func cloneNamespace(in Namespace) Namespace {
 		out.Services = make(map[string]NamespaceService, len(in.Services))
 		for k, v := range in.Services {
 			out.Services[k] = v
+		}
+	}
+	if len(in.Pipes) > 0 {
+		out.Pipes = make(map[string]NamespacePipe, len(in.Pipes))
+		for k, v := range in.Pipes {
+			out.Pipes[k] = v
 		}
 	}
 	return out

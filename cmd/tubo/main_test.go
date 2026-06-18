@@ -606,6 +606,74 @@ func TestBuildDetachedConnectSpecUsesTokenServiceKindForTCP(t *testing.T) {
 	}
 }
 
+func TestPersistPipeDefinitionFromConnectAndInspect(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{
+		CurrentOverlay:   "manual",
+		CurrentCluster:   "home",
+		CurrentNamespace: "team",
+		Overlays:         map[string]cfgpkg.Overlay{"manual": {}},
+		Clusters: map[string]cfgpkg.Cluster{
+			"home": {ClusterID: "cluster-123", Namespaces: map[string]cfgpkg.Namespace{"team": {}}},
+		},
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	req := connectCLIRequest{ServiceRef: "myapi", ConfigPath: configPath}
+	state := detachedProcessState{Name: "connect-myapi-1234", ServiceID: "service-123", ServiceKind: "tcp", Cluster: "home", Namespace: "team", Local: "tcp://127.0.0.1:1234", Path: "relayed", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/peer", SelectedPath: "relayed"}
+	previous, existed, err := persistPipeDefinitionFromConnect(configPath, req, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existed || previous.Name != "" {
+		t.Fatalf("expected new pipe definition, got existed=%v previous=%#v", existed, previous)
+	}
+	loaded, err := loadPipeDefinition(configPath, "home", "team", state.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Name != state.Name || loaded.ServiceRef != "myapi" || loaded.ServiceID != "service-123" || loaded.Local != "127.0.0.1:1234" || loaded.Path != "relayed" || loaded.SelectedAddr == "" {
+		t.Fatalf("unexpected persisted pipe definition: %#v", loaded)
+	}
+	if view := pipeDefinitionViewFromDefinition(loaded); view.Status != "ready" || len(view.Missing) != 0 {
+		t.Fatalf("unexpected pipe view: %#v", view)
+	}
+	out, err := capture(func() error {
+		return inspectPipeDefinition(configPath, "pipe/"+state.Name, true, "home", "team")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspectOut struct {
+		Status string `json:"status"`
+		Pipe   struct {
+			ServiceID string `json:"service_id"`
+		} `json:"pipe"`
+	}
+	if err := json.Unmarshal([]byte(out), &inspectOut); err != nil {
+		t.Fatalf("inspect pipe json invalid: %v\n%s", err, out)
+	}
+	if inspectOut.Status != "ready" || inspectOut.Pipe.ServiceID != "service-123" {
+		t.Fatalf("inspect pipe json missing expected fields: %#v", inspectOut)
+	}
+}
+
+func TestPipeDefinitionViewMarksIncompleteLegacyDefinitions(t *testing.T) {
+	view := pipeDefinitionViewFromDefinition(cfgpkg.NamespacePipe{Name: "legacy", ClusterID: "home", NamespaceID: "team"})
+	if view.Status != "incomplete" {
+		t.Fatalf("status = %q", view.Status)
+	}
+	want := map[string]bool{"service_ref/service_id": true, "service_kind": true, "local": true}
+	for _, field := range view.Missing {
+		delete(want, field)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing fields not reported: %#v", view.Missing)
+	}
+}
+
 func TestConnectForegroundUsesNormalizedLocalForProcessState(t *testing.T) {
 	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
 	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", LocalURL: "tcp://127.0.0.1:1234", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/peer", Path: "relayed"}
