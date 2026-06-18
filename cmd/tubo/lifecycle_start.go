@@ -33,7 +33,7 @@ func startCmd(args []string) error {
 		}
 	}
 	if len(positionals) != 1 {
-		return errors.New("usage: tubo start [--config <path>] service/<name>")
+		return errors.New("usage: tubo start [--config <path>] <service/name|pipe/name>")
 	}
 	kind, name, err := parseLocalResourceRef(positionals[0])
 	if err != nil {
@@ -47,8 +47,15 @@ func startCmd(args []string) error {
 		}
 		printDetachedSummary("start", state)
 		return nil
+	case "pipe":
+		state, err := startPipeLifecycle(name, configPath)
+		if err != nil {
+			return err
+		}
+		printDetachedSummary("start", state)
+		return nil
 	default:
-		return fmt.Errorf("start currently supports only service/<name> in this slice")
+		return fmt.Errorf("start currently supports only service/<name> and pipe/<name>")
 	}
 }
 

@@ -156,8 +156,8 @@ func serviceScopeMatches(view processView, ctx workspace.ServiceContext) bool {
 }
 
 func stopPipeLifecycle(name string, force bool) (detachedProcessState, error) {
-	// Initial stop-only slice: pipe/<name> resolves the registered connect
-	// process state, not a persistent pipe definition yet.
+	// Pipe stop stays process-backed and does not delete the persistent
+	// pipe definition.
 	views, err := listProcessViews(true)
 	if err != nil {
 		return detachedProcessState{}, err

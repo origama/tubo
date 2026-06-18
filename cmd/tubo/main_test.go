@@ -753,6 +753,19 @@ func TestPipeDefinitionViewMarksIncompleteLegacyDefinitions(t *testing.T) {
 	}
 }
 
+func TestStartCmdRejectsIncompletePipeDefinition(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Pipes: map[string]cfgpkg.NamespacePipe{"legacy": {Name: "legacy"}}}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err := capture(func() error { return startCmd([]string{"pipe/legacy", "--config", configPath}) })
+	if err == nil || !strings.Contains(err.Error(), "incomplete") {
+		t.Fatalf("expected incomplete pipe error, got %v", err)
+	}
+}
+
 func TestConnectForegroundUsesNormalizedLocalForProcessState(t *testing.T) {
 	req := connectCLIRequest{ServiceRef: "lms", Local: "127.0.0.1:1234"}
 	result := connectflow.Result{ServiceName: "lms", ServiceKind: "tcp", ServiceID: "service-123", LocalURL: "tcp://127.0.0.1:1234", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/peer", Path: "relayed"}
@@ -1129,6 +1142,11 @@ func TestStopCmdPrefersExactServiceIDOverLegacyNameMatch(t *testing.T) {
 
 func TestStopCmdStopsPipeLifecycleRuntime(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Pipes: map[string]cfgpkg.NamespacePipe{"connect-lms-1234": {Name: "connect-lms-1234", ServiceRef: "lms", ServiceKind: cfgpkg.ServiceKindTCP, Local: "127.0.0.1:1234"}}}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -1153,6 +1171,147 @@ func TestStopCmdStopsPipeLifecycleRuntime(t *testing.T) {
 	}
 	if pidRunning(state.PID) {
 		t.Fatal("expected pipe runtime to stop")
+	}
+	if _, err := loadPipeDefinition(configPath, "home", "default", "connect-lms-1234"); err != nil {
+		t.Fatalf("expected pipe definition to remain after stop: %v", err)
+	}
+}
+
+func TestStartCmdUsesPersistedPipeDefinition(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Pipes: map[string]cfgpkg.NamespacePipe{"connect-myapi-1234": {Name: "connect-myapi-1234", ServiceRef: "myapi", ServiceKind: cfgpkg.ServiceKindTCP, Local: "127.0.0.1:1234"}}}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	oldStart := startPipeDetachedProcessFn
+	var captured detachedSpec
+	startPipeDetachedProcessFn = func(spec detachedSpec) (detachedProcessState, error) {
+		captured = spec
+		return detachedProcessState{ID: spec.State.ID, Kind: "process", ResourceKind: "pipe", Command: "connect", Name: spec.State.Name, Local: spec.State.Local}, nil
+	}
+	defer func() { startPipeDetachedProcessFn = oldStart }()
+	out, err := capture(func() error { return startCmd([]string{"pipe/connect-myapi-1234", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "started") {
+		t.Fatalf("unexpected start output: %s", out)
+	}
+	if captured.State.Local != "127.0.0.1:1234" || captured.State.Cluster != "home" || captured.State.Namespace != "default" {
+		t.Fatalf("start pipe did not use persisted definition: %#v", captured.State)
+	}
+	if got := strings.Join(captured.ChildArgs, " "); !strings.Contains(got, "myapi") || !strings.Contains(got, "--local 127.0.0.1:1234") || !strings.Contains(got, "--cluster home") {
+		t.Fatalf("start pipe did not pass persisted args: %v", captured.ChildArgs)
+	}
+	if _, err := loadPipeDefinition(configPath, "home", "default", "connect-myapi-1234"); err != nil {
+		t.Fatalf("pipe definition should remain after start: %v", err)
+	}
+}
+
+func TestRestartCmdStartsPersistedPipeWhenStopped(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Pipes: map[string]cfgpkg.NamespacePipe{"connect-myapi-1234": {Name: "connect-myapi-1234", ServiceRef: "myapi", ServiceKind: cfgpkg.ServiceKindTCP, Local: "127.0.0.1:1234"}}}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	oldStart := startPipeDetachedProcessFn
+	var captured detachedSpec
+	startPipeDetachedProcessFn = func(spec detachedSpec) (detachedProcessState, error) {
+		captured = spec
+		return detachedProcessState{ID: spec.State.ID, Kind: "process", ResourceKind: "pipe", Command: "connect", Name: spec.State.Name, Local: spec.State.Local}, nil
+	}
+	defer func() { startPipeDetachedProcessFn = oldStart }()
+	out, err := capture(func() error { return restartCmd([]string{"pipe/connect-myapi-1234", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "started") {
+		t.Fatalf("unexpected restart output: %s", out)
+	}
+	if captured.State.Local != "127.0.0.1:1234" || captured.State.Cluster != "home" || captured.State.Namespace != "default" {
+		t.Fatalf("restart pipe did not use persisted definition: %#v", captured.State)
+	}
+}
+
+func TestRestartCmdRestartsRunningPipeFromPersistedDefinition(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Pipes: map[string]cfgpkg.NamespacePipe{"connect-myapi-1234": {Name: "connect-myapi-1234", ServiceRef: "myapi", ServiceKind: cfgpkg.ServiceKindTCP, Local: "127.0.0.1:1234"}}}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	state := detachedProcessState{ID: "process/connect-myapi-1234", Kind: "process", ResourceKind: "pipe", Command: "connect", Name: "connect-myapi-1234", Service: "myapi", ServiceKind: "tcp", ServiceID: "service-123", Cluster: "home", Namespace: "default", Local: "127.0.0.1:1234", Target: "myapi", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "connect-myapi-1234.pid"), StateFile: filepath.Join(processStateDir(), "connect-myapi-1234.json"), LogFile: filepath.Join(processLogDir(), "connect-myapi-1234.log")}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	oldStart := startPipeDetachedProcessFn
+	var captured detachedSpec
+	startPipeDetachedProcessFn = func(spec detachedSpec) (detachedProcessState, error) {
+		captured = spec
+		return detachedProcessState{ID: spec.State.ID, Kind: "process", ResourceKind: "pipe", Command: "connect", Name: spec.State.Name, Local: spec.State.Local}, nil
+	}
+	defer func() { startPipeDetachedProcessFn = oldStart }()
+	out, err := capture(func() error { return restartCmd([]string{"pipe/connect-myapi-1234", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "stopped "+state.ID) || !strings.Contains(out, "started") {
+		t.Fatalf("unexpected restart output: %s", out)
+	}
+	if pidRunning(state.PID) {
+		t.Fatal("expected running pipe runtime to stop before restart")
+	}
+	if captured.State.Local != "127.0.0.1:1234" || captured.State.Cluster != "home" || captured.State.Namespace != "default" {
+		t.Fatalf("restart pipe did not use persisted definition: %#v", captured.State)
+	}
+}
+
+func TestRmCmdRemovesPipeDefinitionAndRefusesRunningWithoutForce(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {Namespaces: map[string]cfgpkg.Namespace{"default": {Pipes: map[string]cfgpkg.NamespacePipe{"connect-myapi-1234": {Name: "connect-myapi-1234", ServiceRef: "myapi", ServiceKind: cfgpkg.ServiceKindTCP, Local: "127.0.0.1:1234"}}}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("sleep", "30")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	state := detachedProcessState{ID: "process/connect-myapi-1234", Kind: "process", ResourceKind: "pipe", Command: "connect", Name: "connect-myapi-1234", Service: "myapi", ServiceKind: "tcp", ServiceID: "service-123", Cluster: "home", Namespace: "default", Local: "127.0.0.1:1234", Target: "myapi", PID: cmd.Process.Pid, PIDFile: filepath.Join(processRunDir(), "connect-myapi-1234.pid"), StateFile: filepath.Join(processStateDir(), "connect-myapi-1234.json"), LogFile: filepath.Join(processLogDir(), "connect-myapi-1234.log")}
+	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
+	b, _ := json.Marshal(state)
+	_ = os.WriteFile(state.StateFile, b, 0600)
+	if _, err := capture(func() error { return rmCmd([]string{"pipe/connect-myapi-1234", "--config", configPath}) }); err == nil || !strings.Contains(err.Error(), "running or degraded") {
+		t.Fatalf("expected running-pipe refusal, got %v", err)
+	}
+	if _, err := capture(func() error { return rmCmd([]string{"pipe/connect-myapi-1234", "--config", configPath, "--force"}) }); err != nil {
+		t.Fatalf("force rm failed: %v", err)
+	}
+	if pidRunning(state.PID) {
+		t.Fatal("expected forced rm to stop the pipe runtime")
+	}
+	if _, err := loadPipeDefinition(configPath, "home", "default", "connect-myapi-1234"); err == nil {
+		t.Fatal("expected pipe definition to be removed")
 	}
 }
 
@@ -2213,7 +2372,7 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>", "persistent service definition", "legacy name-only matches", "process-backed"} {
+	for _, want := range []string{"tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>", "persistent service or pipe definition", "legacy name-only matches", "process-backed"} {
 		if !strings.Contains(stopHelp, want) {
 			t.Fatalf("stop help missing %q: %s", want, stopHelp)
 		}
@@ -2222,7 +2381,7 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tubo start [--config <path>] service/<name>", "stored local service definition", "already running"} {
+	for _, want := range []string{"tubo start [--config <path>] <service/name|pipe/name>", "stored local service definition or start a pipe runtime", "already running"} {
 		if !strings.Contains(startHelp, want) {
 			t.Fatalf("start help missing %q: %s", want, startHelp)
 		}
@@ -2231,7 +2390,7 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tubo restart [--config <path>] service/<name>", "stops a live degraded/running service runtime first", "starts directly from the stored definition"} {
+	for _, want := range []string{"tubo restart [--config <path>] <service/name|pipe/name>", "service or pipe runtime", "stops a live degraded/running runtime first", "starts directly from the stored definition"} {
 		if !strings.Contains(restartHelp, want) {
 			t.Fatalf("restart help missing %q: %s", want, restartHelp)
 		}
@@ -2240,7 +2399,7 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tubo rm --stale", "tubo rm [--config <path>] [--force] service/<name>", "service-scoped artifacts"} {
+	for _, want := range []string{"tubo rm --stale", "tubo rm [--config <path>] [--force] <service/name|pipe/name>", "service/pipe definition", "scoped artifacts"} {
 		if !strings.Contains(rmHelp, want) {
 			t.Fatalf("rm help missing %q: %s", want, rmHelp)
 		}
