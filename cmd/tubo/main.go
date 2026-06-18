@@ -2384,16 +2384,16 @@ func printSystemServicesCompactTable(services []serviceResource, aliasIdx peerAl
 	showSource := anyServiceHasSource(services)
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	if showSource {
-		fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tSOURCE\tPROTOCOL\tPEER\tADDRS")
+		fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tSOURCE\tPROTOCOL\tPEER\tADDRS\tEXPIRES")
 	} else {
-		fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tPROTOCOL\tPEER\tADDRS")
+		fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tPROTOCOL\tPEER\tADDRS\tEXPIRES")
 	}
 	for _, service := range services {
 		if showSource {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), displayServiceSource(service), serviceProtocolSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceAddressSummary(service))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), displayServiceSource(service), serviceProtocolSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceAddressSummary(service), serviceFreshnessSummary(service))
 			continue
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), serviceProtocolSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceAddressSummary(service))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", displayValue(service.Name), displayValue(service.Kind), displayValue(service.Status), serviceProtocolSummary(service), displayGrantRequester(aliasIdx, service.PeerID), serviceAddressSummary(service), serviceFreshnessSummary(service))
 	}
 	_ = w.Flush()
 }
@@ -2424,9 +2424,9 @@ func printSystemServicesTable(services []serviceResource) {
 	showSource := anyServiceHasSource(services)
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	if showSource {
-		fmt.Fprintln(w, "NAME\tKIND\tSOURCE\tSCOPE\tPROTOCOL\tSTATUS\tPEER\tADDRS")
+		fmt.Fprintln(w, "NAME\tKIND\tSOURCE\tSCOPE\tPROTOCOL\tSTATUS\tPEER\tADDRS\tEXPIRES")
 	} else {
-		fmt.Fprintln(w, "NAME\tKIND\tSCOPE\tPROTOCOL\tSTATUS\tPEER\tADDRS")
+		fmt.Fprintln(w, "NAME\tKIND\tSCOPE\tPROTOCOL\tSTATUS\tPEER\tADDRS\tEXPIRES")
 	}
 	for _, service := range services {
 		protocol := "-"
@@ -2438,10 +2438,10 @@ func printSystemServicesTable(services []serviceResource) {
 			addrs = strings.Join(service.Addresses, ",")
 		}
 		if showSource {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayValue(service.Kind), displayServiceSource(service), displayServiceScope(service), protocol, service.Status, displayValue(service.PeerID), addrs)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayValue(service.Kind), displayServiceSource(service), displayServiceScope(service), protocol, service.Status, displayValue(service.PeerID), addrs, serviceFreshnessSummary(service))
 			continue
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayValue(service.Kind), displayServiceScope(service), protocol, service.Status, displayValue(service.PeerID), addrs)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", service.Name, displayValue(service.Kind), displayServiceScope(service), protocol, service.Status, displayValue(service.PeerID), addrs, serviceFreshnessSummary(service))
 	}
 	_ = w.Flush()
 }
@@ -2507,6 +2507,13 @@ func serviceExpiresSummary(service serviceResource) string {
 		return "-"
 	}
 	return humanizeDurationCompact(time.Duration(service.ExpiresInSeconds) * time.Second)
+}
+
+func serviceFreshnessSummary(service serviceResource) string {
+	if service.ExpiresInSeconds <= 0 {
+		return "expired"
+	}
+	return "expires in " + humanizeDurationCompact(time.Duration(service.ExpiresInSeconds)*time.Second)
 }
 
 func serviceAddressSummary(service serviceResource) string {

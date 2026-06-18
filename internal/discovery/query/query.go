@@ -203,6 +203,10 @@ func serviceFromEntry(entry *discovery.ServiceEntry) Service {
 	if expiresIn < 0 {
 		expiresIn = 0
 	}
+	status := "online"
+	if expiresIn <= 0 {
+		status = "expired"
+	}
 	direct, relayed := splitAddresses(entry.Addresses)
 	kind := strings.TrimSpace(entry.Kind)
 	if kind == "" {
@@ -222,7 +226,7 @@ func serviceFromEntry(entry *discovery.ServiceEntry) Service {
 		Addresses:        append([]string(nil), entry.Addresses...),
 		DirectAddresses:  direct,
 		RelayedAddresses: relayed,
-		Status:           "online",
+		Status:           status,
 		Path:             pathFromAddresses(entry.Addresses),
 		TTLSeconds:       int64(entry.TTL.Seconds()),
 		ExpiresInSeconds: int64(expiresIn.Seconds()),

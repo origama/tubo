@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -294,8 +295,17 @@ func discoverGrantServicePeers(configPath string, cfg cfgpkg.Config) ([]string, 
 	if cluster, ok := cfg.Clusters[cfg.CurrentCluster]; ok {
 		clusterID = strings.TrimSpace(cluster.ClusterID)
 	}
-	peers := make([]string, 0, 4)
-	for _, service := range result.Services {
+	peers := grantServicePeersFromDiscoveryResults(result.Services, clusterID, cfg.CurrentNamespace)
+	return uniqueStrings(filterNonEmptyStrings(peers)), nil
+}
+
+func grantServicePeersFromDiscoveryResults(services []serviceResource, clusterID, namespaceID string) []string {
+	type grantServiceCandidate struct {
+		service      serviceResource
+		registeredAt time.Time
+	}
+	candidates := make([]grantServiceCandidate, 0, 4)
+	for _, service := range services {
 		if !isSystemServiceResource(service) || !hasStrictSystemServiceScope(service) {
 			continue
 		}
@@ -305,17 +315,37 @@ func discoverGrantServicePeers(configPath string, cfg cfgpkg.Config) ([]string, 
 		if strings.TrimSpace(clusterID) == "" || strings.TrimSpace(service.ClusterID) != clusterID {
 			continue
 		}
-		if strings.TrimSpace(cfg.CurrentNamespace) == "" || strings.TrimSpace(service.NamespaceID) != strings.TrimSpace(cfg.CurrentNamespace) {
+		if strings.TrimSpace(namespaceID) == "" || strings.TrimSpace(service.NamespaceID) != strings.TrimSpace(namespaceID) {
 			continue
 		}
-		candidatePeers := grantServicePeersFromResource(service)
+		if service.ExpiresInSeconds <= 0 {
+			continue
+		}
+		registeredAt, _ := time.Parse(time.RFC3339, strings.TrimSpace(service.RegisteredAt))
+		candidates = append(candidates, grantServiceCandidate{service: service, registeredAt: registeredAt})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].service.ExpiresInSeconds != candidates[j].service.ExpiresInSeconds {
+			return candidates[i].service.ExpiresInSeconds > candidates[j].service.ExpiresInSeconds
+		}
+		if !candidates[i].registeredAt.Equal(candidates[j].registeredAt) {
+			return candidates[i].registeredAt.After(candidates[j].registeredAt)
+		}
+		if candidates[i].service.ServiceID != candidates[j].service.ServiceID {
+			return candidates[i].service.ServiceID < candidates[j].service.ServiceID
+		}
+		return candidates[i].service.PeerID < candidates[j].service.PeerID
+	})
+	peers := make([]string, 0, 4)
+	for _, candidate := range candidates {
+		candidatePeers := grantServicePeersFromResource(candidate.service)
 		if len(candidatePeers) == 0 {
-			logging.Progressf("grant service discovery: grant-service record found but has no usable peer address (cluster=%q namespace=%q kind=%q grantService=%v addrs=%v)\n", service.ClusterID, service.NamespaceID, service.Kind, service.GrantService, service.Addresses)
+			logging.Progressf("grant service discovery: grant-service record found but has no usable peer address (cluster=%q namespace=%q kind=%q grantService=%v addrs=%v)\n", candidate.service.ClusterID, candidate.service.NamespaceID, candidate.service.Kind, candidate.service.GrantService, candidate.service.Addresses)
 			continue
 		}
 		peers = append(peers, candidatePeers...)
 	}
-	return uniqueStrings(filterNonEmptyStrings(peers)), nil
+	return peers
 }
 
 func grantServicePeersFromResource(service serviceResource) []string {
