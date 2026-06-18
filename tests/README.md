@@ -34,6 +34,8 @@ Runs the minimum complete path:
 - `service`
 - real HTTP request via edge
 
+The workflow compose harness binds host ports dynamically to avoid collisions on shared runners.
+
 Command:
 
 ```bash

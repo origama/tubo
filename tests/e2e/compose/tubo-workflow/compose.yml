@@ -13,8 +13,8 @@ services:
     volumes:
       - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/config/tubo:ro
     ports:
-      - "4002:4002"
-      - "8092:8092"
+      - "${TUBO_SMOKE_RELAY_PORT:-4002}:4002"
+      - "${TUBO_SMOKE_RELAY_HEALTH_PORT:-8092}:8092"
 
   tubo-dummy-api-server:
     image: tubo-dummy-api-server:dev
@@ -24,7 +24,7 @@ services:
     environment:
       DUMMY_API_LISTEN: "0.0.0.0:8000"
     ports:
-      - "8000:8000"
+      - "${TUBO_SMOKE_DUMMY_API_PORT:-8000}:8000"
 
   tubo-edge:
     image: tubo:dev
@@ -40,9 +40,9 @@ services:
     volumes:
       - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/config/tubo:ro
     ports:
-      - "8443:8443"
-      - "8444:8444"
-      - "4001:4001"
+      - "${TUBO_SMOKE_EDGE_HTTP_PORT:-8443}:8443"
+      - "${TUBO_SMOKE_EDGE_ADMIN_PORT:-8444}:8444"
+      - "${TUBO_SMOKE_EDGE_P2P_PORT:-4001}:4001"
 
   tubo-service-a:
     image: tubo:dev
@@ -62,8 +62,8 @@ services:
     volumes:
       - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/config/tubo:ro
     ports:
-      - "8091:8091"
-      - "40123:40123"
+      - "${TUBO_SMOKE_SERVICE_A_HEALTH_PORT:-8091}:8091"
+      - "${TUBO_SMOKE_SERVICE_A_P2P_PORT:-40123}:40123"
 
   tubo-service-b:
     image: tubo:dev
@@ -83,5 +83,5 @@ services:
     volumes:
       - ${TUBO_REPO_ROOT}/generated/tubo-workflow/tubo:/config/tubo:ro
     ports:
-      - "8093:8093"
-      - "40124:40124"
+      - "${TUBO_SMOKE_SERVICE_B_HEALTH_PORT:-8093}:8093"
+      - "${TUBO_SMOKE_SERVICE_B_P2P_PORT:-40124}:40124"

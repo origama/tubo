@@ -8,6 +8,37 @@ COMPOSE="${COMPOSE_CMD:-docker compose} -f tests/e2e/compose/tubo-workflow/compo
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 export TUBO_REPO_ROOT="$ROOT_DIR"
+free_tcp_port() {
+  python3 - <<'PY'
+import socket
+s = socket.socket()
+s.bind(('127.0.0.1', 0))
+print(s.getsockname()[1])
+s.close()
+PY
+}
+declare -A RESERVED_TCP_PORTS=()
+reserve_tcp_port() {
+  local port
+  while :; do
+    port="$(free_tcp_port)"
+    if [[ -z "${RESERVED_TCP_PORTS[$port]:-}" ]]; then
+      RESERVED_TCP_PORTS[$port]=1
+      echo "$port"
+      return 0
+    fi
+  done
+}
+export TUBO_SMOKE_RELAY_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_RELAY_HEALTH_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_DUMMY_API_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_EDGE_HTTP_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_EDGE_ADMIN_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_EDGE_P2P_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_SERVICE_A_HEALTH_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_SERVICE_A_P2P_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_SERVICE_B_HEALTH_PORT="$(reserve_tcp_port)"
+export TUBO_SMOKE_SERVICE_B_P2P_PORT="$(reserve_tcp_port)"
 if [[ "$(id -u)" -eq 0 ]]; then
   export TUBO_SMOKE_UID="${TUBO_SMOKE_UID:-65532}"
   export TUBO_SMOKE_GID="${TUBO_SMOKE_GID:-65532}"
@@ -67,15 +98,6 @@ assert_no_workflow_connect_leaks() {
   fi
 }
 
-free_tcp_port() {
-  python3 - <<'PY'
-import socket
-s = socket.socket()
-s.bind(('127.0.0.1', 0))
-print(s.getsockname()[1])
-s.close()
-PY
-}
 
 extract_field() {
   local prefix="$1"
@@ -310,7 +332,7 @@ fi
 relay_peer_id="$(tubo id from-seed relay-demo-seed | tr -d '\n')"
 edge_peer_id="$(tubo id from-seed edge-demo-seed | tr -d '\n')"
 relay_addr="/dns4/tubo-relay/tcp/4002/p2p/${relay_peer_id}"
-host_relay_addr="/ip4/127.0.0.1/tcp/4002/p2p/${relay_peer_id}"
+host_relay_addr="/ip4/127.0.0.1/tcp/${TUBO_SMOKE_RELAY_PORT}/p2p/${relay_peer_id}"
 edge_addr="/dns4/tubo-edge/tcp/4001/p2p/${edge_peer_id}"
 
 cat > "${config_dir}/relay.yaml" <<YAML
@@ -517,7 +539,7 @@ network:
   relay_peers:
     - ${host_relay_addr}
 edge:
-  admin_listen: 127.0.0.1:8444
+  admin_listen: 127.0.0.1:${TUBO_SMOKE_EDGE_ADMIN_PORT}
 current_cluster: home
 current_namespace: tenant-a
 clusters:
@@ -605,16 +627,16 @@ echo "[smoke-tubo-workflow] docker compose up -d"
 $COMPOSE up -d --remove-orphans
 
 echo "[smoke-tubo-workflow] waiting for health endpoints"
-wait_http_ok "http://127.0.0.1:8091/healthz"
-wait_http_ok "http://127.0.0.1:8093/healthz"
-wait_http_ok "http://127.0.0.1:8443/healthz"
-wait_http_ok "http://127.0.0.1:8444/healthz"
-wait_http_ok "http://127.0.0.1:8092/healthz"
+wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_SERVICE_A_HEALTH_PORT}/healthz"
+wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_SERVICE_B_HEALTH_PORT}/healthz"
+wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_EDGE_HTTP_PORT}/healthz"
+wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_EDGE_ADMIN_PORT}/healthz"
+wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_RELAY_HEALTH_PORT}/healthz"
 
 echo "[smoke-tubo-workflow] waiting for tenant-a discovery cache and route"
 for i in $(seq 1 90); do
-  services_json="$(curl -fsS http://127.0.0.1:8444/services || true)"
-  routes_json="$(curl -fsS http://127.0.0.1:8444/routes || true)"
+  services_json="$(curl -fsS http://127.0.0.1:${TUBO_SMOKE_EDGE_ADMIN_PORT}/services || true)"
+  routes_json="$(curl -fsS http://127.0.0.1:${TUBO_SMOKE_EDGE_ADMIN_PORT}/routes || true)"
   if echo "$services_json" | grep -Eq '"count"[[:space:]]*:[[:space:]]*1' && echo "$routes_json" | grep -q '"hostname":"myapi"'; then
     break
   fi
@@ -699,15 +721,15 @@ if tubo connect --token "$share_token" --namespace tenant-b --config "${config_d
   exit 1
 fi
 
-if ! tubo get service/myapi --config "$config_path" >/dev/null; then
-  echo "[smoke-tubo-workflow] get service/myapi failed"
+if ! tubo get service/${service_a_id} --config "$config_path" >/dev/null; then
+  echo "[smoke-tubo-workflow] get service/${service_a_id} failed"
   exit 1
 fi
 
 payload="hello-tubo-workflow"
 payload_b64="$(printf '%s' "$payload" | base64)"
 resp_body="$(mktemp)"
-http_code="$(curl -sS -o "$resp_body" -w "%{http_code}" -H "Host: myapi" -H "Content-Type: text/plain" --data "$payload" "http://127.0.0.1:8443/v1/dummy?from=tubo-workflow")"
+http_code="$(curl -sS -o "$resp_body" -w "%{http_code}" -H "Host: myapi" -H "Content-Type: text/plain" --data "$payload" "http://127.0.0.1:${TUBO_SMOKE_EDGE_HTTP_PORT}/v1/dummy?from=tubo-workflow")"
 if [[ "$http_code" != "200" ]]; then
   echo "[smoke-tubo-workflow] expected HTTP 200, got $http_code"
   cat "$resp_body"
