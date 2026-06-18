@@ -729,24 +729,24 @@ fi
 payload="hello-tubo-workflow"
 payload_b64="$(printf '%s' "$payload" | base64)"
 resp_body="$(mktemp)"
-http_code="$(curl -sS -o "$resp_body" -w "%{http_code}" -H "Host: myapi" -H "Content-Type: text/plain" --data "$payload" "http://127.0.0.1:${TUBO_SMOKE_EDGE_HTTP_PORT}/v1/dummy?from=tubo-workflow")"
+http_code="$(curl -sS -o "$resp_body" -w "%{http_code}" -H "Content-Type: text/plain" --data "$payload" "http://127.0.0.1:${connect_port}/v1/dummy?from=tubo-workflow")"
 if [[ "$http_code" != "200" ]]; then
   echo "[smoke-tubo-workflow] expected HTTP 200, got $http_code"
   cat "$resp_body"
   exit 1
 fi
 if ! grep -q '"method":"POST"' "$resp_body"; then
-  echo "[smoke-tubo-workflow] missing method in edge response"
+  echo "[smoke-tubo-workflow] missing method in connect response"
   cat "$resp_body"
   exit 1
 fi
 if ! grep -q '"raw_query":"from=tubo-workflow"' "$resp_body"; then
-  echo "[smoke-tubo-workflow] missing query in edge response"
+  echo "[smoke-tubo-workflow] missing query in connect response"
   cat "$resp_body"
   exit 1
 fi
 if ! grep -q "\"body_b64\":\"$payload_b64\"" "$resp_body"; then
-  echo "[smoke-tubo-workflow] missing body payload in edge response"
+  echo "[smoke-tubo-workflow] missing body payload in connect response"
   cat "$resp_body"
   exit 1
 fi
