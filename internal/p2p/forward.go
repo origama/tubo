@@ -188,7 +188,7 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 			log.Printf("service protocol negotiated peer=%s remote_role=%s local_role=service stream_protocol_id=%s protocol=%s peer_protocol=%s capabilities=%v", remotePeer, peerHello.Role, s.Protocol(), protocol.ProtocolVersion, remoteProtocolVersion, negotiated)
 		}
 
-		if connectAuth != nil && connectAuth.Require && peerHello != nil && peerHello.Role == "bridge" {
+		if connectAuth != nil && connectAuth.Require {
 			if !hasCapability(peerHello.Capabilities, protocol.CapabilityConnectProofV1) {
 				opErr = errors.New("connect proof required")
 				_ = writer.WriteError(&protocol.Error{Code: 426, Message: "connect proof required"})
@@ -397,7 +397,7 @@ func HandleServiceTCPStream(localTarget string, connectAuth *ConnectProofValidat
 			}
 		}
 
-		if connectAuth != nil && connectAuth.Require && peerHello != nil && peerHello.Role == "bridge" {
+		if connectAuth != nil && connectAuth.Require {
 			if !hasCapability(peerHello.Capabilities, protocol.CapabilityConnectProofV1) {
 				opErr = errors.New("connect proof required")
 				_ = writer.WriteError(&protocol.Error{Code: 426, Message: "connect proof required"})

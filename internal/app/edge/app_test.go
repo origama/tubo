@@ -120,6 +120,10 @@ func TestHandleAddRoute(t *testing.T) {
 	}
 }
 
+func TestGatewayProtectedServiceNeedsAuthorizedConnectSession(t *testing.T) {
+	t.Skip("TODO #264: gateway still opens proof-less edge streams; migrate to authorized connect sessions")
+}
+
 func TestNewGatewayConfiguresCurrentAndPreviousDiscoveryScopes(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
