@@ -18,7 +18,6 @@ import (
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
@@ -119,25 +118,11 @@ func grantsRequestCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg.Service.Name = serviceName
 	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
 	if err != nil {
 		return err
 	}
-	explicitGrantPeer := strings.TrimSpace(*grantPeer)
-	_, _, _, err = requestGrantWithFallback(*configPath, cfg, svc, cfg.CurrentCluster, cfg.CurrentNamespace, serviceName, servicePeerID.String(), explicitGrantPeer, explicitGrantPeer == "", grantClientResponsePrimary, func(ctx context.Context, overlay *p2p.OverlayHost, info peer.AddrInfo) (grantspkg.Message, error) {
-		if *pollOnly {
-			if svc.GrantRequestID == "" {
-				return grantspkg.Message{}, errors.New("no local grant request id recorded for service")
-			}
-			return grantspkg.Poll(ctx, overlay.Host, info, svc.GrantRequestID)
-		}
-		leaseReq, err := buildServicePublishLeaseRequest(*configPath, cfg, svc, servicePeerID.String())
-		if err != nil {
-			return grantspkg.Message{}, err
-		}
-		return grantspkg.Submit(ctx, overlay.Host, info, grantspkg.Message{Type: grantspkg.TypeSubmit, Version: grantspkg.VersionV1, ClusterID: cfg.Clusters[cfg.CurrentCluster].ClusterID, NamespaceID: cfg.CurrentNamespace, ServiceName: serviceName, ServiceID: svc.ServiceID, ServiceKind: string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), ServicePublicKey: leaseReq.ServicePublicKey, ServiceOwnerSignature: leaseReq.ServiceOwnerSignature, ServicePeerID: servicePeerID.String(), ServiceAddresses: serviceEndpointAddrsForTokens(cfg, servicePeerID.String()), RequestNonce: leaseReq.Nonce, RequestedPermissions: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, RequestedTTLSeconds: int64(ttl.Seconds())})
-	})
+	_, _, _, err = requestPublishGrant(*configPath, cfg, svc, servicePeerID.String(), grantRequestOptions{explicitPeer: strings.TrimSpace(*grantPeer), pollOnly: *pollOnly, requestedTTL: *ttl, responseMode: grantClientResponsePrimary})
 	return err
 }
 
@@ -148,16 +133,16 @@ const (
 	grantClientResponseInternal
 )
 
-func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, clusterName, namespaceName, serviceName string, grantPeer string, resp grantspkg.Message, servicePeerID string, mode grantClientResponseMode) (string, error) {
-	cluster := cfg.Clusters[clusterName]
-	namespace := cluster.Namespaces[namespaceName]
+func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, grantPeer string, resp grantspkg.Message, servicePeerID string, mode grantClientResponseMode) (string, error) {
+	cluster := cfg.Clusters[cfg.CurrentCluster]
+	namespace := cluster.Namespaces[cfg.CurrentNamespace]
 	switch resp.Type {
 	case grantspkg.TypePending:
 		svc.GrantRequestID = resp.RequestID
 		svc.GrantServicePeer = grantPeer
-		namespace.Services[serviceName] = svc
-		cluster.Namespaces[namespaceName] = namespace
-		cfg.Clusters[clusterName] = cluster
+		namespace.Services[cfg.Service.Name] = svc
+		cluster.Namespaces[cfg.CurrentNamespace] = namespace
+		cfg.Clusters[cfg.CurrentCluster] = cluster
 		if err := saveLocalConfig(configPath, cfg); err != nil {
 			return "", err
 		}
@@ -176,7 +161,7 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			return "", err
 		}
 		if resp.PublishLease != nil {
-			if err := grantspkg.VerifyPublishLease(*resp.PublishLease, pub, cluster.ClusterID, namespaceName, svc.ServiceID, servicePeerID); err != nil {
+			if err := grantspkg.VerifyPublishLease(*resp.PublishLease, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID); err != nil {
 				return "", fmt.Errorf("approved publish lease rejected: %w", err)
 			}
 			if err := writePublishLeaseFile(svc.ServicePublishLeaseFile, *resp.PublishLease); err != nil {
@@ -187,7 +172,7 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			}
 		}
 		if resp.ServiceClaim != nil {
-			if err := capability.VerifyServiceClaim(*resp.ServiceClaim, pub, cluster.ClusterID, namespaceName, svc.ServiceID, servicePeerID); err != nil {
+			if err := capability.VerifyServiceClaim(*resp.ServiceClaim, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID); err != nil {
 				return "", fmt.Errorf("approved service claim rejected: %w", err)
 			}
 			if err := writeServiceClaimFile(svc.ServiceClaimFile, *resp.ServiceClaim); err != nil {
@@ -195,14 +180,15 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			}
 		}
 		svc.GrantServicePeer = grantPeer
-		namespace.Services[serviceName] = svc
-		cluster.Namespaces[namespaceName] = namespace
-		cfg.Clusters[clusterName] = cluster
+		svc.GrantRequestID = ""
+		namespace.Services[cfg.Service.Name] = svc
+		cluster.Namespaces[cfg.CurrentNamespace] = namespace
+		cfg.Clusters[cfg.CurrentCluster] = cluster
 		if err := saveLocalConfig(configPath, cfg); err != nil {
 			return "", err
 		}
 		if resp.MembershipCapability != nil {
-			membershipPath := serviceMembershipCapabilityPath(configPath, clusterName, namespaceName)
+			membershipPath := serviceMembershipCapabilityPath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace)
 			if err := writeCapabilityFile(membershipPath, *resp.MembershipCapability); err != nil {
 				return "", err
 			}
@@ -214,19 +200,36 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			if mode == grantClientResponsePrimary {
 				logging.Resultf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\nShare invite token: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile, resp.ServiceShareToken)
 			} else {
-				logging.Progressf("publish authorization refreshed for service %q\n", serviceName)
+				logging.Progressf("publish authorization request approved: %s; publish authorization refreshed for service %q\n", resp.RequestID, cfg.Service.Name)
 			}
 		} else {
 			if mode == grantClientResponsePrimary {
 				logging.Resultf("Grant request approved.\nRequest ID: %s\nService claim saved: %s\nService publish lease saved: %s\n", resp.RequestID, svc.ServiceClaimFile, svc.ServicePublishLeaseFile)
 			} else {
-				logging.Progressf("publish authorization refreshed for service %q\n", serviceName)
+				logging.Progressf("publish authorization request approved: %s; publish authorization refreshed for service %q\n", resp.RequestID, cfg.Service.Name)
 			}
 		}
 		return resp.ServiceShareToken, nil
 	case grantspkg.TypeDenied:
+		if mode == grantClientResponsePrimary {
+			logging.Progressf("publish authorization request denied: %s (%s)\n", resp.RequestID, resp.Reason)
+		} else {
+			logging.Progressf("publish authorization request denied: %s (%s)\n", resp.RequestID, resp.Reason)
+		}
 		return "", fmt.Errorf("grant request %s denied: %s", resp.RequestID, resp.Reason)
 	case grantspkg.TypeExpired:
+		svc.GrantRequestID = ""
+		namespace.Services[cfg.Service.Name] = svc
+		cluster.Namespaces[cfg.CurrentNamespace] = namespace
+		cfg.Clusters[cfg.CurrentCluster] = cluster
+		if err := saveLocalConfig(configPath, cfg); err != nil {
+			return "", err
+		}
+		if mode == grantClientResponsePrimary {
+			logging.Progressf("publish authorization request expired and cleared: %s\n", resp.RequestID)
+		} else {
+			logging.Progressf("publish authorization request expired and cleared: %s\n", resp.RequestID)
+		}
 		return "", fmt.Errorf("grant request %s expired: %s", resp.RequestID, resp.Reason)
 	default:
 		return "", fmt.Errorf("unexpected grant response type %q", resp.Type)

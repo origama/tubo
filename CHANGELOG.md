@@ -6,9 +6,23 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+### Added
+- `tubo get services -a/--all` now adds a local service inventory projection for the current cluster/namespace, merging local definitions with discovery results and showing a `SOURCE` column plus synthetic statuses for local-only rows.
+- `tubo start service/<name>` now starts a service runtime from the stored local definition without retyping the target; the service target is persisted with the service definition, and start refuses when the matching service runtime is already running.
+- `tubo restart service/<name>` now stops a live running/degraded service runtime first when present, then starts it again from the stored local definition; if no live runtime exists, restart starts directly from the stored definition.
+- `tubo rm service/<name>` now removes the stored service definition and its service-scoped artifacts from the current cluster/namespace; with `--force`, it stops a live runtime first, while `tubo rm --stale` still handles stale process cleanup.
+
 ### Fixed
 - `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
-- `tubo attach` and `tubo grants request` now re-discover a fresh grant-service peer when the stored `grant_service_peer` is stale or unreachable, instead of failing immediately.
+- `tubo rm service/<name>` now saves the updated service config before deleting service-scoped artifacts, so a config save failure no longer leaves artifacts deleted while the service definition remains in place.
+- `attach` now clears a consumed `grant_request_id` after an approved publish lease is written, and the grant store reuses an existing pending request for equivalent retries instead of creating duplicate pending requests.
+- `tubo grants pending` now makes grouped duplicate pending requests explicit in compact output with latest/oldest request IDs and an `approve latest` hint.
+- `tubo grants history` now also surfaces mixed groups where the latest row is approved but pending duplicates still exist, without suggesting `approve latest` from history.
+- `tubo connect` now reports a clearer runtime reason when a remote service grant endpoint cannot mint a new connect lease because service publish authorization is expired, while keeping the raw failure in detailed diagnostics.
+- `tubo logs` now reads tail output from the end of the file in bounded chunks, so large process logs no longer require loading the full file into memory.
+- Detached `attach -d` / `connect -d` can now recover from compatible stale process state instead of forcing `tubo rm --stale`, while still failing closed on conflicts or live processes, including the case where a zero-PID state file still has a live pid file.
+- `tubo grants request service/<name>`, `attach`, and `start service/<name>` now rediscover stale stored grant-service peers during grant retry flows, while still respecting an explicit `--peer` and reusing saved pending request IDs before creating new ones.
+- `tubo grants serve` help/docs now clarify that `--public-auto-approve` is the current legacy auto-approval switch, and document the `--claim-ttl` publish-authorization TTL knob separately from share/connect lifetimes.
 
 ## [v0.11.0] - 2026-06-15
 

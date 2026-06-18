@@ -3123,7 +3123,7 @@ func TestRequestPublishGrantForAttachRecoversFromStaleGrantPeer(t *testing.T) {
 		t.Fatal(err)
 	}
 	updatedCfg, updatedSvc, _, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
-	if err == nil || !strings.Contains(err.Error(), "is pending; publication requires an approved publish lease") {
+	if err == nil || err.Error() != "grant request pending; approve it, then rerun tubo start service/myapi" {
 		t.Fatalf("expected pending grant error, got %v", err)
 	}
 	if updatedSvc.GrantServicePeer != grantPeer {
@@ -3839,7 +3839,7 @@ func TestServiceShareMissingPublishLeaseRequestsGrantAndSurfacesPending(t *testi
 	_, err = capture(func() error {
 		return run([]string{"share", "service/myapi", "--config", configPath, "--expires", "45m"})
 	})
-	if err == nil || !strings.Contains(err.Error(), "is pending; publication requires an approved publish lease") {
+	if err == nil || err.Error() != "grant request pending; approve it, then rerun tubo start service/myapi" {
 		t.Fatalf("expected pending renewal guidance, got %v", err)
 	}
 	reloaded, err := cfgpkg.LoadFile(configPath)
@@ -4074,7 +4074,7 @@ func TestResolveAttachAuthorizationRequestsAndUsesGrantRoute(t *testing.T) {
 	}
 
 	_, err = resolveAttachAuthorization(configPath, cfg)
-	if err == nil || !strings.Contains(err.Error(), "is pending") {
+	if err == nil || !strings.Contains(err.Error(), "grant request pending") {
 		t.Fatalf("expected pending error, got %v", err)
 	}
 	reloaded, err := cfgpkg.LoadFile(configPath)
@@ -4192,12 +4192,12 @@ func TestRequestPublishGrantClearsExpiredRequestIDAndResubmits(t *testing.T) {
 	//   1. Poll gr_expired_does_not_exist → TypeExpired from server
 	//   2. Clear grant_request_id from config
 	//   3. Submit a fresh request → TypePending
-	//   4. Return with err containing "is pending"
+	//   4. Return with err containing "grant request pending"
 	_, updatedSvc, _, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID.String())
 	if err == nil {
 		t.Fatal("expected pending error, got nil")
 	}
-	if !strings.Contains(err.Error(), "is pending") {
+	if !strings.Contains(err.Error(), "grant request pending") {
 		t.Fatalf("expected pending error, got: %v", err)
 	}
 	if updatedSvc.GrantRequestID == "gr_expired_does_not_exist" {
