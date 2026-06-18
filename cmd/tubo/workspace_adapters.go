@@ -66,3 +66,11 @@ func resolveServiceScope(cfg cfgpkg.Config, clusterFlag, namespaceFlag string, a
 	}
 	return serviceScope{Cluster: scope.Cluster, Namespace: scope.Namespace, AllNamespaces: scope.AllNamespaces}, nil
 }
+
+func resolveServiceScopeFromConfig(configPath string) (serviceScope, error) {
+	cfg, err := loadLocalConfigOrError(configPath)
+	if err != nil {
+		return serviceScope{}, err
+	}
+	return resolveServiceScope(cfg, "", "", false)
+}

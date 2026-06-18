@@ -82,6 +82,8 @@ func parseConnectCLIArgs(args []string) (connectCLIRequest, error) {
 	}, nil
 }
 
+var startDetachedProcessWithTimeoutFn = startDetachedProcessWithTimeout
+
 func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
 	req, err := parseConnectCLIArgs(args)
 	if err != nil {
@@ -92,8 +94,13 @@ func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
 	if err != nil {
 		return err
 	}
-	state, err := startDetachedProcessWithTimeout(spec, 5*time.Second)
+	previousPipe, pipeExisted, persisted, err := persistPipeDefinitionFromConnect(req.ConfigPath, req, spec.State)
 	if err != nil {
+		return err
+	}
+	state, err := startDetachedProcessWithTimeoutFn(spec, 5*time.Second)
+	if err != nil {
+		_ = restorePipeDefinition(req.ConfigPath, persisted.Cluster, persisted.Namespace, persisted.Name, previousPipe, pipeExisted)
 		return err
 	}
 	if req.JSONOut {
@@ -146,7 +153,7 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 }
 
 func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detachedSpec, error) {
-	serviceName, serviceID, _, err := connectServiceShareSetup(req.ServiceRef, req.Token, req.Cluster, req.Namespace)
+	serviceName, serviceID, shareScope, err := connectServiceShareSetup(req.ServiceRef, req.Token, req.Cluster, req.Namespace)
 	if err != nil {
 		return detachedSpec{}, err
 	}
@@ -209,6 +216,12 @@ func buildDetachedConnectSpec(req connectCLIRequest, childArgs []string) (detach
 		resolved.ServiceID = serviceID
 	}
 	state := connectProcessState(req, resolved, localAddr, "pipe")
+	if state.Cluster == "" {
+		state.Cluster = strings.TrimSpace(shareScope.Cluster)
+	}
+	if state.Namespace == "" {
+		state.Namespace = strings.TrimSpace(shareScope.Namespace)
+	}
 	state.LogFile = logPath
 	state.StateFile = statePath
 	state.PIDFile = pidPath

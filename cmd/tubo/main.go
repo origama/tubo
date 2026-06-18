@@ -541,6 +541,7 @@ Examples:
 Connect modes:
   - tubo connect --token ... = invite path; does not require ambient discovery when the token carries a self-contained endpoint
   - tubo connect <service> = collaboration path; requires a discovery-enabled scope and the right namespace permissions
+  - -d also saves a local pipe definition for the chosen scope so it can be inspected later
 
 Logging:
   - -v / -vv / -vvv and --log-level can follow connect
@@ -554,6 +555,8 @@ Flags:
   --json                    print JSON result
   -d, --detach              run in background and register in tubo ps
   --no-init                 fail instead of auto-joining the public bundle
+
+Detached connect also persists a pipe definition for the current scope so future pipe lifecycle work can reuse the saved service reference, service ID, local listener, and selected path without retyping the full connect command.
 
 Path selection:
   - usable direct addresses are tried first
@@ -684,7 +687,7 @@ It stops a live degraded/running service runtime first when present; if no live 
 
 Stop a local runtime process without deleting the persistent service definition.
 service/<name> prefers an exact service_id match when the service is defined that way; legacy name-only matches are allowed only when unambiguous.
-pipe/<name> is an initial stop-only, process-backed slice and does not imply a persistent pipe definition yet.`)
+pipe/<name> is still stop-only and process-backed for runtime control, but detached connect now also stores a persistent pipe definition for later inspection.`)
 	case "rm":
 		fmt.Println(`Usage:
   tubo rm --stale
@@ -2112,10 +2115,10 @@ func getCmd(args []string) error {
 
 func describeCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo describe <service/name|process/name|overlay/name|cluster/name|namespace/name> [flags]")
+		return errors.New("usage: tubo describe <service/name|pipe/name|process/name|overlay/name|cluster/name|namespace/name> [flags]")
 	}
 	resource := args[0]
-	if strings.HasPrefix(resource, "overlay/") || strings.HasPrefix(resource, "cluster/") || strings.HasPrefix(resource, "namespace/") || strings.HasPrefix(resource, "secret/") {
+	if strings.HasPrefix(resource, "overlay/") || strings.HasPrefix(resource, "cluster/") || strings.HasPrefix(resource, "namespace/") || strings.HasPrefix(resource, "secret/") || strings.HasPrefix(resource, "pipe/") {
 		fs := flag.NewFlagSet("describe", flag.ContinueOnError)
 		configPath := fs.String("config", defaultTuboConfigPath(), "")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -2177,7 +2180,7 @@ func describeCmd(args []string) error {
 
 func inspectCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tubo inspect <service/name|process/name> [flags]")
+		return errors.New("usage: tubo inspect <service/name|pipe/name|process/name> [flags]")
 	}
 	resource := args[0]
 	if strings.HasPrefix(resource, "process/") || !strings.Contains(resource, "/") {
@@ -2189,6 +2192,21 @@ func inspectCmd(args []string) error {
 			Status string               `json:"status"`
 			State  detachedProcessState `json:"state"`
 		}{Status: status, State: state})
+	}
+	if strings.HasPrefix(resource, "pipe/") {
+		fs := flag.NewFlagSet("inspect", flag.ContinueOnError)
+		configPath := fs.String("config", defaultTuboConfigPath(), "")
+		jsonOut := fs.Bool("json", false, "")
+		cluster := fs.String("cluster", "", "")
+		namespace := fs.String("namespace", "", "")
+		namespaceShort := fs.String("n", "", "")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *namespace == "" {
+			*namespace = *namespaceShort
+		}
+		return inspectPipeDefinition(*configPath, resource, *jsonOut, *cluster, *namespace)
 	}
 	if !strings.HasPrefix(resource, "service/") {
 		return fmt.Errorf("unsupported inspect resource %q", resource)

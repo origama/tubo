@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -601,8 +602,154 @@ func TestBuildDetachedConnectSpecUsesTokenServiceKindForTCP(t *testing.T) {
 	if spec.State.ServiceKind != "tcp" {
 		t.Fatalf("ServiceKind = %q", spec.State.ServiceKind)
 	}
+	if spec.State.Cluster != "home" || spec.State.Namespace != "team" {
+		t.Fatalf("expected token scope in detached state, got %#v", spec.State)
+	}
 	if spec.State.StatusURL == "" || spec.State.StatsURL == "" {
 		t.Fatalf("expected tcp token connect to expose admin urls, got state=%q stats=%q", spec.State.StatusURL, spec.State.StatsURL)
+	}
+}
+
+func TestDetachedConnectTokenPersistsPipeDefinitionWithTokenScope(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "team", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]cfgpkg.Namespace{"team": {}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildServiceShareArtifacts(priv, "home", "cluster-123", "team", "myapi", "service-123", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := artifacts.Payload
+	payload.ServiceKind = "tcp"
+	payload.ServiceEndpoint = grantspkg.ServiceEndpoint{PeerID: "12D3KooWServicePeer", Addresses: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}}
+	token, err := grantspkg.SignServiceShareToken(payload, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--token", token, "--config", configPath, "--timeout", "3s"}
+	req, err := parseConnectCLIArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := buildDetachedConnectSpec(req, args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.State.Cluster != "home" || spec.State.Namespace != "team" {
+		t.Fatalf("expected token scope in state, got %#v", spec.State)
+	}
+	if _, _, persisted, err := persistPipeDefinitionFromConnect(configPath, req, spec.State); err != nil {
+		t.Fatal(err)
+	} else if persisted.Cluster != "home" || persisted.Namespace != "team" {
+		t.Fatalf("expected persisted token scope, got %#v", persisted)
+	}
+	loaded, err := loadPipeDefinition(configPath, "home", "team", spec.State.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ServiceRef != "myapi" || loaded.ServiceID != "service-123" || loaded.ServiceKind != "tcp" {
+		t.Fatalf("unexpected persisted token pipe: %#v", loaded)
+	}
+}
+
+func TestDetachedConnectRollbackUsesPersistedScope(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "team", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]cfgpkg.Namespace{"team": {}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildServiceShareArtifacts(priv, "home", "cluster-123", "team", "myapi", "service-123", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := artifacts.Payload
+	payload.ServiceEndpoint = grantspkg.ServiceEndpoint{PeerID: "12D3KooWServicePeer", Addresses: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer"}}
+	token, err := grantspkg.SignServiceShareToken(payload, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--token", token, "--config", configPath, "--local", "127.0.0.1:1234", "--timeout", "3s"}
+	oldStart := startDetachedProcessWithTimeoutFn
+	startDetachedProcessWithTimeoutFn = func(spec detachedSpec, timeout time.Duration) (detachedProcessState, error) {
+		return detachedProcessState{}, errors.New("boom")
+	}
+	defer func() { startDetachedProcessWithTimeoutFn = oldStart }()
+	if err := detachConnectCommand(args, globalCLIOptions{}); err == nil {
+		t.Fatal("expected detached connect failure")
+	}
+	if _, err := loadPipeDefinition(configPath, "home", "team", "connect-myapi-1234"); err == nil {
+		t.Fatal("expected token pipe definition to be rolled back")
+	}
+}
+
+func TestPersistPipeDefinitionFromConnectAndInspect(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "team", Overlays: map[string]cfgpkg.Overlay{"manual": {}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", Namespaces: map[string]cfgpkg.Namespace{"team": {}}}}}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	req := connectCLIRequest{ServiceRef: "myapi", ConfigPath: configPath, Cluster: "home", Namespace: "team"}
+	state := detachedProcessState{Name: "connect-myapi-1234", ServiceID: "service-123", ServiceKind: "tcp", Cluster: "home", Namespace: "team", Local: "127.0.0.1:1234", Path: "relayed", SelectedAddr: "/dns4/relay.example/tcp/4001/p2p/peer", SelectedPath: "relayed"}
+	previous, existed, persisted, err := persistPipeDefinitionFromConnect(configPath, req, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if existed || previous.Name != "" || persisted.Cluster != "home" || persisted.Namespace != "team" {
+		t.Fatalf("expected new pipe definition, got existed=%v previous=%#v persisted=%#v", existed, previous, persisted)
+	}
+	loaded, err := loadPipeDefinition(configPath, "home", "team", state.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Name != state.Name || loaded.ServiceRef != "myapi" || loaded.ServiceID != "service-123" || loaded.Local != "127.0.0.1:1234" || loaded.Path != "relayed" || loaded.SelectedAddr == "" {
+		t.Fatalf("unexpected persisted pipe definition: %#v", loaded)
+	}
+	if view := pipeDefinitionViewFromDefinition(loaded); view.Status != "ready" || len(view.Missing) != 0 {
+		t.Fatalf("unexpected pipe view: %#v", view)
+	}
+	out, err := capture(func() error {
+		return inspectPipeDefinition(configPath, "pipe/"+state.Name, true, "home", "team")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspectOut struct {
+		Status string `json:"status"`
+		Pipe   struct {
+			ServiceID string `json:"service_id"`
+		} `json:"pipe"`
+	}
+	if err := json.Unmarshal([]byte(out), &inspectOut); err != nil {
+		t.Fatalf("inspect pipe json invalid: %v\n%s", err, out)
+	}
+	if inspectOut.Status != "ready" || inspectOut.Pipe.ServiceID != "service-123" {
+		t.Fatalf("inspect pipe json missing expected fields: %#v", inspectOut)
+	}
+}
+
+func TestPipeDefinitionViewMarksIncompleteLegacyDefinitions(t *testing.T) {
+	view := pipeDefinitionViewFromDefinition(cfgpkg.NamespacePipe{Name: "legacy", ClusterID: "home", NamespaceID: "team"})
+	if view.Status != "incomplete" {
+		t.Fatalf("status = %q", view.Status)
+	}
+	want := map[string]bool{"service_ref/service_id": true, "service_kind": true, "local": true}
+	for _, field := range view.Missing {
+		delete(want, field)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing fields not reported: %#v", view.Missing)
 	}
 }
 

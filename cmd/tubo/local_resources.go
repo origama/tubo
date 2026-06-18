@@ -330,6 +330,17 @@ func localDescribeResource(resource string, configPath string) error {
 		}
 		printSecretScopeDescription(desc)
 		return nil
+	case "pipe":
+		scope, err := resolveServiceScopeFromConfig(configPath)
+		if err != nil {
+			return err
+		}
+		pipe, err := loadPipeDefinition(configPath, scope.Cluster, scope.Namespace, ref.Name)
+		if err != nil {
+			return err
+		}
+		printPipeDescription(pipeDefinitionViewFromDefinition(pipe))
+		return nil
 	default:
 		return fmt.Errorf("unsupported describe resource %q", resource)
 	}
