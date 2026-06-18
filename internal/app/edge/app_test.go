@@ -121,7 +121,34 @@ func TestHandleAddRoute(t *testing.T) {
 }
 
 func TestGatewayProtectedServiceNeedsAuthorizedConnectSession(t *testing.T) {
-	t.Skip("TODO #264: gateway still opens proof-less edge streams; migrate to authorized connect sessions")
+	cache := discovery.NewCache(30*time.Second, time.Hour)
+	defer cache.Stop()
+	pid := peer.ID("12D3KooWProtectedPeer")
+	if err := cache.AddV2(pid, "cluster-123", "default", "svc-123", "myapi", discovery.ResourceKindService, "http", "", string(cfgpkg.ConnectPolicyNamespaceMember), nil, []string{"/ip4/127.0.0.1/tcp/4001"}, nil, 30*time.Second); err != nil {
+		t.Fatalf("cache add: %v", err)
+	}
+	called := false
+	gw := &Gateway{
+		cache:  cache,
+		routes: routing.NewRouteTable(),
+		openStream: func(context.Context, peer.ID) (network.Stream, string, error) {
+			called = true
+			return nil, "", nil
+		},
+	}
+	if err := gw.routes.Add(routing.Route{Hostname: "myapi", PathPrefix: "/", ServiceName: "myapi", PeerID: pid.String()}); err != nil {
+		t.Fatalf("add route: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://myapi/v1/dummy", nil)
+	req.Host = "myapi"
+	w := httptest.NewRecorder()
+	gw.handleProxy(w, req)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadGateway)
+	}
+	if called {
+		t.Fatal("expected gateway to fail closed before dialing upstream")
+	}
 }
 
 func TestNewGatewayConfiguresCurrentAndPreviousDiscoveryScopes(t *testing.T) {
@@ -153,7 +180,7 @@ func TestNewGatewayConfiguresCurrentAndPreviousDiscoveryScopes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-prev-valid-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), currentTopic, previousTopic, discovery.ModeNamespaceV3.String(), "cluster-123", "default", currentCtx, previousCtx)
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-prev-valid-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), currentTopic, previousTopic, discovery.ModeNamespaceV3.String(), "cluster-123", "default", currentCtx, previousCtx, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +233,7 @@ func TestDiscoveryRuntimeIgnoresExpiredPreviousScopeForGateway(t *testing.T) {
 	if runtime.PreviousTopic != "" || runtime.PreviousContext != nil {
 		t.Fatalf("expected expired previous discovery scope to be ignored: %#v", runtime)
 	}
-	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-prev-expired-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), runtime.Topic, runtime.PreviousTopic, runtime.Mode.String(), runtime.ClusterID, runtime.NamespaceID, runtime.Context, runtime.PreviousContext)
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-prev-expired-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), runtime.Topic, runtime.PreviousTopic, runtime.Mode.String(), runtime.ClusterID, runtime.NamespaceID, runtime.Context, runtime.PreviousContext, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +270,7 @@ func TestGatewayDiscoveryQueryServesCachedServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), topic, "", discovery.ModeNamespaceV3.String(), "cluster-123", "default", dctx, nil)
+	gw, stopCh, err := newGateway(ctx, "/ip4/127.0.0.1/tcp/0", "edge-query-seed", nil, 750*time.Millisecond, "", "", strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), topic, "", discovery.ModeNamespaceV3.String(), "cluster-123", "default", dctx, nil, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}

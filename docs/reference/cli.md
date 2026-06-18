@@ -146,7 +146,7 @@ tubo connect lmstudio --local 127.0.0.1:51234 -d
 
 If the local default config does not exist yet:
 
-- `attach`, `connect`, `gateway`, `relay`, and the discovery commands (`get`, `describe`, `inspect`, `watch`) perform an **implicit public join** to the default public network by downloading and verifying the signed bundle; the public bundle also installs the `home/default` cluster metadata (cluster ID, authority public key, and grant-service peers), so `tubo attach`/`tubo connect` can start from a clean config without an explicit `join cluster/home`;
+- `attach`, `connect`, `gateway`, `relay`, and the discovery commands (`get`, `describe`, `inspect`, `watch`) perform an **implicit public join** to the default public network by downloading and verifying the signed bundle; the public bundle also installs the `home/default` cluster metadata (cluster ID, authority public key, and grant-service peers), so `tubo attach`/`tubo connect` can start from a clean config without an explicit `join cluster/home`; in collaborative namespaces, `gateway` also uses the local membership capability / grant token from config to mint connect sessions before proxying protected services;
 - this means that, from zero, relay/service/client all start on the same swarm key from the public bundle;
 - in cluster/namespace mode, `attach` creates or reuses a stable identity for `(cluster, namespace, service)` (`service_id`, `service_owner_key_file`, `service_seed`, `service_claim_file`) before starting the runtime;
 - without explicit config, `attach` still generates a unique libp2p seed per process if you do not pass `--seed`, avoiding shared demo PeerIDs between machines;

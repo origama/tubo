@@ -25,7 +25,7 @@ tubo attach --config service.yaml
 Available roles through `tubo`:
 
 - `relay` (bootstrap + relay v2 + health endpoint); today it is only transport/bootstrap, not a discovery authority or catalog of record
-- `gateway` (HTTP ingress + discovery consumer)
+- `gateway` (HTTP ingress + discovery consumer; in collaborative namespaces it mints connect sessions from the local membership capability / grant token before proxying protected services, and fails closed if that authorization material is missing or invalid)
 - `attach` (publisher + stream handler toward the origin HTTP service or raw TCP, depending on the target)
 - in collaborative configurations, `gateway`/`attach`/observer select an opaque Discovery V3 topic derived from the namespace discovery entry, not from public cluster/namespace identifiers alone
 - the old discovery swarm `/discovery/v1.0` has been removed: only namespace-scoped Discovery V3 remains for collaborative ambient discovery
