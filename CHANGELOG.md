@@ -12,6 +12,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo restart service/<name>` now stops a live running/degraded service runtime first when present, then starts it again from the stored local definition; if no live runtime exists, restart starts directly from the stored definition.
 - `tubo rm service/<name>` now removes the stored service definition and its service-scoped artifacts from the current cluster/namespace; with `--force`, it stops a live runtime first, while `tubo rm --stale` still handles stale process cleanup.
 - Detached `connect -d` now persists a first-class `pipe/<name>` definition with saved scope, service reference/ID, local listener, and selected route fields, and `tubo inspect pipe/<name>` can show that stored definition.
+- Detached `connect --token ... -d` now preserves the token scope for pipe persistence and rolls the saved pipe definition back from the exact persisted scope if startup fails.
 
 ### Fixed
 - Protected service data-plane streams now require a valid connect proof regardless of client-supplied `Hello.Role`, so non-bridge roles can no longer bypass authorization before the HTTP upstream is called or the TCP target is dialed.

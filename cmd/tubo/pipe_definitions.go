@@ -26,10 +26,16 @@ type pipeDefinitionView struct {
 	Missing      []string `json:"missing,omitempty"`
 }
 
-func persistPipeDefinitionFromConnect(configPath string, req connectCLIRequest, state detachedProcessState) (cfgpkg.NamespacePipe, bool, error) {
+type pipeDefinitionLocation struct {
+	Cluster   string
+	Namespace string
+	Name      string
+}
+
+func persistPipeDefinitionFromConnect(configPath string, req connectCLIRequest, state detachedProcessState) (cfgpkg.NamespacePipe, bool, pipeDefinitionLocation, error) {
 	cfg, err := loadLocalConfigOrError(configPath)
 	if err != nil {
-		return cfgpkg.NamespacePipe{}, false, err
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, err
 	}
 	clusterName := strings.TrimSpace(state.Cluster)
 	if clusterName == "" {
@@ -40,31 +46,31 @@ func persistPipeDefinitionFromConnect(configPath string, req connectCLIRequest, 
 		namespaceName = strings.TrimSpace(req.Namespace)
 	}
 	if clusterName == "" || namespaceName == "" {
-		return cfgpkg.NamespacePipe{}, false, errors.New("pipe definition requires a cluster and namespace scope")
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, errors.New("pipe definition requires a cluster and namespace scope")
 	}
 	cluster, ok := cfg.Clusters[clusterName]
 	if !ok {
-		return cfgpkg.NamespacePipe{}, false, fmt.Errorf("cluster %q not found in config", clusterName)
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, fmt.Errorf("cluster %q not found in config", clusterName)
 	}
 	if cluster.Namespaces == nil {
-		return cfgpkg.NamespacePipe{}, false, fmt.Errorf("cluster %q has no namespaces configured", clusterName)
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, fmt.Errorf("cluster %q has no namespaces configured", clusterName)
 	}
 	namespace, ok := cluster.Namespaces[namespaceName]
 	if !ok {
-		return cfgpkg.NamespacePipe{}, false, fmt.Errorf("namespace %q not found in cluster %q", namespaceName, clusterName)
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, fmt.Errorf("namespace %q not found in cluster %q", namespaceName, clusterName)
 	}
 	if namespace.Pipes == nil {
 		namespace.Pipes = map[string]cfgpkg.NamespacePipe{}
 	}
 	name := strings.TrimSpace(state.Name)
 	if name == "" {
-		return cfgpkg.NamespacePipe{}, false, errors.New("pipe name is required")
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, errors.New("pipe name is required")
 	}
 	previous, existed := namespace.Pipes[name]
 	now := time.Now().UTC()
 	definition := cfgpkg.NamespacePipe{
 		Name:         name,
-		ServiceRef:   strings.TrimSpace(req.ServiceRef),
+		ServiceRef:   firstNonEmpty(strings.TrimSpace(req.ServiceRef), strings.TrimSpace(state.Service)),
 		ServiceID:    strings.TrimSpace(state.ServiceID),
 		ServiceKind:  cfgpkg.ServiceKind(strings.TrimSpace(state.ServiceKind)),
 		ClusterID:    strings.TrimSpace(cluster.ClusterID),
@@ -104,9 +110,9 @@ func persistPipeDefinitionFromConnect(configPath string, req connectCLIRequest, 
 	cluster.Namespaces[namespaceName] = namespace
 	cfg.Clusters[clusterName] = cluster
 	if err := saveLocalConfig(configPath, cfg); err != nil {
-		return cfgpkg.NamespacePipe{}, false, err
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, err
 	}
-	return previous, existed, nil
+	return previous, existed, pipeDefinitionLocation{Cluster: clusterName, Namespace: namespaceName, Name: name}, nil
 }
 
 func restorePipeDefinition(configPath, clusterName, namespaceName, name string, previous cfgpkg.NamespacePipe, existed bool) error {
