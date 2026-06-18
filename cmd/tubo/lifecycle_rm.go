@@ -47,7 +47,7 @@ func rmCmd(args []string) error {
 		return nil
 	}
 	if len(positionals) != 1 {
-		return errors.New("usage: tubo rm [--config <path>] [--force] service/<name>")
+		return errors.New("usage: tubo rm [--config <path>] [--force] <service/name|pipe/name>")
 	}
 	kind, name, err := parseLocalResourceRef(positionals[0])
 	if err != nil {
@@ -64,8 +64,18 @@ func rmCmd(args []string) error {
 		}
 		fmt.Printf("removed service/%s\n", name)
 		return nil
+	case "pipe":
+		state, err := rmPipeLifecycle(name, configPath, force)
+		if err != nil {
+			return err
+		}
+		if state.ID != "" {
+			fmt.Printf("stopped %s\n", state.ID)
+		}
+		fmt.Printf("removed pipe/%s\n", name)
+		return nil
 	default:
-		return fmt.Errorf("rm currently supports only service/<name> in this slice")
+		return fmt.Errorf("rm currently supports only service/<name> and pipe/<name>")
 	}
 }
 

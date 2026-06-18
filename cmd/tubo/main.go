@@ -671,30 +671,30 @@ Save a local operator-only label for a peer ID.`)
 Show live local traffic stats for registered Tubo processes.`)
 	case "start":
 		fmt.Println(`Usage:
-  tubo start [--config <path>] service/<name>
+  tubo start [--config <path>] <service/name|pipe/name>
 
-Start a service runtime from the stored local service definition.
-This initial slice only covers service/<name>; it reuses the saved target and identity material and refuses to start if the service is already running.`)
+Start a service runtime from the stored local service definition or start a pipe runtime from the saved pipe definition.
+Both slices reuse persisted local definition data and refuse to start if the runtime is already running.`)
 	case "restart":
 		fmt.Println(`Usage:
-  tubo restart [--config <path>] service/<name>
+  tubo restart [--config <path>] <service/name|pipe/name>
 
-Restart a service runtime from the stored local service definition.
-It stops a live degraded/running service runtime first when present; if no live runtime exists, it starts directly from the stored definition.`)
+Restart a service or pipe runtime from the stored local definition.
+It stops a live degraded/running runtime first when present; if no live runtime exists, it starts directly from the stored definition.`)
 	case "stop":
 		fmt.Println(`Usage:
   tubo stop [--config <path>] [--force] <process/name|service/name|pipe/name>
 
-Stop a local runtime process without deleting the persistent service definition.
+Stop a local runtime process without deleting the persistent service or pipe definition.
 service/<name> prefers an exact service_id match when the service is defined that way; legacy name-only matches are allowed only when unambiguous.
-pipe/<name> is still stop-only and process-backed for runtime control, but detached connect now also stores a persistent pipe definition for later inspection.`)
+pipe/<name> remains process-backed for runtime control, and stop keeps the saved pipe definition intact.`)
 	case "rm":
 		fmt.Println(`Usage:
   tubo rm --stale
-  tubo rm [--config <path>] [--force] service/<name>
+  tubo rm [--config <path>] [--force] <service/name|pipe/name>
 
-Remove stale process artifacts or a service definition from the current cluster/namespace.
-Without --force, service removal fails when a matching runtime is running or degraded; with --force, Tubo stops the runtime first, then removes the definition and service-scoped artifacts.`)
+Remove stale process artifacts or a service/pipe definition from the current cluster/namespace.
+Without --force, service or pipe removal fails when a matching runtime is running or degraded; with --force, Tubo stops the runtime first, then removes the definition and scoped artifacts.`)
 	case "watch", "inspect", "ps", "logs", "version", "doctor", "config", "keygen", "id", "init":
 		fmt.Printf("Run `tubo help` for common usage. Command %q keeps its existing flags.\n", command)
 	default:

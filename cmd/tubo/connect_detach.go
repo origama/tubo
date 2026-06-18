@@ -112,11 +112,15 @@ func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
 
 func connectProcessState(req connectCLIRequest, result connectflow.Result, localAddr, resourceKind string) detachedProcessState {
 	localAddr = normalizeConnectProcessLocal(localAddr)
-	scopeCluster := ""
-	scopeNamespace := ""
+	scopeCluster := strings.TrimSpace(req.Cluster)
+	scopeNamespace := strings.TrimSpace(req.Namespace)
 	if result.Scope != nil {
-		scopeCluster = result.Scope.Cluster
-		scopeNamespace = result.Scope.Namespace
+		if strings.TrimSpace(result.Scope.Cluster) != "" {
+			scopeCluster = result.Scope.Cluster
+		}
+		if strings.TrimSpace(result.Scope.Namespace) != "" {
+			scopeNamespace = result.Scope.Namespace
+		}
 	}
 	name := detachedConnectProcessName(result.ServiceName, localAddr)
 	statusURL := ""
