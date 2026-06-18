@@ -506,15 +506,25 @@ func ServiceResourceFromEntry(entry *discovery.ServiceEntry) Service {
 	if expiresIn < 0 {
 		expiresIn = 0
 	}
+	status := "online"
+	if expiresIn <= 0 {
+		status = "expired"
+	}
 	kind := strings.TrimSpace(entry.Kind)
 	if kind == "" {
 		kind = discovery.ResourceKindService
 	}
-	return NormalizeService(Service{Kind: kind, ClusterID: entry.ClusterID, NamespaceID: entry.NamespaceID, ServiceKind: entry.ServiceKind, Name: entry.ServiceName, ServiceID: entry.ServiceID, ServicePublicKey: entry.ServicePublicKey, ConnectPolicy: entry.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(entry.GrantService), PeerID: entry.PeerID.String(), Addresses: append([]string(nil), entry.Addresses...), Status: "online", TTLSeconds: int64(entry.TTL.Seconds()), ExpiresInSeconds: int64(expiresIn.Seconds()), Capabilities: append([]string(nil), entry.Capabilities...), RegisteredAt: entry.Registered.Format(time.RFC3339)})
+	return NormalizeService(Service{Kind: kind, ClusterID: entry.ClusterID, NamespaceID: entry.NamespaceID, ServiceKind: entry.ServiceKind, Name: entry.ServiceName, ServiceID: entry.ServiceID, ServicePublicKey: entry.ServicePublicKey, ConnectPolicy: entry.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(entry.GrantService), PeerID: entry.PeerID.String(), Addresses: append([]string(nil), entry.Addresses...), Status: status, TTLSeconds: int64(entry.TTL.Seconds()), ExpiresInSeconds: int64(expiresIn.Seconds()), Capabilities: append([]string(nil), entry.Capabilities...), RegisteredAt: entry.Registered.Format(time.RFC3339)})
 }
 
 func ServiceFromQueryService(service discoveryquery.Service) Service {
-	return NormalizeService(Service{Kind: service.Kind, ClusterID: service.ClusterID, NamespaceID: service.NamespaceID, ServiceKind: service.ServiceKind, Name: service.Name, ServiceID: service.ServiceID, ServicePublicKey: service.ServicePublicKey, ConnectPolicy: service.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(service.GrantService), PeerID: service.PeerID, Addresses: append([]string(nil), service.Addresses...), DirectAddresses: append([]string(nil), service.DirectAddresses...), RelayedAddresses: append([]string(nil), service.RelayedAddresses...), Status: service.Status, Path: service.Path, TTLSeconds: service.TTLSeconds, ExpiresInSeconds: service.ExpiresInSeconds, Capabilities: append([]string(nil), service.Capabilities...), RegisteredAt: service.RegisteredAt})
+	status := strings.TrimSpace(service.Status)
+	if service.ExpiresInSeconds <= 0 {
+		status = "expired"
+	} else if status == "" {
+		status = "online"
+	}
+	return NormalizeService(Service{Kind: service.Kind, ClusterID: service.ClusterID, NamespaceID: service.NamespaceID, ServiceKind: service.ServiceKind, Name: service.Name, ServiceID: service.ServiceID, ServicePublicKey: service.ServicePublicKey, ConnectPolicy: service.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(service.GrantService), PeerID: service.PeerID, Addresses: append([]string(nil), service.Addresses...), DirectAddresses: append([]string(nil), service.DirectAddresses...), RelayedAddresses: append([]string(nil), service.RelayedAddresses...), Status: status, Path: service.Path, TTLSeconds: service.TTLSeconds, ExpiresInSeconds: service.ExpiresInSeconds, Capabilities: append([]string(nil), service.Capabilities...), RegisteredAt: service.RegisteredAt})
 }
 
 func NormalizeService(service Service) Service {

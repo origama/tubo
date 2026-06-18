@@ -85,6 +85,17 @@ func TestResponseForRequestAnnounce(t *testing.T) {
 	}
 }
 
+func TestServiceFromEntryMarksExpiredFreshness(t *testing.T) {
+	entry := &discovery.ServiceEntry{ServiceName: "grant-service", ServiceKind: "grant-service", PeerID: peer.ID("12D3KooWExpired"), Addresses: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWExpired"}, Registered: time.Now().Add(-2 * time.Hour), TTL: time.Hour}
+	service := serviceFromEntry(entry)
+	if service.Status != "expired" {
+		t.Fatalf("status = %q, want expired", service.Status)
+	}
+	if service.ExpiresInSeconds != 0 {
+		t.Fatalf("expires_in_seconds = %d, want 0", service.ExpiresInSeconds)
+	}
+}
+
 func TestResponseForRequestAnnounceRejectedByGateway(t *testing.T) {
 	cache := discovery.NewCache(30*time.Second, time.Second)
 	defer cache.Stop()

@@ -129,7 +129,7 @@ grant service discovery announced peer=<relay-peer> service=service-...
 - when the namespace has `discovery: enabled`, publishes a `grant-service`
   system record via gossipsub and announces it to relay discovery caches — this
   means `tubo attach` on members can find the endpoint automatically via
-  `tubo get services --system`.
+  `tubo get services --system`. The system listing now also shows freshness/expiry, and expired relay-cache records are not used for grant-peer recovery.
 
 ### Verify discoverability from the member
 
@@ -169,7 +169,7 @@ On first run (no existing `PublishLease`), `attach` will:
 3. submit a `PublishLease` grant request;
 4. receive `TypePending` and save the `grant_request_id` locally;
 5. later retries poll the same saved request id instead of submitting duplicates;
-6. if the stored peer is stale or unsupported, Tubo rediscovers it before retrying unless you passed `--peer`;
+6. if the stored peer is stale or unsupported, Tubo rediscovers it before retrying unless you passed `--peer`; it ignores expired remote-cache grant-service entries when picking a rediscovery target;
 7. exit with:
 
 ```

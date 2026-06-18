@@ -6262,15 +6262,33 @@ func TestFilterListedServicesDropsUnscopedSystemResources(t *testing.T) {
 	}
 }
 
+func TestGrantServicePeerDiscoveryPrefersFreshLiveSystemRecords(t *testing.T) {
+	freshPeer := "/ip4/10.0.0.3/tcp/4001/p2p/12D3KooWFreshGrant"
+	olderLivePeer := "/ip4/10.0.0.2/tcp/4001/p2p/12D3KooWOlderGrant"
+	stalePeer := "/ip4/10.0.0.1/tcp/4001/p2p/12D3KooWStaleGrant"
+	services := []serviceResource{
+		{Name: "grant-service", Kind: "grant-service", ClusterID: "cluster-123", NamespaceID: "observability", Status: "expired", PeerID: "12D3KooWStale", ExpiresInSeconds: 0, RegisteredAt: "2026-06-18T14:00:00Z", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{stalePeer}}},
+		{Name: "grant-service", Kind: "grant-service", ClusterID: "cluster-123", NamespaceID: "observability", Status: "online", PeerID: "12D3KooWOlder", ExpiresInSeconds: 30, RegisteredAt: "2026-06-18T14:10:00Z", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{olderLivePeer}}},
+		{Name: "grant-service", Kind: "grant-service", ClusterID: "cluster-123", NamespaceID: "observability", Status: "online", PeerID: "12D3KooWFresh", ExpiresInSeconds: 120, RegisteredAt: "2026-06-18T14:20:00Z", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{freshPeer}}},
+	}
+	peers := grantServicePeersFromDiscoveryResults(services, "cluster-123", "observability")
+	if len(peers) != 2 || peers[0] != freshPeer || peers[1] != olderLivePeer {
+		t.Fatalf("unexpected grant service peers: %#v", peers)
+	}
+	if strings.Contains(strings.Join(peers, ","), stalePeer) {
+		t.Fatalf("stale grant service peer should not be selected: %#v", peers)
+	}
+}
+
 func TestPrintSystemServicesTableIncludesGrantServiceMetadata(t *testing.T) {
 	out, err := capture(func() error {
-		printSystemServicesTable([]serviceResource{{Kind: "grant-service", Name: "grant-service", Status: "online", PeerID: "12D3-peer", Addresses: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}, GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}}}})
+		printSystemServicesTable([]serviceResource{{Kind: "grant-service", Name: "grant-service", Status: "online", PeerID: "12D3-peer", Addresses: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}, ExpiresInSeconds: 30, GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/127.0.0.1/tcp/4001/p2p/12D3-peer"}}}})
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"KIND", "PROTOCOL", grantspkg.ProtocolID, "grant-service", "12D3-peer"} {
+	for _, want := range []string{"KIND", "PROTOCOL", "EXPIRES", grantspkg.ProtocolID, "grant-service", "12D3-peer", "expires in"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("system services table missing %q: %s", want, out)
 		}
@@ -6595,7 +6613,7 @@ func TestGetServicesSystemFiltersGrantServiceByActualScope(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"System services in home/observability", "grant-service", "1 direct addr"} {
+	for _, want := range []string{"System services in home/observability", "grant-service", "1 direct addr", "EXPIRES"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("system services output missing %q: %s", want, out)
 		}
