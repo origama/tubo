@@ -32,7 +32,9 @@ Runs the minimum complete path:
 - `dummy-api-server`
 - `edge`
 - `service`
-- real HTTP request via edge
+- real HTTP request via connect tunnel
+
+The workflow compose harness binds host ports dynamically to avoid collisions on shared runners.
 
 Command:
 

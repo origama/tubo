@@ -1,10 +1,15 @@
 package p2p
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -155,6 +160,126 @@ func TestHandleClientRequestSendsFinalChunkForEmptyBodyReader(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("server side timed out waiting for final body chunk")
+	}
+}
+
+func TestHandleServiceStreamRejectsMissingConnectProofForNonBridgeRole(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var upstreamHits int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamHits, 1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+
+	serviceHost, err := NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-protected-http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	serviceHost.SetStreamHandler(ProtocolID, HandleServiceStream(upstream.URL, &ConnectProofValidation{Require: true}))
+
+	clientHost, err := NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "client-protected-http")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceInfo, err := AddrInfoFromString(PeerAddrs(serviceHost)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clientHost.Connect(ctx, serviceInfo); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := clientHost.NewStream(ctx, serviceHost.ID(), SupportedProtocolIDs()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := HandleClientRequest(stream, "evil", http.MethodGet, "/v1/dummy", "", nil, nil, nil)
+		errCh <- err
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected connect proof error, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client side timed out waiting for rejection")
+	}
+	if got := atomic.LoadInt32(&upstreamHits); got != 0 {
+		t.Fatalf("upstream hits = %d, want 0", got)
+	}
+}
+
+func TestHandleServiceTCPStreamRejectsMissingConnectProofForNonBridgeRole(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var targetHits int32
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			atomic.AddInt32(&targetHits, 1)
+			_ = conn.Close()
+		}
+	}()
+
+	serviceHost, err := NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-protected-tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+	serviceHost.SetStreamHandler(ProtocolID, HandleServiceTCPStream("tcp://"+ln.Addr().String(), &ConnectProofValidation{Require: true}))
+
+	clientHost, err := NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "client-protected-tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceInfo, err := AddrInfoFromString(PeerAddrs(serviceHost)[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := clientHost.Connect(ctx, serviceInfo); err != nil {
+		t.Fatal(err)
+	}
+	stream, err := clientHost.NewStream(ctx, serviceHost.ID(), SupportedProtocolIDs()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- StartClientTCPTunnel(stream, "evil", nil)
+	}()
+
+	select {
+	case err := <-errCh:
+		if err == nil {
+			t.Fatal("expected connect proof error, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("client side timed out waiting for rejection")
+	}
+	if got := atomic.LoadInt32(&targetHits); got != 0 {
+		t.Fatalf("tcp target hits = %d, want 0", got)
 	}
 }
 

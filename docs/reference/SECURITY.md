@@ -9,7 +9,7 @@ This file is the short operational summary.
 - public bundle trust is established by a locally pinned bundle signing key;
 - `service_id` is the secure identity for Discovery V3 service publication and exact service resolution;
 - service publication requires a valid authority-signed `PublishLease`;
-- connect authorization uses `ConnectAccessLease` / `ConnectRefreshLease` and service-side connect proofs;
+- connect authorization uses `ConnectAccessLease` / `ConnectRefreshLease` and service-side connect proofs; client-supplied `Hello.Role` is not an authorization gate for protected data-plane streams;
 - optional private swarm PSK and PeerID allowlist gating are supported;
 - authority-side publish grants use `/tubo/grants/1.0`.
 

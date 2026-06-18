@@ -13,6 +13,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo rm service/<name>` now removes the stored service definition and its service-scoped artifacts from the current cluster/namespace; with `--force`, it stops a live runtime first, while `tubo rm --stale` still handles stale process cleanup.
 
 ### Fixed
+- Protected service data-plane streams now require a valid connect proof regardless of client-supplied `Hello.Role`, so non-bridge roles can no longer bypass authorization before the HTTP upstream is called or the TCP target is dialed.
 - `tubo rm service/<name>` now saves the updated service config before deleting service-scoped artifacts, so a config save failure no longer leaves artifacts deleted while the service definition remains in place.
 - `attach` now clears a consumed `grant_request_id` after an approved publish lease is written, and the grant store reuses an existing pending request for equivalent retries instead of creating duplicate pending requests.
 - `attach`, `tubo grants request service/<name>`, and `tubo start service/<name>` now rediscover stale stored grant-service peers during grant retry flows, while still respecting an explicit `--peer` and reusing saved pending request IDs before creating new ones.
