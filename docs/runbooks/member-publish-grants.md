@@ -169,10 +169,11 @@ On first run (no existing `PublishLease`), `attach` will:
 3. submit a `PublishLease` grant request;
 4. receive `TypePending` and save the `grant_request_id` locally;
 5. later retries poll the same saved request id instead of submitting duplicates;
-6. exit with:
+6. if the stored peer is stale or unsupported, Tubo rediscovers it before retrying unless you passed `--peer`;
+7. exit with:
 
 ```
-tubo: publish grant request "gr_..." is pending; publication requires an approved publish lease
+grant request pending; approve it, then rerun tubo start service/<service-name>
 ```
 
 This is expected — the request is queued on the authority and must be approved
@@ -306,6 +307,8 @@ tubo grants request service/<service-name> \
   --namespace <namespace-name> \
   --peer '<relay-circuit-multiaddr-of-grant-service>'
 ```
+
+If you pass `--peer`, Tubo uses it as-is and will not rediscover another grant service.
 
 ### `grants serve` logs `"grant service discovery publication disabled"`
 
