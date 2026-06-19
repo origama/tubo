@@ -942,7 +942,7 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 			snap.Reason = "connect access lease expired; ask the service owner for a fresh token/invite"
 		}
 	}
-	if a.lastRefreshError != "" && snap.Reason == "" && connectRefreshFailureIsStillDegrading(a.lastRefreshError, a.lastRefreshHealthyAt, a.lastRefreshErrorAt, a.lastRefreshErrorClass) {
+	if a.lastRefreshError != "" && snap.Reason == "" && connectRefreshFailureIsCurrent(a.lastRefreshHealthyAt, a.lastRefreshErrorAt) {
 		snap.Status = "degraded"
 		snap.Reason = connectRefreshFailureDisplayReason(a.lastRefreshError)
 	}
@@ -1026,23 +1026,28 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	now := time.Now().UTC()
 	a.lastRefreshHealthyAt = now
 	a.clearPeerPingStateLocked(now)
+	a.clearStaleTunnelDegradedStateAfterLeaseRecoveryLocked(now)
+	a.recordRenewalReachabilitySuccess()
 	a.nextRefreshRetryAt = time.Time{}
 	a.consecutiveRefreshFails = 0
 }
 
-func connectRefreshFailureClearsOnSuccess(class reachability.ErrorClass) bool {
-	return class == reachability.ErrorTransient || class == reachability.ErrorUnknown
+func connectRefreshFailureIsCurrent(lastHealthyAt, lastErrorAt time.Time) bool {
+	return lastHealthyAt.IsZero() || lastHealthyAt.Before(lastErrorAt)
 }
 
-func connectRefreshFailureIsStillDegrading(lastError string, lastHealthyAt, lastErrorAt time.Time, class reachability.ErrorClass) bool {
-	effectiveClass := class
-	if (effectiveClass == "" || effectiveClass == reachability.ErrorNone) && strings.TrimSpace(lastError) != "" {
-		effectiveClass = reachability.Classify(errors.New(lastError)).Class
+func (a *App) clearStaleTunnelDegradedStateAfterLeaseRecoveryLocked(now time.Time) {
+	if a.lastTunnelError == "" || !connectTunnelErrorIsRecoverable(a.lastTunnelError) {
+		return
 	}
-	if lastHealthyAt.IsZero() || lastHealthyAt.Before(lastErrorAt) {
-		return true
+	if a.lastTunnelHealthyAt.IsZero() || a.lastTunnelHealthyAt.Before(a.lastTunnelErrorAt) {
+		a.lastTunnelHealthyAt = now
 	}
-	return !connectRefreshFailureClearsOnSuccess(effectiveClass)
+}
+
+func connectTunnelErrorIsRecoverable(errText string) bool {
+	class := reachability.Classify(errors.New(errText)).Class
+	return class == reachability.ErrorTransient || class == reachability.ErrorUnknown
 }
 
 func ConnectPathTransitionMessage(previous, current string) (string, bool) {
@@ -1348,6 +1353,7 @@ func (a *App) mux() *http.ServeMux {
 		}
 		proof, err := a.connectProof()
 		if err != nil {
+			a.markTunnelDegraded(err)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
