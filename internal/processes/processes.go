@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
@@ -746,20 +747,18 @@ func isLiveStatus(status string) bool {
 }
 
 func UpdateState(path string, mutate func(*State)) error {
+	stateWriteMu.Lock()
+	defer stateWriteMu.Unlock()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	var state State
-	if err := json.Unmarshal(b, &state); err != nil {
-		return err
-	}
-	mutate(&state)
-	updated, err := json.MarshalIndent(state, "", "  ")
+	state, err := decodeState(b)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, updated, 0o600)
+	mutate(&state)
+	return writeStateAtomic(path, state)
 }
 
 func SummaryLogTail(path string, max int) string {
@@ -820,6 +819,8 @@ type stateEntry struct {
 	state State
 }
 
+var stateWriteMu sync.Mutex
+
 func listStateEntries(dataRoot string) ([]stateEntry, error) {
 	entries, err := os.ReadDir(StateDir(dataRoot))
 	if err != nil {
@@ -834,13 +835,9 @@ func listStateEntries(dataRoot string) ([]stateEntry, error) {
 			continue
 		}
 		path := filepath.Join(StateDir(dataRoot), entry.Name())
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		var state State
-		if err := json.Unmarshal(b, &state); err != nil {
-			state = State{}
+		state, err := readStateIfExists(path)
+		if err != nil || !stateHasIdentity(state) {
+			state = fallbackStateFromPath(dataRoot, path)
 		}
 		states = append(states, stateEntry{path: path, state: state})
 	}
@@ -857,6 +854,93 @@ func listStates(dataRoot string) ([]State, error) {
 		states = append(states, entry.state)
 	}
 	return states, nil
+}
+
+func decodeState(b []byte) (State, error) {
+	var state State
+	dec := json.NewDecoder(bytes.NewReader(b))
+	if err := dec.Decode(&state); err != nil {
+		return State{}, err
+	}
+	return state, nil
+}
+
+func writeStateAtomic(path string, state State) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	stateBytes, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	stateBytes = append(stateBytes, '\n')
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if _, err := tmp.Write(stateBytes); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
+}
+
+func stateHasIdentity(state State) bool {
+	return strings.TrimSpace(state.ID) != "" && strings.TrimSpace(state.Name) != ""
+}
+
+func fallbackStateFromPath(dataRoot, path string) State {
+	base := strings.TrimSuffix(filepath.Base(path), ".json")
+	state := State{
+		ID:        normalizeRef(base),
+		Kind:      "process",
+		Name:      base,
+		Command:   commandFromProcessName(base),
+		StateFile: path,
+		PIDFile:   filepath.Join(RunDir(dataRoot), base+".pid"),
+		LogFile:   filepath.Join(LogDir(dataRoot), base+".log"),
+	}
+	if pid, err := readPIDFile(state.ID, state.PIDFile); err == nil {
+		state.PID = pid
+	}
+	if state.Command != "" {
+		switch state.Command {
+		case "attach":
+			state.ResourceKind = "service"
+		case "connect":
+			state.ResourceKind = "pipe"
+		default:
+			state.ResourceKind = "process"
+		}
+	}
+	return state
+}
+
+func commandFromProcessName(name string) string {
+	switch {
+	case strings.HasPrefix(name, "connect-"):
+		return "connect"
+	case strings.HasPrefix(name, "attach-"):
+		return "attach"
+	case strings.HasPrefix(name, "grants-serve-"):
+		return "grants serve"
+	case strings.HasPrefix(name, "relay-"):
+		return "relay"
+	case strings.HasPrefix(name, "gateway-"):
+		return "gateway"
+	default:
+		return ""
+	}
 }
 
 func normalizeRef(ref string) string {
@@ -879,16 +963,14 @@ func ensureProcessDirs(state State) error {
 }
 
 func writeProcessRegistration(state State) error {
+	stateWriteMu.Lock()
+	defer stateWriteMu.Unlock()
 	if state.PIDFile != "" {
 		if err := os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600); err != nil {
 			return err
 		}
 	}
-	stateBytes, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(state.StateFile, stateBytes, 0o600)
+	return writeStateAtomic(state.StateFile, state)
 }
 
 func readStateIfExists(path string) (State, error) {
@@ -896,11 +978,7 @@ func readStateIfExists(path string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	var state State
-	if err := json.Unmarshal(b, &state); err != nil {
-		return State{}, err
-	}
-	return state, nil
+	return decodeState(b)
 }
 
 func runtimeSourceFromEnv() string {
