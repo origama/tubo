@@ -566,6 +566,33 @@ func TestBridgeCurrentRuntimeStatusClearsStaleRefreshErrorAfterTrafficRecovery(t
 	}
 }
 
+func TestBridgeCurrentRuntimeStatusClearsTransientRefreshErrorAfterLeaseSuccess(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}}
+	app.lastRefreshError = "grant service unavailable"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	app.lastRefreshErrorClass = reachability.ErrorTransient
+	app.applyConnectLeaseArtifactsLocked(grantspkg.ConnectLeaseArtifacts{AccessLease: grantspkg.ConnectAccessLease{ExpiresAt: time.Now().Add(time.Hour)}, RefreshLease: grantspkg.ConnectRefreshLease{ExpiresAt: time.Now().Add(time.Hour)}})
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected running status after lease success, got %#v", snap)
+	}
+	if snap.LastRefreshError != "grant service unavailable" {
+		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusKeepsConfigRefreshFailureAfterLeaseSuccess(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp"}}
+	app.lastRefreshError = "publish lease service public key mismatch"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	app.lastRefreshErrorClass = reachability.ErrorConfig
+	app.applyConnectLeaseArtifactsLocked(grantspkg.ConnectLeaseArtifacts{AccessLease: grantspkg.ConnectAccessLease{ExpiresAt: time.Now().Add(time.Hour)}, RefreshLease: grantspkg.ConnectRefreshLease{ExpiresAt: time.Now().Add(time.Hour)}})
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "public key mismatch") {
+		t.Fatalf("expected config failure to stay degraded after lease success, got %#v", snap)
+	}
+}
+
 func TestBridgeCurrentRuntimeStatusExplainsPublishLeaseExpiry(t *testing.T) {
 	app := &App{cfg: Config{ServiceKind: "tcp"}}
 	app.lastRefreshError = "rollover connect lease: request connect lease from advertised grant endpoint(s): publish lease expired"
@@ -620,6 +647,19 @@ func TestBridgeCurrentRuntimeStatusKeepsRefreshFailureAheadOfPingSuccess(t *test
 	snap := app.CurrentRuntimeStatus()
 	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "grant service unavailable") {
 		t.Fatalf("expected refresh failure to keep status degraded, got %#v", snap)
+	}
+	if snap.PeerLivenessState != "healthy" {
+		t.Fatalf("expected ping success to still update liveness details, got %#v", snap)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusKeepsConfigRefreshFailureAheadOfPingSuccess(t *testing.T) {
+	peerID := corepeer.ID("12D3KooWPeerPing")
+	app := &App{cfg: Config{ServiceKind: "tcp"}, service: corepeer.AddrInfo{ID: peerID}, lastRefreshError: "publish lease service public key mismatch", lastRefreshErrorAt: time.Now().Add(-time.Minute), lastRefreshErrorClass: reachability.ErrorConfig}
+	app.recordPeerPingSuccess(peerID, 9*time.Millisecond)
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "public key mismatch") {
+		t.Fatalf("expected config failure to stay degraded despite ping success, got %#v", snap)
 	}
 	if snap.PeerLivenessState != "healthy" {
 		t.Fatalf("expected ping success to still update liveness details, got %#v", snap)
