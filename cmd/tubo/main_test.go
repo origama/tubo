@@ -4132,7 +4132,7 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 		t.Fatalf("describe output missing peer: %s", out)
 	}
 	if _, err := capture(func() error {
-		return run([]string{"grants", "approve", first.ID, "--config", configPath, "--store", storePath, "--ttl", "168h"})
+		return run([]string{"grants", "approve", first.ID, "--config", configPath, "--store", storePath, "--claim-ttl", "168h"})
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -4162,6 +4162,110 @@ func TestGrantsAuthorityCLIApprovesDeniesAndShowsRequests(t *testing.T) {
 			t.Fatalf("history missing %q: %s", want, out)
 		}
 	}
+}
+
+func TestGrantsApproveTTLFlagsControlClaimPublishAndShareExpiry(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clusterID := cfg.Clusters["home"].ClusterID
+	newPending := func(t *testing.T, storePath, serviceName, servicePeerID string) grantspkg.Request {
+		t.Helper()
+		store := grantspkg.NewStore(storePath)
+		now := time.Now().UTC()
+		req, err := store.CreatePending(makePendingGrantRequest(t, "home", clusterID, "default", "12D3-requester-"+serviceName, serviceName, servicePeerID, now, now.Add(48*time.Hour)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return req
+	}
+	approx := func(t *testing.T, got, want time.Time, label string) {
+		t.Helper()
+		delta := got.Sub(want)
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > 5*time.Second {
+			t.Fatalf("%s expiry = %s, want about %s (delta %s)", label, got.UTC().Format(time.RFC3339), want.UTC().Format(time.RFC3339), delta)
+		}
+	}
+	t.Run("claim-defaults-publish-and-share", func(t *testing.T) {
+		storePath := filepath.Join(t.TempDir(), "requests.json")
+		req := newPending(t, storePath, "myapi-default", "12D3-service-default")
+		start := time.Now().UTC()
+		if _, err := capture(func() error {
+			return run([]string{"grants", "approve", req.ID, "--config", configPath, "--store", storePath, "--claim-ttl", "1064h"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		approved, ok, err := grantspkg.NewStore(storePath).Get(req.ID)
+		if err != nil || !ok || approved.ServiceClaim == nil || approved.PublishLease == nil || approved.ServiceShareToken == "" {
+			t.Fatalf("approval not persisted ok=%t err=%v req=%#v", ok, err, approved)
+		}
+		approx(t, approved.ServiceClaim.ExpiresAt, start.Add(1064*time.Hour), "service claim")
+		approx(t, approved.PublishLease.ExpiresAt, start.Add(1064*time.Hour), "publish lease")
+		payload, err := parseAndVerifyServiceShareToken(approved.ServiceShareToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approx(t, payload.ExpiresAt, start.Add(grantspkg.ServiceShareDefaultTTL), "share invite")
+	})
+	t.Run("explicit-publish-and-share-ttl", func(t *testing.T) {
+		storePath := filepath.Join(t.TempDir(), "requests.json")
+		req := newPending(t, storePath, "myapi-explicit", "12D3-service-explicit")
+		start := time.Now().UTC()
+		if _, err := capture(func() error {
+			return run([]string{"grants", "approve", req.ID, "--config", configPath, "--store", storePath, "--claim-ttl", "1064h", "--publish-lease-ttl", "24h", "--share-ttl", "30m"})
+		}); err != nil {
+			t.Fatal(err)
+		}
+		approved, ok, err := grantspkg.NewStore(storePath).Get(req.ID)
+		if err != nil || !ok || approved.ServiceClaim == nil || approved.PublishLease == nil || approved.ServiceShareToken == "" {
+			t.Fatalf("approval not persisted ok=%t err=%v req=%#v", ok, err, approved)
+		}
+		approx(t, approved.ServiceClaim.ExpiresAt, start.Add(1064*time.Hour), "service claim")
+		approx(t, approved.PublishLease.ExpiresAt, start.Add(24*time.Hour), "publish lease")
+		payload, err := parseAndVerifyServiceShareToken(approved.ServiceShareToken)
+		if err != nil {
+			t.Fatal(err)
+		}
+		approx(t, payload.ExpiresAt, start.Add(30*time.Minute), "share invite")
+	})
+	t.Run("publish-ttl-cannot-exceed-claim-ttl", func(t *testing.T) {
+		storePath := filepath.Join(t.TempDir(), "requests.json")
+		req := newPending(t, storePath, "myapi-too-long-publish", "12D3-service-too-long-publish")
+		_, err := capture(func() error {
+			return run([]string{"grants", "approve", req.ID, "--config", configPath, "--store", storePath, "--claim-ttl", "24h", "--publish-lease-ttl", "48h"})
+		})
+		if err == nil || !strings.Contains(err.Error(), "cannot be greater than --claim-ttl") {
+			t.Fatalf("expected publish ttl validation error, got %v", err)
+		}
+	})
+	t.Run("share-ttl-cannot-exceed-publish-ttl", func(t *testing.T) {
+		storePath := filepath.Join(t.TempDir(), "requests.json")
+		req := newPending(t, storePath, "myapi-too-long-share", "12D3-service-too-long-share")
+		_, err := capture(func() error {
+			return run([]string{"grants", "approve", req.ID, "--config", configPath, "--store", storePath, "--claim-ttl", "24h", "--publish-lease-ttl", "24h", "--share-ttl", "48h"})
+		})
+		if err == nil || !strings.Contains(err.Error(), "cannot be greater than --publish-lease-ttl") {
+			t.Fatalf("expected share ttl validation error, got %v", err)
+		}
+	})
+	t.Run("ttl-is-rejected", func(t *testing.T) {
+		storePath := filepath.Join(t.TempDir(), "requests.json")
+		req := newPending(t, storePath, "myapi-ttl-rejected", "12D3-service-ttl-rejected")
+		_, err := capture(func() error {
+			return run([]string{"grants", "approve", req.ID, "--config", configPath, "--store", storePath, "--ttl", "24h"})
+		})
+		if err == nil || !strings.Contains(err.Error(), "--ttl is ambiguous") {
+			t.Fatalf("expected ambiguous ttl rejection, got %v", err)
+		}
+	})
 }
 
 func TestGrantsServeProcessStateHasLogFile(t *testing.T) {

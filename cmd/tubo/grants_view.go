@@ -218,7 +218,7 @@ func printGrantPendingHuman(requests []grantspkg.Request, title string, aliasIdx
 				fmt.Printf("   peer: %s\n", abbreviatePeerID(group.ServicePeerID))
 			}
 			if group.LatestRequestID != "" {
-				fmt.Printf("\n   approve: tubo grants approve %s --ttl 168h\n", group.LatestRequestID)
+				fmt.Printf("\n   approve: tubo grants approve %s --claim-ttl 168h\n", group.LatestRequestID)
 				fmt.Printf("   deny:    tubo grants deny %s --reason \"<reason>\"\n", group.LatestRequestID)
 				fmt.Printf("   inspect: tubo grants describe %s\n", group.LatestRequestID)
 			}
@@ -237,7 +237,7 @@ func printGrantPendingDuplicateSummary(group grantRequestGroup, verbose bool) {
 	if verbose {
 		fmt.Printf("   service id: %s\n", abbreviateID(group.ServiceID))
 	}
-	fmt.Printf("\n   approve latest: tubo grants approve %s --ttl 168h\n", group.LatestRequestID)
+	fmt.Printf("\n   approve latest: tubo grants approve %s --claim-ttl 168h\n", group.LatestRequestID)
 	fmt.Printf("   inspect group: tubo grants describe %s\n", group.LatestRequestID)
 	fmt.Printf("   show all: tubo grants pending --wide\n")
 }
@@ -446,7 +446,7 @@ func printGrantRequestReview(req grantspkg.Request, related []grantspkg.Request,
 	fmt.Printf("  - service name: %s\n", req.ServiceName)
 	fmt.Println()
 	fmt.Println("Approve:")
-	fmt.Printf("  tubo grants approve %s --ttl 168h\n", req.ID)
+	fmt.Printf("  tubo grants approve %s --claim-ttl 168h\n", req.ID)
 	fmt.Println("Deny:")
 	fmt.Printf("  tubo grants deny %s --reason \"<reason>\"\n", req.ID)
 	if storePath != "" {
@@ -597,7 +597,7 @@ func printGrantDescribeJSON(storePath string, req grantspkg.Request, group grant
 		RequesterAlias:  alias,
 		Review: grantReviewNotes{
 			SuggestedVerification: []string{"requester peer suffix: " + peerSuffix(req.RequesterPeerID), "service peer suffix: " + peerSuffix(req.ServicePeerID), "service name: " + req.ServiceName},
-			ApproveCommand:        fmt.Sprintf("tubo grants approve %s --ttl 168h", req.ID),
+			ApproveCommand:        fmt.Sprintf("tubo grants approve %s --claim-ttl 168h", req.ID),
 			DenyCommand:           fmt.Sprintf("tubo grants deny %s --reason \"<reason>\"", req.ID),
 		},
 	}

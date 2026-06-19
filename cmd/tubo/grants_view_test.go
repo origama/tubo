@@ -98,7 +98,7 @@ func TestGrantsPendingHumanOutputShowsGroupedDuplicatesExplicitly(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Pending grant requests", "source: authority/local store", "oripi wants to publish myapi (http) in home/default", "2 pending requests for same requester/service/service_peer", "latest: gr_new", "oldest: gr_old", "requester:", "service peer:", "approve latest: tubo grants approve gr_new --ttl 168h", "inspect group: tubo grants describe gr_new", "show all: tubo grants pending --wide"} {
+	for _, want := range []string{"Pending grant requests", "source: authority/local store", "oripi wants to publish myapi (http) in home/default", "2 pending requests for same requester/service/service_peer", "latest: gr_new", "oldest: gr_old", "requester:", "service peer:", "approve latest: tubo grants approve gr_new --claim-ttl 168h", "inspect group: tubo grants describe gr_new", "show all: tubo grants pending --wide"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("pending output missing %q: %s", want, out)
 		}

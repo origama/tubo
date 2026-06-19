@@ -8,6 +8,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Fixed
 - Connect and bridge health now keeps auth/config refresh failures sticky until a real refresh or rollover recovery succeeds; successful lease recovery also clears stale transient tunnel-degraded state, and HTTP proof failures now mark the tunnel degraded like TCP/WebSocket paths.
+- Manual `tubo grants approve` now uses explicit `--claim-ttl`, `--publish-lease-ttl`, and `--share-ttl` flags, rejects ambiguous `--ttl`, and stops silently minting a short publish lease when the operator intended a long approval.
 
 ## [v0.12.0] - 2026-06-17
 

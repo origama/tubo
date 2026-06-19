@@ -203,12 +203,13 @@ Inspect the request if needed:
 tubo grants describe gr_a0f4b0d61b77d0f1
 ```
 
-`describe` now prints a readable review card with requester, service, verification hints, and approve/deny suggestions. Use `--wide` for raw per-request debugging, and after #256 duplicate pending groups are surfaced explicitly; prefer approving the latest request shown by `tubo grants pending` unless `describe` gives you a reason not to.
+`describe` now prints a readable review card with requester, service, verification hints, and approve/deny suggestions. Use `--wide` for raw per-request debugging, and after #256 duplicate pending groups are surfaced explicitly; prefer approving the latest request shown by `tubo grants pending` unless `describe` gives you a reason not to. For manual approval, use `--claim-ttl` and only add `--publish-lease-ttl` / `--share-ttl` when you really want shorter downstream lifetimes.
 
-Approve with a TTL:
+Approve with explicit TTLs:
 
 ```bash
-tubo grants approve gr_a0f4b0d61b77d0f1 --ttl 24h
+tubo grants approve gr_a0f4b0d61b77d0f1 --claim-ttl 24h
+# optional: --publish-lease-ttl and --share-ttl when you need shorter downstream lifetimes
 ```
 
 To deny:
