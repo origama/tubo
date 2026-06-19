@@ -180,6 +180,97 @@ func TestListViewsAndLoadState(t *testing.T) {
 	}
 }
 
+func TestListViewsAndLoadStateIgnoreTrailingGarbage(t *testing.T) {
+	root := t.TempDir()
+	system := &stubSystem{running: map[int]bool{26656: true}, cmdlines: map[int][]string{26656: []string{"/Users/gvirzi/local_repos/origama/tubo/tubo", "connect", "piwebui", "--local", "127.0.0.1:38080"}}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := State{ID: "process/connect-piwebui-38080", Kind: "process", Command: "connect", ResourceKind: "pipe", Name: "connect-piwebui-38080", PID: 26656, PIDFile: filepath.Join(RunDir(root), "connect-piwebui-38080.pid"), StateFile: filepath.Join(StateDir(root), "connect-piwebui-38080.json"), LogFile: filepath.Join(LogDir(root), "connect-piwebui-38080.log")}
+	if err := os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b = append(b, []byte("\nconnect runtime status update failed: invalid character 't' after top-level value\n")...)
+	if err := os.WriteFile(state.StateFile, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ListViews(root, true, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %#v", items)
+	}
+	if items[0].Name != state.Name || items[0].ID != state.ID {
+		t.Fatalf("unexpected recovered view: %#v", items[0])
+	}
+	if status := items[0].Status; status != "running" {
+		t.Fatalf("unexpected recovered status: %q", status)
+	}
+	loaded, status, err := LoadState(root, "connect-piwebui-38080", system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Name != state.Name || status != "running" {
+		t.Fatalf("unexpected loaded state/status: %#v %q", loaded, status)
+	}
+	if err := UpdateState(state.StateFile, func(st *State) {
+		st.RuntimeStatus = "degraded"
+		st.DegradedReason = "test repair"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	repaired, err := readStateIfExists(state.StateFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repaired.RuntimeStatus != "degraded" || repaired.DegradedReason != "test repair" {
+		t.Fatalf("unexpected repaired state: %#v", repaired)
+	}
+}
+
+func TestListViewsFallsBackWhenSnapshotLacksIdentity(t *testing.T) {
+	root := t.TempDir()
+	system := &stubSystem{running: map[int]bool{26656: true}, cmdlines: map[int][]string{26656: []string{"/Users/gvirzi/local_repos/origama/tubo/tubo", "connect", "piwebui", "--local", "127.0.0.1:38080"}}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(StateDir(root), "connect-piwebui-38080.json")
+	pidPath := filepath.Join(RunDir(root), "connect-piwebui-38080.pid")
+	if err := os.WriteFile(pidPath, []byte("26656\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, []byte("{\n  \"unexpected\": \"value\"\n}\ntrailing garbage\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := ListViews(root, true, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %#v", items)
+	}
+	if items[0].Name != "connect-piwebui-38080" || items[0].ID != "process/connect-piwebui-38080" {
+		t.Fatalf("expected filename fallback, got %#v", items[0])
+	}
+	if items[0].Status != "running" {
+		t.Fatalf("expected running status from fallback, got %#v", items[0])
+	}
+	if _, status, err := LoadState(root, "connect-piwebui-38080", system); err != nil || status != "running" {
+		t.Fatalf("LoadState fallback err=%v status=%q", err, status)
+	}
+}
+
 func TestStatusDetailsUsesHealthEndpointForDegradedProcess(t *testing.T) {
 	root := t.TempDir()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
