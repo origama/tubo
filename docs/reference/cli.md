@@ -571,7 +571,7 @@ tubo grants pending
 tubo grants pending --wide
 tubo grants describe gr_123
 tubo grants describe gr_123 --json
-tubo grants approve gr_123 --ttl 24h
+tubo grants approve gr_123 --claim-ttl 24h [--publish-lease-ttl 24h] [--share-ttl 1h]
 tubo grants deny gr_123
 
 tubo grants request service/myapi --peer /ip4/1.2.3.4/tcp/4001/p2p/12D3...
@@ -588,7 +588,7 @@ tubo grants history --json
 tubo peers alias 12D3KooW... --name oripi --note "verified via SSH"
 ```
 
-`--claim-ttl` sets the approved publish authorization lifetime. Keep it separate from share invite lifetime and connect access/refresh lease lifetimes. `TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish authorization TTLs and may change. For most trusted private long-running services, `--claim-ttl 24h` is a good default; for dev/test, shorter TTLs such as `1h` are fine; for semi-public or weakly controlled environments, prefer manual approval plus shorter TTLs.
+`--claim-ttl` sets the approved ServiceClaim lifetime. `--publish-lease-ttl` sets the PublishLease lifetime and defaults to `--claim-ttl` when omitted. `--share-ttl` sets the share invite token lifetime and defaults to `min(ServiceShareDefaultTTL, publish-lease-ttl)` when omitted. `--publish-lease-ttl` must not exceed `--claim-ttl`, and `--share-ttl` must not exceed `--publish-lease-ttl`. `--ttl` is no longer accepted because it was ambiguous.
 
 The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and now publishes a system `grant-service` discovery record when namespace discovery is enabled, so members can discover the grant endpoint even without local `grant_service_peers`. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, reuses an existing pending request for equivalent service/requester/service-peer retries, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `tubo grants request` / `attach` now prefer fresh grant-service discovery records and ignore expired remote-cache entries when rediscovering a grant peer.
 
@@ -597,7 +597,7 @@ Manual review flow:
 ```bash
 tubo grants pending
 tubo grants describe <request-id>
-tubo grants approve <request-id> --ttl 24h
+tubo grants approve <request-id> --claim-ttl 24h [--publish-lease-ttl 24h] [--share-ttl 1h]
 ```
 
 Use `--wide` for raw per-request debugging. After #256, duplicate pending groups are surfaced explicitly; prefer approving the latest request shown by `grants pending` unless `describe` shows a reason not to.

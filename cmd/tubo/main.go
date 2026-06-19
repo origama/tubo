@@ -651,7 +651,7 @@ Rotate the managed namespace discovery secret using the current/previous model.`
   tubo grants pending [--wide] [--json] [--verbose]
   tubo grants history [--wide] [--json] [--all] [--verbose]
   tubo grants describe <request-id> [--wide] [--json]
-  tubo grants approve <request-id> --ttl 7d
+  tubo grants approve <request-id> --claim-ttl 7d [--publish-lease-ttl 7d] [--share-ttl 1h]
   tubo grants deny <request-id> --reason <reason>
   tubo grants request service/<name> --peer <multiaddr>
   tubo grants serve --cluster <name> --namespace <name> [--public-auto-approve] [--claim-ttl 24h]

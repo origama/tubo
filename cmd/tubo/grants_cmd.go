@@ -352,17 +352,82 @@ func grantsDenyCmd(args []string) error {
 	return nil
 }
 
+type trackedDurationFlag struct {
+	value time.Duration
+	set   bool
+}
+
+func (f *trackedDurationFlag) String() string {
+	return f.value.String()
+}
+
+func (f *trackedDurationFlag) Set(s string) error {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	f.value = d
+	f.set = true
+	return nil
+}
+
+func rejectAmbiguousGrantTTL(args []string) error {
+	for _, arg := range args {
+		switch {
+		case arg == "--ttl", strings.HasPrefix(arg, "--ttl="), arg == "-ttl", strings.HasPrefix(arg, "-ttl="):
+			return errors.New("--ttl is ambiguous; use --claim-ttl and optionally --publish-lease-ttl / --share-ttl")
+		}
+	}
+	return nil
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a <= 0 || (b > 0 && b < a) {
+		return b
+	}
+	return a
+}
+
 func grantsApproveCmd(args []string) error {
 	id, flagArgs := splitGrantIDArg(args)
+	if err := rejectAmbiguousGrantTTL(flagArgs); err != nil {
+		return err
+	}
 	fs := flag.NewFlagSet("grants approve", flag.ContinueOnError)
 	configPath := fs.String("config", "", "")
 	storePath := fs.String("store", grantspkg.DefaultStorePath(), "")
-	ttl := fs.Duration("ttl", 7*24*time.Hour, "")
+	claimTTL := &trackedDurationFlag{value: 7 * 24 * time.Hour}
+	publishLeaseTTL := &trackedDurationFlag{}
+	shareTTL := &trackedDurationFlag{}
+	fs.Var(claimTTL, "claim-ttl", "")
+	fs.Var(publishLeaseTTL, "publish-lease-ttl", "")
+	fs.Var(shareTTL, "share-ttl", "")
 	if err := fs.Parse(flagArgs); err != nil {
 		return err
 	}
 	if id == "" {
-		return errors.New("usage: tubo grants approve <request-id> --ttl 7d")
+		return errors.New("usage: tubo grants approve <request-id> --claim-ttl 7d")
+	}
+	if claimTTL.value <= 0 {
+		return errors.New("--claim-ttl must be greater than 0")
+	}
+	if !publishLeaseTTL.set {
+		publishLeaseTTL.value = claimTTL.value
+	}
+	if publishLeaseTTL.value <= 0 {
+		return errors.New("--publish-lease-ttl must be greater than 0")
+	}
+	if publishLeaseTTL.value > claimTTL.value {
+		return fmt.Errorf("--publish-lease-ttl %s cannot be greater than --claim-ttl %s", publishLeaseTTL.value, claimTTL.value)
+	}
+	if !shareTTL.set {
+		shareTTL.value = minDuration(grantspkg.ServiceShareDefaultTTL, publishLeaseTTL.value)
+	}
+	if shareTTL.value <= 0 {
+		return errors.New("--share-ttl must be greater than 0")
+	}
+	if shareTTL.value > publishLeaseTTL.value {
+		return fmt.Errorf("--share-ttl %s cannot be greater than --publish-lease-ttl %s", shareTTL.value, publishLeaseTTL.value)
 	}
 	store := grantspkg.NewStore(*storePath)
 	req, ok, err := store.Get(id)
@@ -390,7 +455,7 @@ func grantsApproveCmd(args []string) error {
 	if err != nil {
 		return fmt.Errorf("load cluster authority key: %w", err)
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(priv, req.ClusterName, req.ClusterID, req.NamespaceID, req.ServiceName, req.ServiceID, req.ServicePeerID, req.ServiceKind, *ttl, grantspkg.ServiceShareDefaultTTL, req.RequestedPermissions, req.ServicePublicKey, req.RequestNonce, req.ServiceOwnerSignature)
+	artifacts, err := buildManualApprovalArtifacts(priv, req, claimTTL.value, publishLeaseTTL.value, shareTTL.value)
 	if err != nil {
 		return err
 	}
@@ -403,6 +468,50 @@ func grantsApproveCmd(args []string) error {
 		fmt.Printf("share invite token: %s\n", artifacts.ServiceShareToken)
 	}
 	return nil
+}
+
+func buildManualApprovalArtifacts(priv ed25519.PrivateKey, req grantspkg.Request, claimTTL, publishLeaseTTL, shareTTL time.Duration) (grantspkg.ApprovalArtifacts, error) {
+	leaseArtifacts, err := grantspkg.BuildPublishLeaseArtifacts(priv, grantspkg.PublishLeaseRequest{
+		Version:               grantspkg.PublishLeaseVersion,
+		Kind:                  grantspkg.PublishLeaseRequestKind,
+		ClusterID:             req.ClusterID,
+		NamespaceID:           req.NamespaceID,
+		ServiceID:             req.ServiceID,
+		ServicePublicKey:      req.ServicePublicKey,
+		PublisherPeerID:       req.ServicePeerID,
+		RequestedCapabilities: append([]string(nil), req.RequestedPermissions...),
+		Nonce:                 req.RequestNonce,
+		ServiceOwnerSignature: append([]byte(nil), req.ServiceOwnerSignature...),
+	}, req.ServiceName, claimTTL, publishLeaseTTL)
+	if err != nil {
+		return grantspkg.ApprovalArtifacts{}, err
+	}
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     req.ClusterID,
+		NamespaceID:   req.NamespaceID,
+		SubjectPeerID: req.ServicePeerID,
+		Permissions: []string{
+			capability.PermissionSubscribe,
+			capability.PermissionList,
+			capability.PermissionPublish,
+		},
+		ExpiresAt: leaseArtifacts.ServiceClaim.ExpiresAt,
+	}, priv)
+	if err != nil {
+		return grantspkg.ApprovalArtifacts{}, err
+	}
+	shareArtifacts, err := grantspkg.BuildShareInviteArtifactsFromLeaseWithEndpoints(priv, req.ClusterName, leaseArtifacts.Lease, req.ServiceName, shareTTL, nil, req.ServicePeerID, nil)
+	if err != nil {
+		shareArtifacts, err = grantspkg.BuildServiceShareArtifactsWithEndpoints(priv, req.ClusterName, req.ClusterID, req.NamespaceID, req.ServiceName, req.ServiceID, shareTTL, nil, req.ServicePeerID, nil)
+		if err != nil {
+			return grantspkg.ApprovalArtifacts{}, err
+		}
+	}
+	shareArtifacts.Token, err = grantspkg.ReissueServiceShareTokenWithKind(shareArtifacts.Token, priv, req.ServiceKind)
+	if err != nil {
+		return grantspkg.ApprovalArtifacts{}, err
+	}
+	return grantspkg.ApprovalArtifacts{ServiceClaim: leaseArtifacts.ServiceClaim, PublishLease: leaseArtifacts.Lease, MembershipCapability: membership, ServiceShareToken: shareArtifacts.Token}, nil
 }
 
 func ensureNoApprovedServiceCollision(store *grantspkg.Store, req grantspkg.Request) error {
