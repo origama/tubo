@@ -373,7 +373,8 @@ func (f *trackedDurationFlag) Set(s string) error {
 
 func rejectAmbiguousGrantTTL(args []string) error {
 	for _, arg := range args {
-		if strings.HasPrefix(arg, "--ttl") || strings.HasPrefix(arg, "-ttl") {
+		switch {
+		case arg == "--ttl", strings.HasPrefix(arg, "--ttl="), arg == "-ttl", strings.HasPrefix(arg, "-ttl="):
 			return errors.New("--ttl is ambiguous; use --claim-ttl and optionally --publish-lease-ttl / --share-ttl")
 		}
 	}
