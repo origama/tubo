@@ -1026,7 +1026,7 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	now := time.Now().UTC()
 	a.lastRefreshHealthyAt = now
 	a.clearPeerPingStateLocked(now)
-	a.clearStaleTunnelDegradedStateAfterLeaseRecoveryLocked(now)
+	a.clearStaleTunnelDegradedStateAfterLeaseRecovery(now)
 	a.recordRenewalReachabilitySuccess()
 	a.nextRefreshRetryAt = time.Time{}
 	a.consecutiveRefreshFails = 0
@@ -1036,7 +1036,12 @@ func connectRefreshFailureIsCurrent(lastHealthyAt, lastErrorAt time.Time) bool {
 	return lastHealthyAt.IsZero() || lastHealthyAt.Before(lastErrorAt)
 }
 
-func (a *App) clearStaleTunnelDegradedStateAfterLeaseRecoveryLocked(now time.Time) {
+func (a *App) clearStaleTunnelDegradedStateAfterLeaseRecovery(now time.Time) {
+	if a == nil {
+		return
+	}
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
 	if a.lastTunnelError == "" || !connectTunnelErrorIsRecoverable(a.lastTunnelError) {
 		return
 	}
@@ -1636,7 +1641,6 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		a.applyConnectLeaseArtifactsLocked(grantspkg.ConnectLeaseArtifacts{AccessLease: access, RefreshLease: *refresh})
 		a.connectMu.Unlock()
 		log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
-		a.recordRenewalReachabilitySuccess()
 		a.reportStatus()
 		return access, nil
 	}

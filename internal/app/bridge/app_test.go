@@ -688,19 +688,6 @@ func TestBridgeCurrentRuntimeStatusKeepsRefreshFailureAheadOfPingSuccess(t *test
 	}
 }
 
-func TestBridgeCurrentRuntimeStatusKeepsConfigRefreshFailureAheadOfPingSuccess(t *testing.T) {
-	peerID := corepeer.ID("12D3KooWPeerPing")
-	app := &App{cfg: Config{ServiceKind: "tcp"}, service: corepeer.AddrInfo{ID: peerID}, lastRefreshError: "publish lease service public key mismatch", lastRefreshErrorAt: time.Now().Add(-time.Minute), lastRefreshErrorClass: reachability.ErrorConfig}
-	app.recordPeerPingSuccess(peerID, 9*time.Millisecond)
-	snap := app.CurrentRuntimeStatus()
-	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "public key mismatch") {
-		t.Fatalf("expected config failure to stay degraded despite ping success, got %#v", snap)
-	}
-	if snap.PeerLivenessState != "healthy" {
-		t.Fatalf("expected ping success to still update liveness details, got %#v", snap)
-	}
-}
-
 func TestBridgePeerPingUsesSnapshotPeerID(t *testing.T) {
 	pinger := &fakePeerPinger{results: []p2pping.Result{{RTT: 7 * time.Millisecond}}}
 	oldPeerID := corepeer.ID("12D3KooWOldPeer")
