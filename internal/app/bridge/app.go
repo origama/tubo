@@ -942,11 +942,9 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 			snap.Reason = "connect access lease expired; ask the service owner for a fresh token/invite"
 		}
 	}
-	if a.lastRefreshError != "" && snap.Reason == "" {
-		if a.lastRefreshHealthyAt.IsZero() || a.lastRefreshHealthyAt.Before(a.lastRefreshErrorAt) {
-			snap.Status = "degraded"
-			snap.Reason = connectRefreshFailureDisplayReason(a.lastRefreshError)
-		}
+	if a.lastRefreshError != "" && snap.Reason == "" && connectRefreshFailureIsCurrent(a.lastRefreshHealthyAt, a.lastRefreshErrorAt) {
+		snap.Status = "degraded"
+		snap.Reason = connectRefreshFailureDisplayReason(a.lastRefreshError)
 	}
 	if !a.lastPeerPingAt.IsZero() {
 		t := a.lastPeerPingAt
@@ -1028,9 +1026,33 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	now := time.Now().UTC()
 	a.lastRefreshHealthyAt = now
 	a.clearPeerPingStateLocked(now)
-	a.lastRefreshErrorClass = reachability.ErrorNone
+	a.clearStaleTunnelDegradedStateAfterLeaseRecovery(now)
+	a.recordRenewalReachabilitySuccess()
 	a.nextRefreshRetryAt = time.Time{}
 	a.consecutiveRefreshFails = 0
+}
+
+func connectRefreshFailureIsCurrent(lastHealthyAt, lastErrorAt time.Time) bool {
+	return lastHealthyAt.IsZero() || lastHealthyAt.Before(lastErrorAt)
+}
+
+func (a *App) clearStaleTunnelDegradedStateAfterLeaseRecovery(now time.Time) {
+	if a == nil {
+		return
+	}
+	a.healthMu.Lock()
+	defer a.healthMu.Unlock()
+	if a.lastTunnelError == "" || !connectTunnelErrorIsRecoverable(a.lastTunnelError) {
+		return
+	}
+	if a.lastTunnelHealthyAt.IsZero() || a.lastTunnelHealthyAt.Before(a.lastTunnelErrorAt) {
+		a.lastTunnelHealthyAt = now
+	}
+}
+
+func connectTunnelErrorIsRecoverable(errText string) bool {
+	class := reachability.Classify(errors.New(errText)).Class
+	return class == reachability.ErrorTransient || class == reachability.ErrorUnknown
 }
 
 func ConnectPathTransitionMessage(previous, current string) (string, bool) {
@@ -1321,6 +1343,7 @@ func (a *App) mux() *http.ServeMux {
 		}
 		s, err := a.host.NewStream(streamCtx, peerID, p2p.SupportedProtocolIDs()...)
 		if err != nil {
+			a.markTunnelDegraded(err)
 			http.Error(w, err.Error(), 502)
 			return
 		}
@@ -1335,6 +1358,7 @@ func (a *App) mux() *http.ServeMux {
 		}
 		proof, err := a.connectProof()
 		if err != nil {
+			a.markTunnelDegraded(err)
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
 		}
@@ -1352,6 +1376,7 @@ func (a *App) mux() *http.ServeMux {
 		resp, err := p2p.HandleClientRequest(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, reqBody, proof)
 		if err != nil {
 			opErr = err
+			a.markTunnelDegraded(err)
 			http.Error(w, err.Error(), 502)
 			return
 		}
@@ -1393,12 +1418,14 @@ func (a *App) serveWebSocket(w http.ResponseWriter, r *http.Request, s network.S
 	proof, err := a.connectProof()
 	if err != nil {
 		opErr = err
+		a.markTunnelDegraded(err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
 	respHeader, err := p2p.StartClientWebSocketUpgrade(s, "bridge", r.Method, r.URL.Path, r.URL.RawQuery, headers, proof)
 	if err != nil {
 		opErr = err
+		a.markTunnelDegraded(err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -1611,15 +1638,9 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 			a.connectMu.Unlock()
 			return grantspkg.ConnectAccessLease{}, wrapped
 		}
-		a.connectLease = &access
-		a.cfg.ConnectAccessLease = &access
-		a.lastRefreshError = ""
-		a.lastRefreshErrorClass = reachability.ErrorNone
-		a.nextRefreshRetryAt = time.Time{}
-		a.consecutiveRefreshFails = 0
+		a.applyConnectLeaseArtifactsLocked(grantspkg.ConnectLeaseArtifacts{AccessLease: access, RefreshLease: *refresh})
 		a.connectMu.Unlock()
 		log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
-		a.recordRenewalReachabilitySuccess()
 		a.reportStatus()
 		return access, nil
 	}

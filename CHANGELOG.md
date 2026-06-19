@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
+## [Unreleased]
+
+### Fixed
+- Connect and bridge health now keeps auth/config refresh failures sticky until a real refresh or rollover recovery succeeds; successful lease recovery also clears stale transient tunnel-degraded state, and HTTP proof failures now mark the tunnel degraded like TCP/WebSocket paths.
+
 ## [v0.12.0] - 2026-06-17
 
 ### Added
