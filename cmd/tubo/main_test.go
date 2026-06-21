@@ -21,6 +21,7 @@ import (
 	"time"
 
 	capability "github.com/origama/tubo/internal/capability"
+	catalogpkg "github.com/origama/tubo/internal/catalog"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	connectflow "github.com/origama/tubo/internal/connectflow"
@@ -6355,7 +6356,7 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatalf("unexpected services: %#v", result.Services)
 	}
 	joined := strings.Join(result.Messages, "\n")
-	if !strings.Contains(joined, "querying discovery cache from relay") || !strings.Contains(joined, "received 1 services") {
+	if !strings.Contains(joined, "querying configured discovery peer fallback from relay") || !strings.Contains(joined, "received 1 services") {
 		t.Fatalf("unexpected messages: %s", joined)
 	}
 }
@@ -6424,7 +6425,7 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatalf("unexpected service: %#v", service)
 	}
 	joined := strings.Join(result.Messages, "\n")
-	if !strings.Contains(joined, "querying discovery cache from relay") || !strings.Contains(joined, "received service myapi") {
+	if !strings.Contains(joined, "querying configured discovery peer fallback from relay") || !strings.Contains(joined, "received service myapi") {
 		t.Fatalf("unexpected messages: %s", joined)
 	}
 }
@@ -6936,23 +6937,126 @@ func TestDiscoverGrantServicePeerUsesSystemDiscovery(t *testing.T) {
 	}
 }
 
+func writeDiscoveryConfigFromFixture(t *testing.T, cfg cfgpkg.Config) string {
+	t.Helper()
+	configRoot := filepath.Join(t.TempDir(), "config")
+	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	return configPath
+}
+
+func newLocalDiscoveryEndpointFixture(t *testing.T) string {
+	t.Helper()
+	_, cfg, _, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	admin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(catalogpkg.AdminResponse{Count: 2, Items: []catalogpkg.Service{
+			{Name: "shared-api", Kind: "service", ServiceKind: "http", Status: "online", Path: "direct", PeerID: "12D3KooWLocalAdminPeer"},
+			{Name: "network-only", Kind: "service", ServiceKind: "http", Status: "online", Path: "direct", PeerID: "12D3KooWLocalAdminPeer"},
+		}})
+	}))
+	t.Cleanup(admin.Close)
+	cfg.Edge.AdminListen = admin.Listener.Addr().String()
+	return writeDiscoveryConfigFromFixture(t, cfg)
+}
+
 func TestGetServicesWithoutAllRemainsNetworkOnly(t *testing.T) {
-	configPath := newLocalServiceInventoryFixture(t)
-	out, err := capture(func() error {
+	configPath := newLocalDiscoveryEndpointFixture(t)
+	stdout, stderr, err := captureOutputs(func() error {
 		return run([]string{"get", "services", "--no-init", "--config", configPath, "--timeout", "5s"})
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []string{"shared-api", "network-only"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("expected discovered service %q in default get services output: %s", want, out)
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("expected default get services output to include %q: %s", want, stdout)
 		}
 	}
-	for _, want := range []string{"SOURCE", "available", "stopped-api", "incomplete-api", "running-api", "degraded-api", "stale-api", "local+network"} {
-		if strings.Contains(out, want) {
-			t.Fatalf("default get services output should not include %q: %s", want, out)
+	if !strings.Contains(stderr, "using local discovery admin endpoint at") {
+		t.Fatalf("expected local discovery message on stderr, got: %s", stderr)
+	}
+	for _, want := range []string{"SOURCE", "available", "stopped-api", "incomplete-api", "running-api", "degraded-api", "stale-api", "local+network", "local cache"} {
+		if strings.Contains(stdout, want) {
+			t.Fatalf("default get services output should not include %q: %s", want, stdout)
 		}
+	}
+}
+
+func TestGetServicesFallsBackToConfiguredDiscoveryPeersWhenNoLocalDiscoveryEndpoint(t *testing.T) {
+	configPath, _, _, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	stdout, stderr, err := captureOutputs(func() error {
+		return run([]string{"get", "services", "--no-init", "--config", configPath, "--timeout", "5s"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"no local discovery endpoint available", "querying configured discovery peer fallback from relay", "received 3 services"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("fallback stderr missing %q: %s", want, stderr)
+		}
+	}
+	if strings.Contains(stdout, "local cache") {
+		t.Fatalf("fallback stdout leaked local-cache wording: %s", stdout)
+	}
+}
+
+func TestGetServicesCachedOnlyWithoutLocalDiscoveryEndpointErrorsClearly(t *testing.T) {
+	configPath, _, _, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	_, err := capture(func() error {
+		return run([]string{"get", "services", "--cached-only", "--no-init", "--config", configPath, "--timeout", "5s"})
+	})
+	if err == nil || !strings.Contains(err.Error(), "local discovery endpoint") {
+		t.Fatalf("expected cached-only local discovery error, got %v", err)
+	}
+}
+
+func TestGetServicesLiveModeKeepsTemporaryObserverPath(t *testing.T) {
+	configPath, _, _, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	stdout, stderr, err := captureOutputs(func() error {
+		return run([]string{"get", "services", "--live", "--no-init", "--config", configPath, "--timeout", "5s"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr, "starting temporary observer for 5s...") {
+		t.Fatalf("live mode stderr missing observer message: %s", stderr)
+	}
+	if strings.Contains(stderr, "no local discovery endpoint available") || strings.Contains(stderr, "querying configured discovery peer fallback") {
+		t.Fatalf("live mode stderr leaked fallback diagnostics: %s", stderr)
+	}
+	_ = stdout
+}
+
+func TestGetServicesJSONRemainsParseableWithoutLocalDiscoveryEndpoint(t *testing.T) {
+	configPath, _, _, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	stdout, stderr, err := captureOutputs(func() error {
+		return run([]string{"get", "services", "--json", "--no-init", "--config", configPath, "--timeout", "5s"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(stderr) != "" {
+		t.Fatalf("json mode should not emit stderr diagnostics, got: %s", stderr)
+	}
+	var payload struct {
+		Mode     string   `json:"mode"`
+		Messages []string `json:"messages"`
+		Count    int      `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(stdout), &payload); err != nil {
+		t.Fatalf("json parse: %v\nout=%s", err, stdout)
+	}
+	if payload.Count < 0 || payload.Mode == "" {
+		t.Fatalf("unexpected json payload: %#v", payload)
+	}
+	joined := strings.Join(payload.Messages, "\n")
+	if !strings.Contains(joined, "no local discovery endpoint available") || !strings.Contains(joined, "querying configured discovery peer fallback from relay") {
+		t.Fatalf("unexpected json messages: %#v", payload.Messages)
 	}
 }
 

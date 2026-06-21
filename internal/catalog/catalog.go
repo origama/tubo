@@ -21,6 +21,26 @@ import (
 
 const DefaultTimeout = 20 * time.Second
 
+func localDiscoveryEndpointMessage(adminAddr string) string {
+	return fmt.Sprintf("using local discovery admin endpoint at %s", adminAddr)
+}
+
+func missingLocalDiscoveryEndpointMessage() string {
+	return "no local discovery endpoint available"
+}
+
+func cachedOnlyRequiresLocalDiscoveryEndpointError() error {
+	return errors.New("--cached-only requires a local discovery endpoint")
+}
+
+func configuredDiscoveryPeerFallbackMessage(role, servedBy string) string {
+	return fmt.Sprintf("querying configured discovery peer fallback from %s %s", role, servedBy)
+}
+
+func configuredDiscoveryPeerFallbackFailureMessage(err error) string {
+	return fmt.Sprintf("configured discovery peer fallback failed: %v", err)
+}
+
 func DiscoverServices(configPath string, timeout time.Duration, cachedOnly, live bool, scope Scope) (LookupResult, error) {
 	cfg, err := LoadDiscoveryConfig(configPath)
 	if err != nil {
@@ -45,13 +65,13 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 	if !live {
 		if services, adminAddr, err := FetchLocalServiceCache(cfg); err == nil {
 			services = applyRequestedScope(cfg, scope, services)
-			return LookupResult{Services: services, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, nil
+			return LookupResult{Services: services, Messages: []string{localDiscoveryEndpointMessage(adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, nil
 		}
 		if cachedOnly {
-			return LookupResult{}, errors.New("no local cache found")
+			return LookupResult{}, cachedOnlyRequiresLocalDiscoveryEndpointError()
 		}
 		if services, metadata, messages, err := FetchRemoteServiceCache(cfg, timeout); err == nil {
-			messages = append([]string{"no local cache found"}, messages...)
+			messages = append([]string{missingLocalDiscoveryEndpointMessage()}, messages...)
 			services = applyRequestedScope(cfg, scope, services)
 			if len(services) > 0 {
 				return LookupResult{Services: services, Messages: messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, nil
@@ -64,7 +84,7 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
 			return LookupResult{Services: services, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, nil
 		} else {
-			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
+			messages := []string{"no local discovery endpoint available", fmt.Sprintf("configured discovery peer fallback failed: %v", err)}
 			services, obsErr := ObserveServices(cfg, timeout, nil)
 			if obsErr != nil {
 				return LookupResult{}, obsErr
@@ -81,7 +101,7 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 	services = applyRequestedScope(cfg, scope, services)
 	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
 	if !live {
-		messages = append([]string{"no local cache found"}, messages...)
+		messages = append([]string{"no local discovery endpoint available"}, messages...)
 	}
 	return LookupResult{Services: services, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, nil
 }
@@ -113,14 +133,14 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 			service, err := RequireService(services, serviceName)
 			if err == nil {
 				service = applyScope(service, scope)
-				return LookupResult{Services: []Service{service}, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, service, nil
+				return LookupResult{Services: []Service{service}, Messages: []string{fmt.Sprintf("using local discovery admin endpoint at %s", adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, service, nil
 			}
 			if IsAmbiguousServiceError(err) {
 				return LookupResult{}, Service{}, err
 			}
 		}
 		if cachedOnly {
-			return LookupResult{}, Service{}, errors.New("no local cache found")
+			return LookupResult{}, Service{}, cachedOnlyRequiresLocalDiscoveryEndpointError()
 		}
 		if services, metadata, messages, err := FetchRemoteServiceCache(cfg, timeout); err == nil {
 			services = filterServicesByActualScope(cfg, scope, services)
@@ -130,13 +150,13 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 					return LookupResult{}, Service{}, err
 				}
 			} else {
-				messages = append([]string{"no local cache found"}, messages...)
+				messages = append([]string{"no local discovery endpoint available"}, messages...)
 				messages = append(messages, fmt.Sprintf("received service %s", service.Name))
 				service = applyScope(service, scope)
 				return LookupResult{Services: []Service{service}, Messages: messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, service, nil
 			}
 		} else {
-			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
+			messages := []string{"no local discovery endpoint available", fmt.Sprintf("configured discovery peer fallback failed: %v", err)}
 			services, obsErr := ObserveServices(cfg, timeout, nil)
 			if obsErr != nil {
 				return LookupResult{}, Service{}, obsErr
@@ -162,7 +182,7 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 	}
 	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
 	if !live {
-		messages = append([]string{"no local cache found"}, messages...)
+		messages = append([]string{"no local discovery endpoint available"}, messages...)
 	}
 	service = applyScope(service, scope)
 	return LookupResult{Services: []Service{service}, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, service, nil
@@ -184,23 +204,23 @@ func DiscoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 			service, err := RequireServiceByID(services, serviceID)
 			if err == nil {
 				service = applyScope(service, scope)
-				return LookupResult{Services: []Service{service}, Messages: []string{fmt.Sprintf("using local cache from edge admin at %s", adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, service, nil
+				return LookupResult{Services: []Service{service}, Messages: []string{fmt.Sprintf("using local discovery admin endpoint at %s", adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, service, nil
 			}
 		}
 		if cachedOnly {
-			return LookupResult{}, Service{}, errors.New("no local cache found")
+			return LookupResult{}, Service{}, cachedOnlyRequiresLocalDiscoveryEndpointError()
 		}
 		if services, metadata, messages, err := FetchRemoteServiceCache(cfg, timeout); err == nil {
 			services = filterServicesByActualScope(cfg, scope, services)
 			service, err := RequireServiceByID(services, serviceID)
 			if err == nil {
-				messages = append([]string{"no local cache found"}, messages...)
+				messages = append([]string{"no local discovery endpoint available"}, messages...)
 				messages = append(messages, fmt.Sprintf("received service %s", service.Name))
 				service = applyScope(service, scope)
 				return LookupResult{Services: []Service{service}, Messages: messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, service, nil
 			}
 		} else {
-			messages := []string{"no local cache found", fmt.Sprintf("remote discovery query failed: %v", err)}
+			messages := []string{"no local discovery endpoint available", fmt.Sprintf("configured discovery peer fallback failed: %v", err)}
 			services, obsErr := ObserveServices(cfg, timeout, nil)
 			if obsErr != nil {
 				return LookupResult{}, Service{}, obsErr
@@ -247,7 +267,7 @@ func DiscoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 	}
 	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
 	if !live {
-		messages = append([]string{"no local cache found"}, messages...)
+		messages = append([]string{"no local discovery endpoint available"}, messages...)
 	}
 	messages = append(messages, fmt.Sprintf("received service %s", service.Name))
 	service = applyScope(service, scope)
@@ -344,7 +364,7 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 		}
 		SortServices(services)
 		metadata := resp.Metadata
-		messages := []string{fmt.Sprintf("querying discovery cache from %s %s", metadata.ServedByRole, metadata.ServedBy), fmt.Sprintf("received %d services", len(services))}
+		messages := []string{fmt.Sprintf("querying configured discovery peer fallback from %s %s", metadata.ServedByRole, metadata.ServedBy), fmt.Sprintf("received %d services", len(services))}
 		return services, &metadata, messages, nil
 	}
 	if lastErr == nil {
@@ -394,7 +414,7 @@ func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 		}
 		service := ServiceFromQueryService(*resp.Service)
 		metadata := resp.Metadata
-		messages := []string{fmt.Sprintf("querying discovery cache from %s %s", metadata.ServedByRole, metadata.ServedBy), fmt.Sprintf("received service %s", service.Name)}
+		messages := []string{fmt.Sprintf("querying configured discovery peer fallback from %s %s", metadata.ServedByRole, metadata.ServedBy), fmt.Sprintf("received service %s", service.Name)}
 		return service, &metadata, messages, nil
 	}
 	if lastErr == nil {
