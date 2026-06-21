@@ -78,6 +78,8 @@ func transientState(err error) (State, bool) {
 		return StateRelayNotReady, true
 	case containsAny(msg, []string{"grant service unavailable", "grant endpoint unavailable", "grant service not ready", "grant endpoint not ready", "grant service unreachable"}):
 		return StateGrantUnreachable, true
+	case isRateLimitError(msg):
+		return StateRateLimited, true
 	case isNetworkTransient(err, msg):
 		return StateOfflineSuspected, true
 	default:
@@ -128,6 +130,8 @@ func reasonForError(err error) string {
 		return string(StateRelayNotReady)
 	case containsAny(msg, []string{"grant service unavailable", "grant endpoint unavailable", "grant service not ready", "grant endpoint not ready", "grant service unreachable"}):
 		return string(StateGrantUnreachable)
+	case isRateLimitError(msg):
+		return string(StateRateLimited)
 	case isConfigError(err):
 		return string(StateConfigInvalid)
 	case isAuthError(err):
@@ -144,6 +148,10 @@ func normalizedMessage(err error) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(err.Error()))
+}
+
+func isRateLimitError(msg string) bool {
+	return containsAny(msg, []string{"rate limit exceeded", "rate-limited", "deny cache active"})
 }
 
 func containsAny(msg string, phrases []string) bool {

@@ -162,6 +162,7 @@ type App struct {
 	openTunnelStream         func(context.Context) (network.Stream, error)
 	startClientTCPTunnel     func(network.Stream, string, *protocol.ConnectProof) error
 	rebindServiceFn          func(context.Context) (peer.AddrInfo, string, string, error)
+	requestConnectLeaseFn    func(context.Context, host.Host, []string, string, string, string, *capability.MembershipCapability, string) (grantspkg.ConnectLeaseArtifacts, error)
 	reconnectServiceFn       func(context.Context) error
 	selectedAddr             string
 	selectedPath             string
@@ -442,6 +443,7 @@ const bridgeSelfHealTimeout = 2 * time.Second
 const connectRefreshMinUsefulLifetime = 5 * time.Second
 const connectRefreshFailureCooldown = 5 * time.Second
 const connectRefreshMinExtension = time.Second
+const connectRefreshRolloverRetryCooldown = time.Minute
 
 // connectRefreshBackoff returns an exponential backoff duration for consecutive
 // refresh/rollover failures. The backoff starts at connectRefreshFailureCooldown
@@ -1093,6 +1095,9 @@ func connectLeaseFailureIsTerminal(err error) bool {
 
 func connectLeaseFailureRetryAt(err error, current *grantspkg.ConnectAccessLease, refresh grantspkg.ConnectRefreshLease, now time.Time) time.Time {
 	retryAt := now.Add(connectRefreshFailureCooldown)
+	if connectRefreshErrorIsRateLimited(err) {
+		retryAt = now.Add(connectRefreshRolloverRetryCooldown)
+	}
 	switch reachability.Classify(err).Class {
 	case reachability.ErrorAuth, reachability.ErrorConfig:
 		if current != nil && now.Before(current.ExpiresAt.UTC()) {
@@ -1104,12 +1109,28 @@ func connectLeaseFailureRetryAt(err error, current *grantspkg.ConnectAccessLease
 	return retryAt
 }
 
+func connectRefreshErrorIsRateLimited(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.TrimSpace(strings.ToLower(err.Error()))
+	if s == "" {
+		return false
+	}
+	return strings.Contains(s, "rate limit exceeded") || strings.Contains(s, "deny cache active")
+}
+
 func connectRefreshFailureDisplayReason(errText string) string {
 	s := strings.TrimSpace(strings.ToLower(errText))
 	if s == "" {
 		return errText
 	}
-	if strings.Contains(s, "publish lease expired") {
+	switch {
+	case strings.Contains(s, "rate limit exceeded") || strings.Contains(s, "deny cache active"):
+		return "rate limited by service grant endpoint; retrying after backoff"
+	case strings.Contains(s, "publish lease is near expiry") || strings.Contains(s, "waiting before retrying connect lease rollover"):
+		return "remote service publish lease is near expiry; waiting for service publisher renewal"
+	case strings.Contains(s, "publish lease expired"):
 		return "remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired; renew service publication or resolve pending publish grant on the service publisher side"
 	}
 	return errText
@@ -1612,7 +1633,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 			prevExpiry = current.ExpiresAt.UTC()
 		}
 		if rolloverDue {
-			return a.rolloverConnectLeaseLocked(ctx, current, now, false)
+			return a.rolloverConnectLeaseLocked(ctx, current, *refresh, now, false)
 		}
 		log.Printf("bridge connect access lease refresh requested service=%s expires_at=%s", refresh.ServiceID, refresh.ExpiresAt.UTC().Format(time.RFC3339))
 		refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
@@ -1645,7 +1666,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		}
 		if !connectRefreshResultUseful(prevExpiry, access.ExpiresAt.UTC(), time.Now().UTC()) {
 			if a.connectCanRolloverLocked() {
-				return a.rolloverConnectLeaseLocked(ctx, current, now, true)
+				return a.rolloverConnectLeaseLocked(ctx, current, *refresh, now, true)
 			}
 			wrapped := errors.New("connect refresh lease is near expiry; ask the service owner for a fresh token/invite")
 			if current != nil && now.Before(current.ExpiresAt.UTC()) {
@@ -1668,7 +1689,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 	}
 }
 
-func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg.ConnectAccessLease, now time.Time, skippedRefresh bool) (grantspkg.ConnectAccessLease, error) {
+func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg.ConnectAccessLease, refresh grantspkg.ConnectRefreshLease, now time.Time, skippedRefresh bool) (grantspkg.ConnectAccessLease, error) {
 	grantPeers := append([]string(nil), a.cfg.ConnectGrantPeers...)
 	clusterID := a.cfg.ConnectClusterID
 	namespaceID := a.cfg.ConnectNamespaceID
@@ -1683,8 +1704,12 @@ func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg
 	refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	a.refreshingLease = true
 	a.refreshDone = make(chan struct{})
+	requestFn := requestDirectConnectLease
+	if a.requestConnectLeaseFn != nil {
+		requestFn = a.requestConnectLeaseFn
+	}
 	a.connectMu.Unlock()
-	artifacts, err := requestDirectConnectLease(refreshCtx, a.host, grantPeers, clusterID, namespaceID, serviceID, membership, membershipGrantToken)
+	artifacts, err := requestFn(refreshCtx, a.host, grantPeers, clusterID, namespaceID, serviceID, membership, membershipGrantToken)
 	cancel()
 	a.connectMu.Lock()
 	done := a.refreshDone
@@ -1695,10 +1720,7 @@ func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg
 	}
 	if err != nil {
 		wrapped := fmt.Errorf("rollover connect lease: %w", err)
-		retryAt := time.Now().UTC().Add(connectRefreshFailureCooldown)
-		if connectLeaseFailureIsTerminal(err) && current != nil && now.Before(current.ExpiresAt.UTC()) {
-			retryAt = current.ExpiresAt.UTC()
-		}
+		retryAt := connectLeaseFailureRetryAt(err, current, refresh, now)
 		if current != nil && now.Before(current.ExpiresAt.UTC()) {
 			a.recordRefreshFailureLocked(wrapped, retryAt)
 			log.Printf("bridge member connect lease rollover failed: %v", err)
@@ -1708,6 +1730,21 @@ func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg
 		}
 		a.recordRefreshFailureLocked(wrapped, retryAt)
 		log.Printf("bridge member connect lease rollover failed: %v", err)
+		a.connectMu.Unlock()
+		return grantspkg.ConnectAccessLease{}, wrapped
+	}
+	if !connectRefreshResultUseful(refresh.ExpiresAt.UTC(), artifacts.RefreshLease.ExpiresAt.UTC(), time.Now().UTC()) {
+		wrapped := errors.New("remote service publish lease is near expiry; waiting before retrying connect lease rollover")
+		retryAt := now.Add(connectRefreshRolloverRetryCooldown)
+		if current != nil && now.Before(current.ExpiresAt.UTC()) {
+			a.recordRefreshFailureLocked(wrapped, retryAt)
+			log.Printf("bridge member connect lease rollover deferred: %v", wrapped)
+			a.connectMu.Unlock()
+			a.reportStatus()
+			return *current, nil
+		}
+		a.recordRefreshFailureLocked(wrapped, retryAt)
+		log.Printf("bridge member connect lease rollover deferred: %v", wrapped)
 		a.connectMu.Unlock()
 		return grantspkg.ConnectAccessLease{}, wrapped
 	}
