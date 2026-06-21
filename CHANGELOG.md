@@ -7,6 +7,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 ## [Unreleased]
 
 ### Fixed
+- `tubo connect` now treats rollover artifacts with a near-expired delegated refresh lease as non-useful, backs off instead of storming the service grant endpoint, and surfaces clearer rate-limit / publish-renewal status reasons.
 - `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
 
 ## [v0.12.1] - 2026-06-17

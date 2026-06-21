@@ -52,6 +52,28 @@ func TestClassifyTransientErrors(t *testing.T) {
 	}
 }
 
+func TestClassifyRateLimitErrors(t *testing.T) {
+	tests := []struct {
+		name  string
+		err   error
+		state State
+	}{
+		{name: "peer limit", err: errors.New("grant endpoint rate limit exceeded for peer; retry later"), state: StateRateLimited},
+		{name: "service limit", err: errors.New("grant endpoint rate limit exceeded for service; retry later"), state: StateRateLimited},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := Classify(tc.err)
+			if got.State != tc.state || got.Class != ErrorTransient {
+				t.Fatalf("Classify(%v) = %#v", tc.err, got)
+			}
+			if got.Reason != string(StateRateLimited) {
+				t.Fatalf("unexpected reason: %#v", got)
+			}
+		})
+	}
+}
+
 func TestClassifyAuthErrors(t *testing.T) {
 	tests := []struct {
 		name string

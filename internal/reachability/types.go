@@ -15,6 +15,7 @@ const (
 	StateBootstrapOnly    State = "bootstrap_reachable"
 	StateRelayNotReady    State = "relay_not_ready"
 	StateGrantUnreachable State = "grant_unreachable"
+	StateRateLimited      State = "rate_limited"
 	StateAuthDenied       State = "auth_denied"
 	StateConfigInvalid    State = "config_invalid"
 )

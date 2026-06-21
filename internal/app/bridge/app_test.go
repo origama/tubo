@@ -509,6 +509,200 @@ func TestBridgeStatusSnapshotDegradesWhenRefreshLeaseNearExpiry(t *testing.T) {
 	}
 }
 
+func TestBridgeCurrentRuntimeStatusShowsRefreshRetryReasons(t *testing.T) {
+	tests := []struct {
+		name    string
+		errText string
+		want    string
+	}{
+		{name: "rate limited", errText: "rollover connect lease: request connect lease from advertised grant endpoint(s): grant endpoint rate limit exceeded for peer; retry later", want: "rate limited by service grant endpoint"},
+		{name: "publish lease near expiry", errText: "rollover connect lease: remote service publish lease is near expiry; waiting before retrying connect lease rollover", want: "remote service publish lease is near expiry"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app := &App{cfg: Config{ServiceKind: "tcp"}, lastRefreshError: tc.errText, lastRefreshErrorAt: time.Now().UTC().Add(-time.Minute)}
+			snap := app.CurrentRuntimeStatus()
+			if snap.Status != "degraded" {
+				t.Fatalf("status = %q", snap.Status)
+			}
+			if !strings.Contains(strings.ToLower(snap.Reason), strings.ToLower(tc.want)) {
+				t.Fatalf("reason = %q want %q", snap.Reason, tc.want)
+			}
+		})
+	}
+}
+
+func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseNotUseful(t *testing.T) {
+	now := time.Now().UTC()
+	current := grantspkg.ConnectAccessLease{JTI: "access-current", ExpiresAt: now.Add(time.Hour)}
+	refresh := grantspkg.ConnectRefreshLease{JTI: "refresh-current", ExpiresAt: now.Add(2 * time.Second)}
+	var calls int32
+	app := &App{
+		cfg: Config{
+			ConnectRefreshLease:         &refresh,
+			ConnectGrantPeers:           []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWRolloverPeer"},
+			ConnectClusterID:            "cluster-123",
+			ConnectNamespaceID:          "default",
+			ConnectServiceID:            "svc-123",
+			ConnectMembershipGrantToken: "membership-token",
+		},
+		connectLease: &current,
+		requestConnectLeaseFn: func(context.Context, hostpkg.Host, []string, string, string, string, *capability.MembershipCapability, string) (grantspkg.ConnectLeaseArtifacts, error) {
+			atomic.AddInt32(&calls, 1)
+			return grantspkg.ConnectLeaseArtifacts{
+				AccessLease:  grantspkg.ConnectAccessLease{JTI: "access-new", ExpiresAt: now.Add(2 * time.Hour)},
+				RefreshLease: grantspkg.ConnectRefreshLease{JTI: "refresh-new", ExpiresAt: now.Add(2 * time.Second)},
+			}, nil
+		},
+	}
+	got, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("ensureConnectAccessLease: %v", err)
+	}
+	if got.JTI != current.JTI {
+		t.Fatalf("got access lease %q, want %q", got.JTI, current.JTI)
+	}
+	if gotCalls := atomic.LoadInt32(&calls); gotCalls != 1 {
+		t.Fatalf("request calls = %d, want 1", gotCalls)
+	}
+	if wait := time.Until(app.nextRefreshRetryAt); wait < 55*time.Second {
+		t.Fatalf("retry wait = %s, want conservative backoff", wait)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" {
+		t.Fatalf("status = %q", snap.Status)
+	}
+	if !strings.Contains(strings.ToLower(snap.Reason), "publish lease is near expiry") {
+		t.Fatalf("reason = %q", snap.Reason)
+	}
+}
+
+func TestBridgeConnectLeaseRolloverRecoversAfterUsefulRefreshLease(t *testing.T) {
+	now := time.Now().UTC()
+	current := grantspkg.ConnectAccessLease{JTI: "access-current", ExpiresAt: now.Add(time.Hour)}
+	refresh := grantspkg.ConnectRefreshLease{JTI: "refresh-current", ExpiresAt: now.Add(2 * time.Second)}
+	var calls int32
+	app := &App{
+		cfg: Config{
+			ConnectRefreshLease:         &refresh,
+			ConnectGrantPeers:           []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWRolloverPeer"},
+			ConnectClusterID:            "cluster-123",
+			ConnectNamespaceID:          "default",
+			ConnectServiceID:            "svc-123",
+			ConnectMembershipGrantToken: "membership-token",
+		},
+		connectLease: &current,
+		requestConnectLeaseFn: func(_ context.Context, _ hostpkg.Host, _ []string, _ string, _ string, _ string, _ *capability.MembershipCapability, _ string) (grantspkg.ConnectLeaseArtifacts, error) {
+			call := atomic.AddInt32(&calls, 1)
+			if call == 1 {
+				return grantspkg.ConnectLeaseArtifacts{
+					AccessLease:  grantspkg.ConnectAccessLease{JTI: "access-stale", ExpiresAt: now.Add(2 * time.Hour)},
+					RefreshLease: grantspkg.ConnectRefreshLease{JTI: "refresh-stale", ExpiresAt: now.Add(2 * time.Second)},
+				}, nil
+			}
+			return grantspkg.ConnectLeaseArtifacts{
+				AccessLease:  grantspkg.ConnectAccessLease{JTI: "access-useful", ExpiresAt: now.Add(4 * time.Hour)},
+				RefreshLease: grantspkg.ConnectRefreshLease{JTI: "refresh-useful", ExpiresAt: now.Add(3 * time.Hour)},
+			}, nil
+		},
+	}
+	if _, err := app.ensureConnectAccessLease(context.Background()); err != nil {
+		t.Fatalf("first ensureConnectAccessLease: %v", err)
+	}
+	if gotCalls := atomic.LoadInt32(&calls); gotCalls != 1 {
+		t.Fatalf("request calls after first attempt = %d, want 1", gotCalls)
+	}
+	app.nextRefreshRetryAt = time.Time{}
+	got, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("second ensureConnectAccessLease: %v", err)
+	}
+	if got.JTI != "access-useful" {
+		t.Fatalf("got access lease %q, want access-useful", got.JTI)
+	}
+	if gotCalls := atomic.LoadInt32(&calls); gotCalls != 2 {
+		t.Fatalf("request calls after recovery = %d, want 2", gotCalls)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected recovered running status, got %#v", snap)
+	}
+	if !app.nextRefreshRetryAt.IsZero() {
+		t.Fatalf("nextRefreshRetryAt not cleared after recovery: %v", app.nextRefreshRetryAt)
+	}
+}
+
+func TestBridgeConnectLeaseRolloverIsSerialized(t *testing.T) {
+	now := time.Now().UTC()
+	current := grantspkg.ConnectAccessLease{JTI: "access-current", ExpiresAt: now.Add(time.Hour)}
+	refresh := grantspkg.ConnectRefreshLease{JTI: "refresh-current", ExpiresAt: now.Add(2 * time.Second)}
+	var inFlight int32
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	app := &App{
+		cfg: Config{
+			ConnectRefreshLease:         &refresh,
+			ConnectGrantPeers:           []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWRolloverPeer"},
+			ConnectClusterID:            "cluster-123",
+			ConnectNamespaceID:          "default",
+			ConnectServiceID:            "svc-123",
+			ConnectMembershipGrantToken: "membership-token",
+		},
+		connectLease: &current,
+		requestConnectLeaseFn: func(_ context.Context, _ hostpkg.Host, _ []string, _ string, _ string, _ string, _ *capability.MembershipCapability, _ string) (grantspkg.ConnectLeaseArtifacts, error) {
+			if atomic.AddInt32(&inFlight, 1) != 1 {
+				t.Fatalf("parallel rollover requests detected: inFlight=%d", atomic.LoadInt32(&inFlight))
+			}
+			select {
+			case entered <- struct{}{}:
+			default:
+			}
+			defer atomic.AddInt32(&inFlight, -1)
+			<-release
+			return grantspkg.ConnectLeaseArtifacts{
+				AccessLease:  grantspkg.ConnectAccessLease{JTI: "access-useful", ExpiresAt: now.Add(3 * time.Hour)},
+				RefreshLease: grantspkg.ConnectRefreshLease{JTI: "refresh-useful", ExpiresAt: now.Add(2 * time.Hour)},
+			}, nil
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done1 := make(chan error, 1)
+	go func() {
+		_, err := app.ensureConnectAccessLease(ctx)
+		done1 <- err
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first rollover request did not start")
+	}
+	done2 := make(chan error, 1)
+	go func() {
+		_, err := app.ensureConnectAccessLease(ctx)
+		done2 <- err
+	}()
+	select {
+	case <-entered:
+		t.Fatal("second rollover request started before first completed")
+	case <-time.After(150 * time.Millisecond):
+	}
+	close(release)
+	for i, done := range []<-chan error{done1, done2} {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("ensureConnectAccessLease #%d: %v", i+1, err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("ensureConnectAccessLease #%d timed out", i+1)
+		}
+	}
+	if got := atomic.LoadInt32(&inFlight); got != 0 {
+		t.Fatalf("inFlight = %d, want 0", got)
+	}
+}
+
 func TestBridgeConnectPathTransitionMessage(t *testing.T) {
 	if msg, ok := ConnectPathTransitionMessage("relayed", "direct"); !ok || msg != "connect path upgraded to direct" {
 		t.Fatalf("relayed->direct = %q, %v", msg, ok)
