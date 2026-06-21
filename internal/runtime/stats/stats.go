@@ -2,6 +2,7 @@ package stats
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,85 +28,83 @@ type Snapshot struct {
 
 type Collector struct {
 	mu   sync.Mutex
-	snap Snapshot
+	meta Snapshot
+
+	rxBytesTotal atomic.Int64
+	txBytesTotal atomic.Int64
+	active       atomic.Int64
+	completed    atomic.Int64
+	errors       atomic.Int64
+	requests     atomic.Int64
 }
 
 func New(meta Snapshot) *Collector {
 	c := &Collector{}
-	c.snap = meta
-	c.snap.CollectedAt = time.Now().UTC()
+	c.setMeta(meta)
 	return c
 }
 
-func (c *Collector) SetMeta(meta Snapshot) {
+func (c *Collector) setMeta(meta Snapshot) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	c.snap.Role = meta.Role
-	c.snap.Kind = meta.Kind
-	c.snap.Service = meta.Service
-	c.snap.ServiceID = meta.ServiceID
-	c.snap.Path = meta.Path
-	c.snap.Status = meta.Status
-	c.snap.Reason = meta.Reason
-	c.snap.CollectedAt = time.Now().UTC()
+	c.meta.Role = meta.Role
+	c.meta.Kind = meta.Kind
+	c.meta.Service = meta.Service
+	c.meta.ServiceID = meta.ServiceID
+	c.meta.Path = meta.Path
+	c.meta.Status = meta.Status
+	c.meta.Reason = meta.Reason
+	c.meta.CollectedAt = time.Now().UTC()
 	c.mu.Unlock()
+}
+
+func (c *Collector) SetMeta(meta Snapshot) {
+	c.setMeta(meta)
 }
 
 func (c *Collector) Begin() {
 	if c == nil {
 		return
 	}
-	c.mu.Lock()
-	c.snap.Active++
-	now := time.Now().UTC()
-	c.snap.CollectedAt = now
-	c.snap.LastActivityAt = &now
-	c.mu.Unlock()
+	c.active.Add(1)
+	c.markActivity()
 }
 
 func (c *Collector) Finish(err error) {
 	if c == nil {
 		return
 	}
-	c.mu.Lock()
-	if c.snap.Active > 0 {
-		c.snap.Active--
+	for {
+		current := c.active.Load()
+		if current == 0 {
+			break
+		}
+		if c.active.CompareAndSwap(current, current-1) {
+			break
+		}
 	}
 	if err != nil {
-		c.snap.Errors++
+		c.errors.Add(1)
 	} else {
-		c.snap.Completed++
+		c.completed.Add(1)
 	}
-	now := time.Now().UTC()
-	c.snap.CollectedAt = now
-	c.snap.LastActivityAt = &now
-	c.mu.Unlock()
+	c.markActivity()
 }
 
 func (c *Collector) AddRx(n int64) {
 	if c == nil || n <= 0 {
 		return
 	}
-	c.mu.Lock()
-	c.snap.RxBytesTotal += n
-	now := time.Now().UTC()
-	c.snap.CollectedAt = now
-	c.snap.LastActivityAt = &now
-	c.mu.Unlock()
+	c.rxBytesTotal.Add(n)
 }
 
 func (c *Collector) AddTx(n int64) {
 	if c == nil || n <= 0 {
 		return
 	}
-	c.mu.Lock()
-	c.snap.TxBytesTotal += n
-	now := time.Now().UTC()
-	c.snap.CollectedAt = now
-	c.snap.LastActivityAt = &now
-	c.mu.Unlock()
+	c.txBytesTotal.Add(n)
 }
 
 func (c *Collector) Observe(statusCode int, latency time.Duration) {
@@ -113,12 +112,23 @@ func (c *Collector) Observe(statusCode int, latency time.Duration) {
 		return
 	}
 	c.mu.Lock()
-	c.snap.RequestsTotal++
-	c.snap.LastStatusCode = statusCode
-	c.snap.LastLatencyMS = latency.Milliseconds()
+	c.meta.LastStatusCode = statusCode
+	c.meta.LastLatencyMS = latency.Milliseconds()
+	c.meta.CollectedAt = time.Now().UTC()
+	now := c.meta.CollectedAt
+	c.meta.LastActivityAt = &now
+	c.mu.Unlock()
+	c.requests.Add(1)
+}
+
+func (c *Collector) markActivity() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
 	now := time.Now().UTC()
-	c.snap.CollectedAt = now
-	c.snap.LastActivityAt = &now
+	c.meta.CollectedAt = now
+	c.meta.LastActivityAt = &now
 	c.mu.Unlock()
 }
 
@@ -127,11 +137,18 @@ func (c *Collector) Snapshot() Snapshot {
 		return Snapshot{}
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	snap := c.snap
+	snap := c.meta
 	if snap.LastActivityAt != nil {
 		t := *snap.LastActivityAt
 		snap.LastActivityAt = &t
 	}
+	c.mu.Unlock()
+
+	snap.RxBytesTotal = c.rxBytesTotal.Load()
+	snap.TxBytesTotal = c.txBytesTotal.Load()
+	snap.Active = c.active.Load()
+	snap.Completed = c.completed.Load()
+	snap.Errors = c.errors.Load()
+	snap.RequestsTotal = c.requests.Load()
 	return snap
 }
