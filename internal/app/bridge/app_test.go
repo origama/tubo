@@ -577,6 +577,51 @@ func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseNotUseful(t *testing.T)
 	}
 }
 
+func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseExtensionBelowThreshold(t *testing.T) {
+	now := time.Now().UTC()
+	current := grantspkg.ConnectAccessLease{JTI: "access-current", ExpiresAt: now.Add(time.Hour)}
+	refresh := grantspkg.ConnectRefreshLease{JTI: "refresh-current", ExpiresAt: now.Add(2 * time.Second)}
+	var calls int32
+	app := &App{
+		cfg: Config{
+			ConnectRefreshLease:         &refresh,
+			ConnectGrantPeers:           []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWRolloverPeer"},
+			ConnectClusterID:            "cluster-123",
+			ConnectNamespaceID:          "default",
+			ConnectServiceID:            "svc-123",
+			ConnectMembershipGrantToken: "membership-token",
+		},
+		connectLease: &current,
+		requestConnectLeaseFn: func(context.Context, hostpkg.Host, []string, string, string, string, *capability.MembershipCapability, string) (grantspkg.ConnectLeaseArtifacts, error) {
+			atomic.AddInt32(&calls, 1)
+			return grantspkg.ConnectLeaseArtifacts{
+				AccessLease:  grantspkg.ConnectAccessLease{JTI: "access-new", ExpiresAt: now.Add(2 * time.Hour)},
+				RefreshLease: grantspkg.ConnectRefreshLease{JTI: "refresh-new", ExpiresAt: refresh.ExpiresAt.Add(connectRefreshMinExtension / 2)},
+			}, nil
+		},
+	}
+	got, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("ensureConnectAccessLease: %v", err)
+	}
+	if got.JTI != current.JTI {
+		t.Fatalf("got access lease %q, want %q", got.JTI, current.JTI)
+	}
+	if gotCalls := atomic.LoadInt32(&calls); gotCalls != 1 {
+		t.Fatalf("request calls = %d, want 1", gotCalls)
+	}
+	if wait := time.Until(app.nextRefreshRetryAt); wait < 55*time.Second {
+		t.Fatalf("retry wait = %s, want conservative backoff", wait)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "degraded" {
+		t.Fatalf("status = %q", snap.Status)
+	}
+	if !strings.Contains(strings.ToLower(snap.Reason), "publish lease is near expiry") {
+		t.Fatalf("reason = %q", snap.Reason)
+	}
+}
+
 func TestBridgeConnectLeaseRolloverRecoversAfterUsefulRefreshLease(t *testing.T) {
 	now := time.Now().UTC()
 	current := grantspkg.ConnectAccessLease{JTI: "access-current", ExpiresAt: now.Add(time.Hour)}
