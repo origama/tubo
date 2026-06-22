@@ -61,6 +61,9 @@ func TestBuildSpec(t *testing.T) {
 	if spec.State.ID != "process/attach-lmstudio" {
 		t.Fatalf("id = %q", spec.State.ID)
 	}
+	if spec.State.PrimaryRef != "service/lmstudio" || spec.State.PrimaryKind != "service" || spec.State.PrimaryName != "lmstudio" || spec.State.Purpose != "service-runtime" {
+		t.Fatalf("unexpected primary metadata: %#v", spec.State)
+	}
 	if !strings.Contains(spec.State.LogFile, filepath.Join("logs", "attach-lmstudio.log")) {
 		t.Fatalf("unexpected log path: %q", spec.State.LogFile)
 	}
@@ -174,6 +177,9 @@ func TestListViewsAndLoadState(t *testing.T) {
 	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items with --all, got %#v", items)
+	}
+	if items[0].Name != running.Name || items[1].Name != stale.Name {
+		t.Fatalf("expected deterministic sort by name, got %#v", items)
 	}
 	if _, status, err := LoadState(root, "attach-myapi", system); err != nil || status != "running" {
 		t.Fatalf("LoadState running err=%v status=%q", err, status)

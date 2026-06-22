@@ -30,6 +30,11 @@ type State struct {
 	Service                 string   `json:"service,omitempty"`
 	ServiceKind             string   `json:"service_kind,omitempty"`
 	ServiceID               string   `json:"service_id,omitempty"`
+	PrimaryRef              string   `json:"primary_ref,omitempty"`
+	PrimaryKind             string   `json:"primary_kind,omitempty"`
+	PrimaryName             string   `json:"primary_name,omitempty"`
+	PrimaryID               string   `json:"primary_id,omitempty"`
+	Purpose                 string   `json:"purpose,omitempty"`
 	PeerID                  string   `json:"peer_id,omitempty"`
 	Cluster                 string   `json:"cluster,omitempty"`
 	Namespace               string   `json:"namespace,omitempty"`
@@ -92,6 +97,11 @@ type View struct {
 	Service                 string   `json:"service,omitempty"`
 	ServiceKind             string   `json:"service_kind,omitempty"`
 	ServiceID               string   `json:"service_id,omitempty"`
+	PrimaryRef              string   `json:"primary_ref,omitempty"`
+	PrimaryKind             string   `json:"primary_kind,omitempty"`
+	PrimaryName             string   `json:"primary_name,omitempty"`
+	PrimaryID               string   `json:"primary_id,omitempty"`
+	Purpose                 string   `json:"purpose,omitempty"`
 	PeerID                  string   `json:"peer_id,omitempty"`
 	Cluster                 string   `json:"cluster,omitempty"`
 	Namespace               string   `json:"namespace,omitempty"`
@@ -182,6 +192,10 @@ func BuildSpec(commandName string, cfg cfgpkg.Config, args []string, dataRoot st
 			Command:      commandName,
 			Name:         name,
 			Service:      serviceName,
+			PrimaryKind:  primaryKindForCommand(commandName),
+			PrimaryName:  primaryNameForCommand(commandName, serviceName),
+			PrimaryRef:   primaryRefForCommand(commandName, serviceName),
+			Purpose:      purposeForCommand(commandName),
 			Cluster:      cfg.CurrentCluster,
 			Namespace:    cfg.CurrentNamespace,
 			Local:        local,
@@ -922,6 +936,7 @@ func fallbackStateFromPath(dataRoot, path string) State {
 		default:
 			state.ResourceKind = "process"
 		}
+		state.Purpose = purposeForCommand(state.Command)
 	}
 	return state
 }
@@ -1034,6 +1049,11 @@ func viewFromState(state State, status, confidence string) View {
 		Service:                 state.Service,
 		ServiceKind:             state.ServiceKind,
 		ServiceID:               state.ServiceID,
+		PrimaryRef:              state.PrimaryRef,
+		PrimaryKind:             state.PrimaryKind,
+		PrimaryName:             state.PrimaryName,
+		PrimaryID:               state.PrimaryID,
+		Purpose:                 state.Purpose,
 		PeerID:                  state.PeerID,
 		Cluster:                 state.Cluster,
 		Namespace:               state.Namespace,
@@ -1205,5 +1225,49 @@ func resourceKindForCommand(command string) string {
 		return "pipe"
 	default:
 		return "process"
+	}
+}
+
+func primaryKindForCommand(command string) string {
+	switch command {
+	case "attach":
+		return "service"
+	case "connect":
+		return "service"
+	default:
+		return ""
+	}
+}
+
+func primaryNameForCommand(command, serviceName string) string {
+	switch command {
+	case "attach", "connect":
+		return serviceName
+	default:
+		return ""
+	}
+}
+
+func primaryRefForCommand(command, serviceName string) string {
+	kind := primaryKindForCommand(command)
+	name := primaryNameForCommand(command, serviceName)
+	if kind == "" || name == "" {
+		return ""
+	}
+	return kind + "/" + name
+}
+
+func purposeForCommand(command string) string {
+	switch command {
+	case "attach":
+		return "service-runtime"
+	case "connect":
+		return "pipe-runtime"
+	case "gateway":
+		return "gateway"
+	case "relay":
+		return "relay"
+	default:
+		return ""
 	}
 }

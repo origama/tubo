@@ -231,8 +231,8 @@ for i in $(seq 1 20); do
   fi
   sleep 0.5
 done
-assert_contains "no local cache found" "$WORK_DIR/get-services-live.out"
-assert_contains "querying discovery cache from relay" "$WORK_DIR/get-services-live.out"
+assert_contains "no local discovery endpoint available" "$WORK_DIR/get-services-live.out"
+assert_contains "querying configured discovery peer fallback from relay" "$WORK_DIR/get-services-live.out"
 if grep -F "received 1 services" "$WORK_DIR/get-services-live.out" >/dev/null 2>&1; then
   true
 else
@@ -241,7 +241,7 @@ else
 fi
 assert_contains "lmstudio" "$WORK_DIR/get-services-live.out"
 "$BIN" get service/lmstudio >"$WORK_DIR/get-service.out" 2>&1
-assert_contains "querying discovery cache from relay" "$WORK_DIR/get-service.out"
+assert_contains "querying configured discovery peer fallback from relay" "$WORK_DIR/get-service.out"
 assert_contains "received service lmstudio" "$WORK_DIR/get-service.out"
 assert_contains "lmstudio" "$WORK_DIR/get-service.out"
 "$BIN" describe service/lmstudio >"$WORK_DIR/describe-service.out" 2>&1
@@ -253,7 +253,7 @@ assert_contains "fallback: relay" "$WORK_DIR/describe-service.out"
 assert_contains "  Direct:" "$WORK_DIR/describe-service.out"
 assert_contains "  Relayed:" "$WORK_DIR/describe-service.out"
 assert_contains "Observed from:" "$WORK_DIR/describe-service.out"
-assert_contains "querying discovery cache from relay" "$WORK_DIR/describe-service.out"
+assert_contains "querying configured discovery peer fallback from relay" "$WORK_DIR/describe-service.out"
 "$BIN" inspect service/lmstudio --json >"$WORK_DIR/inspect-service.json"
 python3 - "$WORK_DIR/inspect-service.json" <<'PY'
 import json, sys

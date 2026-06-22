@@ -21,24 +21,8 @@ import (
 
 const DefaultTimeout = 20 * time.Second
 
-func localDiscoveryEndpointMessage(adminAddr string) string {
-	return fmt.Sprintf("using local discovery admin endpoint at %s", adminAddr)
-}
-
-func missingLocalDiscoveryEndpointMessage() string {
-	return "no local discovery endpoint available"
-}
-
 func cachedOnlyRequiresLocalDiscoveryEndpointError() error {
 	return errors.New("--cached-only requires a local discovery endpoint")
-}
-
-func configuredDiscoveryPeerFallbackMessage(role, servedBy string) string {
-	return fmt.Sprintf("querying configured discovery peer fallback from %s %s", role, servedBy)
-}
-
-func configuredDiscoveryPeerFallbackFailureMessage(err error) string {
-	return fmt.Sprintf("configured discovery peer fallback failed: %v", err)
 }
 
 func DiscoverServices(configPath string, timeout time.Duration, cachedOnly, live bool, scope Scope) (LookupResult, error) {
@@ -65,13 +49,13 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 	if !live {
 		if services, adminAddr, err := FetchLocalServiceCache(cfg); err == nil {
 			services = applyRequestedScope(cfg, scope, services)
-			return LookupResult{Services: services, Messages: []string{localDiscoveryEndpointMessage(adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, nil
+			return LookupResult{Services: services, Messages: []string{fmt.Sprintf("using local discovery admin endpoint at %s", adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, nil
 		}
 		if cachedOnly {
 			return LookupResult{}, cachedOnlyRequiresLocalDiscoveryEndpointError()
 		}
 		if services, metadata, messages, err := FetchRemoteServiceCache(cfg, timeout); err == nil {
-			messages = append([]string{missingLocalDiscoveryEndpointMessage()}, messages...)
+			messages = append([]string{"no local discovery endpoint available"}, messages...)
 			services = applyRequestedScope(cfg, scope, services)
 			if len(services) > 0 {
 				return LookupResult{Services: services, Messages: messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, nil

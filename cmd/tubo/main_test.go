@@ -816,6 +816,9 @@ func TestBuildDetachedConnectSpecAllowsCompatibleStaleState(t *testing.T) {
 	if spec.State.Name != name || spec.State.Local != "127.0.0.1:1234" {
 		t.Fatalf("unexpected detached connect state: %#v", spec.State)
 	}
+	if spec.State.PrimaryKind != "pipe" || spec.State.PrimaryName != name || spec.State.PrimaryRef != "pipe/"+name || spec.State.PrimaryID != "" || spec.State.Purpose != "pipe-runtime" {
+		t.Fatalf("unexpected detached connect primary metadata: %#v", spec.State)
+	}
 }
 
 func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
@@ -842,6 +845,9 @@ func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
 	}
 	if state.Service != "lms" || state.Target != "lms" {
 		t.Fatalf("service/target = %#v", state)
+	}
+	if state.PrimaryKind != "pipe" || state.PrimaryName != state.Name || state.PrimaryRef != "pipe/"+state.Name || state.PrimaryID != "" || state.Purpose != "pipe-runtime" {
+		t.Fatalf("primary metadata = %#v", state)
 	}
 }
 
@@ -1202,6 +1208,9 @@ func TestStartCmdUsesPersistedPipeDefinition(t *testing.T) {
 	if captured.State.Local != "127.0.0.1:1234" || captured.State.Cluster != "home" || captured.State.Namespace != "default" {
 		t.Fatalf("start pipe did not use persisted definition: %#v", captured.State)
 	}
+	if captured.State.PrimaryRef != "pipe/connect-myapi-1234" || captured.State.PrimaryKind != "pipe" || captured.State.PrimaryName != "connect-myapi-1234" || captured.State.Purpose != "pipe-runtime" {
+		t.Fatalf("start pipe did not set primary metadata: %#v", captured.State)
+	}
 	if got := strings.Join(captured.ChildArgs, " "); !strings.Contains(got, "myapi") || !strings.Contains(got, "--local 127.0.0.1:1234") || !strings.Contains(got, "--cluster home") {
 		t.Fatalf("start pipe did not pass persisted args: %v", captured.ChildArgs)
 	}
@@ -1233,6 +1242,9 @@ func TestRestartCmdStartsPersistedPipeWhenStopped(t *testing.T) {
 	}
 	if captured.State.Local != "127.0.0.1:1234" || captured.State.Cluster != "home" || captured.State.Namespace != "default" {
 		t.Fatalf("restart pipe did not use persisted definition: %#v", captured.State)
+	}
+	if captured.State.PrimaryRef != "pipe/connect-myapi-1234" || captured.State.PrimaryKind != "pipe" || captured.State.PrimaryName != "connect-myapi-1234" || captured.State.Purpose != "pipe-runtime" {
+		t.Fatalf("restart pipe did not set primary metadata: %#v", captured.State)
 	}
 }
 
@@ -1277,6 +1289,9 @@ func TestRestartCmdRestartsRunningPipeFromPersistedDefinition(t *testing.T) {
 	}
 	if captured.State.Local != "127.0.0.1:1234" || captured.State.Cluster != "home" || captured.State.Namespace != "default" {
 		t.Fatalf("restart pipe did not use persisted definition: %#v", captured.State)
+	}
+	if captured.State.PrimaryRef != "pipe/connect-myapi-1234" || captured.State.PrimaryKind != "pipe" || captured.State.PrimaryName != "connect-myapi-1234" || captured.State.Purpose != "pipe-runtime" {
+		t.Fatalf("restart pipe did not set primary metadata: %#v", captured.State)
 	}
 }
 
@@ -1402,6 +1417,9 @@ func TestStartCmdUsesPersistedServiceTargetAfterAttachStop(t *testing.T) {
 	})
 	if state2.Target != target {
 		t.Fatalf("expected target from persisted service definition, got %q want %q", state2.Target, target)
+	}
+	if state2.PrimaryRef != "service/myapi" || state2.PrimaryKind != "service" || state2.PrimaryName != "myapi" || state2.Purpose != "service-runtime" || state2.PrimaryID != svc.ServiceID {
+		t.Fatalf("expected service primary metadata to persist, got %#v", state2)
 	}
 	if state2.ServiceKind != string(cfgpkg.ServiceKindTCP) {
 		t.Fatalf("expected persisted tcp kind, got %q", state2.ServiceKind)
@@ -1706,7 +1724,7 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	if !ok || len(cmdline) == 0 {
 		t.Fatal("expected current process cmdline")
 	}
-	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-myapi", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), Source: "foreground", CommandLine: cmdline, ServiceKind: "http", PeerID: "12D3KooWServicePeer"}
+	state := detachedProcessState{ID: "process/attach-myapi", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-myapi", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-myapi.pid"), StateFile: filepath.Join(processStateDir(), "attach-myapi.json"), Source: "foreground", CommandLine: cmdline, ServiceKind: "http", PeerID: "12D3KooWServicePeer", PrimaryRef: "service/myapi", PrimaryKind: "service", PrimaryName: "myapi", PrimaryID: "service-a", Purpose: "service-runtime"}
 	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
 	b, _ := json.Marshal(state)
 	_ = os.WriteFile(state.StateFile, b, 0600)
@@ -1730,7 +1748,7 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	if err := json.Unmarshal([]byte(inspectOut), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" || payload.State.ResourceKind != "service" || payload.State.ServiceKind != "http" || payload.State.PeerID != "12D3KooWServicePeer" || payload.State.GrantEndpointEnabled || payload.State.ConnectPolicy != "" || payload.State.GrantProtocol != "" {
+	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" || payload.State.ResourceKind != "service" || payload.State.ServiceKind != "http" || payload.State.PeerID != "12D3KooWServicePeer" || payload.State.PrimaryRef != "service/myapi" || payload.State.PrimaryKind != "service" || payload.State.PrimaryName != "myapi" || payload.State.PrimaryID != "service-a" || payload.State.Purpose != "service-runtime" || payload.State.GrantEndpointEnabled || payload.State.ConnectPolicy != "" || payload.State.GrantProtocol != "" {
 		t.Fatalf("unexpected inspect payload: %+v", payload)
 	}
 }
@@ -1760,6 +1778,11 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 		CommandLine:             cmdline,
 		ServiceKind:             "tcp",
 		PeerID:                  "12D3KooWServicePeer",
+		PrimaryRef:              "pipe/lms-1234",
+		PrimaryKind:             "pipe",
+		PrimaryName:             "lms-1234",
+		PrimaryID:               "",
+		Purpose:                 "pipe-runtime",
 		SelectedAddr:            "/dns4/relay.tubo.test/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWServicePeer",
 		SelectedPath:            "relayed",
 		Path:                    "relayed",
@@ -1788,6 +1811,19 @@ func TestDescribeProcessShowsRuntimeExpiryAndDegradedReason(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
+	}
+	inspectOut, err := capture(func() error { return inspectCmd([]string{state.ID, "--json"}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		State detachedProcessState `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(inspectOut), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.State.PrimaryRef != "pipe/lms-1234" || payload.State.PrimaryKind != "pipe" || payload.State.PrimaryName != "lms-1234" || payload.State.Purpose != "pipe-runtime" {
+		t.Fatalf("unexpected pipe inspect payload: %+v", payload.State)
 	}
 	for _, want := range []string{"Network since in:", "Last network error in:", "Last network recovered in:"} {
 		if strings.Contains(out, want) {
@@ -1940,7 +1976,7 @@ func TestProcessListingCommandsUseCompactWideAndJSONPaths(t *testing.T) {
 	if err := os.MkdirAll(processRunDir(), 0700); err != nil {
 		t.Fatal(err)
 	}
-	state := detachedProcessState{ID: "process/attach-lmstudio", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-lmstudio", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-lmstudio.pid"), StateFile: filepath.Join(processStateDir(), "attach-lmstudio.json"), LogFile: filepath.Join(processLogDir(), "attach-lmstudio.log"), Service: "lmstudio", ServiceKind: "http", StatusConfidence: "pid", RuntimeStatus: "degraded", DegradedReason: "last grant renewal failed", ConnectAccessExpiresAt: time.Now().Add(90 * time.Minute).UTC().Format(time.RFC3339)}
+	state := detachedProcessState{ID: "process/attach-lmstudio", Kind: "process", ResourceKind: "service", Command: "attach", Name: "attach-lmstudio", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "attach-lmstudio.pid"), StateFile: filepath.Join(processStateDir(), "attach-lmstudio.json"), LogFile: filepath.Join(processLogDir(), "attach-lmstudio.log"), Service: "lmstudio", ServiceKind: "http", PrimaryRef: "service/lmstudio", PrimaryKind: "service", PrimaryName: "lmstudio", PrimaryID: "service-a", Purpose: "service-runtime", StatusConfidence: "pid", RuntimeStatus: "degraded", DegradedReason: "last grant renewal failed", ConnectAccessExpiresAt: time.Now().Add(90 * time.Minute).UTC().Format(time.RFC3339)}
 	if err := os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -1974,7 +2010,7 @@ func TestProcessListingCommandsUseCompactWideAndJSONPaths(t *testing.T) {
 				if err := json.Unmarshal([]byte(out), &payload); err != nil {
 					t.Fatalf("json parse: %v\nout=%s", err, out)
 				}
-				if payload.Count != 1 || len(payload.Items) != 1 || payload.Items[0].Name != state.Name || payload.Items[0].DegradedReason != state.DegradedReason {
+				if payload.Count != 1 || len(payload.Items) != 1 || payload.Items[0].Name != state.Name || payload.Items[0].DegradedReason != state.DegradedReason || payload.Items[0].PrimaryRef != state.PrimaryRef || payload.Items[0].PrimaryKind != state.PrimaryKind || payload.Items[0].PrimaryName != state.PrimaryName || payload.Items[0].PrimaryID != state.PrimaryID || payload.Items[0].Purpose != state.Purpose {
 					t.Fatalf("unexpected json payload: %#v", payload)
 				}
 				return
