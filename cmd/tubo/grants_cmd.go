@@ -798,17 +798,18 @@ func mustMarshalJSON(v any) []byte {
 func grantsServeProcessState(clusterName, namespaceName, listen string) detachedProcessState {
 	name := "grants-serve-" + sanitizeProcessName(clusterName+"-"+namespaceName)
 	return detachedProcessState{
-		ID:        "process/" + name,
-		Kind:      "process",
-		Command:   "grants serve",
-		Name:      name,
-		Purpose:   "discovery-authority",
-		Cluster:   clusterName,
-		Namespace: namespaceName,
-		Local:     listen,
-		LogFile:   filepath.Join(processLogDir(), name+".log"),
-		StateFile: filepath.Join(processStateDir(), name+".json"),
-		PIDFile:   filepath.Join(processRunDir(), name+".pid"),
+		ID:           "process/" + name,
+		Kind:         "process",
+		Command:      "grants serve",
+		Name:         name,
+		Purpose:      "discovery-authority",
+		Capabilities: processCapabilitiesForCommand("grants serve"),
+		Cluster:      clusterName,
+		Namespace:    namespaceName,
+		Local:        listen,
+		LogFile:      filepath.Join(processLogDir(), name+".log"),
+		StateFile:    filepath.Join(processStateDir(), name+".json"),
+		PIDFile:      filepath.Join(processRunDir(), name+".pid"),
 	}
 }
 

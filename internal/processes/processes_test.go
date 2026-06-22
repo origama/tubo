@@ -64,6 +64,9 @@ func TestBuildSpec(t *testing.T) {
 	if spec.State.PrimaryRef != "service/lmstudio" || spec.State.PrimaryKind != "service" || spec.State.PrimaryName != "lmstudio" || spec.State.Purpose != "service-runtime" {
 		t.Fatalf("unexpected primary metadata: %#v", spec.State)
 	}
+	if got := strings.Join(spec.State.Capabilities, ","); got != "publish,discovery.cache,discovery.query,discovery.sync" {
+		t.Fatalf("capabilities = %q", got)
+	}
 	if !strings.Contains(spec.State.LogFile, filepath.Join("logs", "attach-lmstudio.log")) {
 		t.Fatalf("unexpected log path: %q", spec.State.LogFile)
 	}
@@ -239,6 +242,48 @@ func TestListViewsAndLoadStateIgnoreTrailingGarbage(t *testing.T) {
 	}
 	if repaired.RuntimeStatus != "degraded" || repaired.DegradedReason != "test repair" {
 		t.Fatalf("unexpected repaired state: %#v", repaired)
+	}
+}
+
+func TestLoadStateBackfillsCapabilitiesFromCommand(t *testing.T) {
+	root := t.TempDir()
+	system := &stubSystem{running: map[int]bool{1234: true}}
+	if err := os.MkdirAll(StateDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(RunDir(root), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	state := State{ID: "process/connect-lms-1234", Kind: "process", Command: "connect", Name: "connect-lms-1234", PID: 1234, PIDFile: filepath.Join(RunDir(root), "connect-lms-1234.pid"), StateFile: filepath.Join(StateDir(root), "connect-lms-1234.json"), LogFile: filepath.Join(LogDir(root), "connect-lms-1234.log")}
+	if err := os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(state.StateFile, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, status, err := LoadState(root, "connect-lms-1234", system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != "running" {
+		t.Fatalf("unexpected status: %q", status)
+	}
+	if got := strings.Join(loaded.Capabilities, ","); got != "proxy,client" {
+		t.Fatalf("unexpected loaded capabilities: %q", got)
+	}
+	items, err := ListViews(root, true, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %#v", items)
+	}
+	if got := strings.Join(items[0].Capabilities, ","); got != "proxy,client" {
+		t.Fatalf("unexpected listed capabilities: %q", got)
 	}
 }
 

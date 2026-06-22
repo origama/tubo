@@ -1748,7 +1748,7 @@ func TestDescribeAndInspectProcessIncludeSourceAndConfidence(t *testing.T) {
 	if err := json.Unmarshal([]byte(inspectOut), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" || payload.State.ResourceKind != "service" || payload.State.ServiceKind != "http" || payload.State.PeerID != "12D3KooWServicePeer" || payload.State.PrimaryRef != "service/myapi" || payload.State.PrimaryKind != "service" || payload.State.PrimaryName != "myapi" || payload.State.PrimaryID != "service-a" || payload.State.Purpose != "service-runtime" || payload.State.GrantEndpointEnabled || payload.State.ConnectPolicy != "" || payload.State.GrantProtocol != "" {
+	if payload.Status != "running" || payload.State.Source != "foreground" || payload.State.StatusConfidence != "pid+cmdline" || payload.State.ResourceKind != "service" || payload.State.ServiceKind != "http" || payload.State.PeerID != "12D3KooWServicePeer" || payload.State.PrimaryRef != "service/myapi" || payload.State.PrimaryKind != "service" || payload.State.PrimaryName != "myapi" || payload.State.PrimaryID != "service-a" || payload.State.Purpose != "service-runtime" || strings.Join(payload.State.Capabilities, ",") != "publish,discovery.cache,discovery.query,discovery.sync" || payload.State.GrantEndpointEnabled || payload.State.ConnectPolicy != "" || payload.State.GrantProtocol != "" {
 		t.Fatalf("unexpected inspect payload: %+v", payload)
 	}
 }
@@ -1920,7 +1920,7 @@ func TestPrintProcessesTableIncludesTTLColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"KIND", "SERVICE KIND", "PATH", "TTL", "connect-lms-1234", "pipe", "tcp", "degraded"} {
+	for _, want := range []string{"KIND", "CAPS", "SERVICE KIND", "PATH", "TTL", "connect-lms-1234", "pipe", "tcp", "degraded", "proxy,client"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("process table missing %q: %s", want, out)
 		}
@@ -1947,7 +1947,7 @@ func TestPrintProcessListCompactView(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Running Tubo processes", "NAME", "KIND", "STATUS", "SERVICE", "LOCAL", "TARGET", "PATH", "TTL", "relay", "1h", "describe: tubo describe process/connect-lms-1234", "logs: tubo logs connect-lms-1234", "last grant renewal failed"} {
+	for _, want := range []string{"Running Tubo processes", "NAME", "KIND", "CAPS", "STATUS", "SERVICE", "LOCAL", "TARGET", "PATH", "TTL", "relay", "proxy,client", "1h", "describe: tubo describe process/connect-lms-1234", "logs: tubo logs connect-lms-1234", "last grant renewal failed"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("compact process list missing %q: %s", want, out)
 		}
@@ -2010,13 +2010,13 @@ func TestProcessListingCommandsUseCompactWideAndJSONPaths(t *testing.T) {
 				if err := json.Unmarshal([]byte(out), &payload); err != nil {
 					t.Fatalf("json parse: %v\nout=%s", err, out)
 				}
-				if payload.Count != 1 || len(payload.Items) != 1 || payload.Items[0].Name != state.Name || payload.Items[0].DegradedReason != state.DegradedReason || payload.Items[0].PrimaryRef != state.PrimaryRef || payload.Items[0].PrimaryKind != state.PrimaryKind || payload.Items[0].PrimaryName != state.PrimaryName || payload.Items[0].PrimaryID != state.PrimaryID || payload.Items[0].Purpose != state.Purpose {
+				if payload.Count != 1 || len(payload.Items) != 1 || payload.Items[0].Name != state.Name || payload.Items[0].DegradedReason != state.DegradedReason || payload.Items[0].PrimaryRef != state.PrimaryRef || payload.Items[0].PrimaryKind != state.PrimaryKind || payload.Items[0].PrimaryName != state.PrimaryName || payload.Items[0].PrimaryID != state.PrimaryID || payload.Items[0].Purpose != state.Purpose || strings.Join(payload.Items[0].Capabilities, ",") != "publish,discovery.cache,discovery.query,discovery.sync" {
 					t.Fatalf("unexpected json payload: %#v", payload)
 				}
 				return
 			}
 			if tc.wide {
-				for _, want := range []string{"COMMAND", "SERVICE KIND", "SERVICE ID", "PID", state.Name} {
+				for _, want := range []string{"COMMAND", "CAPS", "SERVICE KIND", "SERVICE ID", "PID", state.Name, "publish,discovery.cache,discovery.query,discovery.sync"} {
 					if !strings.Contains(out, want) {
 						t.Fatalf("wide process listing missing %q: %s", want, out)
 					}
@@ -2028,7 +2028,7 @@ func TestProcessListingCommandsUseCompactWideAndJSONPaths(t *testing.T) {
 				}
 				return
 			}
-			for _, want := range []string{"Running Tubo processes", "SERVICE", "TTL", "1h", "describe: tubo describe process/attach-lmstudio", "logs: tubo logs attach-lmstudio", state.DegradedReason} {
+			for _, want := range []string{"Running Tubo processes", "SERVICE", "CAPS", "TTL", "1h", "publish,discovery.cache,discovery.query,discovery.sync", "describe: tubo describe process/attach-lmstudio", "logs: tubo logs attach-lmstudio", state.DegradedReason} {
 				if !strings.Contains(out, want) {
 					t.Fatalf("compact process listing missing %q: %s", want, out)
 				}
@@ -7413,7 +7413,7 @@ func TestPrintProcessesTableIncludesServiceMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"KIND", "SERVICE KIND", "SERVICE ID", "SCOPE", "service", "http", "service-a", "home/default"} {
+	for _, want := range []string{"KIND", "COMMAND", "CAPS", "SERVICE KIND", "SERVICE ID", "SCOPE", "service", "http", "service-a", "home/default", "publish,discovery.cache,discovery.query,discovery.sync"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("process table missing %q: %s", want, out)
 		}

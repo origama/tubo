@@ -148,6 +148,7 @@ func connectProcessState(req connectCLIRequest, result connectflow.Result, local
 		PrimaryRef:   "pipe/" + name,
 		PrimaryID:    "",
 		Purpose:      "pipe-runtime",
+		Capabilities: processCapabilitiesForCommand("connect"),
 		PeerID:       result.ServicePeerID,
 		Cluster:      scopeCluster,
 		Namespace:    scopeNamespace,

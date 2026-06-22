@@ -1414,6 +1414,17 @@ func processServiceKind(item processView) string {
 	return "-"
 }
 
+func processCapabilitiesColumn(item processView) string {
+	caps := item.Capabilities
+	if len(caps) == 0 {
+		caps = processCapabilitiesForCommand(item.Command)
+	}
+	if len(caps) == 0 {
+		return "-"
+	}
+	return strings.Join(caps, ",")
+}
+
 func printProcessList(items []processView, wide bool) {
 	if !wide {
 		fmt.Println("Running Tubo processes")
@@ -1427,9 +1438,9 @@ func printProcessList(items []processView, wide bool) {
 
 func printProcessesCompactTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tKIND\tSTATUS\tSERVICE\tLOCAL\tTARGET\tPATH\tTTL")
+	fmt.Fprintln(w, "NAME\tKIND\tCAPS\tSTATUS\tSERVICE\tLOCAL\tTARGET\tPATH\tTTL")
 	for _, item := range items {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, processResourceKind(item), item.Status, displayValue(item.Service), displayValue(item.Local), displayValue(item.Target), summarizeProcessPath(item.Path), processTTLColumn(item))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, processResourceKind(item), processCapabilitiesColumn(item), item.Status, displayValue(item.Service), displayValue(item.Local), displayValue(item.Target), summarizeProcessPath(item.Path), processTTLColumn(item))
 	}
 	_ = w.Flush()
 }
@@ -1461,7 +1472,7 @@ func printProcessesCompactHints(items []processView) {
 
 func printProcessesTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tKIND\tCOMMAND\tSERVICE KIND\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tTTL\tPID\tLOCAL\tTARGET")
+	fmt.Fprintln(w, "NAME\tKIND\tCOMMAND\tCAPS\tSERVICE KIND\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tTTL\tPID\tLOCAL\tTARGET")
 	for _, item := range items {
 		local := item.Local
 		if local == "" {
@@ -1479,7 +1490,7 @@ func printProcessesTable(items []processView) {
 		if path == "" {
 			path = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, processResourceKind(item), item.Command, processServiceKind(item), displayServiceID(item.ServiceID), scope, item.Status, path, processTTLColumn(item), item.PID, local, target)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, processResourceKind(item), item.Command, processCapabilitiesColumn(item), processServiceKind(item), displayServiceID(item.ServiceID), scope, item.Status, path, processTTLColumn(item), item.PID, local, target)
 	}
 	_ = w.Flush()
 }
