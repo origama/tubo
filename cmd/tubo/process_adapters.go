@@ -68,6 +68,10 @@ func processStateDir() string { return processes.StateDir(defaultTuboDataDir()) 
 func processLogDir() string   { return processes.LogDir(defaultTuboDataDir()) }
 func processRunDir() string   { return processes.RunDir(defaultTuboDataDir()) }
 
+func processCapabilitiesForCommand(command string) []string {
+	return processes.CapabilitiesForCommand(command)
+}
+
 func listProcessViews(includeAll bool) ([]processView, error) {
 	return processes.ListViews(defaultTuboDataDir(), includeAll, processSystemAdapter{})
 }

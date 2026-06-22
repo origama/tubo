@@ -35,6 +35,7 @@ type State struct {
 	PrimaryName             string   `json:"primary_name,omitempty"`
 	PrimaryID               string   `json:"primary_id,omitempty"`
 	Purpose                 string   `json:"purpose,omitempty"`
+	Capabilities            []string `json:"capabilities,omitempty"`
 	PeerID                  string   `json:"peer_id,omitempty"`
 	Cluster                 string   `json:"cluster,omitempty"`
 	Namespace               string   `json:"namespace,omitempty"`
@@ -102,6 +103,7 @@ type View struct {
 	PrimaryName             string   `json:"primary_name,omitempty"`
 	PrimaryID               string   `json:"primary_id,omitempty"`
 	Purpose                 string   `json:"purpose,omitempty"`
+	Capabilities            []string `json:"capabilities,omitempty"`
 	PeerID                  string   `json:"peer_id,omitempty"`
 	Cluster                 string   `json:"cluster,omitempty"`
 	Namespace               string   `json:"namespace,omitempty"`
@@ -196,6 +198,7 @@ func BuildSpec(commandName string, cfg cfgpkg.Config, args []string, dataRoot st
 			PrimaryName:  primaryNameForCommand(commandName, serviceName),
 			PrimaryRef:   primaryRefForCommand(commandName, serviceName),
 			Purpose:      purposeForCommand(commandName),
+			Capabilities: CapabilitiesForCommand(commandName),
 			Cluster:      cfg.CurrentCluster,
 			Namespace:    cfg.CurrentNamespace,
 			Local:        local,
@@ -407,6 +410,7 @@ func LoadState(dataRoot, ref string, system System) (State, string, error) {
 	}
 	for _, state := range states {
 		if state.ID == ref {
+			state = normalizeStateCapabilities(state)
 			status, confidence := StatusDetails(state, system)
 			state.StatusConfidence = confidence
 			return state, status, nil
@@ -771,6 +775,7 @@ func UpdateState(path string, mutate func(*State)) error {
 	if err != nil {
 		return err
 	}
+	state = normalizeStateCapabilities(state)
 	mutate(&state)
 	return writeStateAtomic(path, state)
 }
@@ -937,6 +942,7 @@ func fallbackStateFromPath(dataRoot, path string) State {
 			state.ResourceKind = "process"
 		}
 		state.Purpose = purposeForCommand(state.Command)
+		state.Capabilities = CapabilitiesForCommand(state.Command)
 	}
 	return state
 }
@@ -993,7 +999,11 @@ func readStateIfExists(path string) (State, error) {
 	if err != nil {
 		return State{}, err
 	}
-	return decodeState(b)
+	state, err := decodeState(b)
+	if err != nil {
+		return State{}, err
+	}
+	return normalizeStateCapabilities(state), nil
 }
 
 func runtimeSourceFromEnv() string {
@@ -1038,6 +1048,7 @@ func confidenceLabel(state State, cmdlineAvailable bool) string {
 }
 
 func viewFromState(state State, status, confidence string) View {
+	state = normalizeStateCapabilities(state)
 	return View{
 		ID:                      state.ID,
 		Name:                    state.Name,
@@ -1054,6 +1065,7 @@ func viewFromState(state State, status, confidence string) View {
 		PrimaryName:             state.PrimaryName,
 		PrimaryID:               state.PrimaryID,
 		Purpose:                 state.Purpose,
+		Capabilities:            append([]string(nil), state.Capabilities...),
 		PeerID:                  state.PeerID,
 		Cluster:                 state.Cluster,
 		Namespace:               state.Namespace,
@@ -1269,5 +1281,34 @@ func purposeForCommand(command string) string {
 		return "relay"
 	default:
 		return ""
+	}
+}
+
+func normalizeStateCapabilities(state State) State {
+	if len(state.Capabilities) > 0 {
+		return state
+	}
+	caps := CapabilitiesForCommand(state.Command)
+	if len(caps) == 0 {
+		return state
+	}
+	state.Capabilities = append([]string(nil), caps...)
+	return state
+}
+
+func CapabilitiesForCommand(command string) []string {
+	switch command {
+	case "attach":
+		return []string{"publish", "discovery.cache", "discovery.query", "discovery.sync"}
+	case "connect":
+		return []string{"proxy", "client"}
+	case "gateway":
+		return []string{"gateway", "proxy"}
+	case "relay":
+		return []string{"relay", "discovery.cache", "discovery.query"}
+	case "grants serve":
+		return []string{"grant"}
+	default:
+		return nil
 	}
 }

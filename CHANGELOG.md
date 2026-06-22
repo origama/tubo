@@ -6,9 +6,22 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ## [Unreleased]
 
+### Added
+- Detached process state now stores stable runtime capabilities, and `tubo ps` / `tubo ps --wide` / `inspect process/... --json` expose them.
+
+### Changed
+- Human process listings now show a `CAPS` column in both compact and wide views.
+- Legacy process state files without `capabilities` are still readable and are backfilled in memory from the stored command.
+
 ### Fixed
 - `tubo connect` now treats rollover artifacts with a near-expired delegated refresh lease as non-useful, backs off instead of storming the service grant endpoint, and surfaces clearer rate-limit / publish-renewal status reasons.
 - `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
+
+### Compatibility
+- Product version: unreleased
+- Protocol version: 1.1
+- Protocol compatibility change: none
+- Operator action required: none
 
 ## [v0.12.1] - 2026-06-17
 
