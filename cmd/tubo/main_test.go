@@ -816,6 +816,9 @@ func TestBuildDetachedConnectSpecAllowsCompatibleStaleState(t *testing.T) {
 	if spec.State.Name != name || spec.State.Local != "127.0.0.1:1234" {
 		t.Fatalf("unexpected detached connect state: %#v", spec.State)
 	}
+	if spec.State.PrimaryKind != "pipe" || spec.State.PrimaryName != name || spec.State.PrimaryRef != "pipe/"+name || spec.State.PrimaryID != "" || spec.State.Purpose != "pipe-runtime" {
+		t.Fatalf("unexpected detached connect primary metadata: %#v", spec.State)
+	}
 }
 
 func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
@@ -842,6 +845,9 @@ func TestConnectProcessStateSharesForegroundAndDetachedMetadata(t *testing.T) {
 	}
 	if state.Service != "lms" || state.Target != "lms" {
 		t.Fatalf("service/target = %#v", state)
+	}
+	if state.PrimaryKind != "pipe" || state.PrimaryName != state.Name || state.PrimaryRef != "pipe/"+state.Name || state.PrimaryID != "" || state.Purpose != "pipe-runtime" {
+		t.Fatalf("primary metadata = %#v", state)
 	}
 }
 
