@@ -73,6 +73,11 @@ func startPipeLifecycle(pipeName, configPath string) (detachedProcessState, erro
 	if err != nil {
 		return detachedProcessState{}, err
 	}
+	spec.State.PrimaryKind = "pipe"
+	spec.State.PrimaryName = pipeName
+	spec.State.PrimaryRef = "pipe/" + pipeName
+	spec.State.PrimaryID = ""
+	spec.State.Purpose = "pipe-runtime"
 	return startPipeDetachedProcessFn(spec)
 }
 

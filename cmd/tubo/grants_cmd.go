@@ -802,6 +802,7 @@ func grantsServeProcessState(clusterName, namespaceName, listen string) detached
 		Kind:      "process",
 		Command:   "grants serve",
 		Name:      name,
+		Purpose:   "discovery-authority",
 		Cluster:   clusterName,
 		Namespace: namespaceName,
 		Local:     listen,

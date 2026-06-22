@@ -110,6 +110,11 @@ func startServiceLifecycle(serviceName, configPath string) (detachedProcessState
 		return detachedProcessState{}, err
 	}
 	spec.State.ServiceID = authz.Service.ServiceID
+	spec.State.PrimaryKind = "service"
+	spec.State.PrimaryName = authz.Config.Service.Name
+	spec.State.PrimaryRef = "service/" + authz.Config.Service.Name
+	spec.State.PrimaryID = authz.Service.ServiceID
+	spec.State.Purpose = "service-runtime"
 	spec.State.ResourceKind = "service"
 	spec.State.ServiceKind = string(cfgpkg.NormalizeServiceKind(authz.Config.Service.Kind, authz.Config.Service.Target))
 	if authz.ServicePeerID != "" {
