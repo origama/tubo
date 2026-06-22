@@ -130,6 +130,10 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 			resp.Error = "missing service payload"
 			return resp
 		}
+		if isNamespaceScopedServiceDTO(req.Service) {
+			resp.Error = "namespace-scoped announce_service requires verifiable AnnouncementV3"
+			return resp
+		}
 		if cache == nil {
 			resp.Error = "discovery cache unavailable"
 			return resp
@@ -148,6 +152,13 @@ func responseForRequest(h host.Host, role string, cache Cache, req Request) Resp
 		resp.Error = fmt.Sprintf("unsupported request type %q", req.Type)
 		return resp
 	}
+}
+
+func isNamespaceScopedServiceDTO(service *Service) bool {
+	if service == nil {
+		return false
+	}
+	return strings.TrimSpace(service.ClusterID) != "" || strings.TrimSpace(service.NamespaceID) != ""
 }
 
 func errorResponse(h host.Host, role, msg string) Response {

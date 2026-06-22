@@ -693,6 +693,9 @@ func (a *App) cacheCurrentAnnouncementV3(payload discovery.AnnouncementV3Payload
 }
 
 func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.AnnouncementV3Payload) error {
+	if strings.TrimSpace(payload.ClusterID) != "" || strings.TrimSpace(payload.NamespaceID) != "" {
+		return nil
+	}
 	peers := append([]string(nil), a.cfg.BootstrapPeers...)
 	peers = append(peers, a.cfg.RelayPeers...)
 	seen := make(map[string]struct{}, len(peers))

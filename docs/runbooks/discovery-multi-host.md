@@ -42,6 +42,7 @@ For operational startup and secure P2P tunneling across 2+ services, use this as
 - The cache is keyed primarily by `service_id`; `serviceName`/display name remains a compatibility index and is not unique (`internal/discovery/cache.go`).
 - Edges update the cache through validated Discovery V3; they do not accept `announce_service` on the query protocol.
 - Relays can keep a query/sync cache to support remote `get services`.
+- Namespace-scoped services must arrive through validated Discovery V3; `announce_service` DTOs without signed Discovery V3 authorization are rejected at the receiver.
 - The effective TTL of V2 announcements is bounded by the announcement TTL and the expiry of the embedded `PublishLease`/claim.
 - On `added`, the gateway creates an auto-route:
   - `hostname = serviceName`

@@ -15,6 +15,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Fixed
 - `tubo connect` now treats rollover artifacts with a near-expired delegated refresh lease as non-useful, backs off instead of storming the service grant endpoint, and surfaces clearer rate-limit / publish-renewal status reasons.
+- Discovery/query `announce_service` no longer accepts namespace-scoped service DTOs as trusted cache input; those records now require validated Discovery V3 authorization.
 - `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
 
 ### Compatibility

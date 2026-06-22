@@ -10,6 +10,7 @@ This file is the short operational summary.
 - `service_id` is the secure identity for Discovery V3 service publication and exact service resolution;
 - service publication requires a valid authority-signed `PublishLease`;
 - connect authorization uses `ConnectAccessLease` / `ConnectRefreshLease` and service-side connect proofs; client-supplied `Hello.Role` is not an authorization gate for protected data-plane streams;
+- namespace-scoped discovery/query `announce_service` DTOs are not an authorization boundary; receivers reject them unless they arrive through validated Discovery V3;
 - optional private swarm PSK and PeerID allowlist gating are supported;
 - authority-side publish grants use `/tubo/grants/1.0`.
 

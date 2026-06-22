@@ -56,7 +56,7 @@ func TestResponseForRequestAnnounce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer h.Close()
-	service := Service{ClusterID: "cluster-123", NamespaceID: "observability", Name: "myapi", ServiceKind: "tcp", PeerID: h.ID().String(), ConnectPolicy: "namespace_members", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant"}}, Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, Capabilities: []string{"hello-v1", "raw-tcp-v1"}, TTLSeconds: 30}
+	service := Service{Name: "myapi", ServiceKind: "tcp", PeerID: h.ID().String(), Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, Capabilities: []string{"hello-v1", "raw-tcp-v1"}, TTLSeconds: 30}
 	resp := responseForRequest(h, "relay", cache, Request{Type: RequestTypeAnnounce, Service: &service})
 	if resp.Error != "" {
 		t.Fatalf("unexpected announce error: %#v", resp)
@@ -68,20 +68,38 @@ func TestResponseForRequestAnnounce(t *testing.T) {
 	if !ok || entry.PeerID != h.ID() {
 		t.Fatalf("cache peer id = %s, want %s", entry.PeerID, h.ID())
 	}
-	if entry.ConnectPolicy != "namespace_members" {
+	if entry.ConnectPolicy != "" {
 		t.Fatalf("connect policy = %q", entry.ConnectPolicy)
 	}
 	if entry.ServiceKind != "tcp" {
 		t.Fatalf("service kind = %q", entry.ServiceKind)
 	}
-	if entry.ClusterID != "cluster-123" || entry.NamespaceID != "observability" {
+	if entry.ClusterID != "" || entry.NamespaceID != "" {
 		t.Fatalf("scope ids = %q/%q", entry.ClusterID, entry.NamespaceID)
 	}
 	if len(entry.Capabilities) != 2 || entry.Capabilities[1] != "raw-tcp-v1" {
 		t.Fatalf("capabilities = %#v", entry.Capabilities)
 	}
-	if entry.GrantService == nil || len(entry.GrantService.Peers) != 1 || entry.GrantService.Peers[0] != "/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant" {
+	if entry.GrantService != nil {
 		t.Fatalf("grant service = %#v", entry.GrantService)
+	}
+}
+
+func TestResponseForRequestAnnounceRejectsNamespaceScopedDTO(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-announce-namespace-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	service := Service{ClusterID: "cluster-123", NamespaceID: "observability", Name: "myapi", ServiceKind: "tcp", PeerID: h.ID().String(), ConnectPolicy: "namespace_members", GrantService: &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{"/ip4/9.8.7.6/tcp/4001/p2p/12D3KooWGrant"}}, Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + h.ID().String()}, Capabilities: []string{"hello-v1", "raw-tcp-v1"}, TTLSeconds: 30}
+	resp := responseForRequest(h, "relay", cache, Request{Type: RequestTypeAnnounce, Service: &service})
+	if resp.Error != "namespace-scoped announce_service requires verifiable AnnouncementV3" {
+		t.Fatalf("unexpected announce error: %#v", resp)
+	}
+	if got := cache.Count(); got != 0 {
+		t.Fatalf("cache count = %d, want 0", got)
 	}
 }
 
