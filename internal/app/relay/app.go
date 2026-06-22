@@ -20,6 +20,8 @@ import (
 type Config struct {
 	Listen, Seed, HealthListen, PublicAddr, PrivateKeyFile, PrivateKeyB64                                      string
 	EnableRelayService, EnableAutoNATService, EnableDiscoveryPubSub, ForceReachabilityPublic, PrintRunCommands bool
+	DiscoveryClusterID, DiscoveryNamespaceID, AuthorityPublicKey                                               string
+	DiscoveryContext, DiscoveryPreviousContext                                                                 *discovery.NamespaceDiscoveryContext
 	MaxReservations, MaxReservationsPerIP, MaxReservationsPerASN, MaxCircuitsPerPeer, BufferSize               int
 	ReservationTTL, LimitDuration                                                                              time.Duration
 	LimitDataBytes                                                                                             int64
@@ -105,7 +107,20 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 			return nil, err
 		}
 	}
-	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "relay", cache))
+	handleOpts := []discoveryquery.Option{}
+	if len(cfg.AuthorityPublicKey) > 0 && cfg.DiscoveryContext != nil {
+		contexts := []discovery.NamespaceDiscoveryContext{*cfg.DiscoveryContext}
+		if cfg.DiscoveryPreviousContext != nil {
+			contexts = append(contexts, *cfg.DiscoveryPreviousContext)
+		}
+		authorityPub, err := discovery.ParseAuthorityPublicKey(cfg.AuthorityPublicKey)
+		if err != nil {
+			_ = h.Close()
+			return nil, fmt.Errorf("parse authority public key: %w", err)
+		}
+		handleOpts = append(handleOpts, discoveryquery.WithAnnouncementV3Validation(authorityPub, contexts...))
+	}
+	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "relay", cache, handleOpts...))
 	return &App{cfg: cfg, host: h, cache: cache, stopSubscriber: stopSubscriber}, nil
 }
 func (a *App) Start(ctx context.Context) error {

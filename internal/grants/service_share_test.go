@@ -154,6 +154,41 @@ func TestBuildShareInviteArtifactsRejectsLeaseWithoutShareMint(t *testing.T) {
 	}
 }
 
+func TestBuildShareInviteArtifactsCapsTTLToPublishLeaseExpiry(t *testing.T) {
+	_, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	req, err := SignPublishLeaseRequest(PublishLeaseRequest{
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
+		PublisherPeerID:       "12D3-peer",
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
+		Nonce:                 "nonce-share-cap",
+	}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseArtifacts, err := BuildPublishLeaseArtifacts(authorityPriv, req, "myapi", time.Minute, 150*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := BuildShareInviteArtifactsFromLease(authorityPriv, "home", leaseArtifacts.Lease, "myapi", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invite.Payload.ExpiresAt.After(leaseArtifacts.Lease.ExpiresAt.Add(100 * time.Millisecond)) {
+		t.Fatalf("share invite expiry = %s, want bounded by publish lease expiry %s", invite.Payload.ExpiresAt, leaseArtifacts.Lease.ExpiresAt)
+	}
+}
+
 func TestBuildShareInviteArtifactsRejectsExpiredOrMismatchedLease(t *testing.T) {
 	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

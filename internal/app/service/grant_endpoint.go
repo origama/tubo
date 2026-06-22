@@ -143,7 +143,7 @@ func (e *serviceGrantEndpoint) handleShareRedeem(msg grantspkg.Message, requeste
 	if payload.ClusterID != e.clusterID || payload.NamespaceID != e.namespaceID || payload.TargetServiceID != e.serviceID {
 		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: payload.JTI, Reason: "share invite does not match attached service scope"}
 	}
-	if artifacts, err := e.buildDelegatedArtifacts(payload.JTI, payload.AccessEpoch, msg.ClientPublicKey); err == nil {
+	if artifacts, err := e.buildDelegatedArtifacts(payload.JTI, payload.AccessEpoch, msg.ClientPublicKey, grantspkg.DefaultConnectAccessLeaseTTL, grantspkg.DefaultConnectRefreshLeaseTTL); err == nil {
 		if err := e.consumeShareInvite(payload, requester, msg.ClientPublicKey, artifacts.RefreshLease.SessionID); err != nil {
 			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: payload.JTI, Reason: err.Error()}
 		}
@@ -160,10 +160,25 @@ func (e *serviceGrantEndpoint) handleConnectRequest(msg grantspkg.Message, reque
 	if msg.ClusterID != e.clusterID || msg.NamespaceID != e.namespaceID || msg.ServiceID != e.serviceID {
 		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: requestID, Reason: "connect lease request scope does not match attached service"}
 	}
-	if err := e.authorizeConnectRequest(requester, msg); err != nil {
+	membershipExpiry, err := e.authorizeConnectRequest(requester, msg)
+	if err != nil {
 		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: requestID, Reason: err.Error()}
 	}
-	artifacts, err := e.buildDelegatedArtifacts("", 0, msg.ClientPublicKey)
+	accessTTL := grantspkg.DefaultConnectAccessLeaseTTL
+	refreshTTL := grantspkg.DefaultConnectRefreshLeaseTTL
+	if !membershipExpiry.IsZero() {
+		remaining := time.Until(membershipExpiry.UTC())
+		if remaining <= 0 {
+			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: requestID, Reason: "namespace membership expired"}
+		}
+		if accessTTL > remaining {
+			accessTTL = remaining
+		}
+		if refreshTTL > remaining {
+			refreshTTL = remaining
+		}
+	}
+	artifacts, err := e.buildDelegatedArtifacts("", 0, msg.ClientPublicKey, accessTTL, refreshTTL)
 	if err != nil {
 		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: requestID, Reason: err.Error()}
 	}
@@ -180,7 +195,13 @@ func (e *serviceGrantEndpoint) handleConnectRefresh(msg grantspkg.Message, reque
 	}
 	owner, _, delegation, _, err := e.loadDelegatedSigner()
 	if err == nil {
-		access, err := grantspkg.RefreshDelegatedConnectAccessLease(e.authorityPub, owner.PrivateKey, *lease, grantspkg.DefaultConnectAccessLeaseTTL, delegation.PublisherPeerID)
+		accessTTL := grantspkg.DefaultConnectAccessLeaseTTL
+		if remaining := time.Until(delegation.ExpiresAt.UTC()); remaining <= 0 {
+			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: lease.JTI, Reason: "publish lease expired"}
+		} else if accessTTL > remaining {
+			accessTTL = remaining
+		}
+		access, err := grantspkg.RefreshDelegatedConnectAccessLease(e.authorityPub, owner.PrivateKey, *lease, accessTTL, delegation.PublisherPeerID)
 		if err == nil {
 			return grantspkg.Message{Type: grantspkg.TypeConnectRefresh, Version: grantspkg.VersionV1, RequestID: lease.JTI, ConnectAccessLease: &access}
 		}
@@ -191,12 +212,12 @@ func (e *serviceGrantEndpoint) handleConnectRefresh(msg grantspkg.Message, reque
 	return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: lease.JTI, Reason: "connect refresh requires a valid local service delegation"}
 }
 
-func (e *serviceGrantEndpoint) buildDelegatedArtifacts(shareInviteJTI string, accessEpoch int64, clientPublicKey string) (grantspkg.ConnectLeaseArtifacts, error) {
+func (e *serviceGrantEndpoint) buildDelegatedArtifacts(shareInviteJTI string, accessEpoch int64, clientPublicKey string, accessTTL, refreshTTL time.Duration) (grantspkg.ConnectLeaseArtifacts, error) {
 	owner, _, delegation, _, err := e.loadDelegatedSigner()
 	if err != nil {
 		return grantspkg.ConnectLeaseArtifacts{}, err
 	}
-	return grantspkg.BuildDelegatedConnectLeaseArtifacts(e.authorityPub, owner.PrivateKey, delegation, shareInviteJTI, clientPublicKey, accessEpoch, grantspkg.DefaultConnectAccessLeaseTTL, grantspkg.DefaultConnectRefreshLeaseTTL)
+	return grantspkg.BuildDelegatedConnectLeaseArtifacts(e.authorityPub, owner.PrivateKey, delegation, shareInviteJTI, clientPublicKey, accessEpoch, accessTTL, refreshTTL)
 }
 
 func (e *serviceGrantEndpoint) loadDelegatedSigner() (serviceidentity.Identity, []byte, grantspkg.PublishLease, []byte, error) {
@@ -227,37 +248,40 @@ func (e *serviceGrantEndpoint) loadDelegatedSigner() (serviceidentity.Identity, 
 	return owner, raw, lease, raw, nil
 }
 
-func (e *serviceGrantEndpoint) authorizeConnectRequest(requester peer.ID, msg grantspkg.Message) error {
+// authorizeConnectRequest validates the namespace membership boundary for a
+// connect request and returns the expiry that should cap any minted connect
+// leases. A granted connect session must not outlive that membership boundary.
+func (e *serviceGrantEndpoint) authorizeConnectRequest(requester peer.ID, msg grantspkg.Message) (time.Time, error) {
 	switch e.connectPolicy {
 	case "invite_only":
-		return errors.New("service is invite_only; use `tubo connect --token <share-invite>`")
+		return time.Time{}, errors.New("service is invite_only; use `tubo connect --token <share-invite>`")
 	case "namespace_members":
 		if msg.MembershipCapability == nil && strings.TrimSpace(msg.MembershipGrantToken) == "" {
-			return errors.New("namespace_members policy requires a membership capability or membership invite with connect permission")
+			return time.Time{}, errors.New("namespace_members policy requires a membership capability or membership invite with connect permission")
 		}
 		var errs []string
 		if msg.MembershipCapability != nil {
-			if err := verifyConnectMembership(*msg.MembershipCapability, e.authorityPub, e.clusterID, e.namespaceID, requester.String()); err == nil {
-				return nil
+			if expiry, err := verifyConnectMembership(*msg.MembershipCapability, e.authorityPub, e.clusterID, e.namespaceID, requester.String()); err == nil {
+				return expiry, nil
 			} else {
 				errs = append(errs, err.Error())
 			}
 		}
 		if strings.TrimSpace(msg.MembershipGrantToken) != "" {
-			if err := e.verifyConnectMembershipGrantToken(msg.MembershipGrantToken); err == nil {
-				return nil
+			if expiry, err := e.verifyConnectMembershipGrantToken(msg.MembershipGrantToken); err == nil {
+				return expiry, nil
 			} else {
 				errs = append(errs, err.Error())
 			}
 		}
-		return fmt.Errorf("namespace_members policy denied connect: %s", strings.Join(errs, "; "))
+		return time.Time{}, fmt.Errorf("namespace_members policy denied connect: %s", strings.Join(errs, "; "))
 	case "public":
 		if !e.allowPublicConnect(requester) {
-			return errors.New("public connect policy rate limit exceeded; retry later")
+			return time.Time{}, errors.New("public connect policy rate limit exceeded; retry later")
 		}
-		return nil
+		return time.Time{}, nil
 	default:
-		return fmt.Errorf("unsupported connect policy %q", e.connectPolicy)
+		return time.Time{}, fmt.Errorf("unsupported connect policy %q", e.connectPolicy)
 	}
 }
 
@@ -281,7 +305,7 @@ func (e *serviceGrantEndpoint) allowPublicConnect(requester peer.ID) bool {
 	return true
 }
 
-func verifyConnectMembership(membership capability.MembershipCapability, authorityPub ed25519.PublicKey, clusterID, namespaceID, requesterPeerID string) error {
+func verifyConnectMembership(membership capability.MembershipCapability, authorityPub ed25519.PublicKey, clusterID, namespaceID, requesterPeerID string) (time.Time, error) {
 	var lastErr error
 	for _, subject := range []string{requesterPeerID, clusterID} {
 		candidateNamespaces := []string{namespaceID}
@@ -298,39 +322,39 @@ func verifyConnectMembership(membership capability.MembershipCapability, authori
 				continue
 			}
 			if !containsConnectPermission(membership.Permissions) {
-				return errors.New("membership capability is missing connect permission")
+				return time.Time{}, errors.New("membership capability is missing connect permission")
 			}
-			return nil
+			return membership.ExpiresAt.UTC(), nil
 		}
 	}
 	if lastErr != nil {
-		return lastErr
+		return time.Time{}, lastErr
 	}
-	return errors.New("membership capability rejected")
+	return time.Time{}, errors.New("membership capability rejected")
 }
 
-func (e *serviceGrantEndpoint) verifyConnectMembershipGrantToken(token string) error {
+func (e *serviceGrantEndpoint) verifyConnectMembershipGrantToken(token string) (time.Time, error) {
 	payload, err := clusterinvite.ParseAndVerifyToken(token)
 	if err != nil {
-		return err
+		return time.Time{}, err
 	}
 	if !clusterinvite.MatchesAuthority(payload, e.authorityPub) {
-		return errors.New("membership invite authority does not match attached service authority")
+		return time.Time{}, errors.New("membership invite authority does not match attached service authority")
 	}
 	if payload.ClusterID != e.clusterID || payload.Namespace != e.namespaceID {
-		return errors.New("membership invite does not authorize attached service scope")
+		return time.Time{}, errors.New("membership invite does not authorize attached service scope")
 	}
 	if !containsConnectPermission(payload.Grant.Permissions) {
-		return errors.New("membership invite is missing connect permission")
+		return time.Time{}, errors.New("membership invite is missing connect permission")
 	}
 	if e.revocations != nil {
 		if revoked, _, err := e.revocations.IsInviteRevoked(payload.JTI); err != nil {
-			return err
+			return time.Time{}, err
 		} else if revoked {
-			return errors.New("membership invite revoked")
+			return time.Time{}, errors.New("membership invite revoked")
 		}
 	}
-	return nil
+	return payload.ExpiresAt.UTC(), nil
 }
 
 func (e *serviceGrantEndpoint) consumeShareInvite(payload grantspkg.ServiceSharePayload, requester peer.ID, clientPublicKey, sessionID string) error {

@@ -9,8 +9,10 @@ This file is the short operational summary.
 - public bundle trust is established by a locally pinned bundle signing key;
 - `service_id` is the secure identity for Discovery V3 service publication and exact service resolution;
 - service publication requires a valid authority-signed `PublishLease`;
-- connect authorization uses `ConnectAccessLease` / `ConnectRefreshLease` and service-side connect proofs; client-supplied `Hello.Role` is not an authorization gate for protected data-plane streams;
-- namespace-scoped discovery/query `announce_service` DTOs are not an authorization boundary; receivers reject them unless they arrive through validated Discovery V3;
+- connect authorization uses `ConnectAccessLease` / `ConnectRefreshLease` and service-side connect proofs; client-supplied `Hello.Role` is not an authorization gate for protected data-plane streams; share-invite redemption and namespace-member connect minting are capped by the live publish/membership expiry they present, and reissued/imported membership is reread on retry so long-lived attach/connect runtimes can recover without restart;
+- namespace-scoped discovery/query `announce_service` DTOs are not an authorization boundary; receivers reject them unless they arrive through validated Discovery V3, and `announce_service_v3` is only accepted after the same signature/scope/lease checks used by PubSub Discovery V3; cache lifetimes are bounded by the earliest of announcement, membership, publish lease, and service-claim expiry;
+- namespace-scoped `list_services` / `get_service` queries require a valid membership capability bound to the requesting peer ID (Tubo derives a stable query identity per cluster/namespace for this), or an accepted membership grant proof; missing or expired membership must fail closed with an authorization/config error rather than returning an empty namespace;
+- membership grant tokens used for discovery visibility accept bearer proof as long as they contain at least `subscribe` + `list` permissions;
 - optional private swarm PSK and PeerID allowlist gating are supported;
 - authority-side publish grants use `/tubo/grants/1.0`.
 

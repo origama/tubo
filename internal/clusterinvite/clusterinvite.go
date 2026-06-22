@@ -99,6 +99,36 @@ func ParseAndVerifyMembershipGrantToken(token string) (Payload, error) {
 	return parseAndVerifyToken(token, ValidateMembershipGrantPayload)
 }
 
+func VerifyMembershipGrantTokenForScope(token, clusterID, namespaceID string) (Payload, error) {
+	payload, err := ParseAndVerifyMembershipGrantToken(token)
+	if err != nil {
+		return Payload{}, err
+	}
+	if payload.ClusterID != clusterID {
+		return Payload{}, fmt.Errorf("cluster id mismatch: got %q want %q", payload.ClusterID, clusterID)
+	}
+	if payload.Namespace != namespaceID {
+		return Payload{}, fmt.Errorf("namespace id mismatch: got %q want %q", payload.Namespace, namespaceID)
+	}
+	if !hasAllPermissions(payload.Grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList}) {
+		return Payload{}, fmt.Errorf("missing discovery permissions")
+	}
+	return payload, nil
+}
+
+func hasAllPermissions(have []string, want []string) bool {
+	set := make(map[string]struct{}, len(have))
+	for _, perm := range have {
+		set[perm] = struct{}{}
+	}
+	for _, perm := range want {
+		if _, ok := set[perm]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func parseAndVerifyToken(token string, validate func(Payload) error) (Payload, error) {
 	if !IsToken(token) {
 		return Payload{}, fmt.Errorf("invalid cluster invite token")
@@ -214,11 +244,11 @@ func validateCommonPayload(payload Payload, kind string) error {
 func validateGrant(payload Payload, label string) error {
 	switch payload.Grant.Role {
 	case RoleMember:
-		if !stringSliceEqualSet(payload.Grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
+		if !hasAllPermissions(payload.Grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
 			return fmt.Errorf("%s member grant has invalid permissions", label)
 		}
 	case RoleViewer:
-		if !stringSliceEqualSet(payload.Grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList}) {
+		if !hasAllPermissions(payload.Grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList}) {
 			return fmt.Errorf("%s viewer grant has invalid permissions", label)
 		}
 	case RoleGrantRequester:

@@ -110,6 +110,8 @@ func updateProcessRuntimeState(stateFile string, runtime bridgeapp.RuntimeStatus
 	return processes.UpdateState(stateFile, func(state *detachedProcessState) {
 		state.RuntimeStatus = runtime.Status
 		state.DegradedReason = runtime.Reason
+		state.AuthorizationStatus = runtime.AuthorizationStatus
+		state.AuthorizationReason = runtime.AuthorizationReason
 		state.Path = runtime.Path
 		state.SelectedAddr = runtime.SelectedAddr
 		state.SelectedPath = runtime.SelectedPath
@@ -185,6 +187,10 @@ func updateAttachServiceRuntimeState(stateFile string, runtime serviceapp.Runtim
 	return processes.UpdateState(stateFile, func(state *detachedProcessState) {
 		state.RuntimeStatus = runtime.Status
 		state.DegradedReason = runtime.Reason
+		state.AdvertisementStatus = runtime.AdvertisementStatus
+		state.AdvertisementReason = runtime.AdvertisementReason
+		state.AuthorizationStatus = runtime.AuthorizationStatus
+		state.AuthorizationReason = runtime.AuthorizationReason
 		state.LastRefreshError = runtime.LastRefreshError
 		if runtime.NextRefreshRetryAt != nil {
 			state.NextRefreshRetryAt = runtime.NextRefreshRetryAt.UTC().Format(time.RFC3339)

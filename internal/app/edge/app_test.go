@@ -16,6 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -253,7 +254,7 @@ func TestDiscoveryRuntimeIgnoresExpiredPreviousScopeForGateway(t *testing.T) {
 func TestGatewayDiscoveryQueryServesCachedServices(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +290,11 @@ func TestGatewayDiscoveryQueryServesCachedServices(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := discoveryquery.ListServices(ctx, client, info)
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: client.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := discoveryquery.ListServicesWithAuthorization(ctx, client, info, &membership, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -59,6 +59,10 @@ type State struct {
 	StatusConfidence        string   `json:"status_confidence,omitempty"`
 	RuntimeStatus           string   `json:"runtime_status,omitempty"`
 	DegradedReason          string   `json:"degraded_reason,omitempty"`
+	AdvertisementStatus     string   `json:"advertisement_status,omitempty"`
+	AdvertisementReason     string   `json:"advertisement_reason,omitempty"`
+	AuthorizationStatus     string   `json:"authorization_status,omitempty"`
+	AuthorizationReason     string   `json:"authorization_reason,omitempty"`
 	ConnectAccessExpiresAt  string   `json:"connect_access_expires_at,omitempty"`
 	ConnectRefreshExpiresAt string   `json:"connect_refresh_expires_at,omitempty"`
 	LastTunnelError         string   `json:"last_tunnel_error,omitempty"`
@@ -93,6 +97,10 @@ type View struct {
 	Command                 string   `json:"command"`
 	Status                  string   `json:"status"`
 	StatusConfidence        string   `json:"status_confidence,omitempty"`
+	AdvertisementStatus     string   `json:"advertisement_status,omitempty"`
+	AdvertisementReason     string   `json:"advertisement_reason,omitempty"`
+	AuthorizationStatus     string   `json:"authorization_status,omitempty"`
+	AuthorizationReason     string   `json:"authorization_reason,omitempty"`
 	PID                     int      `json:"pid"`
 	ResourceKind            string   `json:"resource_kind,omitempty"`
 	Service                 string   `json:"service,omitempty"`
@@ -1083,6 +1091,10 @@ func viewFromState(state State, status, confidence string) View {
 		Source:                  state.Source,
 		CommandLine:             append([]string(nil), state.CommandLine...),
 		DegradedReason:          state.DegradedReason,
+		AdvertisementStatus:     state.AdvertisementStatus,
+		AdvertisementReason:     state.AdvertisementReason,
+		AuthorizationStatus:     state.AuthorizationStatus,
+		AuthorizationReason:     state.AuthorizationReason,
 		ConnectAccessExpiresAt:  state.ConnectAccessExpiresAt,
 		ConnectRefreshExpiresAt: state.ConnectRefreshExpiresAt,
 		LastTunnelError:         state.LastTunnelError,

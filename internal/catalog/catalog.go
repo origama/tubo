@@ -12,6 +12,8 @@ import (
 	"time"
 
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	capability "github.com/origama/tubo/internal/capability"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -67,6 +69,8 @@ func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cached
 			services = applyRequestedScope(cfg, scope, services)
 			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
 			return LookupResult{Services: services, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, nil
+		} else if isDiscoveryAuthorizationError(err) {
+			return LookupResult{}, err
 		} else {
 			messages := []string{"no local discovery endpoint available", fmt.Sprintf("configured discovery peer fallback failed: %v", err)}
 			services, obsErr := ObserveServices(cfg, timeout, nil)
@@ -139,6 +143,8 @@ func DiscoverServiceWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedO
 				service = applyScope(service, scope)
 				return LookupResult{Services: []Service{service}, Messages: messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, service, nil
 			}
+		} else if isDiscoveryAuthorizationError(err) {
+			return LookupResult{}, Service{}, err
 		} else {
 			messages := []string{"no local discovery endpoint available", fmt.Sprintf("configured discovery peer fallback failed: %v", err)}
 			services, obsErr := ObserveServices(cfg, timeout, nil)
@@ -203,6 +209,8 @@ func DiscoverServiceExactWithConfig(cfg cfgpkg.Config, timeout time.Duration, ca
 				service = applyScope(service, scope)
 				return LookupResult{Services: []Service{service}, Messages: messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, service, nil
 			}
+		} else if isDiscoveryAuthorizationError(err) {
+			return LookupResult{}, Service{}, err
 		} else {
 			messages := []string{"no local discovery endpoint available", fmt.Sprintf("configured discovery peer fallback failed: %v", err)}
 			services, obsErr := ObserveServices(cfg, timeout, nil)
@@ -307,6 +315,124 @@ func FetchLocalServiceCache(cfg cfgpkg.Config) ([]Service, string, error) {
 	return payload.Items, adminAddr, nil
 }
 
+func loadMembershipCapabilityFile(path string) (capability.MembershipCapability, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return capability.MembershipCapability{}, err
+	}
+	var membership capability.MembershipCapability
+	if err := json.Unmarshal(b, &membership); err != nil {
+		return capability.MembershipCapability{}, err
+	}
+	return membership, nil
+}
+
+func discoveryQueryAuthorizationForConfig(cfg cfgpkg.Config) (*capability.MembershipCapability, string, error) {
+	clusterName := strings.TrimSpace(cfg.CurrentCluster)
+	namespaceName := strings.TrimSpace(cfg.CurrentNamespace)
+	if clusterName == "" || namespaceName == "" {
+		return nil, "", nil
+	}
+	cluster, ok := cfg.Clusters[clusterName]
+	if !ok {
+		return nil, "", nil
+	}
+	if ns, ok := cluster.Namespaces[namespaceName]; ok && strings.TrimSpace(ns.MembershipCapabilityFile) != "" {
+		membership, err := loadMembershipCapabilityFile(ns.MembershipCapabilityFile)
+		if err != nil {
+			return nil, "", fmt.Errorf("load membership capability for %s/%s: %w", clusterName, namespaceName, err)
+		}
+		if strings.TrimSpace(cluster.AuthorityPublicKey) == "" {
+			return nil, "", fmt.Errorf("cluster %q is missing authority public key", clusterName)
+		}
+		pub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse authority public key for %s/%s: %w", clusterName, namespaceName, err)
+		}
+		queryPeerID, err := discoveryQueryPeerIDForConfig(cluster.ClusterID, namespaceName)
+		if err != nil {
+			return nil, "", fmt.Errorf("membership capability for %s/%s rejected: %w", clusterName, namespaceName, err)
+		}
+		if err := capability.VerifyMembershipCapability(membership, pub, cluster.ClusterID, namespaceName, queryPeerID); err != nil {
+			return nil, "", fmt.Errorf("membership capability for %s/%s rejected: %w", clusterName, namespaceName, err)
+		}
+		return &membership, "", nil
+	}
+	if cluster.MembershipGrant != nil {
+		token := strings.TrimSpace(cluster.MembershipGrant.InviteToken)
+		if token == "" && strings.TrimSpace(cluster.MembershipGrant.InviteTokenFile) != "" {
+			b, err := os.ReadFile(cluster.MembershipGrant.InviteTokenFile)
+			if err != nil {
+				return nil, "", fmt.Errorf("load membership grant token for %s/%s: %w", clusterName, namespaceName, err)
+			}
+			token = strings.TrimSpace(string(b))
+		}
+		if token != "" {
+			if _, err := clusterinvite.VerifyMembershipGrantTokenForScope(token, cluster.ClusterID, namespaceName); err != nil {
+				return nil, token, fmt.Errorf("membership grant for %s/%s rejected: %w", clusterName, namespaceName, err)
+			}
+			return nil, token, nil
+		}
+	}
+	if capPath := strings.TrimSpace(cluster.MembershipCapabilityFile); capPath != "" {
+		membership, err := loadMembershipCapabilityFile(capPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("load membership capability for %s/%s: %w", clusterName, namespaceName, err)
+		}
+		if strings.TrimSpace(cluster.AuthorityPublicKey) == "" {
+			return nil, "", fmt.Errorf("cluster %q is missing authority public key", clusterName)
+		}
+		pub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
+		if err != nil {
+			return nil, "", fmt.Errorf("parse authority public key for %s/%s: %w", clusterName, namespaceName, err)
+		}
+		queryPeerID, err := discoveryQueryPeerIDForConfig(cluster.ClusterID, namespaceName)
+		if err != nil {
+			return nil, "", fmt.Errorf("membership capability for %s/%s rejected: %w", clusterName, namespaceName, err)
+		}
+		if err := capability.VerifyMembershipCapability(membership, pub, cluster.ClusterID, namespaceName, queryPeerID); err != nil {
+			return nil, "", fmt.Errorf("membership capability for %s/%s rejected: %w", clusterName, namespaceName, err)
+		}
+		return &membership, "", nil
+	}
+	return nil, "", nil
+}
+
+func discoveryQueryPeerIDForConfig(clusterID, namespace string) (string, error) {
+	seed := discoveryQuerySeed(clusterID, namespace)
+	peerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		return "", fmt.Errorf("derive discovery query peer id: %w", err)
+	}
+	return peerID.String(), nil
+}
+
+func discoveryQuerySeed(clusterID, namespace string) string {
+	return "discovery-query-" + strings.TrimSpace(clusterID) + "-" + strings.TrimSpace(namespace)
+}
+
+func discoveryQuerySeedForConfig(cfg cfgpkg.Config) string {
+	clusterName := strings.TrimSpace(cfg.CurrentCluster)
+	namespaceName := strings.TrimSpace(cfg.CurrentNamespace)
+	if cluster, ok := cfg.Clusters[clusterName]; ok && strings.TrimSpace(cluster.ClusterID) != "" && namespaceName != "" {
+		return discoveryQuerySeed(cluster.ClusterID, namespaceName)
+	}
+	return ""
+}
+
+func isDiscoveryAuthorizationError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	for _, needle := range []string{"membership capability missing", "membership capability rejected", "membership capability expired", "membership capability or grant token does not authorize discovery", "membership grant for", "membership authorization unavailable"} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Service, *discoveryquery.Metadata, []string, error) {
 	peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
 	if len(peers) == 0 {
@@ -319,7 +445,12 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("load private network key: %w", err)
 	}
-	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "", psk)
+	authMembership, authGrantToken, err := discoveryQueryAuthorizationForConfig(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	seed := discoveryQuerySeedForConfig(cfg)
+	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", seed, psk)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("create remote query host: %w", err)
 	}
@@ -332,7 +463,7 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		resp, err := discoveryquery.ListServices(ctx, h, info)
+		resp, err := discoveryquery.ListServicesWithAuthorization(ctx, h, info, authMembership, authGrantToken)
 		cancel()
 		if err != nil {
 			lastErr = err
@@ -369,7 +500,12 @@ func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 	if err != nil {
 		return Service{}, nil, nil, fmt.Errorf("load private network key: %w", err)
 	}
-	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "", psk)
+	authMembership, authGrantToken, err := discoveryQueryAuthorizationForConfig(cfg)
+	if err != nil {
+		return Service{}, nil, nil, err
+	}
+	seed := discoveryQuerySeedForConfig(cfg)
+	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", seed, psk)
 	if err != nil {
 		return Service{}, nil, nil, fmt.Errorf("create remote query host: %w", err)
 	}
@@ -382,7 +518,7 @@ func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		resp, err := discoveryquery.GetService(ctx, h, info, serviceName)
+		resp, err := discoveryquery.GetServiceWithAuthorization(ctx, h, info, serviceName, authMembership, authGrantToken)
 		cancel()
 		if err != nil {
 			lastErr = err
@@ -421,7 +557,8 @@ func ObserveServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(Watc
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", "", psk)
+	seed := discoveryQuerySeedForConfig(cfg)
+	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", seed, psk)
 	if err != nil {
 		return nil, fmt.Errorf("create observer host: %w", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +150,36 @@ func testV3SubscriberAndMessage(t *testing.T, ctx NamespaceDiscoveryContext, ser
 	h.wireExpiredCallback()
 	msg := &pubsub.Message{Message: &pb.Message{Data: data, From: []byte(pid), Topic: &topic, Key: mustPubKeyRaw(t, priv.GetPublic())}}
 	return h, msg
+}
+
+func testV3AnnouncementFixture(t *testing.T, ctx NamespaceDiscoveryContext, serviceName string, authorityPriv ed25519.PrivateKey) (*testV3RuntimeHarness, AnnouncementV3, AnnouncementV3Payload) {
+	t.Helper()
+	h, msg := testV3SubscriberAndMessage(t, ctx, serviceName, authorityPriv)
+	var ann AnnouncementV3
+	if err := json.Unmarshal(msg.Data, &ann); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := ann.Payload(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, ann, payload
+}
+
+func buildV3Announcement(t *testing.T, ctx NamespaceDiscoveryContext, signer crypto.PrivKey, payload AnnouncementV3Payload) AnnouncementV3 {
+	t.Helper()
+	pid, err := peer.IDFromPrivateKey(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann, err := NewAnnouncementV3(ctx, pid, 30*time.Second, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ann.Sign(signer); err != nil {
+		t.Fatal(err)
+	}
+	return ann
 }
 
 func assertV3Accepted(t *testing.T, subscriber *testV3RuntimeHarness, wantCount int, wantService string) {
@@ -343,4 +374,212 @@ func TestPubSubSubscriberV3RequiresAuthorityPublicKey(t *testing.T) {
 	subscriber.authorityPublicKey = nil
 	subscriber.handleMessage(msg)
 	assertV3Rejected(t, subscriber)
+}
+
+func TestValidateAnnouncementV3AcrossContextsAcceptsValidAnnouncement(t *testing.T) {
+	_, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testV3RuntimeContext(0x11, "nsdk_current")
+	h, ann, _ := testV3AnnouncementFixture(t, ctx, "svc-current", authorityPriv)
+	validated, err := ValidateAnnouncementV3(ctx, ann, h.testPrivKey.GetPublic(), authorityPriv.Public().(ed25519.PublicKey), ann.PeerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validated.ServiceName != "svc-current" || validated.ClusterID != ctx.ClusterID || validated.NamespaceID != ctx.NamespaceID || validated.ServiceID == "" || validated.TTL <= 0 {
+		t.Fatalf("unexpected validated announcement: %#v", validated)
+	}
+}
+
+func TestValidateAnnouncementV3AcrossContextsRejectsAuthorizationFailures(t *testing.T) {
+	_, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub := authorityPriv.Public().(ed25519.PublicKey)
+	ctx := testV3RuntimeContext(0x11, "nsdk_current")
+	h, ann, payload := testV3AnnouncementFixture(t, ctx, "svc-current", authorityPriv)
+	basePub := h.testPrivKey.GetPublic()
+	build := func(payload AnnouncementV3Payload) AnnouncementV3 {
+		return buildV3Announcement(t, ctx, h.testPrivKey, payload)
+	}
+
+	t.Run("missing membership", func(t *testing.T) {
+		mutated := payload
+		mutated.MembershipCapability = nil
+		ann := build(mutated)
+		if _, err := ValidateAnnouncementV3(ctx, ann, basePub, authorityPub, ann.PeerID); err == nil || !strings.Contains(strings.ToLower(err.Error()), "membership") {
+			t.Fatalf("expected membership rejection, got %v", err)
+		}
+	})
+
+	t.Run("expired membership with valid lease", func(t *testing.T) {
+		mutated := payload
+		var membership capability.MembershipCapability
+		if err := json.Unmarshal(mutated.MembershipCapability, &membership); err != nil {
+			t.Fatal(err)
+		}
+		membership.ExpiresAt = time.Now().Add(-time.Minute)
+		signed, err := capability.SignMembershipCapability(membership, authorityPriv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(signed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutated.MembershipCapability = b
+		ann := build(mutated)
+		if _, err := ValidateAnnouncementV3(ctx, ann, basePub, authorityPub, ann.PeerID); err == nil || !strings.Contains(strings.ToLower(err.Error()), "expired") {
+			t.Fatalf("expected expired membership rejection, got %v", err)
+		}
+	})
+
+	t.Run("invalid publish lease", func(t *testing.T) {
+		mutated := payload
+		mutated.PublishLease = []byte("bad-lease")
+		ann := build(mutated)
+		if _, err := ValidateAnnouncementV3(ctx, ann, basePub, authorityPub, ann.PeerID); err == nil {
+			t.Fatal("expected publish lease rejection")
+		}
+	})
+
+	t.Run("wrong service id", func(t *testing.T) {
+		mutated := payload
+		mutated.ServiceID = "service-other"
+		ann := build(mutated)
+		if _, err := ValidateAnnouncementV3(ctx, ann, basePub, authorityPub, ann.PeerID); err == nil || !strings.Contains(strings.ToLower(err.Error()), "invalid service_id") {
+			t.Fatalf("expected service id rejection, got %v", err)
+		}
+	})
+
+	t.Run("wrong peer binding", func(t *testing.T) {
+		wrongPeer := peer.ID("12D3KooWBadPeer")
+		if _, err := ValidateAnnouncementV3(ctx, ann, basePub, authorityPub, wrongPeer); err == nil || !strings.Contains(strings.ToLower(err.Error()), "peer id") {
+			t.Fatalf("expected peer binding rejection, got %v", err)
+		}
+	})
+
+	t.Run("wrong scope", func(t *testing.T) {
+		wrongCtx := ctx
+		wrongCtx.NamespaceID = "tenant-b"
+		wrongCtx.Secret = append([]byte(nil), ctx.Secret...)
+		if _, err := ValidateAnnouncementV3(wrongCtx, ann, basePub, authorityPub, ann.PeerID); err == nil {
+			t.Fatal("expected wrong scope rejection")
+		}
+	})
+
+	t.Run("bad signature", func(t *testing.T) {
+		mutated := ann
+		mutated.Signature = append([]byte(nil), ann.Signature...)
+		mutated.Signature[0] ^= 0xff
+		if _, err := ValidateAnnouncementV3(ctx, mutated, basePub, authorityPub, ann.PeerID); err == nil || !strings.Contains(strings.ToLower(err.Error()), "signature") {
+			t.Fatalf("expected signature rejection, got %v", err)
+		}
+	})
+}
+
+func buildV3ExpiryFixture(t *testing.T, membershipTTL, claimTTL, leaseTTL, announcementTTL time.Duration) (NamespaceDiscoveryContext, AnnouncementV3, crypto.PubKey, ed25519.PublicKey, peer.ID) {
+	t.Helper()
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signerPriv, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signerPeerID, err := peer.IDFromPrivateKey(signerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := testV3RuntimeContext(0x33, "nsdk_expiry")
+	owner, err := serviceidentity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, SubjectPeerID: signerPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionAnnounce}, ExpiresAt: time.Now().UTC().Add(membershipTTL)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipBytes, err := json.Marshal(membership)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, ServiceID: owner.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey), PublisherPeerID: signerPeerID.String(), RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: "expiry-fixture-nonce"}, owner.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseArtifacts, err := grantspkg.BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "svc-expiry", claimTTL, leaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseBytes, err := json.Marshal(leaseArtifacts.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := json.Marshal(leaseArtifacts.ServiceClaim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann, err := NewAnnouncementV3(ctx, signerPeerID, announcementTTL, AnnouncementV3Payload{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, ServiceName: "svc-expiry", ServiceKind: "http", ServiceID: owner.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey), ConnectPolicy: "namespace_members", Addresses: []string{"/ip4/127.0.0.1/tcp/8080"}, MembershipCapability: membershipBytes, PublishLease: leaseBytes, ServiceClaim: claimBytes, RegisteredAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ann.Sign(signerPriv); err != nil {
+		t.Fatal(err)
+	}
+	return ctx, ann, signerPriv.GetPublic(), authorityPub, signerPeerID
+}
+
+func TestEffectiveAnnouncementV3ExpiryUsesEarliestBound(t *testing.T) {
+	now := time.Date(2026, 6, 22, 19, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		bounds AnnouncementV3ExpiryBounds
+		want   time.Time
+	}{
+		{name: "membership", bounds: AnnouncementV3ExpiryBounds{Announcement: now.Add(5 * time.Second), Membership: now.Add(2 * time.Second), PublishLease: now.Add(3 * time.Second), ServiceClaim: now.Add(4 * time.Second)}, want: now.Add(2 * time.Second)},
+		{name: "service claim", bounds: AnnouncementV3ExpiryBounds{Announcement: now.Add(5 * time.Second), Membership: now.Add(4 * time.Second), PublishLease: now.Add(3 * time.Second), ServiceClaim: now.Add(1 * time.Second)}, want: now.Add(1 * time.Second)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := EffectiveAnnouncementV3Expiry(tc.bounds)
+			if !got.Equal(tc.want) {
+				t.Fatalf("expiry = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateAnnouncementV3BoundsTTLByMembershipExpiry(t *testing.T) {
+	ctx, ann, signerPub, authorityPub, _ := buildV3ExpiryFixture(t, 200*time.Millisecond, time.Second, time.Second, 5*time.Second)
+	validated, err := ValidateAnnouncementV3(ctx, ann, signerPub, authorityPub, ann.PeerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if validated.TTL > 400*time.Millisecond {
+		t.Fatalf("ttl = %s, want membership-bound ttl", validated.TTL)
+	}
+	cache := NewCache(50*time.Millisecond, 10*time.Millisecond)
+	defer cache.Stop()
+	if err := cache.AddV2(validated.PeerID, validated.ClusterID, validated.NamespaceID, validated.ServiceID, validated.ServiceName, validated.Kind, validated.ServiceKind, validated.ServicePublicKey, validated.ConnectPolicy, validated.GrantService, validated.Addresses, validated.Capabilities, validated.TTL); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cache.Resolve(validated.ServiceName); !ok {
+		t.Fatal("expected service in cache")
+	}
+	time.Sleep(350 * time.Millisecond)
+	if _, ok := cache.Resolve(validated.ServiceName); ok {
+		t.Fatal("expected cache entry to expire when membership expires first")
+	}
+}
+
+func TestValidateAnnouncementV3RejectsExpiredPublishLeaseBeforeMembership(t *testing.T) {
+	ctx, ann, signerPub, authorityPub, _ := buildV3ExpiryFixture(t, time.Second, time.Second, 150*time.Millisecond, 5*time.Second)
+	time.Sleep(250 * time.Millisecond)
+	if _, err := ValidateAnnouncementV3(ctx, ann, signerPub, authorityPub, ann.PeerID); err == nil || !strings.Contains(strings.ToLower(err.Error()), "publish lease expired") {
+		t.Fatalf("expected publish lease expiry rejection, got %v", err)
+	}
 }

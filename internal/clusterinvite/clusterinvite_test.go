@@ -152,3 +152,23 @@ func TestValidateMembershipGrantRejectsDiscoveryEntry(t *testing.T) {
 		t.Fatalf("expected membership discovery rejection, got %v", err)
 	}
 }
+
+func TestVerifyMembershipGrantTokenForScopeAcceptsPermissionSuperset(t *testing.T) {
+	priv := testInviteAuthority(t)
+	payload := testInvitePayload(t, priv)
+	payload.Grant = Grant{Role: RoleMember, Permissions: []string{"connect", "extra", "subscribe", "publish", "list"}}
+	payload.MembershipToken = ""
+	payload.Discovery = nil
+	payload.Kind = MembershipGrantKind
+	token, err := SignToken(payload, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verified, err := VerifyMembershipGrantTokenForScope(token, payload.ClusterID, payload.Namespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(verified.Grant.Permissions) != len(payload.Grant.Permissions) {
+		t.Fatalf("unexpected permission count: %#v", verified.Grant.Permissions)
+	}
+}

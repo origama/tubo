@@ -435,6 +435,9 @@ func buildServiceSharePayload(priv ed25519.PrivateKey, clusterName, clusterID, n
 	return buildShareInvitePayload(clusterName, clusterID, namespaceID, serviceName, serviceID, pubAuthorized, priv, shareTTL)
 }
 
+// buildShareInvitePayloadFromLease clamps the invite lifetime to the remaining
+// publish-lease lifetime so a derived share invite cannot outlive its publish
+// authorization contract.
 func buildShareInvitePayloadFromLease(priv ed25519.PrivateKey, clusterName string, lease PublishLease, displayName string, shareTTL time.Duration) (ServiceSharePayload, error) {
 	if len(priv) == 0 {
 		return ServiceSharePayload{}, errors.New("private key is required")
@@ -451,6 +454,13 @@ func buildShareInvitePayloadFromLease(priv ed25519.PrivateKey, clusterName strin
 	}
 	if err := verifyLeaseCanMintShareInvite(priv, lease); err != nil {
 		return ServiceSharePayload{}, err
+	}
+	remaining := time.Until(lease.ExpiresAt.UTC())
+	if remaining <= 0 {
+		return ServiceSharePayload{}, errors.New("publish lease expired")
+	}
+	if shareTTL > remaining {
+		shareTTL = remaining
 	}
 	if displayName == "" {
 		displayName = lease.ServiceID

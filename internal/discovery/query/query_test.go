@@ -3,15 +3,21 @@ package query
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
 
+	"github.com/origama/tubo/internal/capability"
 	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	"github.com/origama/tubo/internal/p2p"
+	"github.com/origama/tubo/internal/serviceidentity"
 )
 
 func TestResponseForRequestListAndGet(t *testing.T) {
@@ -45,6 +51,88 @@ func TestResponseForRequestListAndGet(t *testing.T) {
 	miss := responseForRequest(h, "relay", cache, Request{Type: RequestTypeGet, Name: "missing"})
 	if miss.Error != "service not found" {
 		t.Fatalf("unexpected miss response: %#v", miss)
+	}
+}
+
+func TestResponseForRequestListAndGetRequireMembershipVisibility(t *testing.T) {
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	pid, err := peer.Decode("12D3KooWBDXSkfRCux8NFenVRDUKQLUDPC4LAbaB6x1bpm8YBHLd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cache.AddV2(pid, "cluster-123", "observability", "svc-123", "myapi", discovery.ResourceKindService, "http", "", "namespace_members", nil, []string{"/ip4/127.0.0.1/tcp/40123/p2p/12D3KooWBDXSkfRCux8NFenVRDUKQLUDPC4LAbaB6x1bpm8YBHLd"}, []string{"hello-v1"}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-auth-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := discovery.NamespaceDiscoveryContext{ClusterID: "cluster-123", NamespaceID: "observability", KeyID: "nsdk_query", Secret: bytes.Repeat([]byte{0x31}, 32)}
+	clientPeerID := peer.ID("12D3KooWQueryClient")
+	valid, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, SubjectPeerID: clientPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expired, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, SubjectPeerID: clientPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(-time.Minute)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := serverConfig{membershipAuthorityPublicKey: authorityPub, membershipContexts: []discovery.NamespaceDiscoveryContext{ctx}}
+	missing := responseForRequestWithConfig(h, "relay", cache, cfg, clientPeerID, Request{Type: RequestTypeList})
+	if missing.Error != "membership capability missing" {
+		t.Fatalf("unexpected missing-membership response: %#v", missing)
+	}
+	listed := responseForRequestWithConfig(h, "relay", cache, cfg, clientPeerID, Request{Type: RequestTypeList, MembershipCapability: &valid})
+	if len(listed.Services) != 1 || listed.Services[0].Name != "myapi" {
+		t.Fatalf("unexpected authorized list: %#v", listed)
+	}
+	got := responseForRequestWithConfig(h, "relay", cache, cfg, clientPeerID, Request{Type: RequestTypeGet, Name: "myapi", MembershipCapability: &valid})
+	if got.Service == nil || got.Service.Name != "myapi" {
+		t.Fatalf("unexpected authorized get: %#v", got)
+	}
+	expiredResp := responseForRequestWithConfig(h, "relay", cache, cfg, clientPeerID, Request{Type: RequestTypeList, MembershipCapability: &expired})
+	if !strings.Contains(strings.ToLower(expiredResp.Error), "expired") {
+		t.Fatalf("expected expired membership error, got %#v", expiredResp)
+	}
+	emptyCache := discovery.NewCache(30*time.Second, time.Second)
+	defer emptyCache.Stop()
+	empty := responseForRequestWithConfig(h, "relay", emptyCache, cfg, clientPeerID, Request{Type: RequestTypeList, MembershipCapability: &valid})
+	if len(empty.Services) != 0 || empty.Error != "" {
+		t.Fatalf("unexpected empty list response: %#v", empty)
+	}
+	missingObserved := responseForRequestWithConfig(h, "relay", emptyCache, cfg, "", Request{Type: RequestTypeList, MembershipCapability: &valid})
+	if !strings.Contains(strings.ToLower(missingObserved.Error), "observed peer") {
+		t.Fatalf("expected observed peer error, got %#v", missingObserved)
+	}
+	wrongSubject, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, SubjectPeerID: "wrong-peer", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSubjectResp := responseForRequestWithConfig(h, "relay", emptyCache, cfg, clientPeerID, Request{Type: RequestTypeList, MembershipCapability: &wrongSubject})
+	if !strings.Contains(strings.ToLower(wrongSubjectResp.Error), "subject peer id mismatch") {
+		t.Fatalf("expected subject peer mismatch, got %#v", wrongSubjectResp)
+	}
+	notFound := responseForRequestWithConfig(h, "relay", emptyCache, cfg, clientPeerID, Request{Type: RequestTypeGet, Name: "missing", MembershipCapability: &valid})
+	if notFound.Error != "service not found" {
+		t.Fatalf("unexpected empty-ns get response: %#v", notFound)
+	}
+}
+
+func TestResponseForRequestReportsCacheUnavailable(t *testing.T) {
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-cache-unavailable-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	resp := responseForRequest(h, "relay", nil, Request{Type: RequestTypeList})
+	if resp.Error != "discovery cache unavailable" {
+		t.Fatalf("unexpected cache unavailable response: %#v", resp)
 	}
 }
 
@@ -192,5 +280,186 @@ func TestListServicesAcrossRealStream(t *testing.T) {
 	}
 	if resp.Metadata.ServedByRole != "gateway" || len(resp.Services) != 1 || resp.Services[0].Name != "myapi" {
 		t.Fatalf("unexpected response: %#v", resp)
+	}
+}
+
+func buildQueryV3Fixture(t *testing.T) (discovery.AnnouncementV3, discovery.NamespaceDiscoveryContext, ed25519.PublicKey, crypto.PrivKey, peer.ID) {
+	t.Helper()
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signerPriv, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signerPeerID, err := peer.IDFromPrivateKey(signerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := discovery.NamespaceDiscoveryContext{ClusterID: "cluster-123", NamespaceID: "observability", KeyID: "nsdk_query_v3", Secret: bytes.Repeat([]byte{0x31}, 32)}
+	service, err := serviceidentity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, SubjectPeerID: signerPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionAnnounce}, ExpiresAt: time.Now().UTC().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipBytes, err := json.Marshal(membership)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, ServiceID: service.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(service.PublicKey), PublisherPeerID: signerPeerID.String(), RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: "query-v3-nonce"}, service.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseArtifacts, err := grantspkg.BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "svc-current", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseBytes, err := json.Marshal(leaseArtifacts.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := json.Marshal(leaseArtifacts.ServiceClaim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann, err := discovery.NewAnnouncementV3(ctx, signerPeerID, 30*time.Second, discovery.AnnouncementV3Payload{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, ServiceName: "svc-current", ServiceKind: "http", ServiceID: service.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(service.PublicKey), ConnectPolicy: "namespace_members", Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + signerPeerID.String()}, MembershipCapability: membershipBytes, PublishLease: leaseBytes, ServiceClaim: claimBytes, RegisteredAt: time.Now().UTC().Add(-time.Second)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ann.Sign(signerPriv); err != nil {
+		t.Fatal(err)
+	}
+	return ann, ctx, authorityPub, signerPriv, signerPeerID
+}
+
+func TestResponseForRequestAnnounceV3UsesSharedValidation(t *testing.T) {
+	ann, ctx, authorityPub, _, signerPeerID := buildQueryV3Fixture(t)
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-v3-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	cfg := serverConfig{}
+	WithAnnouncementV3Validation(authorityPub, ctx)(&cfg)
+
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	resp := responseForRequestWithConfig(h, "gateway", cache, cfg, signerPeerID, Request{Type: RequestTypeAnnounceV3, Announcement: &ann})
+	if resp.Error != "" {
+		t.Fatalf("unexpected announce_v3 error: %#v", resp)
+	}
+	if got := cache.Count(); got != 1 {
+		t.Fatalf("cache count = %d, want 1", got)
+	}
+
+	mutated := ann
+	mutated.Signature = append([]byte(nil), ann.Signature...)
+	mutated.Signature[0] ^= 0xff
+	resp = responseForRequestWithConfig(h, "gateway", cache, cfg, signerPeerID, Request{Type: RequestTypeAnnounceV3, Announcement: &mutated})
+	if resp.Error == "" || !strings.Contains(strings.ToLower(resp.Error), "signature") {
+		t.Fatalf("expected signature rejection, got %#v", resp)
+	}
+}
+
+func buildQueryV3ExpiryFixture(t *testing.T, membershipTTL, claimTTL, leaseTTL, announcementTTL time.Duration) (discovery.AnnouncementV3, discovery.NamespaceDiscoveryContext, ed25519.PublicKey, peer.ID) {
+	t.Helper()
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signerPriv, _, err := crypto.GenerateEd25519Key(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signerPeerID, err := peer.IDFromPrivateKey(signerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := discovery.NamespaceDiscoveryContext{ClusterID: "cluster-123", NamespaceID: "observability", KeyID: "nsdk_query_v3_expiry", Secret: bytes.Repeat([]byte{0x41}, 32)}
+	service, err := serviceidentity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, SubjectPeerID: signerPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionAnnounce}, ExpiresAt: time.Now().UTC().Add(membershipTTL)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipBytes, err := json.Marshal(membership)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, ServiceID: service.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(service.PublicKey), PublisherPeerID: signerPeerID.String(), RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: "query-v3-expiry-nonce"}, service.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseArtifacts, err := grantspkg.BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "svc-expiry", claimTTL, leaseTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseBytes, err := json.Marshal(leaseArtifacts.Lease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimBytes, err := json.Marshal(leaseArtifacts.ServiceClaim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ann, err := discovery.NewAnnouncementV3(ctx, signerPeerID, announcementTTL, discovery.AnnouncementV3Payload{ClusterID: ctx.ClusterID, NamespaceID: ctx.NamespaceID, ServiceName: "svc-expiry", ServiceKind: "http", ServiceID: service.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(service.PublicKey), ConnectPolicy: "namespace_members", Addresses: []string{"/ip4/127.0.0.1/tcp/40123/p2p/" + signerPeerID.String()}, MembershipCapability: membershipBytes, PublishLease: leaseBytes, ServiceClaim: claimBytes, RegisteredAt: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ann.Sign(signerPriv); err != nil {
+		t.Fatal(err)
+	}
+	return ann, ctx, authorityPub, signerPeerID
+}
+
+func TestResponseForRequestAnnounceV3BoundsTTLByMembershipExpiry(t *testing.T) {
+	ann, ctx, authorityPub, signerPeerID := buildQueryV3ExpiryFixture(t, 200*time.Millisecond, time.Second, time.Second, 5*time.Second)
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-v3-expiry-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	cfg := serverConfig{}
+	WithAnnouncementV3Validation(authorityPub, ctx)(&cfg)
+	cache := discovery.NewCache(50*time.Millisecond, 10*time.Millisecond)
+	defer cache.Stop()
+	resp := responseForRequestWithConfig(h, "gateway", cache, cfg, signerPeerID, Request{Type: RequestTypeAnnounceV3, Announcement: &ann})
+	if resp.Error != "" {
+		t.Fatalf("unexpected announce_v3 error: %#v", resp)
+	}
+	entry, ok := cache.Resolve("svc-expiry")
+	if !ok {
+		t.Fatal("expected cached announcement")
+	}
+	if entry.TTL > 400*time.Millisecond {
+		t.Fatalf("ttl = %s, want membership-bound ttl", entry.TTL)
+	}
+	time.Sleep(350 * time.Millisecond)
+	if _, ok := cache.Resolve("svc-expiry"); ok {
+		t.Fatal("expected cache entry to expire when membership expires first")
+	}
+}
+
+func TestResponseForRequestAnnounceV3RejectsExpiredPublishLease(t *testing.T) {
+	ann, ctx, authorityPub, signerPeerID := buildQueryV3ExpiryFixture(t, time.Second, time.Second, 150*time.Millisecond, 5*time.Second)
+	time.Sleep(250 * time.Millisecond)
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-v3-expired-lease-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	cfg := serverConfig{}
+	WithAnnouncementV3Validation(authorityPub, ctx)(&cfg)
+	cache := discovery.NewCache(50*time.Millisecond, 10*time.Millisecond)
+	defer cache.Stop()
+	resp := responseForRequestWithConfig(h, "gateway", cache, cfg, signerPeerID, Request{Type: RequestTypeAnnounceV3, Announcement: &ann})
+	if resp.Error == "" || !strings.Contains(strings.ToLower(resp.Error), "publish lease expired") {
+		t.Fatalf("expected publish lease expiry rejection, got %#v", resp)
 	}
 }

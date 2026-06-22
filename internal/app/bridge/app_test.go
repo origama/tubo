@@ -1667,6 +1667,101 @@ func TestBridgeConnectLeaseRolloverDeniedMarksDegraded(t *testing.T) {
 	}
 }
 
+func TestBridgeConnectLeaseRolloverRecoversAfterMembershipImport(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bridgeHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-member-rollover-recovery-import-client", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bridgeHost.Close()
+	grantHost := newConnectLeaseGrantHost(t, authPriv, 10*time.Second, 20*time.Second, func(msg grantspkg.Message, requester string) error {
+		if msg.MembershipCapability == nil {
+			return errors.New("missing membership capability")
+		}
+		if err := capability.VerifyMembershipCapability(*msg.MembershipCapability, authPriv.Public().(ed25519.PublicKey), "cluster-123", "default", requester); err != nil {
+			return err
+		}
+		if !strings.Contains(strings.Join(msg.MembershipCapability.Permissions, ","), capability.PermissionConnect) {
+			return errors.New("missing connect permission")
+		}
+		return nil
+	})
+	defer grantHost.Close()
+	clientKey := bridgeHostAuthorizedKey(t, bridgeHost)
+	initial, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-member-rollover-import-initial", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 150*time.Millisecond, 300*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowReload := int32(0)
+	allowRequest := int32(0)
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: bridgeHost.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requestCalls int32
+	app := &App{host: bridgeHost, connectLease: &initial.AccessLease, cfg: Config{ConnectRefreshLease: &initial.RefreshLease, ConnectGrantPeers: []string{p2p.PeerAddrs(grantHost)[0]}, ConnectClusterID: "cluster-123", ConnectNamespaceID: "default", ConnectServiceID: "svc-123", ConnectAuthorizationReloader: func(ctx context.Context, current Config) (Config, error) {
+		if atomic.LoadInt32(&allowReload) == 0 {
+			return current, errors.New("membership capability missing")
+		}
+		current.ConnectMembershipCapability = &memberCap
+		return current, nil
+	}, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		return grantspkg.ConnectAccessLease{}, errors.New("grant service unavailable")
+	}}, requestConnectLeaseFn: func(context.Context, hostpkg.Host, []string, string, string, string, *capability.MembershipCapability, string) (grantspkg.ConnectLeaseArtifacts, error) {
+		atomic.AddInt32(&requestCalls, 1)
+		if atomic.LoadInt32(&allowRequest) == 0 {
+			return grantspkg.ConnectLeaseArtifacts{}, errors.New("missing membership capability")
+		}
+		if !strings.Contains(strings.Join(memberCap.Permissions, ","), capability.PermissionConnect) {
+			return grantspkg.ConnectLeaseArtifacts{}, errors.New("missing connect permission")
+		}
+		return grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-member-rollover-import-recovery", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 2*time.Second, time.Minute)
+	}, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		app.startConnectLeaseRenewal(ctx)
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := app.CurrentRuntimeStatus()
+		if snap.Status == "degraded" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&requestCalls); got != 0 {
+		t.Fatalf("expected no rollover request before membership import, got %d", got)
+	}
+	atomic.StoreInt32(&allowReload, 1)
+	atomic.StoreInt32(&allowRequest, 1)
+	deadline = time.Now().Add(7 * time.Second)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&requestCalls) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := atomic.LoadInt32(&requestCalls); got == 0 {
+		t.Fatal("expected rollover request after membership import")
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected recovered running status, got %#v", snap)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected renewal loop to stop after cancel")
+	}
+}
+
 func TestBridgeConnectLeaseRolloverTemporaryFailureBacksOff(t *testing.T) {
 	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
 	if err != nil {

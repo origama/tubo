@@ -4,17 +4,21 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"time"
 
-	"crypto/sha256"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	capability "github.com/origama/tubo/internal/capability"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/serviceidentity"
 	"golang.org/x/crypto/hkdf"
 )
 
@@ -148,6 +152,180 @@ func (a *AnnouncementV3) Payload(ctx NamespaceDiscoveryContext) (AnnouncementV3P
 		return AnnouncementV3Payload{}, fmt.Errorf("namespace id mismatch: got %q want %q", payload.NamespaceID, ctx.NamespaceID)
 	}
 	return payload, nil
+}
+
+// ValidatedAnnouncementV3 is a cache-ready namespace discovery record.
+type ValidatedAnnouncementV3 struct {
+	PeerID           peer.ID
+	Kind             string
+	ClusterID        string
+	NamespaceID      string
+	ServiceID        string
+	ServiceName      string
+	ServiceKind      string
+	ServicePublicKey string
+	ConnectPolicy    string
+	GrantService     *grantspkg.GrantServiceEndpoint
+	Addresses        []string
+	Capabilities     []string
+	TTL              time.Duration
+	ExpiresAt        time.Time
+}
+
+// AnnouncementV3ExpiryBounds makes the cache lifetime rule explicit and testable.
+type AnnouncementV3ExpiryBounds struct {
+	Announcement time.Time
+	Membership   time.Time
+	PublishLease time.Time
+	ServiceClaim time.Time
+}
+
+// EffectiveAnnouncementV3Expiry returns the earliest non-zero expiry.
+func EffectiveAnnouncementV3Expiry(bounds AnnouncementV3ExpiryBounds) time.Time {
+	expiresAt := bounds.Announcement.UTC()
+	for _, candidate := range []time.Time{bounds.Membership, bounds.PublishLease, bounds.ServiceClaim} {
+		if candidate.IsZero() {
+			continue
+		}
+		candidate = candidate.UTC()
+		if expiresAt.IsZero() || candidate.Before(expiresAt) {
+			expiresAt = candidate
+		}
+	}
+	return expiresAt.UTC()
+}
+
+// ValidateAnnouncementV3 verifies a signed announcement against one discovery
+// context, returning a cache-ready record and effective TTL.
+func ValidateAnnouncementV3(ctx NamespaceDiscoveryContext, ann AnnouncementV3, signerPub crypto.PubKey, authorityPub ed25519.PublicKey, observedPeerID peer.ID) (ValidatedAnnouncementV3, error) {
+	return ValidateAnnouncementV3AcrossContexts(ann, signerPub, authorityPub, observedPeerID, ctx)
+}
+
+// ValidateAnnouncementV3AcrossContexts validates a signed announcement against
+// one or more discovery contexts, returning the first cache-ready match.
+func ValidateAnnouncementV3AcrossContexts(ann AnnouncementV3, signerPub crypto.PubKey, authorityPub ed25519.PublicKey, observedPeerID peer.ID, contexts ...NamespaceDiscoveryContext) (ValidatedAnnouncementV3, error) {
+	if strings.TrimSpace(ann.Version) != AnnouncementVersionV3 {
+		return ValidatedAnnouncementV3{}, fmt.Errorf("unsupported announcement version %q", ann.Version)
+	}
+	if observedPeerID != "" && observedPeerID != ann.PeerID {
+		return ValidatedAnnouncementV3{}, fmt.Errorf("peer id mismatch: got %q want %q", observedPeerID, ann.PeerID)
+	}
+	if len(authorityPub) == 0 {
+		return ValidatedAnnouncementV3{}, errors.New("authority public key is required")
+	}
+	if signerPub == nil {
+		return ValidatedAnnouncementV3{}, errors.New("announcement signer public key is required")
+	}
+	ok, err := ann.Verify(signerPub)
+	if err != nil {
+		return ValidatedAnnouncementV3{}, fmt.Errorf("verify announcement signature: %w", err)
+	}
+	if !ok {
+		return ValidatedAnnouncementV3{}, errors.New("announcement signature invalid")
+	}
+	if len(contexts) == 0 {
+		return ValidatedAnnouncementV3{}, errors.New("no discovery context available")
+	}
+	var lastErr error
+	for _, ctx := range contexts {
+		validated, err := validateAnnouncementV3ForContext(ctx, ann, authorityPub)
+		if err == nil {
+			return validated, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return ValidatedAnnouncementV3{}, lastErr
+	}
+	return ValidatedAnnouncementV3{}, errors.New("announcement rejected")
+}
+
+func validateAnnouncementV3ForContext(ctx NamespaceDiscoveryContext, ann AnnouncementV3, authorityPub ed25519.PublicKey) (ValidatedAnnouncementV3, error) {
+	payload, err := ann.Payload(ctx)
+	if err != nil {
+		return ValidatedAnnouncementV3{}, err
+	}
+	if payload.ServiceName == "" || payload.RegisteredAt.IsZero() || ann.TTL <= 0 {
+		return ValidatedAnnouncementV3{}, errors.New("announcement missing required payload fields")
+	}
+	if len(payload.MembershipCapability) == 0 {
+		return ValidatedAnnouncementV3{}, errors.New("membership capability missing")
+	}
+	var membership capability.MembershipCapability
+	if err := json.Unmarshal(payload.MembershipCapability, &membership); err != nil {
+		return ValidatedAnnouncementV3{}, fmt.Errorf("decode membership capability: %w", err)
+	}
+	if err := verifyAnnouncementMembership(membership, authorityPub, ctx.ClusterID, ctx.NamespaceID, ann.PeerID.String()); err != nil {
+		return ValidatedAnnouncementV3{}, err
+	}
+	if payload.ServiceID == "" || payload.ServicePublicKey == "" {
+		return ValidatedAnnouncementV3{}, errors.New("service identity is incomplete")
+	}
+	servicePub, err := serviceidentity.DecodePublicKey(payload.ServicePublicKey)
+	if err != nil {
+		return ValidatedAnnouncementV3{}, fmt.Errorf("decode service public key: %w", err)
+	}
+	if err := serviceidentity.MatchServiceID(servicePub, payload.ServiceID); err != nil {
+		return ValidatedAnnouncementV3{}, err
+	}
+	membershipExpiresAt := membership.ExpiresAt.UTC()
+	expiresAt := EffectiveAnnouncementV3Expiry(AnnouncementV3ExpiryBounds{Announcement: payload.RegisteredAt.UTC().Add(ann.TTL), Membership: membershipExpiresAt})
+	if len(payload.PublishLease) > 0 {
+		lease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(payload.PublishLease, authorityPub, ctx.ClusterID, ctx.NamespaceID, payload.ServiceID, ann.PeerID.String())
+		if err != nil {
+			return ValidatedAnnouncementV3{}, err
+		}
+		if lease.ServicePublicKey != payload.ServicePublicKey {
+			return ValidatedAnnouncementV3{}, fmt.Errorf("publish lease service public key mismatch")
+		}
+		expiresAt = EffectiveAnnouncementV3Expiry(AnnouncementV3ExpiryBounds{Announcement: expiresAt, PublishLease: lease.ExpiresAt.UTC()})
+	} else {
+		if len(payload.ServiceClaim) == 0 {
+			return ValidatedAnnouncementV3{}, errors.New("service claim missing")
+		}
+		var claim capability.ServiceClaim
+		if err := json.Unmarshal(payload.ServiceClaim, &claim); err != nil {
+			return ValidatedAnnouncementV3{}, fmt.Errorf("decode service claim: %w", err)
+		}
+		if err := capability.VerifyServiceClaim(claim, authorityPub, ctx.ClusterID, ctx.NamespaceID, payload.ServiceID, ann.PeerID.String()); err != nil {
+			return ValidatedAnnouncementV3{}, err
+		}
+		expiresAt = EffectiveAnnouncementV3Expiry(AnnouncementV3ExpiryBounds{Announcement: expiresAt, ServiceClaim: claim.ExpiresAt.UTC()})
+	}
+	if len(payload.ServiceClaim) > 0 && len(payload.PublishLease) > 0 {
+		var claim capability.ServiceClaim
+		if err := json.Unmarshal(payload.ServiceClaim, &claim); err != nil {
+			return ValidatedAnnouncementV3{}, fmt.Errorf("decode service claim: %w", err)
+		}
+		if err := capability.VerifyServiceClaim(claim, authorityPub, ctx.ClusterID, ctx.NamespaceID, payload.ServiceID, ann.PeerID.String()); err != nil {
+			return ValidatedAnnouncementV3{}, err
+		}
+		expiresAt = EffectiveAnnouncementV3Expiry(AnnouncementV3ExpiryBounds{Announcement: expiresAt, ServiceClaim: claim.ExpiresAt.UTC()})
+	}
+	ttl := time.Until(expiresAt)
+	if ttl <= 0 {
+		return ValidatedAnnouncementV3{}, errors.New("announcement expired")
+	}
+	kind := strings.TrimSpace(payload.Kind)
+	if kind == "" {
+		kind = ResourceKindService
+	}
+	return ValidatedAnnouncementV3{
+		PeerID:           ann.PeerID,
+		Kind:             kind,
+		ClusterID:        ctx.ClusterID,
+		NamespaceID:      ctx.NamespaceID,
+		ServiceID:        payload.ServiceID,
+		ServiceName:      payload.ServiceName,
+		ServiceKind:      payload.ServiceKind,
+		ServicePublicKey: payload.ServicePublicKey,
+		ConnectPolicy:    payload.ConnectPolicy,
+		GrantService:     grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService),
+		Addresses:        append([]string(nil), payload.Addresses...),
+		Capabilities:     append([]string(nil), payload.Capabilities...),
+		TTL:              ttl,
+		ExpiresAt:        expiresAt,
+	}, nil
 }
 
 func (a *AnnouncementV3) envelopeAAD() []byte {
