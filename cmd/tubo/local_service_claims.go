@@ -240,6 +240,11 @@ func refreshAttachAuthorizationMaterial(configPath string, cfg cfgpkg.Config) (c
 	if err != nil {
 		return cfg, cfgpkg.NamespaceService{}, err
 	}
+	loaded.CurrentCluster = cfg.CurrentCluster
+	loaded.CurrentNamespace = cfg.CurrentNamespace
+	loaded.Service.Name = cfg.Service.Name
+	loaded.Service.Target = cfg.Service.Target
+	loaded.Service.Kind = cfg.Service.Kind
 	cfg = loaded
 	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
 	if err != nil {
