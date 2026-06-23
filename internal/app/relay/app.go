@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	libp2p "github.com/libp2p/go-libp2p"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
@@ -32,6 +33,7 @@ type App struct {
 	health         *http.Server
 	cache          *discovery.Cache
 	stopSubscriber chan struct{}
+	pubsub         *pubsub.PubSub // GossipSub router for Discovery V3 message routing
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -99,9 +101,10 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		log.Printf("libp2p private network enabled")
 	}
 	var cache *discovery.Cache
+	var ps *pubsub.PubSub
 	var stopSubscriber chan struct{}
 	if cfg.EnableDiscoveryPubSub {
-		cache, stopSubscriber, err = startDiscovery(ctx, h)
+		cache, ps, stopSubscriber, err = startDiscovery(ctx, h)
 		if err != nil {
 			_ = h.Close()
 			return nil, err
@@ -121,7 +124,7 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		handleOpts = append(handleOpts, discoveryquery.WithAnnouncementV3Validation(authorityPub, contexts...))
 	}
 	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "relay", cache, handleOpts...))
-	return &App{cfg: cfg, host: h, cache: cache, stopSubscriber: stopSubscriber}, nil
+	return &App{cfg: cfg, host: h, cache: cache, stopSubscriber: stopSubscriber, pubsub: ps}, nil
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
@@ -163,12 +166,17 @@ func (a *App) mux() *http.ServeMux {
 	})
 	return m
 }
-func startDiscovery(ctx context.Context, h host.Host) (*discovery.Cache, chan struct{}, error) {
+func startDiscovery(ctx context.Context, h host.Host) (*discovery.Cache, *pubsub.PubSub, chan struct{}, error) {
+	// Enable GossipSub on relay to route Discovery V3 messages between NAT-ed peers.
+	// The relay does NOT subscribe to specific namespace topics (no discovery secrets),
+	// but participates in the GossipSub mesh for peer discovery and message routing.
+	ps, err := pubsub.NewGossipSub(ctx, h, pubsub.WithFloodPublish(true))
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("create gossipsub for relay routing: %w", err)
+	}
 	cache := discovery.NewCache(30*time.Second, time.Second)
-	log.Printf("discovery pubsub router disabled; legacy swarm discovery removed")
-	_ = ctx
-	_ = h
-	return cache, nil, nil
+	log.Printf("relay discovery: gossipsub mesh router enabled for Discovery V3 routing")
+	return cache, ps, nil, nil
 }
 func PrintStartupCommandHints(h host.Host, addr string) {
 	ra := RelayAdvertiseAddr(h, addr)
