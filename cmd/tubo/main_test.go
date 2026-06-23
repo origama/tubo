@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	serviceapp "github.com/origama/tubo/internal/app/service"
 	capability "github.com/origama/tubo/internal/capability"
 	catalogpkg "github.com/origama/tubo/internal/catalog"
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
@@ -5542,6 +5543,66 @@ func TestResolveAttachAuthorizationTreatsExpiredServiceClaimAsMissingWithGrantPe
 	}
 	if authz.ServicePublishLeaseFile == "" {
 		t.Fatalf("expected renewed publish authorization: %#v", authz)
+	}
+}
+
+func TestAttachPublishAuthorizationRefreshKeepsCurrentServiceDefinition(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "piwebui"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	cfg, svcA, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = svcA
+	cfg.Service.Name = "ifconfig"
+	cfg.Service.Target = "tcp://ifconfig.net:80"
+	cfg.Service.Kind = cfgpkg.ServiceKindTCP
+	cfg, svcB, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diskCfg := cfg
+	diskCfg.Service.Name = "piwebui"
+	diskCfg.Service.Target = "http://127.0.0.1:8080"
+	diskCfg.Service.Kind = cfgpkg.ServiceKindHTTP
+	if err := cfgpkg.WriteFile(configPath, diskCfg, true); err != nil {
+		t.Fatal(err)
+	}
+	ifconfigPeerID, err := p2p.PeerIDFromSeed(svcB.ServiceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator := newAttachPublishAuthorizationCoordinator(configPath, cfg, svcB, ifconfigPeerID.String())
+	var gotCfg cfgpkg.Config
+	var gotSvc cfgpkg.NamespaceService
+	coordinator.renew = func(_ string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
+		gotCfg = cfg
+		gotSvc = svc
+		if servicePeerID != ifconfigPeerID.String() {
+			t.Fatalf("unexpected service peer id: got %q want %q", servicePeerID, ifconfigPeerID.String())
+		}
+		return cfgpkg.Config{}, cfgpkg.NamespaceService{}, "", errors.New("boom")
+	}
+	result := coordinator.handle(context.Background(), serviceapp.PublishAuthorizationRequest{Reason: serviceapp.AnnouncementBlockedPublishLeaseExpired})
+	if result.Outcome != serviceapp.PublishAuthorizationOutcomeRetryable {
+		t.Fatalf("unexpected outcome: %#v", result)
+	}
+	if gotCfg.Service.Name != "ifconfig" || gotCfg.Service.Target != "tcp://ifconfig.net:80" || gotCfg.Service.Kind != cfgpkg.ServiceKindTCP {
+		t.Fatalf("publish auth refresh drifted to wrong service: %#v", gotCfg.Service)
+	}
+	if gotSvc.ServiceID != svcB.ServiceID || gotSvc.ServiceSeed != svcB.ServiceSeed {
+		t.Fatalf("publish auth refresh used wrong service state: %#v want %#v", gotSvc, svcB)
+	}
+	if gotCfg.Clusters[gotCfg.CurrentCluster].Namespaces[gotCfg.CurrentNamespace].Services[gotCfg.Service.Name].ServiceID != svcB.ServiceID {
+		t.Fatalf("refresh service entry mismatch: %#v", gotCfg.Clusters[gotCfg.CurrentCluster].Namespaces[gotCfg.CurrentNamespace].Services)
 	}
 }
 
