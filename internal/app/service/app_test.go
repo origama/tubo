@@ -1,10 +1,12 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -403,7 +405,7 @@ func TestAnnouncementBlockDescription(t *testing.T) {
 }
 
 func TestAnnouncementBlockLogDetails(t *testing.T) {
-	if got := announcementBlockLogDetails(AnnouncementBlockedPublishLeaseMissing); got != `reason=publish_lease_missing message="publish lease missing"` {
+	if got := announcementBlockLogDetails(AnnouncementBlockedPublishLeaseMissing, ""); got != `reason=publish_lease_missing message="publish lease missing"` {
 		t.Fatalf("announcementBlockLogDetails() = %q", got)
 	}
 }
@@ -861,7 +863,7 @@ func TestPublishCurrentAnnouncementAuthorizationStatusAndRecovery(t *testing.T) 
 			t.Fatalf("expected status updates, got none")
 		}
 		got := statuses[len(statuses)-1]
-		if got.Status != "running" || got.AdvertisementStatus != "not advertised" || got.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(got.AdvertisementReason), "publish lease missing") {
+		if got.Status != "running" || got.AdvertisementStatus != "not advertised" || got.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(got.AdvertisementReason), "publish lease file missing") {
 			t.Fatalf("expected blocked publish status, got %#v", got)
 		}
 	})
@@ -963,6 +965,68 @@ func TestPublishCurrentAnnouncementMembershipRecoveryAfterImport(t *testing.T) {
 	got := statuses[len(statuses)-1]
 	if got.Status != "running" || got.AdvertisementStatus != "advertised" || got.AuthorizationStatus != "authorized" {
 		t.Fatalf("expected running status after recovery, got %#v", got)
+	}
+}
+
+func TestPublishCurrentAnnouncementReportsConcreteMembershipErrorAfterRefresh(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	seed := "service-membership-error-seed"
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	wrongMembership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: "wrong-peer", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongMembershipBytes, err := json.MarshalIndent(wrongMembership, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	topic, dctx := testDiscoveryContext(t, "cluster-123", "default")
+	var statuses []RuntimeStatus
+	var logs bytes.Buffer
+	oldWriter := log.Writer()
+	log.SetOutput(&logs)
+	defer log.SetOutput(oldWriter)
+	publisher := &fakeAnnouncementPublisher{}
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath, PublishAuthorizationHandler: func(ctx context.Context, req PublishAuthorizationRequest) PublishAuthorizationResult {
+		if req.Reason != AnnouncementBlockedMembershipCapabilityMissing {
+			t.Fatalf("expected missing membership block, got %q", req.Reason)
+		}
+		if err := os.WriteFile(capPath, append(wrongMembershipBytes, '\n'), 0600); err != nil {
+			t.Fatalf("write membership: %v", err)
+		}
+		return PublishAuthorizationResult{Outcome: PublishAuthorizationOutcomeReady, Message: "publish authorization refreshed"}
+	}, StatusReporter: func(status RuntimeStatus) { statuses = append(statuses, status) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.publisher = publisher
+	if reason, ok := app.publishCurrentAnnouncementV3(ctx); ok || reason != AnnouncementBlockedMembershipCapabilityInvalid {
+		t.Fatalf("expected final membership invalid block, got (%q, %v)", reason, ok)
+	}
+	if publisher.CallCount() != 0 {
+		t.Fatalf("expected no publish call, got %d", publisher.CallCount())
+	}
+	if len(statuses) == 0 {
+		t.Fatal("expected status updates")
+	}
+	got := statuses[len(statuses)-1]
+	if got.AuthorizationStatus != "membership invalid" || !strings.Contains(got.AuthorizationReason, "subject peer id mismatch") || !strings.Contains(got.AdvertisementReason, "subject peer id mismatch") {
+		t.Fatalf("expected concrete membership status, got %#v", got)
+	}
+	if !strings.Contains(logs.String(), "subject peer id mismatch") {
+		t.Fatalf("expected log to contain concrete membership error, got %s", logs.String())
 	}
 }
 

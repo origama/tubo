@@ -75,6 +75,7 @@ const (
 
 type PublishAuthorizationRequest struct {
 	Reason AnnouncementBlockReason
+	Detail string
 }
 
 type PublishAuthorizationResult struct {
@@ -86,14 +87,14 @@ type PublishAuthorizationResult struct {
 type PublishAuthorizationHandler func(context.Context, PublishAuthorizationRequest) PublishAuthorizationResult
 
 type RuntimeStatus struct {
-	Status               string
-	Reason               string
-	AdvertisementStatus  string
-	AdvertisementReason  string
-	AuthorizationStatus  string
-	AuthorizationReason  string
-	LastRefreshError     string
-	NextRefreshRetryAt   *time.Time
+	Status              string
+	Reason              string
+	AdvertisementStatus string
+	AdvertisementReason string
+	AuthorizationStatus string
+	AuthorizationReason string
+	LastRefreshError    string
+	NextRefreshRetryAt  *time.Time
 }
 
 type announcementPublisher interface {
@@ -352,7 +353,8 @@ func (a *App) Start(ctx context.Context) error {
 	go a.maintainRelayReservations(ctx, a.announcementRecoveryEvents())
 	if a.cfg.DiscoveryEnabled && a.discoveryMode == discovery.ModeNamespaceV3 {
 		if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok && reason != AnnouncementReady {
-			log.Printf("initial announcement deferred: %s", announcementBlockLogDetails(reason))
+			_, _, _, detail, _ := a.currentAnnouncementV3Detailed()
+			log.Printf("initial announcement deferred: %s", announcementBlockLogDetails(reason, detail))
 		}
 		go a.runAnnouncementLoopV3(ctx, a.announcementRecoveryEvents())
 	} else if a.cfg.DiscoveryEnabled {
@@ -498,8 +500,16 @@ func announcementBlockDescription(reason AnnouncementBlockReason) string {
 	}
 }
 
-func announcementBlockLogDetails(reason AnnouncementBlockReason) string {
-	return fmt.Sprintf("reason=%s message=%q", reason, announcementBlockDescription(reason))
+func announcementBlockMessage(reason AnnouncementBlockReason, detail string) string {
+	detail = strings.TrimSpace(detail)
+	if detail != "" {
+		return detail
+	}
+	return announcementBlockDescription(reason)
+}
+
+func announcementBlockLogDetails(reason AnnouncementBlockReason, detail string) string {
+	return fmt.Sprintf("reason=%s message=%q", reason, announcementBlockMessage(reason, detail))
 }
 
 func classifyPublishLeaseBlockReason(err error, leaseBytes []byte) AnnouncementBlockReason {
@@ -533,13 +543,30 @@ func classifyMembershipCapabilityBlockReason(err error, capBytes []byte) Announc
 	return AnnouncementBlockedMembershipCapabilityInvalid
 }
 
-func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.AnnouncementV3Payload, AnnouncementBlockReason, bool) {
+func announcementBlockMissingDetail(reason AnnouncementBlockReason, path string) string {
+	switch reason {
+	case AnnouncementBlockedMembershipCapabilityMissing:
+		if strings.TrimSpace(path) != "" {
+			return fmt.Sprintf("membership capability file missing: %s", path)
+		}
+		return "membership capability file not configured"
+	case AnnouncementBlockedPublishLeaseMissing:
+		if strings.TrimSpace(path) != "" {
+			return fmt.Sprintf("publish lease file missing: %s", path)
+		}
+		return "publish lease file not configured"
+	default:
+		return ""
+	}
+}
+
+func (a *App) currentAnnouncementV3Detailed() (discovery.AnnouncementV3, discovery.AnnouncementV3Payload, AnnouncementBlockReason, string, bool) {
 	if a.discoveryMode != discovery.ModeNamespaceV3 || a.cfg.DiscoveryContext == nil {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementReady, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementReady, "", false
 	}
 	addrs := expandUnspecifiedListenAddrs(p2p.PeerAddrs(a.host), a.cfg.Listen, a.host.ID())
 	if a.requireRelayReadyAnn && !hasCircuitAddr(addrs) && !a.hasRelayReservation() {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementBlockedRelayNotReady, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementBlockedRelayNotReady, "", false
 	}
 	if a.requireRelayReadyAnn {
 		addrs = mergeRelayCircuitAddrs(addrs, a.relayInfos, a.host.ID())
@@ -551,15 +578,15 @@ func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.Annou
 	payload := discovery.AnnouncementV3Payload{ClusterID: a.discoveryClusterID(), NamespaceID: a.discoveryNamespaceID(), Kind: discovery.ResourceKindService, ServiceName: a.cfg.ServiceName, ServiceKind: a.cfg.ServiceKind, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, Capabilities: protocol.SupportedCapabilities(), RegisteredAt: time.Now().UTC()}
 	capBytes, err := a.loadMembershipCapabilityBytes()
 	if blockReason := classifyMembershipCapabilityBlockReason(err, capBytes); blockReason != AnnouncementReady {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, announcementBlockMissingDetail(blockReason, a.serviceCapabilityFile), false
 	}
 	if err := a.verifyMembershipCapabilityBytes(capBytes); err != nil {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, classifyMembershipCapabilityBlockReason(err, capBytes), false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, classifyMembershipCapabilityBlockReason(err, capBytes), err.Error(), false
 	}
 	payload.MembershipCapability = capBytes
 	leaseBytes, lease, err := a.loadPublishLeaseBytes()
 	if blockReason := classifyPublishLeaseBlockReason(err, leaseBytes); blockReason != AnnouncementReady {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, announcementBlockMissingDetail(blockReason, a.servicePublishLeaseFile), false
 	}
 	payload.PublishLease = leaseBytes
 	payload.ServicePublicKey = lease.ServicePublicKey
@@ -568,20 +595,25 @@ func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.Annou
 	}
 	ann, err := discovery.NewAnnouncementV3(*a.cfg.DiscoveryContext, a.host.ID(), a.announcementTTL, payload)
 	if err != nil {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementBlockedPublishLeaseInvalid, false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementBlockedPublishLeaseInvalid, err.Error(), false
 	}
-	return ann, payload, AnnouncementReady, true
+	return ann, payload, AnnouncementReady, "", true
+}
+
+func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.AnnouncementV3Payload, AnnouncementBlockReason, bool) {
+	ann, payload, reason, _, ok := a.currentAnnouncementV3Detailed()
+	return ann, payload, reason, ok
 }
 
 func isPublishAuthorizationBlock(reason AnnouncementBlockReason) bool {
 	return reason == AnnouncementBlockedPublishLeaseMissing || reason == AnnouncementBlockedPublishLeaseExpired || reason == AnnouncementBlockedPublishLeaseInvalid || reason == AnnouncementBlockedMembershipCapabilityMissing || reason == AnnouncementBlockedMembershipCapabilityInvalid
 }
 
-func (a *App) reconcilePublishAuthorization(ctx context.Context, reason AnnouncementBlockReason) PublishAuthorizationResult {
+func (a *App) reconcilePublishAuthorization(ctx context.Context, reason AnnouncementBlockReason, detail string) PublishAuthorizationResult {
 	if a == nil || a.cfg.PublishAuthorizationHandler == nil {
 		return PublishAuthorizationResult{Outcome: PublishAuthorizationOutcomeSkipped}
 	}
-	result := a.cfg.PublishAuthorizationHandler(ctx, PublishAuthorizationRequest{Reason: reason})
+	result := a.cfg.PublishAuthorizationHandler(ctx, PublishAuthorizationRequest{Reason: reason, Detail: detail})
 	if result.Outcome != PublishAuthorizationOutcomeReady {
 		return result
 	}
@@ -592,37 +624,50 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 	if a.publisher == nil {
 		return AnnouncementBlockedPublisherUnavailable, false
 	}
-	ann, payload, reason, ok := a.currentAnnouncementV3()
+	ann, payload, reason, detail, ok := a.currentAnnouncementV3Detailed()
 	recoveredAuth := false
 	if !ok {
 		blockedReason := reason
+		blockedDetail := detail
 		a.recordAnnouncementReachabilityFailure(blockedReason)
 		if isPublishAuthorizationBlock(blockedReason) {
-			result := a.reconcilePublishAuthorization(ctx, blockedReason)
+			result := a.reconcilePublishAuthorization(ctx, blockedReason, blockedDetail)
 			switch result.Outcome {
 			case PublishAuthorizationOutcomeReady:
-				if ann, payload, reason, ok = a.currentAnnouncementV3(); !ok {
+				if ann, payload, reason, detail, ok = a.currentAnnouncementV3Detailed(); !ok {
 					a.recordAnnouncementReachabilityFailure(reason)
-					a.reportStatus(RuntimeStatus{Status: "running", Reason: announcementBlockDescription(reason), AdvertisementStatus: "not advertised", AdvertisementReason: announcementBlockDescription(reason), AuthorizationStatus: "waiting for reauthorization", AuthorizationReason: announcementBlockDescription(reason), LastRefreshError: result.Message})
-					log.Printf("publish authorization refreshed but announcement still blocked reason=%s", announcementBlockLogDetails(reason))
+					statusReason := announcementBlockMessage(reason, detail)
+					authStatus := "waiting for reauthorization"
+					switch reason {
+					case AnnouncementBlockedMembershipCapabilityMissing:
+						authStatus = "membership missing"
+					case AnnouncementBlockedMembershipCapabilityInvalid:
+						authStatus = "membership invalid"
+					}
+					lastRefreshError := strings.TrimSpace(detail)
+					if lastRefreshError == "" {
+						lastRefreshError = result.Message
+					}
+					a.reportStatus(RuntimeStatus{Status: "running", Reason: statusReason, AdvertisementStatus: "not advertised", AdvertisementReason: statusReason, AuthorizationStatus: authStatus, AuthorizationReason: statusReason, LastRefreshError: lastRefreshError})
+					log.Printf("publish authorization refreshed but announcement still blocked %s", announcementBlockLogDetails(reason, detail))
 					return reason, false
 				}
 				recoveredAuth = true
-				log.Printf("publish authorization refreshed reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
+				log.Printf("publish authorization refreshed reason=%s message=%q", announcementBlockMessage(blockedReason, blockedDetail), result.Message)
 			case PublishAuthorizationOutcomePending:
-				log.Printf("publish authorization pending reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
+				log.Printf("publish authorization pending reason=%s message=%q", announcementBlockMessage(blockedReason, blockedDetail), result.Message)
 			case PublishAuthorizationOutcomeDenied:
-				log.Printf("publish authorization denied reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
+				log.Printf("publish authorization denied reason=%s message=%q", announcementBlockMessage(blockedReason, blockedDetail), result.Message)
 			case PublishAuthorizationOutcomeUnreachable:
-				log.Printf("publish authorization unreachable reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
+				log.Printf("publish authorization unreachable reason=%s message=%q", announcementBlockMessage(blockedReason, blockedDetail), result.Message)
 			case PublishAuthorizationOutcomeRetryable:
-				log.Printf("publish authorization retryable reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
+				log.Printf("publish authorization retryable reason=%s message=%q", announcementBlockMessage(blockedReason, blockedDetail), result.Message)
 			case PublishAuthorizationOutcomeSkipped:
 				if strings.TrimSpace(result.Message) != "" {
-					log.Printf("publish authorization skipped reason=%s message=%q", announcementBlockDescription(blockedReason), result.Message)
+					log.Printf("publish authorization skipped reason=%s message=%q", announcementBlockMessage(blockedReason, blockedDetail), result.Message)
 				}
 			}
-			a.reportPublishAuthorizationStatus(blockedReason, result)
+			a.reportPublishAuthorizationStatus(blockedReason, blockedDetail, result)
 		}
 		if !ok {
 			return reason, false
@@ -659,7 +704,8 @@ func (a *App) runAnnouncementLoopV3(ctx context.Context, recovery <-chan reachab
 		}
 		if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok {
 			if reason != AnnouncementReady {
-				log.Printf("heartbeat skipped: %s; service remains running but is not advertised", announcementBlockLogDetails(reason))
+				_, _, _, detail, _ := a.currentAnnouncementV3Detailed()
+				log.Printf("heartbeat skipped: %s; service remains running but is not advertised", announcementBlockLogDetails(reason, detail))
 			}
 		}
 		if recovered := reachability.WaitForRecovered(ctx, recovery, a.cfg.HeartbeatInterval); !recovered && ctx.Err() != nil {
@@ -690,17 +736,27 @@ func (a *App) recordAnnouncementReachabilitySuccess(kind reachability.SuccessKin
 	a.announcementReachability.RecordSuccess(kind)
 }
 
-func (a *App) reportPublishAuthorizationStatus(reason AnnouncementBlockReason, result PublishAuthorizationResult) {
+func (a *App) reportPublishAuthorizationStatus(reason AnnouncementBlockReason, detail string, result PublishAuthorizationResult) {
 	if a.statusReporter == nil {
 		return
 	}
-	status := RuntimeStatus{Status: "running", AdvertisementStatus: "not advertised", AdvertisementReason: announcementBlockDescription(reason), AuthorizationStatus: "waiting for reauthorization", AuthorizationReason: announcementBlockDescription(reason), LastRefreshError: result.Message, NextRefreshRetryAt: result.RetryAfter}
+	statusReason := announcementBlockMessage(reason, detail)
+	status := RuntimeStatus{Status: "running", AdvertisementStatus: "not advertised", AdvertisementReason: statusReason, AuthorizationStatus: "waiting for reauthorization", AuthorizationReason: statusReason, LastRefreshError: result.Message, NextRefreshRetryAt: result.RetryAfter}
 	switch result.Outcome {
 	case PublishAuthorizationOutcomeReady:
 		status = RuntimeStatus{Status: "running", AdvertisementStatus: "advertised", AuthorizationStatus: "authorized"}
 	case PublishAuthorizationOutcomeDenied:
 		status.AuthorizationStatus = "authorization denied"
-	case PublishAuthorizationOutcomeUnreachable, PublishAuthorizationOutcomeRetryable, PublishAuthorizationOutcomePending, PublishAuthorizationOutcomeSkipped:
+	case PublishAuthorizationOutcomeSkipped:
+		switch reason {
+		case AnnouncementBlockedMembershipCapabilityMissing:
+			status.AuthorizationStatus = "membership missing"
+		case AnnouncementBlockedMembershipCapabilityInvalid:
+			status.AuthorizationStatus = "membership invalid"
+		default:
+			status.AuthorizationStatus = "waiting for reauthorization"
+		}
+	case PublishAuthorizationOutcomeUnreachable, PublishAuthorizationOutcomeRetryable, PublishAuthorizationOutcomePending:
 		status.AuthorizationStatus = "waiting for reauthorization"
 	}
 	a.reportStatus(status)
@@ -967,7 +1023,8 @@ func (a *App) maintainRelayReservations(ctx context.Context, recovery <-chan rea
 		}
 		if a.discoveryMode == discovery.ModeNamespaceV3 {
 			if reason, ok := a.publishCurrentAnnouncementV3(ctx); !ok && reason != AnnouncementReady {
-				log.Printf("relay-ready publish skipped: %s", announcementBlockLogDetails(reason))
+				_, _, _, detail, _ := a.currentAnnouncementV3Detailed()
+				log.Printf("relay-ready publish skipped: %s", announcementBlockLogDetails(reason, detail))
 			}
 			return
 		}

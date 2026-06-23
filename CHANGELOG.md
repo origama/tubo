@@ -22,6 +22,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - Namespace-scoped `get services` / `get service/...` now require a membership capability bound to the requester peer ID or an accepted membership grant proof; Tubo now derives a stable discovery-query identity per cluster/namespace for that binding, and missing or expired membership fails closed with a clear authorization/config error instead of an empty namespace.
 - Discovery membership grant tokens now accept any permission superset that includes `subscribe` + `list`, regardless of order.
 - `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
+- Approved publish-grant recovery now keeps service advertisement bound to the service-publisher membership capability path: after approval, attach reuses the service-scoped membership file written for the publisher peer, surfaces exact membership verification errors in status/logs, and no longer loops new publish-grant requests when a valid publish lease remains blocked only by invalid membership material.
 
 ### Compatibility
 - Product version: unreleased

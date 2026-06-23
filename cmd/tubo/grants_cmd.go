@@ -164,9 +164,6 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			if err := grantspkg.VerifyPublishLease(*resp.PublishLease, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID); err != nil {
 				return "", fmt.Errorf("approved publish lease rejected: %w", err)
 			}
-			if err := writePublishLeaseFile(svc.ServicePublishLeaseFile, *resp.PublishLease); err != nil {
-				return "", err
-			}
 			if resp.ServiceClaim == nil {
 				resp.ServiceClaim = &resp.PublishLease.ServiceClaim
 			}
@@ -175,7 +172,25 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			if err := capability.VerifyServiceClaim(*resp.ServiceClaim, pub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID); err != nil {
 				return "", fmt.Errorf("approved service claim rejected: %w", err)
 			}
+		}
+		if resp.MembershipCapability != nil {
+			if err := capability.VerifyMembershipCapability(*resp.MembershipCapability, pub, cluster.ClusterID, cfg.CurrentNamespace, servicePeerID); err != nil {
+				return "", fmt.Errorf("approved membership capability rejected: %w", err)
+			}
+		}
+		if resp.PublishLease != nil {
+			if err := writePublishLeaseFile(svc.ServicePublishLeaseFile, *resp.PublishLease); err != nil {
+				return "", err
+			}
+		}
+		if resp.ServiceClaim != nil {
 			if err := writeServiceClaimFile(svc.ServiceClaimFile, *resp.ServiceClaim); err != nil {
+				return "", err
+			}
+		}
+		if resp.MembershipCapability != nil {
+			membershipPath := serviceMembershipCapabilityPath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace)
+			if err := writeCapabilityFile(membershipPath, *resp.MembershipCapability); err != nil {
 				return "", err
 			}
 		}
@@ -186,12 +201,6 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 		cfg.Clusters[cfg.CurrentCluster] = cluster
 		if err := saveLocalConfig(configPath, cfg); err != nil {
 			return "", err
-		}
-		if resp.MembershipCapability != nil {
-			membershipPath := serviceMembershipCapabilityPath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace)
-			if err := writeCapabilityFile(membershipPath, *resp.MembershipCapability); err != nil {
-				return "", err
-			}
 		}
 		if resp.ServiceShareToken != "" {
 			if err := requireShareTokenEndpointForPublicDefault(cfg, resp.ServiceShareToken); err != nil {

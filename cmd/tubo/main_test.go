@@ -5782,6 +5782,20 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" || authz.ServicePublishLeaseFile == "" {
 		t.Fatalf("expected approved authz to save claim, publish lease, and membership: %#v", authz)
 	}
+	if want := serviceMembershipCapabilityPath(configPath, "home", "default"); authz.MembershipCapabilityFile != want {
+		t.Fatalf("membership capability path = %q, want %q", authz.MembershipCapabilityFile, want)
+	}
+	membershipBytes, err := os.ReadFile(authz.MembershipCapabilityFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var membership capability.MembershipCapability
+	if err := json.Unmarshal(membershipBytes, &membership); err != nil {
+		t.Fatal(err)
+	}
+	if err := capability.VerifyMembershipCapability(membership, authorityPriv.Public().(ed25519.PublicKey), cluster.ClusterID, "default", authz.ServicePeerID); err != nil {
+		t.Fatalf("approved membership capability invalid: %v", err)
+	}
 }
 
 func TestResolveAttachAuthorizationPublicBundleGrantFallbackProducesRuntimeMembershipFile(t *testing.T) {

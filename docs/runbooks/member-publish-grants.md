@@ -231,8 +231,8 @@ tubo attach <service-name> --port <port>
 This time:
 
 1. `attach` polls the grant service with the saved `grant_request_id`;
-2. receives `TypeApproved` with the signed `PublishLease`;
-3. saves the lease locally and clears the saved request id;
+2. receives `TypeApproved` with the signed `PublishLease` and the service-publisher membership capability for the service peer;
+3. saves that publish/membership material locally and clears the saved request id;
 4. starts publishing the service to the swarm.
 
 Expected output:
@@ -246,6 +246,10 @@ scope: public/<cluster-name>/<namespace-name>
 
 From this point forward the saved `PublishLease` is reused on every `attach`
 until it expires (after the TTL approved in step 3).
+If the refreshed publish authorization is still blocked by bad membership material,
+`attach` now reports the exact membership failure (for example subject mismatch,
+expiry, wrong scope, missing permission, or missing file) and stops minting new
+publish grant requests until that membership problem is fixed.
 If you reissue/import membership while `attach` or `connect` is already running,
 Tubo retries with backoff and recovers without a restart once the refreshed
 membership material is visible on disk.
