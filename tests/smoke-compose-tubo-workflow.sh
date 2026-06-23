@@ -725,10 +725,18 @@ if tubo connect --token "$share_token" --namespace tenant-b --config "${config_d
   exit 1
 fi
 
-if ! tubo get service/${service_a_id} --config "$config_path" >/dev/null; then
-  echo "[smoke-tubo-workflow] get service/${service_a_id} failed"
-  exit 1
-fi
+service_lookup_ok=""
+for i in $(seq 1 30); do
+  if tubo get service/${service_a_id} --config "$config_path" >/dev/null; then
+    service_lookup_ok=1
+    break
+  fi
+  sleep 1
+  if [[ "$i" == "30" ]]; then
+    echo "[smoke-tubo-workflow] get service/${service_a_id} failed"
+    exit 1
+  fi
+done
 
 payload="hello-tubo-workflow"
 payload_b64="$(printf '%s' "$payload" | base64)"
