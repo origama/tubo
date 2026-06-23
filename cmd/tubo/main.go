@@ -1425,6 +1425,24 @@ func processCapabilitiesColumn(item processView) string {
 	return strings.Join(caps, ",")
 }
 
+func processAuthorizationColumn(item processView) string {
+	if status := strings.TrimSpace(item.AdvertisementStatus); status != "" {
+		reason := strings.TrimSpace(item.AdvertisementReason)
+		if reason != "" {
+			return status + " (" + reason + ")"
+		}
+		return status
+	}
+	if status := strings.TrimSpace(item.AuthorizationStatus); status != "" {
+		reason := strings.TrimSpace(item.AuthorizationReason)
+		if reason != "" {
+			return status + " (" + reason + ")"
+		}
+		return status
+	}
+	return "-"
+}
+
 func printProcessList(items []processView, wide bool) {
 	if !wide {
 		fmt.Println("Running Tubo processes")
@@ -1438,9 +1456,9 @@ func printProcessList(items []processView, wide bool) {
 
 func printProcessesCompactTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tKIND\tCAPS\tSTATUS\tSERVICE\tLOCAL\tTARGET\tPATH\tTTL")
+	fmt.Fprintln(w, "NAME\tKIND\tCAPS\tSTATUS\tAUTH\tSERVICE\tLOCAL\tTARGET\tPATH\tTTL")
 	for _, item := range items {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, processResourceKind(item), processCapabilitiesColumn(item), item.Status, displayValue(item.Service), displayValue(item.Local), displayValue(item.Target), summarizeProcessPath(item.Path), processTTLColumn(item))
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, processResourceKind(item), processCapabilitiesColumn(item), item.Status, processAuthorizationColumn(item), displayValue(item.Service), displayValue(item.Local), displayValue(item.Target), summarizeProcessPath(item.Path), processTTLColumn(item))
 	}
 	_ = w.Flush()
 }
@@ -1472,7 +1490,7 @@ func printProcessesCompactHints(items []processView) {
 
 func printProcessesTable(items []processView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tKIND\tCOMMAND\tCAPS\tSERVICE KIND\tSERVICE ID\tSCOPE\tSTATUS\tPATH\tTTL\tPID\tLOCAL\tTARGET")
+	fmt.Fprintln(w, "NAME\tKIND\tCOMMAND\tCAPS\tSERVICE KIND\tSERVICE ID\tSCOPE\tSTATUS\tAUTH\tPATH\tTTL\tPID\tLOCAL\tTARGET")
 	for _, item := range items {
 		local := item.Local
 		if local == "" {
@@ -1490,7 +1508,7 @@ func printProcessesTable(items []processView) {
 		if path == "" {
 			path = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, processResourceKind(item), item.Command, processCapabilitiesColumn(item), processServiceKind(item), displayServiceID(item.ServiceID), scope, item.Status, path, processTTLColumn(item), item.PID, local, target)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, processResourceKind(item), item.Command, processCapabilitiesColumn(item), processServiceKind(item), displayServiceID(item.ServiceID), scope, item.Status, processAuthorizationColumn(item), path, processTTLColumn(item), item.PID, local, target)
 	}
 	_ = w.Flush()
 }
@@ -1628,6 +1646,18 @@ func printProcessDescription(state detachedProcessState, status string) {
 	}
 	if state.RuntimeStatus != "" && state.RuntimeStatus != status {
 		fmt.Printf("Runtime health: %s\n", state.RuntimeStatus)
+	}
+	if state.AdvertisementStatus != "" {
+		fmt.Printf("Advertisement status: %s\n", state.AdvertisementStatus)
+	}
+	if state.AdvertisementReason != "" {
+		fmt.Printf("Advertisement reason: %s\n", state.AdvertisementReason)
+	}
+	if state.AuthorizationStatus != "" {
+		fmt.Printf("Authorization status: %s\n", state.AuthorizationStatus)
+	}
+	if state.AuthorizationReason != "" {
+		fmt.Printf("Authorization reason: %s\n", state.AuthorizationReason)
 	}
 	if state.DegradedReason != "" {
 		fmt.Printf("Runtime reason: %s\n", state.DegradedReason)

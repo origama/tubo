@@ -11,10 +11,16 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Changed
 - Human process listings now show a `CAPS` column in both compact and wide views.
+- Human process listings and `describe process/...` now separate runtime liveness from authorization state with explicit `AUTH`, `Advertisement status/reason`, and `Authorization status/reason` fields.
 - Legacy process state files without `capabilities` are still readable and are backfilled in memory from the stored command.
 
 ### Fixed
 - `tubo connect` now treats rollover artifacts with a near-expired delegated refresh lease as non-useful, backs off instead of storming the service grant endpoint, and surfaces clearer rate-limit / publish-renewal status reasons.
+- Grant minting now keeps derived share-invite and namespace-member connect lifetimes inside the live publish/membership expiry they were authorized from, including connect refresh on the service-side grant endpoint.
+- Detached attach/connect now rereread refreshed membership/config material on renewal retries, so a valid reissued/imported membership restores publishing or reconnecting without restart.
+- Discovery/query `announce_service` no longer accepts namespace-scoped service DTOs as trusted cache input; those records now require validated Discovery V3 authorization, `announce_service_v3` now routes through the shared AnnouncementV3 validator, and cache TTL now respects the earliest relevant authorization expiry.
+- Namespace-scoped `get services` / `get service/...` now require a membership capability bound to the requester peer ID or an accepted membership grant proof; Tubo now derives a stable discovery-query identity per cluster/namespace for that binding, and missing or expired membership fails closed with a clear authorization/config error instead of an empty namespace.
+- Discovery membership grant tokens now accept any permission superset that includes `subscribe` + `list`, regardless of order.
 - `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
 
 ### Compatibility

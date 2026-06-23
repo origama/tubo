@@ -97,6 +97,28 @@ func TestServiceGrantEndpointNamespaceMembersPolicy(t *testing.T) {
 	}
 }
 
+func TestServiceGrantEndpointConnectRequestBoundsLeasesByMembershipExpiry(t *testing.T) {
+	endpoint, owner, _, servicePeerID, authPriv := newGrantEndpointWithAuthorityForTest(t, "namespace_members")
+	requester := peer.ID("12D3KooWMembershipExpiryRequester")
+	capShort, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: requester.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(200 * time.Millisecond)}, authPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := endpoint.handleMessage(grantspkg.Message{Type: grantspkg.TypeConnectRequest, Version: grantspkg.VersionV1, RequestID: "req-short", ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ClientPublicKey: testAuthorizedClientKey(t), MembershipCapability: &capShort}, requester)
+	if resp.Type != grantspkg.TypeConnectGranted || resp.ConnectRefreshLease == nil {
+		t.Fatalf("expected granted connect response, got %#v", resp)
+	}
+	if resp.ConnectRefreshLease.ExpiresAt.After(capShort.ExpiresAt.Add(100 * time.Millisecond)) {
+		t.Fatalf("refresh lease expiry = %s, want bound by membership expiry %s", resp.ConnectRefreshLease.ExpiresAt, capShort.ExpiresAt)
+	}
+	time.Sleep(300 * time.Millisecond)
+	resp = endpoint.handleMessage(grantspkg.Message{Type: grantspkg.TypeConnectRefresh, Version: grantspkg.VersionV1, ConnectRefreshLease: resp.ConnectRefreshLease}, requester)
+	if resp.Type != grantspkg.TypeDenied {
+		t.Fatalf("expected expired refresh denial, got %#v", resp)
+	}
+	_ = servicePeerID
+}
+
 func TestServiceGrantEndpointShareRedeemIsOneTime(t *testing.T) {
 	endpoint, _, _, _, authPriv := newGrantEndpointWithAuthorityForTest(t, "namespace_members")
 	requester := peer.ID("12D3KooWShareRedeemRequester")

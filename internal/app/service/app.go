@@ -24,6 +24,7 @@ import (
 	p2pping "github.com/libp2p/go-libp2p/p2p/protocol/ping"
 	"github.com/multiformats/go-multiaddr"
 
+	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -85,10 +86,14 @@ type PublishAuthorizationResult struct {
 type PublishAuthorizationHandler func(context.Context, PublishAuthorizationRequest) PublishAuthorizationResult
 
 type RuntimeStatus struct {
-	Status             string
-	Reason             string
-	LastRefreshError   string
-	NextRefreshRetryAt *time.Time
+	Status               string
+	Reason               string
+	AdvertisementStatus  string
+	AdvertisementReason  string
+	AuthorizationStatus  string
+	AuthorizationReason  string
+	LastRefreshError     string
+	NextRefreshRetryAt   *time.Time
 }
 
 type announcementPublisher interface {
@@ -254,7 +259,15 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 			return nil, fmt.Errorf("no private key for peer")
 		}
 		pub = discovery.NewPublisher(topic, pk)
-		h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache))
+		handleOpts := []discoveryquery.Option{}
+		if len(authorityPub) > 0 && cfg.DiscoveryContext != nil {
+			contexts := []discovery.NamespaceDiscoveryContext{*cfg.DiscoveryContext}
+			if cfg.DiscoveryPreviousContext != nil {
+				contexts = append(contexts, *cfg.DiscoveryPreviousContext)
+			}
+			handleOpts = append(handleOpts, discoveryquery.WithAnnouncementV3Validation(authorityPub, contexts...))
+		}
+		h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "attach", cache, handleOpts...))
 	}
 	app := &App{
 		cfg:                      cfg,
@@ -294,7 +307,11 @@ func (a *App) SetStatusReporter(report func(RuntimeStatus)) {
 
 func (a *App) reportStatus(status RuntimeStatus) {
 	if a.stats != nil {
-		a.stats.SetMeta(statspkg.Snapshot{Role: "service", Kind: a.cfg.ServiceKind, Service: a.cfg.ServiceName, ServiceID: a.host.ID().String(), Status: status.Status, Reason: status.Reason})
+		reason := status.Reason
+		if reason == "" {
+			reason = status.AdvertisementReason
+		}
+		a.stats.SetMeta(statspkg.Snapshot{Role: "service", Kind: a.cfg.ServiceKind, Service: a.cfg.ServiceName, ServiceID: a.host.ID().String(), Status: status.Status, Reason: reason})
 	}
 	if a.statusReporter != nil {
 		a.statusReporter(status)
@@ -450,12 +467,14 @@ func mergeRelayCircuitAddrs(base []string, relayInfos []peer.AddrInfo, self peer
 type AnnouncementBlockReason string
 
 const (
-	AnnouncementReady                       AnnouncementBlockReason = ""
-	AnnouncementBlockedPublisherUnavailable AnnouncementBlockReason = "publisher_unavailable"
-	AnnouncementBlockedRelayNotReady        AnnouncementBlockReason = "relay_not_ready"
-	AnnouncementBlockedPublishLeaseMissing  AnnouncementBlockReason = "publish_lease_missing"
-	AnnouncementBlockedPublishLeaseExpired  AnnouncementBlockReason = "publish_lease_expired"
-	AnnouncementBlockedPublishLeaseInvalid  AnnouncementBlockReason = "publish_lease_invalid"
+	AnnouncementReady                              AnnouncementBlockReason = ""
+	AnnouncementBlockedPublisherUnavailable        AnnouncementBlockReason = "publisher_unavailable"
+	AnnouncementBlockedRelayNotReady               AnnouncementBlockReason = "relay_not_ready"
+	AnnouncementBlockedPublishLeaseMissing         AnnouncementBlockReason = "publish_lease_missing"
+	AnnouncementBlockedPublishLeaseExpired         AnnouncementBlockReason = "publish_lease_expired"
+	AnnouncementBlockedPublishLeaseInvalid         AnnouncementBlockReason = "publish_lease_invalid"
+	AnnouncementBlockedMembershipCapabilityMissing AnnouncementBlockReason = "membership_capability_missing"
+	AnnouncementBlockedMembershipCapabilityInvalid AnnouncementBlockReason = "membership_capability_invalid"
 )
 
 func announcementBlockDescription(reason AnnouncementBlockReason) string {
@@ -470,6 +489,10 @@ func announcementBlockDescription(reason AnnouncementBlockReason) string {
 		return "publish lease expired"
 	case AnnouncementBlockedPublishLeaseInvalid:
 		return "publish lease invalid or unverifiable"
+	case AnnouncementBlockedMembershipCapabilityMissing:
+		return "membership capability missing"
+	case AnnouncementBlockedMembershipCapabilityInvalid:
+		return "membership capability invalid or unverifiable"
 	default:
 		return "announcement not ready"
 	}
@@ -497,6 +520,19 @@ func classifyPublishLeaseBlockReason(err error, leaseBytes []byte) AnnouncementB
 	}
 }
 
+func classifyMembershipCapabilityBlockReason(err error, capBytes []byte) AnnouncementBlockReason {
+	if err == nil {
+		if len(capBytes) == 0 {
+			return AnnouncementBlockedMembershipCapabilityMissing
+		}
+		return AnnouncementReady
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return AnnouncementBlockedMembershipCapabilityMissing
+	}
+	return AnnouncementBlockedMembershipCapabilityInvalid
+}
+
 func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.AnnouncementV3Payload, AnnouncementBlockReason, bool) {
 	if a.discoveryMode != discovery.ModeNamespaceV3 || a.cfg.DiscoveryContext == nil {
 		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, AnnouncementReady, false
@@ -513,9 +549,14 @@ func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.Annou
 		grantService = advertisedGrantServiceEndpoint(addrs)
 	}
 	payload := discovery.AnnouncementV3Payload{ClusterID: a.discoveryClusterID(), NamespaceID: a.discoveryNamespaceID(), Kind: discovery.ResourceKindService, ServiceName: a.cfg.ServiceName, ServiceKind: a.cfg.ServiceKind, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, Capabilities: protocol.SupportedCapabilities(), RegisteredAt: time.Now().UTC()}
-	if capBytes, err := a.loadMembershipCapabilityBytes(); err == nil && len(capBytes) > 0 {
-		payload.MembershipCapability = capBytes
+	capBytes, err := a.loadMembershipCapabilityBytes()
+	if blockReason := classifyMembershipCapabilityBlockReason(err, capBytes); blockReason != AnnouncementReady {
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, false
 	}
+	if err := a.verifyMembershipCapabilityBytes(capBytes); err != nil {
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, classifyMembershipCapabilityBlockReason(err, capBytes), false
+	}
+	payload.MembershipCapability = capBytes
 	leaseBytes, lease, err := a.loadPublishLeaseBytes()
 	if blockReason := classifyPublishLeaseBlockReason(err, leaseBytes); blockReason != AnnouncementReady {
 		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, false
@@ -533,7 +574,7 @@ func (a *App) currentAnnouncementV3() (discovery.AnnouncementV3, discovery.Annou
 }
 
 func isPublishAuthorizationBlock(reason AnnouncementBlockReason) bool {
-	return reason == AnnouncementBlockedPublishLeaseMissing || reason == AnnouncementBlockedPublishLeaseExpired || reason == AnnouncementBlockedPublishLeaseInvalid
+	return reason == AnnouncementBlockedPublishLeaseMissing || reason == AnnouncementBlockedPublishLeaseExpired || reason == AnnouncementBlockedPublishLeaseInvalid || reason == AnnouncementBlockedMembershipCapabilityMissing || reason == AnnouncementBlockedMembershipCapabilityInvalid
 }
 
 func (a *App) reconcilePublishAuthorization(ctx context.Context, reason AnnouncementBlockReason) PublishAuthorizationResult {
@@ -562,7 +603,7 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 			case PublishAuthorizationOutcomeReady:
 				if ann, payload, reason, ok = a.currentAnnouncementV3(); !ok {
 					a.recordAnnouncementReachabilityFailure(reason)
-					a.reportStatus(RuntimeStatus{Status: "degraded", Reason: announcementBlockDescription(reason), LastRefreshError: result.Message})
+					a.reportStatus(RuntimeStatus{Status: "running", Reason: announcementBlockDescription(reason), AdvertisementStatus: "not advertised", AdvertisementReason: announcementBlockDescription(reason), AuthorizationStatus: "waiting for reauthorization", AuthorizationReason: announcementBlockDescription(reason), LastRefreshError: result.Message})
 					log.Printf("publish authorization refreshed but announcement still blocked reason=%s", announcementBlockLogDetails(reason))
 					return reason, false
 				}
@@ -590,7 +631,7 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 	if err := a.publisher.PublishV3(ctx, ann); err != nil {
 		log.Printf("heartbeat immediate publish failed: %v", err)
 		a.recordAnnouncementReachabilityFailure(AnnouncementBlockedRelayNotReady)
-		a.reportStatus(RuntimeStatus{Status: "degraded", Reason: announcementBlockDescription(AnnouncementBlockedRelayNotReady), LastRefreshError: err.Error()})
+		a.reportStatus(RuntimeStatus{Status: "degraded", Reason: announcementBlockDescription(AnnouncementBlockedRelayNotReady), AdvertisementStatus: "not advertised", AdvertisementReason: announcementBlockDescription(AnnouncementBlockedRelayNotReady), AuthorizationStatus: "authorized", LastRefreshError: err.Error()})
 		return AnnouncementReady, false
 	}
 	if recoveredAuth {
@@ -598,9 +639,9 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 	} else {
 		a.recordAnnouncementReachabilitySuccess(reachability.SuccessKindRelay)
 	}
-	a.reportStatus(RuntimeStatus{Status: "running"})
+	a.reportStatus(RuntimeStatus{Status: "running", AdvertisementStatus: "advertised", AuthorizationStatus: "authorized"})
 	a.cacheCurrentAnnouncementV3(payload, ann.TTL)
-	if err := a.syncAnnouncementToPeers(ctx, payload); err != nil {
+	if err := a.syncAnnouncementToPeers(ctx, ann); err != nil {
 		log.Printf("heartbeat relay sync failed: %v", err)
 	}
 	if a.shouldLogAnnouncementPublish(time.Now().UTC()) {
@@ -635,7 +676,7 @@ func (a *App) recordAnnouncementReachabilityFailure(reason AnnouncementBlockReas
 	switch reason {
 	case AnnouncementBlockedRelayNotReady:
 		a.announcementReachability.RecordFailure(reachability.FailureKindRelay, errors.New(announcementBlockDescription(reason)))
-	case AnnouncementBlockedPublishLeaseMissing, AnnouncementBlockedPublishLeaseExpired, AnnouncementBlockedPublishLeaseInvalid:
+	case AnnouncementBlockedPublishLeaseMissing, AnnouncementBlockedPublishLeaseExpired, AnnouncementBlockedPublishLeaseInvalid, AnnouncementBlockedMembershipCapabilityMissing, AnnouncementBlockedMembershipCapabilityInvalid:
 		a.announcementReachability.RecordFailure(reachability.FailureKindGrant, errors.New(announcementBlockDescription(reason)))
 	case AnnouncementBlockedPublisherUnavailable:
 		a.announcementReachability.RecordFailure(reachability.FailureKindNetwork, errors.New(announcementBlockDescription(reason)))
@@ -653,9 +694,14 @@ func (a *App) reportPublishAuthorizationStatus(reason AnnouncementBlockReason, r
 	if a.statusReporter == nil {
 		return
 	}
-	status := RuntimeStatus{Status: "degraded", Reason: announcementBlockDescription(reason), LastRefreshError: result.Message, NextRefreshRetryAt: result.RetryAfter}
-	if result.Outcome == PublishAuthorizationOutcomeReady {
-		status = RuntimeStatus{Status: "running"}
+	status := RuntimeStatus{Status: "running", AdvertisementStatus: "not advertised", AdvertisementReason: announcementBlockDescription(reason), AuthorizationStatus: "waiting for reauthorization", AuthorizationReason: announcementBlockDescription(reason), LastRefreshError: result.Message, NextRefreshRetryAt: result.RetryAfter}
+	switch result.Outcome {
+	case PublishAuthorizationOutcomeReady:
+		status = RuntimeStatus{Status: "running", AdvertisementStatus: "advertised", AuthorizationStatus: "authorized"}
+	case PublishAuthorizationOutcomeDenied:
+		status.AuthorizationStatus = "authorization denied"
+	case PublishAuthorizationOutcomeUnreachable, PublishAuthorizationOutcomeRetryable, PublishAuthorizationOutcomePending, PublishAuthorizationOutcomeSkipped:
+		status.AuthorizationStatus = "waiting for reauthorization"
 	}
 	a.reportStatus(status)
 }
@@ -692,11 +738,10 @@ func (a *App) cacheCurrentAnnouncementV3(payload discovery.AnnouncementV3Payload
 	}
 }
 
-func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.AnnouncementV3Payload) error {
+func (a *App) syncAnnouncementToPeers(ctx context.Context, ann discovery.AnnouncementV3) error {
 	peers := append([]string(nil), a.cfg.BootstrapPeers...)
 	peers = append(peers, a.cfg.RelayPeers...)
 	seen := make(map[string]struct{}, len(peers))
-	service := discoveryquery.Service{Kind: payload.Kind, ClusterID: payload.ClusterID, NamespaceID: payload.NamespaceID, ServiceKind: payload.ServiceKind, Name: payload.ServiceName, ServiceID: payload.ServiceID, ServicePublicKey: payload.ServicePublicKey, ConnectPolicy: payload.ConnectPolicy, GrantService: grantspkg.CloneGrantServiceEndpoint(payload.GrantService), PeerID: a.host.ID().String(), Addresses: append([]string(nil), payload.Addresses...), Status: "online", TTLSeconds: int64(a.announcementTTL.Seconds()), Capabilities: append([]string(nil), payload.Capabilities...), RegisteredAt: payload.RegisteredAt.Format(time.RFC3339)}
 	for _, raw := range peers {
 		if raw == "" {
 			continue
@@ -709,7 +754,7 @@ func (a *App) syncAnnouncementToPeers(ctx context.Context, payload discovery.Ann
 		if err != nil {
 			continue
 		}
-		if _, err := discoveryquery.AnnounceService(ctx, a.host, info, service); err != nil {
+		if _, err := discoveryquery.AnnounceAnnouncementV3(ctx, a.host, info, ann); err != nil {
 			log.Printf("discovery sync announce failed peer=%s: %v", info.ID, err)
 		}
 	}
@@ -721,6 +766,21 @@ func (a *App) loadMembershipCapabilityBytes() ([]byte, error) {
 		return nil, nil
 	}
 	return os.ReadFile(a.serviceCapabilityFile)
+}
+
+func (a *App) verifyMembershipCapabilityBytes(capBytes []byte) error {
+	if len(capBytes) == 0 {
+		return errors.New("membership capability missing")
+	}
+	authorityPub, err := discovery.ParseAuthorityPublicKey(a.cfg.AuthorityPublicKey)
+	if err != nil {
+		return err
+	}
+	var membership capability.MembershipCapability
+	if err := json.Unmarshal(capBytes, &membership); err != nil {
+		return err
+	}
+	return capability.VerifyMembershipCapability(membership, authorityPub, a.discoveryClusterIDValue(), a.discoveryNamespaceIDValue(), a.host.ID().String())
 }
 
 func (a *App) loadPublishLeaseBytes() ([]byte, grantspkg.PublishLease, error) {

@@ -106,8 +106,14 @@ func BuildConnectLeaseArtifacts(priv ed25519.PrivateKey, invite ServiceSharePayl
 		return ConnectLeaseArtifacts{}, err
 	}
 	now := time.Now().UTC()
-	if !invite.ExpiresAt.IsZero() && now.After(invite.ExpiresAt.UTC()) {
-		return ConnectLeaseArtifacts{}, errors.New("share invite expired")
+	if !invite.ExpiresAt.IsZero() {
+		remaining := time.Until(invite.ExpiresAt.UTC())
+		if remaining <= 0 {
+			return ConnectLeaseArtifacts{}, errors.New("share invite expired")
+		}
+		if refreshTTL > remaining {
+			refreshTTL = remaining
+		}
 	}
 	sessionID, err := newConnectLeaseJTI("cs")
 	if err != nil {

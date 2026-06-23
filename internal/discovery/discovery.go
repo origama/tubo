@@ -414,86 +414,21 @@ func (s *PubSubSubscriber) handleMessageV3(msg *pubsub.Message, scope subscriber
 		s.pubKey[ann.PeerID] = pk
 		s.mu.Unlock()
 	}
-	ok, err := ann.Verify(pk)
-	if err != nil || !ok {
-		return
-	}
-	if len(s.authorityPublicKey) == 0 {
-		return
-	}
-	payload, err := ann.Payload(*scope.context)
+	validated, err := ValidateAnnouncementV3(*scope.context, ann, pk, s.authorityPublicKey, msg.GetFrom())
 	if err != nil {
 		return
 	}
-	if payload.ServiceName == "" || payload.RegisteredAt.IsZero() || ann.TTL <= 0 {
-		return
-	}
-	if len(payload.MembershipCapability) == 0 {
-		return
-	}
-	var membership capability.MembershipCapability
-	if err := json.Unmarshal(payload.MembershipCapability, &membership); err != nil {
-		return
-	}
-	if err := verifyAnnouncementMembership(membership, s.authorityPublicKey, scope.clusterID, scope.namespaceID, ann.PeerID.String()); err != nil {
-		return
-	}
-	if payload.ServiceID == "" || payload.ServicePublicKey == "" {
-		return
-	}
-	servicePub, err := serviceidentity.DecodePublicKey(payload.ServicePublicKey)
-	if err != nil {
-		return
-	}
-	if err := serviceidentity.MatchServiceID(servicePub, payload.ServiceID); err != nil {
-		return
-	}
-	expiresAt := payload.RegisteredAt.UTC().Add(ann.TTL)
-	if len(payload.PublishLease) > 0 {
-		lease, err := grantspkg.ParseAndVerifyPublishLeaseBytes(payload.PublishLease, s.authorityPublicKey, scope.clusterID, scope.namespaceID, payload.ServiceID, ann.PeerID.String())
-		if err != nil {
+	if s.replay != nil {
+		replayKey := strings.Join([]string{scope.expected, ann.PeerID.String(), hex.EncodeToString(ann.Nonce)}, "|")
+		if s.replay.Seen(replayKey, validated.ExpiresAt) {
 			return
 		}
-		if lease.ServicePublicKey != payload.ServicePublicKey {
-			return
-		}
-		leaseExpiresAt := lease.ExpiresAt.UTC()
-		if leaseExpiresAt.Before(expiresAt) {
-			expiresAt = leaseExpiresAt
-		}
-	} else {
-		if len(payload.ServiceClaim) == 0 {
-			return
-		}
-		var claim capability.ServiceClaim
-		if err := json.Unmarshal(payload.ServiceClaim, &claim); err != nil {
-			return
-		}
-		if err := capability.VerifyServiceClaim(claim, s.authorityPublicKey, scope.clusterID, scope.namespaceID, payload.ServiceID, ann.PeerID.String()); err != nil {
-			return
-		}
-		claimExpiresAt := claim.ExpiresAt.UTC()
-		if claimExpiresAt.Before(expiresAt) {
-			expiresAt = claimExpiresAt
-		}
 	}
-	cacheTTL := time.Until(expiresAt)
-	if cacheTTL <= 0 {
+	if err := s.cache.AddV2(validated.PeerID, validated.ClusterID, validated.NamespaceID, validated.ServiceID, validated.ServiceName, validated.Kind, validated.ServiceKind, validated.ServicePublicKey, validated.ConnectPolicy, validated.GrantService, append([]string(nil), validated.Addresses...), append([]string(nil), validated.Capabilities...), validated.TTL); err != nil {
 		return
 	}
-	replayKey := strings.Join([]string{scope.expected, ann.PeerID.String(), hex.EncodeToString(ann.Nonce)}, "|")
-	if s.replay != nil && s.replay.Seen(replayKey, expiresAt) {
-		return
-	}
-	kind := strings.TrimSpace(payload.Kind)
-	if kind == "" {
-		kind = ResourceKindService
-	}
-	if err := s.cache.AddV2(ann.PeerID, scope.clusterID, scope.namespaceID, payload.ServiceID, payload.ServiceName, kind, payload.ServiceKind, payload.ServicePublicKey, payload.ConnectPolicy, grantspkg.SanitizeGrantServiceEndpoint(payload.GrantService), payload.Addresses, append([]string(nil), payload.Capabilities...), cacheTTL); err != nil {
-		return
-	}
-	log.Printf("discovery v3 announcement accepted service=%q peer=%s namespace=%s/%s addrs=%d ttl=%s", payload.ServiceName, ann.PeerID, scope.clusterID, scope.namespaceID, len(payload.Addresses), ann.TTL)
-	s.events <- DiscoveryEvent{Type: "added", ServiceID: payload.ServiceID, ServiceName: payload.ServiceName, PeerID: ann.PeerID}
+	log.Printf("discovery v3 announcement accepted service=%q peer=%s namespace=%s/%s addrs=%d ttl=%s", validated.ServiceName, ann.PeerID, validated.ClusterID, validated.NamespaceID, len(validated.Addresses), ann.TTL)
+	s.events <- DiscoveryEvent{Type: "added", ServiceID: validated.ServiceID, ServiceName: validated.ServiceName, PeerID: ann.PeerID}
 }
 
 func verifyAnnouncementMembership(membership capability.MembershipCapability, pub ed25519.PublicKey, clusterID, namespaceID, announcerPeerID string) error {

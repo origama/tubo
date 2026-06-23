@@ -16,6 +16,7 @@ import (
 
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/p2p"
 )
 
 func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) {
@@ -46,6 +47,11 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 	}
 	pubAuthorized := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pubKey)))
 	clusterID := clusterIDFromAuthorityKey(pubAuthorized)
+	querySeed := discoveryQuerySeed(clusterID, "default")
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		return ClusterView{}, err
+	}
 	privPath := paths.ClusterAuthorityKey(name)
 	capPath := paths.ClusterMembershipCapability(name)
 	if err := writePrivateKey(w.store, privPath, priv); err != nil {
@@ -54,7 +60,7 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{
 		ClusterID:     clusterID,
 		NamespaceID:   "default",
-		SubjectPeerID: clusterID,
+		SubjectPeerID: queryPeerID.String(),
 		Permissions: []string{
 			capability.PermissionSubscribe,
 			capability.PermissionList,
@@ -125,6 +131,11 @@ func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, err
 	if err != nil {
 		return NamespaceView{}, fmt.Errorf("load cluster authority key: %w", err)
 	}
+	querySeed := discoveryQuerySeed(cluster.ClusterID, name)
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		return NamespaceView{}, err
+	}
 	paths := DerivePaths(configPath)
 	if err := w.store.MkdirAll(paths.NamespaceDir(cfg.CurrentCluster, name), 0700); err != nil {
 		return NamespaceView{}, err
@@ -133,7 +144,7 @@ func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, err
 	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{
 		ClusterID:     cluster.ClusterID,
 		NamespaceID:   name,
-		SubjectPeerID: cluster.ClusterID,
+		SubjectPeerID: queryPeerID.String(),
 		Permissions: []string{
 			capability.PermissionSubscribe,
 			capability.PermissionList,
@@ -229,6 +240,10 @@ func writeNamespaceDiscoverySecret(store Store, path string) (*cfgpkg.ManagedSec
 		return nil, err
 	}
 	return ref, nil
+}
+
+func discoveryQuerySeed(clusterID, namespace string) string {
+	return "discovery-query-" + strings.TrimSpace(clusterID) + "-" + strings.TrimSpace(namespace)
 }
 
 func clusterIDFromAuthorityKey(publicKey string) string {

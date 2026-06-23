@@ -40,8 +40,10 @@ For operational startup and secure P2P tunneling across 2+ services, use this as
 ### 1.3 Cache and auto-routing
 
 - The cache is keyed primarily by `service_id`; `serviceName`/display name remains a compatibility index and is not unique (`internal/discovery/cache.go`).
-- Edges update the cache through validated Discovery V3; they do not accept `announce_service` on the query protocol.
+- Relays and edges update the cache through validated Discovery V3; they accept `announce_service_v3` on the query protocol only after verifying the signed `AnnouncementV3` against the current discovery scope, and the cached TTL is capped by the earliest relevant authorization expiry.
 - Relays can keep a query/sync cache to support remote `get services`.
+- Namespace-scoped services must arrive through validated Discovery V3; legacy `announce_service` DTOs without signed Discovery V3 authorization are rejected at the receiver.
+- Namespace-scoped `get services` / `get service/...` now require valid membership or an accepted membership grant proof; if that proof is missing or expired, Tubo returns an authorization error instead of a blank namespace.
 - The effective TTL of V2 announcements is bounded by the announcement TTL and the expiry of the embedded `PublishLease`/claim.
 - On `added`, the gateway creates an auto-route:
   - `hostname = serviceName`

@@ -14,6 +14,7 @@ import (
 	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
+	"github.com/origama/tubo/internal/p2p"
 )
 
 const broadNamespaceWildcard = "*"
@@ -97,7 +98,11 @@ func authorizeServiceNamespace(cfg cfgpkg.Config, clusterName, namespace string)
 	if err != nil {
 		return fmt.Errorf("load membership capability for %s/%s: %w", clusterName, namespace, err)
 	}
-	if err := capability.VerifyMembershipCapability(cap, pub, cluster.ClusterID, cap.NamespaceID, cluster.ClusterID); err != nil {
+	queryPeerID, err := discoveryQueryPeerIDForConfig(cluster.ClusterID, namespace)
+	if err != nil {
+		return fmt.Errorf("membership capability for %s/%s rejected: %w", clusterName, namespace, err)
+	}
+	if err := capability.VerifyMembershipCapability(cap, pub, cluster.ClusterID, cap.NamespaceID, queryPeerID); err != nil {
 		return fmt.Errorf("membership capability for %s/%s rejected: %w", clusterName, namespace, err)
 	}
 	if cap.NamespaceID != namespace && cap.NamespaceID != broadNamespaceWildcard {
@@ -133,6 +138,19 @@ func namespaceMembershipCapabilityFile(cluster cfgpkg.Cluster, namespace string)
 		return cluster.MembershipCapabilityFile, nil
 	}
 	return "", fmt.Errorf("no membership capability file configured for namespace %q", namespace)
+}
+
+func discoveryQueryPeerIDForConfig(clusterID, namespace string) (string, error) {
+	seed := discoveryQuerySeed(clusterID, namespace)
+	peerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		return "", fmt.Errorf("derive discovery query peer id: %w", err)
+	}
+	return peerID.String(), nil
+}
+
+func discoveryQuerySeed(clusterID, namespace string) string {
+	return "discovery-query-" + strings.TrimSpace(clusterID) + "-" + strings.TrimSpace(namespace)
 }
 
 func loadMembershipCapability(path string) (capability.MembershipCapability, error) {

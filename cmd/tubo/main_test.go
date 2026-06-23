@@ -1845,7 +1845,7 @@ func TestDescribeProcessShowsPublishLeaseExpiryRuntimeReason(t *testing.T) {
 		t.Fatal("expected current process cmdline")
 	}
 	raw := "rollover connect lease: request connect lease from advertised grant endpoint(s): publish lease expired"
-	state := detachedProcessState{ID: "process/connect-lms-5678", Kind: "process", ResourceKind: "pipe", Command: "connect", Name: "connect-lms-5678", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "connect-lms-5678.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-5678.json"), Source: "foreground", CommandLine: cmdline, ServiceKind: "tcp", RuntimeStatus: "degraded", DegradedReason: "remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired; renew service publication or resolve pending publish grant on the service publisher side", LastRefreshError: raw}
+	state := detachedProcessState{ID: "process/connect-lms-5678", Kind: "process", ResourceKind: "pipe", Command: "connect", Name: "connect-lms-5678", PID: os.Getpid(), PIDFile: filepath.Join(processRunDir(), "connect-lms-5678.pid"), StateFile: filepath.Join(processStateDir(), "connect-lms-5678.json"), Source: "foreground", CommandLine: cmdline, ServiceKind: "tcp", RuntimeStatus: "degraded", AuthorizationStatus: "waiting for reauthorization", AuthorizationReason: "service publish authorization is expired", DegradedReason: "remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired; renew service publication or resolve pending publish grant on the service publisher side", LastRefreshError: raw}
 	_ = os.WriteFile(state.PIDFile, []byte(fmt.Sprintf("%d\n", state.PID)), 0600)
 	b, _ := json.Marshal(state)
 	_ = os.WriteFile(state.StateFile, b, 0600)
@@ -1853,7 +1853,7 @@ func TestDescribeProcessShowsPublishLeaseExpiryRuntimeReason(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Runtime reason: remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired", "renew service publication", "Last refresh error: " + raw} {
+	for _, want := range []string{"Runtime reason: remote service grant endpoint cannot issue a new connect lease because service publish authorization is expired", "Authorization status: waiting for reauthorization", "Authorization reason: service publish authorization is expired", "renew service publication", "Last refresh error: " + raw} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("describe output missing %q: %s", want, out)
 		}
@@ -5205,15 +5205,10 @@ func newStaleGrantPeerRecoveryFixture(t *testing.T) (string, cfgpkg.Config, cfgp
 	cache := discovery.NewCache(30*time.Second, time.Second)
 	t.Cleanup(cache.Stop)
 	addr := p2p.PeerAddrs(serverHost)[0]
-	grantPub, grantPriv, err := ed25519.GenerateKey(rand.Reader)
+	grantPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	membershipPath := mustWriteMembershipCapability(t, grantPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
-	if err := cache.AddV2(serverHost.ID(), "cluster-123", "observability", serviceidentity.ServiceIDFromPublicKey(grantPub), "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPub), "system", &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{addr}}, []string{addr}, nil, 30*time.Second); err != nil {
-		t.Fatal(err)
-	}
-	serverHost.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(serverHost, "relay", cache))
 	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -5222,13 +5217,23 @@ func newStaleGrantPeerRecoveryFixture(t *testing.T) (string, cfgpkg.Config, cfgp
 	if err != nil {
 		t.Fatal(err)
 	}
+	querySeed := testDiscoveryQuerySeed("cluster-123", "observability")
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	if err := cache.AddV2(serverHost.ID(), "cluster-123", "observability", serviceidentity.ServiceIDFromPublicKey(grantPub), "grant-service", "grant-service", "grant-service", serviceidentity.EncodePublicKey(grantPub), "system", &grantspkg.GrantServiceEndpoint{Protocol: grantspkg.ProtocolID, Peers: []string{addr}}, []string{addr}, nil, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	serverHost.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(serverHost, "relay", cache))
 	configRoot := filepath.Join(t.TempDir(), "xdg-config")
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
 	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "observability", Service: cfgpkg.Service{Name: "myapi", Target: "http://127.0.0.1:8080"}, Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSHKey))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
+	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: querySeed}, CurrentCluster: "home", CurrentNamespace: "observability", Service: cfgpkg.Service{Name: "myapi", Target: "http://127.0.0.1:8080"}, Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSHKey))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
 	if err := saveLocalConfig(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -6057,6 +6062,10 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if cfg.CurrentCluster != "home" || cfg.CurrentNamespace != "default" {
 		t.Fatalf("unexpected current context: %#v", cfg)
 	}
+	queryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed(cluster.ClusterID, "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if ns := cluster.Namespaces["default"]; ns.DiscoverySecretCurrent == nil || ns.DiscoverySecretCurrent.KeyID == "" || ns.DiscoverySecretCurrent.File == "" {
 		t.Fatalf("default namespace discovery secret missing: %#v", ns)
 	} else if _, err := os.Stat(ns.DiscoverySecretCurrent.File); err != nil {
@@ -6085,7 +6094,7 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if !ok {
 		t.Fatalf("authority public key is not ed25519: %T", cryptoPub.CryptoPublicKey())
 	}
-	if err := capability.VerifyMembershipCapability(membership, edPub, cluster.ClusterID, "default", cluster.ClusterID); err != nil {
+	if err := capability.VerifyMembershipCapability(membership, edPub, cluster.ClusterID, "default", queryPeerID.String()); err != nil {
 		t.Fatalf("membership capability verification failed: %v", err)
 	}
 
@@ -6124,7 +6133,11 @@ func TestCreateClusterAndNamespace(t *testing.T) {
 	if err := json.Unmarshal(observabilityCapBytes, &observabilityMembership); err != nil {
 		t.Fatalf("namespace capability json invalid: %v", err)
 	}
-	if err := capability.VerifyMembershipCapability(observabilityMembership, edPub, cluster.ClusterID, "observability", cluster.ClusterID); err != nil {
+	observabilityQueryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed(cluster.ClusterID, "observability"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := capability.VerifyMembershipCapability(observabilityMembership, edPub, cluster.ClusterID, "observability", observabilityQueryPeerID.String()); err != nil {
 		t.Fatalf("namespace membership capability verification failed: %v", err)
 	}
 
@@ -6352,7 +6365,7 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
-	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6360,12 +6373,26 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	querySeed := testDiscoveryQuerySeed("cluster-123", "observability")
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
-	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipBytes, err := json.MarshalIndent(membership, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(membershipPath, append(membershipBytes, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := cfgpkg.Config{
+		Node:             cfgpkg.Node{Seed: querySeed},
 		CurrentCluster:   "home",
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
@@ -6421,7 +6448,7 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
-	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6429,12 +6456,26 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	querySeed := testDiscoveryQuerySeed("cluster-123", "observability")
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
 	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
-	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipBytes, err := json.MarshalIndent(membership, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(membershipPath, append(membershipBytes, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := cfgpkg.Config{
+		Node:             cfgpkg.Node{Seed: querySeed},
 		CurrentCluster:   "home",
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
@@ -6505,7 +6546,7 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
-	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6513,11 +6554,25 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 	if err != nil {
 		t.Fatal(err)
 	}
+	querySeed := testDiscoveryQuerySeed("cluster-123", "observability")
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
-	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipBytes, err := json.MarshalIndent(membership, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(membershipPath, append(membershipBytes, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := cfgpkg.Config{
+		Node:             cfgpkg.Node{Seed: querySeed},
 		CurrentCluster:   "home",
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
@@ -6587,7 +6642,7 @@ func TestDiscoverServiceExactFallsBackToDisplayNameWhenServiceIDMissing(t *testi
 		t.Fatal(err)
 	}
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
-	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6595,11 +6650,25 @@ func TestDiscoverServiceExactFallsBackToDisplayNameWhenServiceIDMissing(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	querySeed := testDiscoveryQuerySeed("cluster-123", "observability")
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	membershipPath := filepath.Join(t.TempDir(), "membership.cap.json")
-	if err := os.WriteFile(membershipPath, []byte("{}\n"), 0600); err != nil {
+	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipBytes, err := json.MarshalIndent(membership, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(membershipPath, append(membershipBytes, '\n'), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg := cfgpkg.Config{
+		Node:             cfgpkg.Node{Seed: querySeed},
 		CurrentCluster:   "home",
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
@@ -6796,11 +6865,16 @@ func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config,
 	if err != nil {
 		t.Fatal(err)
 	}
-	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	querySeed := testDiscoveryQuerySeed("cluster-123", "observability")
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
 	configRoot := filepath.Join(t.TempDir(), "xdg-config")
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
 	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
-	cfg := cfgpkg.Config{CurrentCluster: "home", CurrentNamespace: "observability", Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
+	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: querySeed}, CurrentCluster: "home", CurrentNamespace: "observability", Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -7202,7 +7276,11 @@ func TestGetServicesCommandPathsUsePeerAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: "cluster-123", Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)}), Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}
+	queryPeerID, err := p2p.PeerIDFromSeed(cfg.Node.Seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)}), Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}
 	configRoot := filepath.Join(t.TempDir(), "config")
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
 	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
@@ -7526,21 +7604,31 @@ func TestResolveAuthorizedServiceScopes(t *testing.T) {
 	}
 	authorityKey := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
 	clusterID := "cluster-123"
+	querySeed := testDiscoveryQuerySeed(clusterID, "default")
+	queryPeerID, err := p2p.PeerIDFromSeed(querySeed)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defaultCap := mustWriteMembershipCapability(t, priv, capability.MembershipCapability{
 		ClusterID:     clusterID,
 		NamespaceID:   "default",
-		SubjectPeerID: clusterID,
+		SubjectPeerID: queryPeerID.String(),
 		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
 		ExpiresAt:     time.Now().Add(time.Hour),
 	})
+	metricsQueryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed(clusterID, "metrics"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	metricsCap := mustWriteMembershipCapability(t, priv, capability.MembershipCapability{
 		ClusterID:     clusterID,
 		NamespaceID:   "metrics",
-		SubjectPeerID: clusterID,
+		SubjectPeerID: metricsQueryPeerID.String(),
 		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
 		ExpiresAt:     time.Now().Add(time.Hour),
 	})
 	cfg := cfgpkg.Config{
+		Node:             cfgpkg.Node{Seed: querySeed},
 		CurrentCluster:   "home",
 		CurrentNamespace: "default",
 		Clusters: map[string]cfgpkg.Cluster{
@@ -7614,6 +7702,10 @@ func mustWriteMembershipCapability(t *testing.T, priv ed25519.PrivateKey, cap ca
 		t.Fatal(err)
 	}
 	return path
+}
+
+func testDiscoveryQuerySeed(clusterID, namespace string) string {
+	return "discovery-query-" + strings.TrimSpace(clusterID) + "-" + strings.TrimSpace(namespace)
 }
 
 func TestRewriteAttachArgsAcceptsScopedServiceRef(t *testing.T) {

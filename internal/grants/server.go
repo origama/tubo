@@ -20,6 +20,13 @@ const (
 	DefaultMaxPendingPerService   = 4
 )
 
+// Namespace-scoped grant semantics:
+//   - publish submit/auto-approve mints a service claim and membership capability
+//     with the same expiry, and share invite TTL is capped by the publish lease.
+//   - connect requests require live membership or a valid membership invite, and
+//     minted connect leases are capped by that membership expiry.
+//   - connect refresh only extends an already bounded session; it never widens the
+//     membership/session window.
 type ServerConfig struct {
 	ClusterName               string
 	ClusterID                 string

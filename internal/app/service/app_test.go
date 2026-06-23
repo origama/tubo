@@ -779,11 +779,15 @@ func TestServiceDiscoveryQueryServesOwnAnnouncement(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	queryCap, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: client.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
 	info, err := p2p.AddrInfoFromString(p2p.PeerAddrs(app.host)[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp, err := discoveryquery.GetService(ctx, client, info, "myapi")
+	resp, err := discoveryquery.GetServiceWithAuthorization(ctx, client, info, "myapi", &queryCap, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -853,8 +857,12 @@ func TestPublishCurrentAnnouncementAuthorizationStatusAndRecovery(t *testing.T) 
 		if got := app.publisher.(*fakeAnnouncementPublisher).CallCount(); got != 0 {
 			t.Fatalf("expected no publish calls, got %d", got)
 		}
-		if len(statuses) == 0 || statuses[len(statuses)-1].Status != "degraded" || !strings.Contains(strings.ToLower(statuses[len(statuses)-1].Reason), "publish lease missing") {
-			t.Fatalf("expected degraded status, got %#v", statuses)
+		if len(statuses) == 0 {
+			t.Fatalf("expected status updates, got none")
+		}
+		got := statuses[len(statuses)-1]
+		if got.Status != "running" || got.AdvertisementStatus != "not advertised" || got.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(got.AdvertisementReason), "publish lease missing") {
+			t.Fatalf("expected blocked publish status, got %#v", got)
 		}
 	})
 
@@ -878,10 +886,84 @@ func TestPublishCurrentAnnouncementAuthorizationStatusAndRecovery(t *testing.T) 
 		if publisher.CallCount() != 1 {
 			t.Fatalf("expected one publish call, got %d", publisher.CallCount())
 		}
-		if len(statuses) == 0 || statuses[len(statuses)-1].Status != "running" {
-			t.Fatalf("expected running status, got %#v", statuses)
+		if len(statuses) == 0 {
+			t.Fatalf("expected status updates, got none")
+		}
+		got := statuses[len(statuses)-1]
+		if got.Status != "running" || got.AdvertisementStatus != "advertised" || got.AuthorizationStatus != "authorized" {
+			t.Fatalf("expected recovered publish status, got %#v", got)
 		}
 	})
+}
+
+func TestPublishCurrentAnnouncementMembershipRecoveryAfterImport(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	seed := "service-membership-recovery-seed"
+	servicePeerID, err := p2p.PeerIDFromSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capPath := filepath.Join(t.TempDir(), "membership.cap.json")
+	leasePath := filepath.Join(t.TempDir(), "publish-lease.json")
+	serviceID := writeTestPublishLease(t, leasePath, authorityPriv, "cluster-123", "default", "myapi", seed, time.Time{})
+	leaseBytes, err := os.ReadFile(leasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(leasePath); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(capPath)
+	topic, dctx := testDiscoveryContext(t, "cluster-123", "default")
+	var statuses []RuntimeStatus
+	publisher := &fakeAnnouncementPublisher{}
+	app, err := New(ctx, Config{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, ServiceName: "myapi", ServiceID: serviceID, Target: "http://127.0.0.1:8000", HeartbeatInterval: time.Second, DiscoveryEnabled: true, DiscoveryMode: discovery.ModeNamespaceV3.String(), DiscoveryTopic: topic, DiscoveryClusterID: "cluster-123", DiscoveryNamespaceID: "default", DiscoveryContext: dctx, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: capPath, ServicePublishLeaseFile: leasePath, PublishAuthorizationHandler: func(ctx context.Context, req PublishAuthorizationRequest) PublishAuthorizationResult {
+		if req.Reason != AnnouncementBlockedMembershipCapabilityMissing && req.Reason != AnnouncementBlockedMembershipCapabilityInvalid {
+			t.Fatalf("expected membership-related block, got %q", req.Reason)
+		}
+		membership, err := capability.SignMembershipCapability(capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}, ExpiresAt: time.Now().Add(time.Hour)}, authorityPriv)
+		if err != nil {
+			t.Fatalf("sign membership: %v", err)
+		}
+		b, err := json.MarshalIndent(membership, "", "  ")
+		if err != nil {
+			t.Fatalf("marshal membership: %v", err)
+		}
+		if err := os.WriteFile(capPath, append(b, '\n'), 0600); err != nil {
+			t.Fatalf("write membership: %v", err)
+		}
+		if err := os.WriteFile(leasePath, leaseBytes, 0600); err != nil {
+			t.Fatalf("restore lease: %v", err)
+		}
+		return PublishAuthorizationResult{Outcome: PublishAuthorizationOutcomeReady, Message: "membership imported"}
+	}, StatusReporter: func(status RuntimeStatus) { statuses = append(statuses, status) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+	app.publisher = publisher
+	if reason, ok := app.publishCurrentAnnouncementV3(ctx); !ok || reason != AnnouncementReady {
+		t.Fatalf("expected recovery publish to succeed, got (%q, %v)", reason, ok)
+	}
+	if publisher.CallCount() != 1 {
+		t.Fatalf("expected one publish call, got %d", publisher.CallCount())
+	}
+	if len(statuses) == 0 {
+		t.Fatalf("expected status updates, got none")
+	}
+	got := statuses[len(statuses)-1]
+	if got.Status != "running" || got.AdvertisementStatus != "advertised" || got.AuthorizationStatus != "authorized" {
+		t.Fatalf("expected running status after recovery, got %#v", got)
+	}
 }
 
 func TestNewSkipsDiscoveryPublisherForUnlistedMode(t *testing.T) {

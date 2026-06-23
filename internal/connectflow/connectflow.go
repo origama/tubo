@@ -199,6 +199,33 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		ConnectInviteToken: connectInviteToken,
 		ConnectGrantPeers:  connectGrantPeers,
 	}
+	bridgeCfg.ConnectAuthorizationReloader = func(ctx context.Context, current bridge.Config) (bridge.Config, error) {
+		freshCfg, err := cfgpkg.LoadFile(req.ConfigPath)
+		if err != nil {
+			return current, err
+		}
+		freshMembership, membershipGrantToken, err := loadConnectMembership(freshCfg, scope)
+		if err != nil {
+			return current, err
+		}
+		current.ConnectMembershipCapability = freshMembership
+		current.ConnectMembershipGrantToken = membershipGrantToken
+		if clusterCfg, ok := freshCfg.Clusters[scope.Cluster]; ok {
+			if clusterCfg.ClusterID != "" {
+				current.ConnectClusterID = clusterCfg.ClusterID
+			}
+			if clusterCfg.AuthorityPrivateKeyFile != "" {
+				current.ConnectAuthorityPrivateKeyFile = clusterCfg.AuthorityPrivateKeyFile
+				if authorityPriv, err := loadConnectAuthorityPrivateKey(clusterCfg.AuthorityPrivateKeyFile); err == nil {
+					current.ConnectAuthorityPrivateKey = authorityPriv
+				}
+			}
+			if clusterCfg.MembershipGrant != nil && len(clusterCfg.MembershipGrant.GrantServicePeers) > 0 {
+				current.ConnectGrantPeers = append([]string(nil), clusterCfg.MembershipGrant.GrantServicePeers...)
+			}
+		}
+		return current, nil
+	}
 	if clusterCfg, ok := cfg.Clusters[scope.Cluster]; ok {
 		bridgeCfg.ConnectAuthorityPrivateKeyFile = clusterCfg.AuthorityPrivateKeyFile
 		bridgeCfg.ConnectClusterID = clusterCfg.ClusterID

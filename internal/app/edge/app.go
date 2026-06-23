@@ -332,7 +332,15 @@ func newGateway(ctx context.Context, p2pListen, seed string, relayPeers []string
 		relayRecoveryActive:             make(map[string]*relayRecoveryState),
 		lastKnownEntries:                make(map[string]*discovery.ServiceEntry),
 	}
-	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "gateway", cache))
+	handleOpts := []discoveryquery.Option{}
+	if len(authorityPub) > 0 && discoveryContext != nil {
+		contexts := []discovery.NamespaceDiscoveryContext{*discoveryContext}
+		if discoveryPreviousContext != nil {
+			contexts = append(contexts, *discoveryPreviousContext)
+		}
+		handleOpts = append(handleOpts, discoveryquery.WithAnnouncementV3Validation(authorityPub, contexts...))
+	}
+	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "gateway", cache, handleOpts...))
 	if len(gw.relayPeers) > 0 {
 		log.Printf("configured %d relay peer(s)", len(gw.relayPeers))
 	}

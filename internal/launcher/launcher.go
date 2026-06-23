@@ -177,26 +177,41 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		}
 		return runner.Start(ctx)
 	case "relay":
+		discoveryClusterID := cluster.ClusterID
+		discoveryNamespaceID := cfg.CurrentNamespace
+		discoveryContext := (*discovery.NamespaceDiscoveryContext)(nil)
+		discoveryPreviousContext := (*discovery.NamespaceDiscoveryContext)(nil)
+		if runtime, err := cfg.RequireDiscoveryRuntime(); err == nil {
+			discoveryClusterID = runtime.ClusterID
+			discoveryNamespaceID = runtime.NamespaceID
+			discoveryContext = runtime.Context
+			discoveryPreviousContext = runtime.PreviousContext
+		}
 		runner, err := deps.NewRelay(ctx, relay.Config{
-			Listen:                  cfg.Node.P2PListen,
-			Seed:                    cfg.Node.Seed,
-			HealthListen:            cfg.Relay.HealthListen,
-			PublicAddr:              cfg.Relay.PublicAddr,
-			PrivateKeyFile:          cfg.Network.PrivateKeyFile,
-			PrivateKeyB64:           cfg.Network.PrivateKeyB64,
-			EnableRelayService:      cfg.Relay.EnableRelayService,
-			EnableAutoNATService:    cfg.Relay.EnableAutoNATService,
-			EnableDiscoveryPubSub:   cfg.Relay.EnableDiscoveryPubSub,
-			ForceReachabilityPublic: cfg.Relay.ForceReachabilityPublic,
-			PrintRunCommands:        cfg.Relay.PrintRunCommands,
-			MaxReservations:         cfg.Relay.MaxReservations,
-			MaxReservationsPerIP:    cfg.Relay.MaxReservationsPerIP,
-			MaxReservationsPerASN:   cfg.Relay.MaxReservationsPerASN,
-			MaxCircuitsPerPeer:      cfg.Relay.MaxCircuitsPerPeer,
-			BufferSize:              cfg.Relay.BufferSize,
-			ReservationTTL:          cfg.Relay.ReservationTTL.Duration(),
-			LimitDuration:           cfg.Relay.LimitDuration.Duration(),
-			LimitDataBytes:          cfg.Relay.LimitDataBytes,
+			Listen:                   cfg.Node.P2PListen,
+			Seed:                     cfg.Node.Seed,
+			HealthListen:             cfg.Relay.HealthListen,
+			PublicAddr:               cfg.Relay.PublicAddr,
+			PrivateKeyFile:           cfg.Network.PrivateKeyFile,
+			PrivateKeyB64:            cfg.Network.PrivateKeyB64,
+			EnableRelayService:       cfg.Relay.EnableRelayService,
+			EnableAutoNATService:     cfg.Relay.EnableAutoNATService,
+			EnableDiscoveryPubSub:    cfg.Relay.EnableDiscoveryPubSub,
+			ForceReachabilityPublic:  cfg.Relay.ForceReachabilityPublic,
+			PrintRunCommands:         cfg.Relay.PrintRunCommands,
+			DiscoveryClusterID:       discoveryClusterID,
+			DiscoveryNamespaceID:     discoveryNamespaceID,
+			DiscoveryContext:         discoveryContext,
+			DiscoveryPreviousContext: discoveryPreviousContext,
+			AuthorityPublicKey:       cluster.AuthorityPublicKey,
+			MaxReservations:          cfg.Relay.MaxReservations,
+			MaxReservationsPerIP:     cfg.Relay.MaxReservationsPerIP,
+			MaxReservationsPerASN:    cfg.Relay.MaxReservationsPerASN,
+			MaxCircuitsPerPeer:       cfg.Relay.MaxCircuitsPerPeer,
+			BufferSize:               cfg.Relay.BufferSize,
+			ReservationTTL:           cfg.Relay.ReservationTTL.Duration(),
+			LimitDuration:            cfg.Relay.LimitDuration.Duration(),
+			LimitDataBytes:           cfg.Relay.LimitDataBytes,
 		})
 		if err != nil {
 			return err

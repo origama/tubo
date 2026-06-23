@@ -185,8 +185,12 @@ func (c *attachPublishAuthorizationCoordinator) handle(ctx context.Context, req 
 		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: ctx.Err().Error()}
 	}
 	reason := req.Reason
-	if reason != serviceapp.AnnouncementBlockedPublishLeaseMissing && reason != serviceapp.AnnouncementBlockedPublishLeaseExpired && reason != serviceapp.AnnouncementBlockedPublishLeaseInvalid {
+	if reason != serviceapp.AnnouncementBlockedPublishLeaseMissing && reason != serviceapp.AnnouncementBlockedPublishLeaseExpired && reason != serviceapp.AnnouncementBlockedPublishLeaseInvalid && reason != serviceapp.AnnouncementBlockedMembershipCapabilityMissing && reason != serviceapp.AnnouncementBlockedMembershipCapabilityInvalid {
 		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: "publish authorization not required for this announcement block"}
+	}
+	if cfg, svc, err := refreshAttachAuthorizationMaterial(c.configPath, c.cfg); err == nil {
+		c.cfg = cfg
+		c.svc = svc
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -229,6 +233,20 @@ func (c *attachPublishAuthorizationCoordinator) handle(ctx context.Context, req 
 	}
 	nextAttempt := c.nextAttempt
 	return serviceapp.PublishAuthorizationResult{Outcome: outcome, Message: err.Error(), RetryAfter: &nextAttempt}
+}
+
+func refreshAttachAuthorizationMaterial(configPath string, cfg cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
+	loaded, err := loadLocalConfigOrError(configPath)
+	if err != nil {
+		return cfg, cfgpkg.NamespaceService{}, err
+	}
+	cfg = loaded
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		return cfg, cfgpkg.NamespaceService{}, err
+	}
+	cfg = seedDiscoveredGrantServicePeer(configPath, cfg)
+	return cfg, svc, nil
 }
 
 func (c *attachPublishAuthorizationCoordinator) run(ctx context.Context) {

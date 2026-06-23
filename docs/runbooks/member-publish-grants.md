@@ -246,6 +246,9 @@ scope: public/<cluster-name>/<namespace-name>
 
 From this point forward the saved `PublishLease` is reused on every `attach`
 until it expires (after the TTL approved in step 3).
+If you reissue/import membership while `attach` or `connect` is already running,
+Tubo retries with backoff and recovers without a restart once the refreshed
+membership material is visible on disk.
 
 ---
 
@@ -383,9 +386,11 @@ Fix the service publication path:
   tightly controlled private clusters; do not use it on public or weakly
   controlled grant services.
 - Approved `PublishLease` TTLs are bounded by `grants serve --claim-ttl`.
-  Keep that separate from share invite lifetimes and connect access/refresh
-  lease lifetimes. For trusted private long-running services, `24h` is a good
-  default; use shorter TTLs for dev/test or semi-public environments.
+  Share invites minted from a publish lease are capped by the publish lease
+  expiry, and namespace-member connect requests/refreshes are capped by the
+  membership expiry they present. For trusted private long-running services,
+  `24h` is a good default; use shorter TTLs for dev/test or semi-public
+  environments.
 - `TUBO_PUBLISH_LEASE_TTL` is an advanced override for publish authorization TTLs and
   may change.
 - The grant service peer address exposed in discovery only allows reaching the

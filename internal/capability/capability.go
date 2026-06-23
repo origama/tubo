@@ -108,6 +108,13 @@ func VerifyMembershipCapability(cap MembershipCapability, publicKey ed25519.Publ
 	return validateMembershipScope(cap, clusterID, namespaceID, subjectPeerID)
 }
 
+func VerifyMembershipCapabilityForScope(cap MembershipCapability, publicKey ed25519.PublicKey, clusterID, namespaceID string) error {
+	if err := verifyCanonical(normalizeMembership(cap), cap.Signature, publicKey); err != nil {
+		return err
+	}
+	return validateMembershipScopeForScope(cap, clusterID, namespaceID)
+}
+
 func SignServiceClaim(cap ServiceClaim, privateKey ed25519.PrivateKey) (ServiceClaim, error) {
 	payload := normalizeServiceClaim(cap)
 	sig, err := signCanonical(payload, privateKey)
@@ -248,6 +255,22 @@ func validateMembershipScope(cap MembershipCapability, clusterID, namespaceID, s
 	}
 	if !hasAllPermissions(cap.Permissions, []string{PermissionSubscribe, PermissionList, PermissionPublish}) {
 		return fmt.Errorf("missing required permissions")
+	}
+	return nil
+}
+
+func validateMembershipScopeForScope(cap MembershipCapability, clusterID, namespaceID string) error {
+	if err := validateTime(cap.ExpiresAt); err != nil {
+		return err
+	}
+	if cap.ClusterID != clusterID {
+		return fmt.Errorf("cluster id mismatch: got %q want %q", cap.ClusterID, clusterID)
+	}
+	if cap.NamespaceID != namespaceID {
+		return fmt.Errorf("namespace id mismatch: got %q want %q", cap.NamespaceID, namespaceID)
+	}
+	if !hasAllPermissions(cap.Permissions, []string{PermissionSubscribe, PermissionList}) {
+		return fmt.Errorf("missing discovery permissions")
 	}
 	return nil
 }

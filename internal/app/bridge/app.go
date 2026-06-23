@@ -53,6 +53,7 @@ type Config struct {
 	ConnectAccessLease                                                                                 *grantspkg.ConnectAccessLease
 	ConnectRefreshLease                                                                                *grantspkg.ConnectRefreshLease
 	ConnectLeaseRefresher                                                                              ConnectLeaseRefresher
+	ConnectAuthorizationReloader                                                                       func(context.Context, Config) (Config, error)
 	ConnectRebindResolver                                                                              func(context.Context) (peer.AddrInfo, string, string, error)
 	ConnectAuthorityPrivateKey                                                                         ed25519.PrivateKey
 	ConnectAuthorityPrivateKeyFile                                                                     string
@@ -63,6 +64,8 @@ type Config struct {
 type RuntimeStatus struct {
 	Status                  string
 	Reason                  string
+	AuthorizationStatus     string
+	AuthorizationReason     string
 	ServiceKind             string
 	Path                    string
 	SelectedAddr            string
@@ -997,6 +1000,35 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 	return snap
 }
 
+func (a *App) authorizationStatus(now time.Time) (string, string) {
+	if a == nil {
+		return "", ""
+	}
+	a.connectMu.Lock()
+	refresh := a.cfg.ConnectRefreshLease
+	current := a.connectLease
+	nextRetry := a.nextRefreshRetryAt
+	lastRefreshError := a.lastRefreshError
+	lastRefreshErrorAt := a.lastRefreshErrorAt
+	lastRefreshHealthyAt := a.lastRefreshHealthyAt
+	canRollover := a.connectCanRolloverLocked()
+	a.connectMu.Unlock()
+	if refresh != nil && connectRefreshLeaseNeedsRollover(*refresh, now) && !canRollover {
+		return "waiting for reauthorization", connectRefreshLeaseFreshTokenReason(*refresh, now)
+	}
+	if strings.TrimSpace(lastRefreshError) != "" && connectRefreshFailureIsCurrent(lastRefreshHealthyAt, lastRefreshErrorAt) {
+		reason := connectRefreshFailureDisplayReason(lastRefreshError)
+		if nextRetry.After(now) {
+			return "waiting for reauthorization", reason
+		}
+		return "degraded", reason
+	}
+	if current != nil && refresh == nil && !now.Before(current.ExpiresAt.UTC()) {
+		return "degraded", "connect access lease expired; ask the service owner for a fresh token/invite"
+	}
+	return "authorized", ""
+}
+
 func connectLeaseRenewBefore(lease grantspkg.ConnectAccessLease) time.Duration {
 	if lease.ExpiresAt.IsZero() {
 		return time.Second
@@ -1028,6 +1060,30 @@ func connectRefreshLeaseFreshTokenReason(refresh grantspkg.ConnectRefreshLease, 
 
 func (a *App) connectCanRolloverLocked() bool {
 	return len(a.cfg.ConnectGrantPeers) > 0 && strings.TrimSpace(a.cfg.ConnectClusterID) != "" && strings.TrimSpace(a.cfg.ConnectNamespaceID) != "" && strings.TrimSpace(a.cfg.ConnectServiceID) != "" && (a.cfg.ConnectMembershipCapability != nil || strings.TrimSpace(a.cfg.ConnectMembershipGrantToken) != "")
+}
+
+func (a *App) refreshConnectAuthorizationMaterial(ctx context.Context) error {
+	if a == nil || a.cfg.ConnectAuthorizationReloader == nil {
+		return nil
+	}
+	a.connectMu.Lock()
+	current := a.cfg
+	a.connectMu.Unlock()
+	updated, err := a.cfg.ConnectAuthorizationReloader(ctx, current)
+	if err != nil {
+		return err
+	}
+	a.connectMu.Lock()
+	a.cfg.ConnectGrantPeers = append([]string(nil), updated.ConnectGrantPeers...)
+	a.cfg.ConnectClusterID = updated.ConnectClusterID
+	a.cfg.ConnectNamespaceID = updated.ConnectNamespaceID
+	a.cfg.ConnectServiceID = updated.ConnectServiceID
+	a.cfg.ConnectMembershipCapability = updated.ConnectMembershipCapability
+	a.cfg.ConnectMembershipGrantToken = updated.ConnectMembershipGrantToken
+	a.cfg.ConnectAuthorityPrivateKey = updated.ConnectAuthorityPrivateKey
+	a.cfg.ConnectAuthorityPrivateKeyFile = updated.ConnectAuthorityPrivateKeyFile
+	a.connectMu.Unlock()
+	return nil
 }
 
 func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseArtifacts) {
@@ -1181,6 +1237,9 @@ func (a *App) waitForRenewalRetry(ctx context.Context, nextRetry time.Time) bool
 
 func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 	for {
+		if err := a.refreshConnectAuthorizationMaterial(ctx); err != nil && ctx.Err() == nil {
+			log.Printf("bridge connect authorization refresh failed: %v", err)
+		}
 		a.connectMu.Lock()
 		refresh := a.cfg.ConnectRefreshLease
 		lease := a.connectLease
@@ -1205,7 +1264,7 @@ func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 			err := errors.New(connectRefreshLeaseFreshTokenReason(*refresh, now))
 			a.recordRefreshFailure(err, refresh.ExpiresAt.UTC())
 			a.markTunnelDegraded(err)
-			return
+			continue
 		}
 		var wait time.Duration
 		if rolloverDue || lease == nil || connectAccessLeaseNeedsRefresh(*lease, now) {
@@ -1238,15 +1297,19 @@ func (a *App) startConnectLeaseRenewal(ctx context.Context) {
 }
 
 func (a *App) CurrentRuntimeStatus() RuntimeStatus {
-	snap := a.statusSnapshot(time.Now().UTC())
+	now := time.Now().UTC()
+	snap := a.statusSnapshot(now)
 	a.connectMu.Lock()
 	lastRefreshError := a.lastRefreshError
 	nextRefreshRetryAt := a.nextRefreshRetryAt
 	a.connectMu.Unlock()
+	authStatus, authReason := a.authorizationStatus(now)
 	selectedPeerID, _ := a.selectedPeerID()
 	return RuntimeStatus{
 		Status:                  snap.Status,
 		Reason:                  snap.Reason,
+		AuthorizationStatus:     authStatus,
+		AuthorizationReason:     authReason,
 		ServiceKind:             snap.ServiceKind,
 		Path:                    snap.Path,
 		SelectedAddr:            snap.SelectedAddr,

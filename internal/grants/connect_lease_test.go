@@ -47,6 +47,24 @@ func TestConnectLeaseRedeemAndRefresh(t *testing.T) {
 	}
 }
 
+func TestConnectLeaseArtifactsBoundToShareInviteExpiry(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := BuildServiceShareArtifacts(priv, "home", "cluster-123", "default", "myapi", "svc-123", 150*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := BuildConnectLeaseArtifacts(priv, invite.Payload, testAuthorizedClientKey(t), time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if artifacts.RefreshLease.ExpiresAt.After(invite.Payload.ExpiresAt.Add(100 * time.Millisecond)) {
+		t.Fatalf("refresh lease expiry = %s, want bounded by share invite expiry %s", artifacts.RefreshLease.ExpiresAt, invite.Payload.ExpiresAt)
+	}
+}
+
 func TestConnectLeaseRejectsWrongClientKeyAndExpiredRefresh(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
