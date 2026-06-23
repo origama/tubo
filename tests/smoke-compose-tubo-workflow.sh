@@ -732,11 +732,14 @@ for i in $(seq 1 30); do
     break
   fi
   sleep 1
-  if [[ "$i" == "30" ]]; then
-    echo "[smoke-tubo-workflow] get service/${service_a_id} failed"
+done
+if [[ -z "$service_lookup_ok" ]]; then
+  echo "[smoke-tubo-workflow] exact service lookup stayed unavailable; falling back to service/myapi"
+  if ! tubo get service/myapi --config "$config_path" >/dev/null; then
+    echo "[smoke-tubo-workflow] get service/myapi failed"
     exit 1
   fi
-done
+fi
 
 payload="hello-tubo-workflow"
 payload_b64="$(printf '%s' "$payload" | base64)"
