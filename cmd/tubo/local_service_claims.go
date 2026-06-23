@@ -485,6 +485,7 @@ func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clu
 		grantPeers = append(grantPeers, grantPeer)
 	}
 	useEndpointMetadata := requireEndpoint || len(grantPeers) > 0 || len(serviceEndpointAddrs) > 0
+	serviceKind := string(cfgpkg.NormalizeServiceKind(svc.Kind, cfg.Service.Target))
 	if svc.ServicePublishLeaseFile != "" {
 		if leaseBytes, err := os.ReadFile(svc.ServicePublishLeaseFile); err == nil {
 			var lease grantspkg.PublishLease
@@ -497,6 +498,10 @@ func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clu
 				}
 				if err == nil {
 					finalToken, err := finalizeAuthorityServiceShareToken(artifacts.Token, privKey, svc.ServiceID)
+					if err != nil {
+						return "", err
+					}
+					finalToken, err = grantspkg.ReissueServiceShareTokenWithKind(finalToken, privKey, serviceKind)
 					if err != nil {
 						return "", err
 					}
@@ -524,6 +529,10 @@ func buildAttachServiceShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clu
 		}
 	}
 	finalToken, err := finalizeAuthorityServiceShareToken(token, privKey, svc.ServiceID)
+	if err != nil {
+		return "", err
+	}
+	finalToken, err = grantspkg.ReissueServiceShareTokenWithKind(finalToken, privKey, serviceKind)
 	if err != nil {
 		return "", err
 	}

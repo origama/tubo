@@ -3796,6 +3796,36 @@ func TestBuildAttachServiceShareTokenPublicDefaultRejectsMissingServiceEndpoint(
 	}
 }
 
+func TestBuildAttachServiceShareTokenUsesTcpServiceKind(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "ifconfig"
+	cfg.Service.Target = "tcp://ifconfig.net:80"
+	cfg.Service.Kind = cfgpkg.ServiceKindTCP
+	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	token, err := buildAttachServiceShareToken(cfg, cluster, "home", "default", "ifconfig", svc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := parseAndVerifyServiceShareToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payload.ServiceKind != "tcp" {
+		t.Fatalf("expected tcp share token, got %#v", payload)
+	}
+}
+
 func writeCreateClusterConfig(t *testing.T) string {
 	t.Helper()
 	configHome := filepath.Join(t.TempDir(), "xdg")
