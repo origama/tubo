@@ -3796,33 +3796,49 @@ func TestBuildAttachServiceShareTokenPublicDefaultRejectsMissingServiceEndpoint(
 	}
 }
 
-func TestBuildAttachServiceShareTokenUsesTcpServiceKind(t *testing.T) {
-	configPath := writeCreateClusterConfig(t)
-	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
-		t.Fatal(err)
+func TestBuildAttachServiceShareTokenUsesEffectiveServiceKind(t *testing.T) {
+	cases := []struct {
+		name     string
+		kind     cfgpkg.ServiceKind
+		target   string
+		wantKind string
+	}{
+		{name: "http", kind: cfgpkg.ServiceKindHTTP, target: "http://127.0.0.1:8080", wantKind: "http"},
+		{name: "tcp", kind: cfgpkg.ServiceKindTCP, target: "tcp://ifconfig.net:80", wantKind: "tcp"},
 	}
-	cfg, err := cfgpkg.LoadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Service.Name = "ifconfig"
-	cfg.Service.Target = "tcp://ifconfig.net:80"
-	cfg.Service.Kind = cfgpkg.ServiceKindTCP
-	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cluster := cfg.Clusters["home"]
-	token, err := buildAttachServiceShareToken(cfg, cluster, "home", "default", "ifconfig", svc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload, err := parseAndVerifyServiceShareToken(token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if payload.ServiceKind != "tcp" {
-		t.Fatalf("expected tcp share token, got %#v", payload)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := writeCreateClusterConfig(t)
+			if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := cfgpkg.LoadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Service.Name = "ifconfig"
+			cfg.Service.Target = tc.target
+			cfg.Service.Kind = tc.kind
+			cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cluster := cfg.Clusters["home"]
+			token, err := buildAttachServiceShareToken(cfg, cluster, "home", "default", "ifconfig", svc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := parseAndVerifyServiceShareToken(token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if payload.ServiceKind != tc.wantKind {
+				t.Fatalf("expected %s share token, got %#v", tc.wantKind, payload)
+			}
+			if payload.ServiceID != svc.ServiceID || payload.TargetServiceID != svc.ServiceID {
+				t.Fatalf("expected token service ids to match current service, got %#v want %q", payload, svc.ServiceID)
+			}
+		})
 	}
 }
 

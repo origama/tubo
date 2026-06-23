@@ -50,20 +50,38 @@ func TestMintServiceShareArtifactsKeepsGrantServiceExplicit(t *testing.T) {
 	}
 	cluster := cfg.Clusters["home"]
 	cluster.AuthorityPublicKey = mustClusterAuthorityPublicKey(t, authPriv)
-	svc := cfgpkg.NamespaceService{ServiceID: "svc-123", ServiceSeed: "service-seed", Kind: cfgpkg.ServiceKindHTTP}
-	artifacts, err := mintServiceShareArtifacts("/tmp/config.yaml", cfg, cluster, "home", "default", "myapi", svc, time.Hour)
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name     string
+		svc      cfgpkg.NamespaceService
+		wantKind string
+		wantName string
+	}{
+		{name: "http", svc: cfgpkg.NamespaceService{ServiceID: "svc-http", ServiceSeed: "service-http", Kind: cfgpkg.ServiceKindHTTP}, wantKind: "http", wantName: "myapi"},
+		{name: "tcp", svc: cfgpkg.NamespaceService{ServiceID: "svc-tcp", ServiceSeed: "service-tcp", Kind: cfgpkg.ServiceKindTCP}, wantKind: "tcp", wantName: "ifconfig"},
 	}
-	payload, err := parseAndVerifyServiceShareToken(artifacts.Token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if payload.ServiceEndpoint.PeerID == "" || len(payload.ServiceEndpoint.Addresses) == 0 {
-		t.Fatalf("missing service endpoint: %#v", payload.ServiceEndpoint)
-	}
-	if payload.GrantService.Protocol != "" || len(payload.GrantService.Peers) != 0 {
-		t.Fatalf("grant service should be omitted unless explicit, got %#v", payload.GrantService)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			artifacts, err := mintServiceShareArtifacts("/tmp/config.yaml", cfg, cluster, "home", "default", tc.wantName, tc.svc, time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := parseAndVerifyServiceShareToken(artifacts.Token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if payload.ServiceEndpoint.PeerID == "" || len(payload.ServiceEndpoint.Addresses) == 0 {
+				t.Fatalf("missing service endpoint: %#v", payload.ServiceEndpoint)
+			}
+			if payload.ServiceKind != tc.wantKind {
+				t.Fatalf("expected %s share token, got %#v", tc.wantKind, payload)
+			}
+			if payload.ServiceID != tc.svc.ServiceID || payload.TargetServiceID != tc.svc.ServiceID {
+				t.Fatalf("expected token service ids to match current service, got %#v want %q", payload, tc.svc.ServiceID)
+			}
+			if payload.GrantService.Protocol != "" || len(payload.GrantService.Peers) != 0 {
+				t.Fatalf("grant service should be omitted unless explicit, got %#v", payload.GrantService)
+			}
+		})
 	}
 }
 
