@@ -8,6 +8,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Added
 - Detached process state now stores stable runtime capabilities, and `tubo ps` / `tubo ps --wide` / `inspect process/... --json` expose them.
+- A minimal A2A discovery spike test now exercises a mock Agent Card through the existing service/connect path using temporary `protocol=a2a` service metadata.
 
 ### Changed
 - Human process listings now show a `CAPS` column in both compact and wide views.

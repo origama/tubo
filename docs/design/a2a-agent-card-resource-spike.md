@@ -128,6 +128,7 @@ Implemented today in Tubo:
 
 - process state can carry `primary_ref` and `capabilities`
 - discovery can already carry resource metadata and capabilities for existing resource kinds
+- #307’s minimal spike currently uses a temporary `service` resource plus `capabilities: ["protocol=a2a"]` and the existing connect bridge to fetch the Agent Card; that is a test-only workaround until a real `agent/<name>` resource exists
 
 Proposed in this spike:
 
