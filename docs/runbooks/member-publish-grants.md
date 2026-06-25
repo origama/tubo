@@ -104,14 +104,18 @@ Keep these separate:
 Run this on the **authority node** (the machine that holds `authority_private_key_file`):
 
 ```bash
-tubo grants serve --cluster <cluster-name> --namespace <namespace-name>
+tubo start cluster/<cluster-name>
 ```
 
-To run it in the background:
+For private clusters, make sure the cluster config has an explicit discovery authority peer in `clusters.<cluster-name>.discovery_query_peers`; `tubo start cluster/<cluster-name>` will persist the live peer list on the authority node.
+
+If you want the foreground form instead, use `tubo grants serve --cluster <cluster-name> [--namespace <namespace-name>]`.
+
+To run it in the background explicitly:
 
 ```bash
 tubo grants serve --cluster <cluster-name> --namespace <namespace-name> -d
-tubo logs process/grants-serve-<cluster-name>-<namespace-name>
+tubo logs process/grants-serve-<cluster-name>
 ```
 
 Expected output:

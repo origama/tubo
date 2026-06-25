@@ -113,12 +113,13 @@ func (w *Workspace) ListClusters(configPath string) ([]ClusterView, error) {
 		}
 		sort.Strings(namespaceNames)
 		items = append(items, ClusterView{
-			Name:               name,
-			Current:            name == cfg.CurrentCluster,
-			ClusterID:          cluster.ClusterID,
-			AuthorityPublicKey: cluster.AuthorityPublicKey,
-			Capabilities:       append([]string(nil), cluster.Capabilities...),
-			Namespaces:         namespaceNames,
+			Name:                name,
+			Current:             name == cfg.CurrentCluster,
+			ClusterID:           cluster.ClusterID,
+			AuthorityPublicKey:   cluster.AuthorityPublicKey,
+			DiscoveryQueryPeers: append([]string(nil), cluster.DiscoveryQueryPeers...),
+			Capabilities:        append([]string(nil), cluster.Capabilities...),
+			Namespaces:          namespaceNames,
 		})
 	}
 	return items, nil
@@ -181,7 +182,7 @@ func (w *Workspace) DescribeCluster(configPath, name string) (ClusterDescription
 	for _, namespace := range namespaceNames {
 		namespaces = append(namespaces, ClusterNamespaceDescription{Name: namespace, Current: namespace == cfg.CurrentNamespace})
 	}
-	return ClusterDescription{Name: name, Current: name == cfg.CurrentCluster, ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, Capabilities: append([]string(nil), cluster.Capabilities...), Namespaces: namespaces}, nil
+	return ClusterDescription{Name: name, Current: name == cfg.CurrentCluster, ClusterID: cluster.ClusterID, AuthorityPublicKey: cluster.AuthorityPublicKey, DiscoveryQueryPeers: append([]string(nil), cluster.DiscoveryQueryPeers...), Capabilities: append([]string(nil), cluster.Capabilities...), Namespaces: namespaces}, nil
 }
 
 func ParseSecretRef(resource string) (secretType, clusterName, namespaceName string, err error) {

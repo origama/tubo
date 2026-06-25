@@ -28,6 +28,8 @@ import (
 	"github.com/origama/tubo/internal/serviceidentity"
 )
 
+var startDetachedProcessFn = startDetachedProcess
+
 func grantsCmd(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: tubo grants <serve|request|pending|describe|approve|deny|history>")
@@ -645,7 +647,7 @@ func grantsServeCmd(args []string) error {
 	scopedCfg := cfg
 	scopedCfg.CurrentCluster = *clusterName
 	scopedCfg.CurrentNamespace = *namespaceName
-	if err := publishGrantServiceDiscovery(ctx, host, overlay, priv, scopedCfg, *claimTTL); err != nil {
+	if err := publishGrantServiceDiscovery(ctx, host, overlay, priv, scopedCfg, *clusterName, *claimTTL, *configPath); err != nil {
 		return err
 	}
 	log.Printf("grants serve started pid=%d peer=%s protocol=%s store=%s", os.Getpid(), host.ID(), grantspkg.ProtocolID, *storePath)
@@ -662,7 +664,7 @@ func grantsServeCmd(args []string) error {
 	return nil
 }
 
-func publishGrantServiceDiscovery(ctx context.Context, h host.Host, overlay *p2p.OverlayHost, authorityPriv ed25519.PrivateKey, cfg cfgpkg.Config, claimTTL time.Duration) error {
+func publishGrantServiceDiscovery(ctx context.Context, h host.Host, overlay *p2p.OverlayHost, authorityPriv ed25519.PrivateKey, cfg cfgpkg.Config, clusterName string, claimTTL time.Duration, configPath string) error {
 	scope, err := cfgpkg.ResolveEffectiveScope(cfg, cfg.CurrentCluster, cfg.CurrentNamespace, false)
 	if err != nil {
 		return err
@@ -695,6 +697,9 @@ func publishGrantServiceDiscovery(ctx context.Context, h host.Host, overlay *p2p
 	publish := func() error {
 		service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, h, overlay, authorityPriv, claimTTL)
 		if err != nil {
+			return err
+		}
+		if err := persistClusterDiscoveryPeers(configPath, cfg, clusterName, runtime.ClusterID, service.Addresses); err != nil {
 			return err
 		}
 		if err := publisher.PublishV3(ctx, ann); err != nil {
@@ -799,22 +804,48 @@ func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg c
 	}
 }
 
+func persistClusterDiscoveryPeers(configPath string, cfg cfgpkg.Config, clusterName, clusterID string, addrs []string) error {
+	peers := grantServicePeersForTokens(addrs)
+	if len(peers) == 0 {
+		return fmt.Errorf("cluster %q discovery peers unavailable", clusterName)
+	}
+	clusterName = strings.TrimSpace(clusterName)
+	if clusterName == "" {
+		return fmt.Errorf("cluster discovery peer persistence requires a cluster name")
+	}
+	cluster, ok := cfg.Clusters[clusterName]
+	if !ok {
+		return fmt.Errorf("cluster %q not found", clusterName)
+	}
+	if strings.TrimSpace(cluster.ClusterID) != "" && strings.TrimSpace(cluster.ClusterID) != strings.TrimSpace(clusterID) {
+		return fmt.Errorf("cluster %q id mismatch while persisting discovery peers", clusterName)
+	}
+	cluster.DiscoveryQueryPeers = append([]string(nil), peers...)
+	cfg.Clusters[clusterName] = cluster
+	return saveLocalConfig(configPath, cfg)
+}
+
 func mustMarshalJSON(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
 
 func grantsServeProcessState(clusterName, namespaceName, listen string) detachedProcessState {
-	name := "grants-serve-" + sanitizeProcessName(clusterName+"-"+namespaceName)
+	_ = namespaceName
+	name := "grants-serve-" + sanitizeProcessName(clusterName)
 	return detachedProcessState{
 		ID:           "process/" + name,
 		Kind:         "process",
+		ResourceKind: "cluster/authority",
 		Command:      "grants serve",
 		Name:         name,
-		Purpose:      "discovery-authority",
+		PrimaryKind:  "authority",
+		PrimaryName:  clusterName,
+		PrimaryRef:   "authority/" + clusterName,
+		Purpose:      "cluster-authority",
 		Capabilities: processCapabilitiesForCommand("grants serve"),
 		Cluster:      clusterName,
-		Namespace:    namespaceName,
+		Namespace:    "",
 		Local:        listen,
 		LogFile:      filepath.Join(processLogDir(), name+".log"),
 		StateFile:    filepath.Join(processStateDir(), name+".json"),
@@ -854,7 +885,7 @@ func detachGrantsServeCommand(args []string) error {
 		State:     state,
 		ChildArgs: append([]string{"grants", "serve"}, args...),
 	}
-	started, err := startDetachedProcess(spec)
+	started, err := startDetachedProcessFn(spec)
 	if err != nil {
 		return err
 	}

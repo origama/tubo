@@ -18,6 +18,16 @@ func TestJoinClusterInvitePreservesExistingClusters(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["clusterA"]
+	cluster.DiscoveryQueryPeers = []string{"/dns4/authority.example/tcp/4001/p2p/12D3KooWBDXSkfRCux8NFenVRDUKQLUDPC4LAbaB6x1bpm8YBHLd"}
+	cfg.Clusters["clusterA"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify the initial state
 	cfgBefore, err := cfgpkg.LoadFile(configPath)
@@ -33,6 +43,16 @@ func TestJoinClusterInvitePreservesExistingClusters(t *testing.T) {
 	if _, err := capture(func() error {
 		return run([]string{"create", "cluster/clusterB", "--config", configPathB})
 	}); err != nil {
+		t.Fatal(err)
+	}
+	cfgB, err := cfgpkg.LoadFile(configPathB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clusterB := cfgB.Clusters["clusterB"]
+	clusterB.DiscoveryQueryPeers = []string{"/dns4/authority.example/tcp/4001/p2p/12D3KooWBDXSkfRCux8NFenVRDUKQLUDPC4LAbaB6x1bpm8YBHLd"}
+	cfgB.Clusters["clusterB"] = clusterB
+	if err := cfgpkg.WriteFile(configPathB, cfgB, true); err != nil {
 		t.Fatal(err)
 	}
 
@@ -83,6 +103,16 @@ func TestJoinClusterInvitePreservesExistingNamespaceServices(t *testing.T) {
 	if _, err := capture(func() error {
 		return run([]string{"create", "cluster/clusterA", "--config", configPath})
 	}); err != nil {
+		t.Fatal(err)
+	}
+	cfgA, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clusterA := cfgA.Clusters["clusterA"]
+	clusterA.DiscoveryQueryPeers = []string{"/dns4/authority.example/tcp/4001/p2p/12D3KooWBDXSkfRCux8NFenVRDUKQLUDPC4LAbaB6x1bpm8YBHLd"}
+	cfgA.Clusters["clusterA"] = clusterA
+	if err := cfgpkg.WriteFile(configPath, cfgA, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := capture(func() error {
@@ -155,6 +185,16 @@ func TestJoinClusterInviteSetsContextWhenEmpty(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	cfg, err := cfgpkg.LoadFile(configPathAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["clusterB"]
+	cluster.DiscoveryQueryPeers = []string{"/dns4/authority.example/tcp/4001/p2p/12D3KooWBDXSkfRCux8NFenVRDUKQLUDPC4LAbaB6x1bpm8YBHLd"}
+	cfg.Clusters["clusterB"] = cluster
+	if err := cfgpkg.WriteFile(configPathAuth, cfg, true); err != nil {
+		t.Fatal(err)
+	}
 	out, err := capture(func() error {
 		return run([]string{"share", "cluster/clusterB", "--config", configPathAuth, "--expires", "1h"})
 	})
@@ -188,6 +228,16 @@ func TestJoinClusterInviteSwitchesNamespaceWhenClusterAlreadySelected(t *testing
 	if _, err := capture(func() error {
 		return run([]string{"create", "cluster/clusterA", "--config", configPath})
 	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["clusterA"]
+	cluster.DiscoveryQueryPeers = []string{"/dns4/authority.example/tcp/4001/p2p/12D3KooWBDXSkfRCux8NFenVRDUKQLUDPC4LAbaB6x1bpm8YBHLd"}
+	cfg.Clusters["clusterA"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := capture(func() error {

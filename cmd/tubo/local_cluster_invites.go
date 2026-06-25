@@ -141,6 +141,10 @@ func localShareCmd(args []string) error {
 	if err != nil {
 		return err
 	}
+	discoveryPeers, err := clusterInviteDiscoveryPeers(cfg, name, cluster)
+	if err != nil {
+		return err
+	}
 	grantPeers, err := parseGrantServicePeers(*grantPeer)
 	if err != nil {
 		return err
@@ -158,17 +162,18 @@ func localShareCmd(args []string) error {
 		return err
 	}
 	payload := clusterInvitePayload{
-		Version:            clusterInviteVersion,
-		Kind:               clusterInviteKind,
-		JTI:                jti,
-		ClusterName:        name,
-		ClusterID:          cluster.ClusterID,
-		AuthorityPublicKey: cluster.AuthorityPublicKey,
-		Namespace:          selectedNamespace,
-		Discovery:          discoveryEntry,
-		Grant:              grant,
-		IssuedAt:           now,
-		ExpiresAt:          now.Add(*expires),
+		Version:             clusterInviteVersion,
+		Kind:                clusterInviteKind,
+		JTI:                 jti,
+		ClusterName:         name,
+		ClusterID:           cluster.ClusterID,
+		AuthorityPublicKey:  cluster.AuthorityPublicKey,
+		Namespace:           selectedNamespace,
+		Discovery:           discoveryEntry,
+		DiscoveryQueryPeers: append([]string(nil), discoveryPeers...),
+		Grant:               grant,
+		IssuedAt:            now,
+		ExpiresAt:           now.Add(*expires),
 	}
 	if len(grantPeers) > 0 {
 		payload.GrantService = clusterInviteGrantService{Protocol: grantspkg.ProtocolID, Peers: grantPeers}
@@ -360,6 +365,11 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	}
 	cluster.ClusterID = payload.ClusterID
 	cluster.AuthorityPublicKey = payload.AuthorityPublicKey
+	if peers := payload.DiscoveryQueryPeers; len(peers) > 0 {
+		cluster.DiscoveryQueryPeers = append([]string(nil), peers...)
+	} else if payload.GrantService.Protocol == grantspkg.ProtocolID && len(payload.GrantService.Peers) > 0 {
+		cluster.DiscoveryQueryPeers = append([]string(nil), payload.GrantService.Peers...)
+	}
 	// Bug fix: preserve the existing namespace entry (discovery policy, connect
 	// policy, services, capability files) instead of overwriting with an empty
 	// struct. We only add the namespace if it does not exist yet.
@@ -563,6 +573,21 @@ func isClusterInviteToken(token string) bool {
 	return clusterinvite.IsToken(token)
 }
 
+func clusterInviteDiscoveryPeers(cfg cfgpkg.Config, clusterName string, cluster cfgpkg.Cluster) ([]string, error) {
+	if peers := uniqueStrings(cluster.DiscoveryQueryPeers); len(peers) > 0 {
+		return peers, nil
+	}
+	if cluster.MembershipGrant != nil {
+		if peers := uniqueStrings(cluster.MembershipGrant.GrantServicePeers); len(peers) > 0 {
+			return peers, nil
+		}
+	}
+	if cfgpkg.IsPublicDefaultScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: clusterName, Namespace: cfg.CurrentNamespace}) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("cluster %q is missing discovery_query_peers; run `tubo start cluster/%s` first", clusterName, clusterName)
+}
+
 func clusterInviteDiscoveryEntry(cluster cfgpkg.Cluster, namespace string) (*clusterinvite.NamespaceDiscoveryEntry, error) {
 	ns, ok := cluster.Namespaces[namespace]
 	if !ok {
@@ -629,7 +654,7 @@ func installClusterInviteMembershipToken(configDir string, payload clusterInvite
 	if membershipPayload.ClusterName != payload.ClusterName || membershipPayload.ClusterID != payload.ClusterID || membershipPayload.Namespace != payload.Namespace {
 		return "", errors.New("cluster invite membership token does not match outer cluster scope")
 	}
-	if membershipPayload.AuthorityPublicKey != payload.AuthorityPublicKey || membershipPayload.Grant.Role != payload.Grant.Role || !stringSliceEqualSet(membershipPayload.Grant.Permissions, payload.Grant.Permissions) || membershipPayload.GrantService.Protocol != payload.GrantService.Protocol || !stringSliceEqualSet(membershipPayload.GrantService.Peers, payload.GrantService.Peers) || !membershipPayload.IssuedAt.Equal(payload.IssuedAt) || !membershipPayload.ExpiresAt.Equal(payload.ExpiresAt) {
+	if membershipPayload.AuthorityPublicKey != payload.AuthorityPublicKey || membershipPayload.Grant.Role != payload.Grant.Role || !stringSliceEqualSet(membershipPayload.Grant.Permissions, payload.Grant.Permissions) || !stringSliceEqualSet(membershipPayload.DiscoveryQueryPeers, payload.DiscoveryQueryPeers) || membershipPayload.GrantService.Protocol != payload.GrantService.Protocol || !stringSliceEqualSet(membershipPayload.GrantService.Peers, payload.GrantService.Peers) || !membershipPayload.IssuedAt.Equal(payload.IssuedAt) || !membershipPayload.ExpiresAt.Equal(payload.ExpiresAt) {
 		return "", errors.New("cluster invite membership token does not match outer invite grant metadata")
 	}
 	paths := workspace.Paths{ConfigDir: configDir}
