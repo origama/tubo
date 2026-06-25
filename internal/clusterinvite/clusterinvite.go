@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/multiformats/go-multiaddr"
 	"golang.org/x/crypto/ssh"
 
 	capability "github.com/origama/tubo/internal/capability"
@@ -47,19 +48,20 @@ type NamespaceDiscoveryEntry struct {
 }
 
 type Payload struct {
-	Version            string                   `json:"version"`
-	Kind               string                   `json:"kind"`
-	JTI                string                   `json:"jti"`
-	ClusterName        string                   `json:"cluster_name"`
-	ClusterID          string                   `json:"cluster_id"`
-	AuthorityPublicKey string                   `json:"authority_public_key"`
-	Namespace          string                   `json:"namespace"`
-	Discovery          *NamespaceDiscoveryEntry `json:"discovery,omitempty"`
-	MembershipToken    string                   `json:"membership_token,omitempty"`
-	Grant              Grant                    `json:"grant"`
-	GrantService       GrantService             `json:"grant_service,omitempty"`
-	IssuedAt           time.Time                `json:"issued_at"`
-	ExpiresAt          time.Time                `json:"expires_at"`
+	Version             string                   `json:"version"`
+	Kind                string                   `json:"kind"`
+	JTI                 string                   `json:"jti"`
+	ClusterName         string                   `json:"cluster_name"`
+	ClusterID           string                   `json:"cluster_id"`
+	AuthorityPublicKey  string                   `json:"authority_public_key"`
+	Namespace           string                   `json:"namespace"`
+	Discovery           *NamespaceDiscoveryEntry `json:"discovery,omitempty"`
+	DiscoveryQueryPeers []string                 `json:"discovery_query_peers,omitempty"`
+	MembershipToken     string                   `json:"membership_token,omitempty"`
+	Grant               Grant                    `json:"grant"`
+	GrantService        GrantService             `json:"grant_service,omitempty"`
+	IssuedAt            time.Time                `json:"issued_at"`
+	ExpiresAt           time.Time                `json:"expires_at"`
 }
 
 func GrantForRole(role string) (Grant, error) {
@@ -181,6 +183,9 @@ func ValidatePayload(payload Payload) error {
 	if err := ValidateNamespaceDiscoveryEntry(*payload.Discovery); err != nil {
 		return fmt.Errorf("cluster invite discovery: %w", err)
 	}
+	if err := validatePeerList(payload.DiscoveryQueryPeers, "cluster invite discovery_query_peers"); err != nil {
+		return err
+	}
 	return validateGrant(payload, "cluster invite")
 }
 
@@ -190,6 +195,9 @@ func ValidateMembershipGrantPayload(payload Payload) error {
 	}
 	if payload.Discovery != nil {
 		return errors.New("cluster membership grant must not contain namespace discovery entry")
+	}
+	if err := validatePeerList(payload.DiscoveryQueryPeers, "cluster membership grant discovery_query_peers"); err != nil {
+		return err
 	}
 	if strings.TrimSpace(payload.MembershipToken) != "" {
 		return errors.New("cluster membership grant must not contain nested membership token")
@@ -271,6 +279,18 @@ func validateGrant(payload Payload, label string) error {
 
 func IsToken(token string) bool {
 	return strings.HasPrefix(token, TokenPrefix)
+}
+
+func validatePeerList(peers []string, label string) error {
+	for _, raw := range peers {
+		if strings.TrimSpace(raw) == "" {
+			return fmt.Errorf("%s contains an empty peer", label)
+		}
+		if _, err := multiaddr.NewMultiaddr(raw); err != nil {
+			return fmt.Errorf("%s peer %q is invalid: %w", label, raw, err)
+		}
+	}
+	return nil
 }
 
 func ValidateNamespaceDiscoveryEntry(entry NamespaceDiscoveryEntry) error {

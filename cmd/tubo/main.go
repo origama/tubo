@@ -654,9 +654,9 @@ Rotate the managed namespace discovery secret using the current/previous model.`
   tubo grants approve <request-id> --claim-ttl 7d [--publish-lease-ttl 7d] [--share-ttl 1h]
   tubo grants deny <request-id> --reason <reason>
   tubo grants request service/<name> --peer <multiaddr>
-  tubo grants serve --cluster <name> --namespace <name> [--public-auto-approve] [--claim-ttl 24h]
+  tubo grants serve --cluster <name> [--namespace <name>] [--public-auto-approve] [--claim-ttl 24h]
 
-Manage publish-grant requests and the grant service on authority nodes.
+Manage the cluster authority process for grants and discovery cache/query.
 
 Manual approval is the safest default. --public-auto-approve is the current legacy auto-approval switch and should only be used on tightly controlled private clusters. The desired future policy vocabulary is documented in the member publish-grants runbook; those future policy flags are not implemented yet.`)
 	case "peers":
@@ -671,10 +671,10 @@ Save a local operator-only label for a peer ID.`)
 Show live local traffic stats for registered Tubo processes.`)
 	case "start":
 		fmt.Println(`Usage:
-  tubo start [--config <path>] <service/name|pipe/name>
+  tubo start [--config <path>] <service/name|pipe/name|cluster/name>
 
-Start a service runtime from the stored local service definition or start a pipe runtime from the saved pipe definition.
-Both slices reuse persisted local definition data and refuse to start if the runtime is already running.`)
+Start a service runtime from the stored local service definition, start a pipe runtime from the saved pipe definition, or start the cluster authority process from cluster material.
+All slices reuse persisted local definition data and refuse to start if the runtime is already running.`)
 	case "restart":
 		fmt.Println(`Usage:
   tubo restart [--config <path>] <service/name|pipe/name>
@@ -1372,6 +1372,12 @@ func printDetachedSummary(commandName string, state detachedProcessState) {
 		if state.ServiceID != "" {
 			logging.Resultf("service id: %s\n", state.ServiceID)
 		}
+	case "grants serve":
+		if state.Cluster != "" {
+			logging.Resultf("started cluster authority for cluster %q\n", state.Cluster)
+		} else {
+			logging.Resultf("started cluster authority\n")
+		}
 	default:
 		logging.Resultf("started %s\n", commandName)
 	}
@@ -1393,6 +1399,22 @@ func processTTLColumn(item processView) string {
 	return "-"
 }
 
+func processScopeLabel(item processView) string {
+	if strings.TrimSpace(item.Cluster) != "" && (strings.TrimSpace(item.PrimaryKind) == "authority" || strings.TrimSpace(item.Command) == "grants serve") {
+		return item.Cluster + "/authority"
+	}
+	if strings.TrimSpace(item.Cluster) != "" && strings.TrimSpace(item.Namespace) != "" {
+		return item.Cluster + "/" + item.Namespace
+	}
+	if strings.TrimSpace(item.Cluster) != "" {
+		return item.Cluster
+	}
+	if strings.TrimSpace(item.Namespace) != "" {
+		return item.Namespace
+	}
+	return "-"
+}
+
 func processResourceKind(item processView) string {
 	if strings.TrimSpace(item.ResourceKind) != "" {
 		return item.ResourceKind
@@ -1402,6 +1424,8 @@ func processResourceKind(item processView) string {
 		return "service"
 	case "connect":
 		return "pipe"
+	case "grants serve":
+		return "cluster/authority"
 	default:
 		return "process"
 	}
@@ -1500,10 +1524,7 @@ func printProcessesTable(items []processView) {
 		if target == "" {
 			target = "-"
 		}
-		scope := "-"
-		if item.Cluster != "" || item.Namespace != "" {
-			scope = item.Cluster + "/" + item.Namespace
-		}
+		scope := processScopeLabel(item)
 		path := item.Path
 		if path == "" {
 			path = "-"

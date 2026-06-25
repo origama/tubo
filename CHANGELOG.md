@@ -8,20 +8,24 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Added
 - Detached process state now stores stable runtime capabilities, and `tubo ps` / `tubo ps --wide` / `inspect process/... --json` expose them.
+- `tubo start cluster/<name>` now starts the cluster authority process for private-cluster grants and discovery cache/query.
 
 ### Changed
 - Human process listings now show a `CAPS` column in both compact and wide views.
 - Human process listings and `describe process/...` now separate runtime liveness from authorization state with explicit `AUTH`, `Advertisement status/reason`, and `Authorization status/reason` fields.
 - Legacy process state files without `capabilities` are still readable and are backfilled in memory from the stored command.
+- `grants serve` now registers as a cluster authority process in `tubo ps` and carries cluster-level discovery-cache/query capabilities.
 
 ### Fixed
 - `tubo connect` now treats rollover artifacts with a near-expired delegated refresh lease as non-useful, backs off instead of storming the service grant endpoint, and surfaces clearer rate-limit / publish-renewal status reasons.
+- Private `tubo get services` discovery now prefers the configured cluster authority peer and fails clearly when that peer is missing instead of silently using the public relay path.
 - Grant minting now keeps derived share-invite and namespace-member connect lifetimes inside the live publish/membership expiry they were authorized from, including connect refresh on the service-side grant endpoint.
 - Detached attach/connect now rereread refreshed membership/config material on renewal retries, so a valid reissued/imported membership restores publishing or reconnecting without restart.
 - Discovery/query `announce_service` no longer accepts namespace-scoped service DTOs as trusted cache input; those records now require validated Discovery V3 authorization, `announce_service_v3` now routes through the shared AnnouncementV3 validator, and cache TTL now respects the earliest relevant authorization expiry.
 - Namespace-scoped `get services` / `get service/...` now require a membership capability bound to the requester peer ID or an accepted membership grant proof; Tubo now derives a stable discovery-query identity per cluster/namespace for that binding, and missing or expired membership fails closed with a clear authorization/config error instead of an empty namespace.
 - Discovery membership grant tokens now accept any permission superset that includes `subscribe` + `list`, regardless of order.
 - `tubo top` runtime counters now update while TCP/WebSocket and HTTP proxy transfers are in flight, instead of only after the stream finishes.
+- Approved publish-grant recovery now keeps service advertisement bound to the service-publisher membership capability path: after approval, attach reuses the service-scoped membership file written for the publisher peer, surfaces exact membership verification errors in status/logs, and no longer loops new publish-grant requests when a valid publish lease remains blocked only by invalid membership material.
 
 ### Compatibility
 - Product version: unreleased

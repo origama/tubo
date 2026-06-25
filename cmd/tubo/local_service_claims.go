@@ -20,6 +20,7 @@ import (
 	attachauth "github.com/origama/tubo/internal/attachauth"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
@@ -201,6 +202,15 @@ func (c *attachPublishAuthorizationCoordinator) handle(ctx context.Context, req 
 	if !c.nextAttempt.IsZero() && now.Before(c.nextAttempt) {
 		nextAttempt := c.nextAttempt
 		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: fmt.Sprintf("retry backoff active until %s", nextAttempt.UTC().Format(time.RFC3339)), RetryAfter: &nextAttempt}
+	}
+	if (reason == serviceapp.AnnouncementBlockedMembershipCapabilityMissing || reason == serviceapp.AnnouncementBlockedMembershipCapabilityInvalid) && strings.TrimSpace(c.svc.GrantRequestID) == "" {
+		if err := verifyCurrentAttachPublishLease(c.cfg, c.svc, c.servicePeerID); err == nil {
+			message := strings.TrimSpace(req.Detail)
+			if message == "" {
+				message = "membership capability still blocks announcement"
+			}
+			return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: message}
+		}
 	}
 	renew := c.renew
 	if renew == nil {
@@ -418,7 +428,7 @@ func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Clu
 	if cluster.AuthorityPrivateKeyFile != "" {
 		return ensureServiceMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
 	}
-	return namespaceMembershipCapabilityFile(cluster, namespaceName)
+	return capPath, nil
 }
 
 func serviceEndpointAddrsForTokens(cfg cfgpkg.Config, servicePeerID string) []string {
@@ -668,6 +678,18 @@ func verifyPublishLeaseFile(path string, pub ed25519.PublicKey, clusterID, names
 		return err
 	}
 	return grantspkg.VerifyPublishLease(lease, pub, clusterID, namespaceID, serviceID, servicePeerID)
+}
+
+func verifyCurrentAttachPublishLease(cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) error {
+	cluster, ok := cfg.Clusters[cfg.CurrentCluster]
+	if !ok {
+		return fmt.Errorf("current cluster %q not found", cfg.CurrentCluster)
+	}
+	authorityPub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
+	if err != nil {
+		return err
+	}
+	return verifyPublishLeaseFile(svc.ServicePublishLeaseFile, authorityPub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID)
 }
 
 func readPublishLeaseFile(path string) (grantspkg.PublishLease, error) {

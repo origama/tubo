@@ -1,6 +1,7 @@
 package catalog
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +55,24 @@ func TestMatchesActualScopeKeepsLegacyUserServicesButRejectsLegacySystemServices
 	}
 	if filtered[0].Name != "user-api" || filtered[1].Name != "scoped-grant-service" {
 		t.Fatalf("unexpected filtered services: %#v", filtered)
+	}
+}
+
+func TestDiscoveryPeersPreferClusterDiscoveryQueryPeers(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Network: cfgpkg.Network{BootstrapPeers: []string{"/dns4/relay.example/tcp/4001/p2p/12D3KooWRelay"}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: "ssh-ed25519 AAAA", DiscoveryQueryPeers: []string{"/dns4/authority.example/tcp/4001/p2p/12D3KooWAuthority"}, MembershipGrant: &cfgpkg.ClusterMembershipGrant{GrantServicePeers: []string{"/dns4/fallback.example/tcp/4001/p2p/12D3KooWFallback"}}}}}
+	peers, err := discoveryPeersForConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(peers) != 1 || peers[0] != "/dns4/authority.example/tcp/4001/p2p/12D3KooWAuthority" {
+		t.Fatalf("unexpected peers: %#v", peers)
+	}
+}
+
+func TestDiscoveryPeersRequireConfiguredClusterAuthorityPeer(t *testing.T) {
+	cfg := cfgpkg.Config{CurrentOverlay: "manual", CurrentCluster: "home", CurrentNamespace: "default", Network: cfgpkg.Network{RelayPeers: []string{"/dns4/relay.example/tcp/4001/p2p/12D3KooWRelay"}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: "ssh-ed25519 AAAA", AuthorityPrivateKeyFile: "/tmp/authority.key", MembershipCapabilityFile: "/tmp/membership.cap.json"}}}
+	if _, err := discoveryPeersForConfig(cfg); err == nil || !strings.Contains(err.Error(), "no discovery authority/cache peer configured for cluster \"home\" namespace \"default\"") {
+		t.Fatalf("expected missing authority peer error, got %v", err)
 	}
 }
 

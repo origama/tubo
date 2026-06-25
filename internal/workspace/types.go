@@ -22,12 +22,13 @@ type OverlayView struct {
 }
 
 type ClusterView struct {
-	Name               string   `json:"name"`
-	Current            bool     `json:"current"`
-	ClusterID          string   `json:"cluster_id,omitempty"`
-	AuthorityPublicKey string   `json:"authority_public_key,omitempty"`
-	Capabilities       []string `json:"capabilities,omitempty"`
-	Namespaces         []string `json:"namespaces,omitempty"`
+	Name                string   `json:"name"`
+	Current             bool     `json:"current"`
+	ClusterID           string   `json:"cluster_id,omitempty"`
+	AuthorityPublicKey  string   `json:"authority_public_key,omitempty"`
+	DiscoveryQueryPeers []string `json:"discovery_query_peers,omitempty"`
+	Capabilities        []string `json:"capabilities,omitempty"`
+	Namespaces          []string `json:"namespaces,omitempty"`
 }
 
 type NamespaceView struct {
@@ -45,12 +46,13 @@ type OverlayDescription struct {
 }
 
 type ClusterDescription struct {
-	Name               string
-	Current            bool
-	ClusterID          string
-	AuthorityPublicKey string
-	Capabilities       []string
-	Namespaces         []ClusterNamespaceDescription
+	Name                string
+	Current             bool
+	ClusterID           string
+	AuthorityPublicKey  string
+	DiscoveryQueryPeers []string
+	Capabilities        []string
+	Namespaces          []ClusterNamespaceDescription
 }
 
 type ClusterNamespaceDescription struct {
