@@ -49,7 +49,9 @@ mints publish leases locally without any grant protocol round-trip.
 
 1. The authority starts `tubo grants serve` — this makes the Grant Service
    reachable and, when namespace discovery is enabled, publishes a discoverable
-   `grant-service` system record so members can find it automatically.
+   `grant-service` system record so members can find it automatically. `grants serve`
+   now waits for a usable reachable peer address before publishing, so the first
+   discovery record already carries a dialable grant endpoint.
 2. The member runs `tubo attach` — it discovers the grant endpoint, submits a
    `PublishLease` request, and waits for approval.
 3. The authority approves the request — the member's next `tubo attach` (or an
@@ -352,6 +354,12 @@ tubo rotate secret namespace/<namespace-name>
 
 The service name contains characters not allowed by the grant protocol. Rename
 the service to match `^[a-z0-9][a-z0-9@._-]{0,62}$`.
+
+### `grants serve` waits and then fails with `grant service discovery could not find a reachable peer address`
+
+The authority never obtained a usable relay/direct address for the grant service.
+Check that the relay is up and reachable, then restart `tubo start cluster/<name>`
+(or `tubo grants serve`).
 
 ### Grant request never appears in `tubo grants pending`
 

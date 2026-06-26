@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/p2p"
@@ -52,6 +55,49 @@ func TestGrantServicePeersForTokensDropsLocalOnlyCandidates(t *testing.T) {
 	got := grantServicePeersForTokens(addrs)
 	if len(got) != 0 {
 		t.Fatalf("grantServicePeersForTokens() = %#v, want empty", got)
+	}
+}
+
+func TestWaitForGrantServiceDiscoveryAddrsReturnsFirstUsablePeer(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	calls := 0
+	want := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWGrant"}
+	got, err := waitForGrantServiceDiscoveryAddrs(ctx, func() []string {
+		calls++
+		if calls < 3 {
+			return nil
+		}
+		return want
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("waitForGrantServiceDiscoveryAddrs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestWaitForGrantServiceDiscoveryAddrsAcceptsDirectUsableAddresses(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	want := []string{"/ip4/172.17.0.1/tcp/40191/p2p/12D3KooWGrant"}
+	got, err := waitForGrantServiceDiscoveryAddrs(ctx, func() []string { return want })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("waitForGrantServiceDiscoveryAddrs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestWaitForGrantServiceDiscoveryAddrsTimesOutCleanly(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	got, err := waitForGrantServiceDiscoveryAddrs(ctx, func() []string { return nil })
+	if err == nil || got != nil || !strings.Contains(err.Error(), "timed out waiting for a usable reachable grant-service address") {
+		t.Fatalf("waitForGrantServiceDiscoveryAddrs() = %#v, %v", got, err)
 	}
 }
 

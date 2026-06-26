@@ -7654,7 +7654,7 @@ func TestBuildGrantServiceDiscoveryArtifactsUsesScopedRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer overlay.Close()
-	service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, overlay.Host, overlay, authorityPriv, time.Minute)
+	service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, overlay.Host, authorityPriv, time.Minute, overlay.ReachableAddrs())
 	if err != nil {
 		t.Fatal(err)
 	}

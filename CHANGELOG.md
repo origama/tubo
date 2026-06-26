@@ -71,6 +71,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `tubo rm service/<name>` now saves the updated service config before deleting service-scoped artifacts, so a config save failure no longer leaves artifacts deleted while the service definition remains in place.
 - `attach` now clears a consumed `grant_request_id` after an approved publish lease is written, and the grant store reuses an existing pending request for equivalent retries instead of creating duplicate pending requests.
 - `attach`, `tubo grants request service/<name>`, and `tubo start service/<name>` now rediscover stale stored grant-service peers during grant retry flows, while still respecting an explicit `--peer` and reusing saved pending request IDs before creating new ones.
+- `grants serve` now waits for a usable reachable peer address before publishing the grant-service discovery record, so the first private-cluster announcement includes a dialable grant endpoint instead of an empty control-plane entry.
 - `tubo get services --system` now surfaces grant-service freshness with an expiry column, and grant-peer recovery skips expired remote-cache grant-service records so stale control-plane endpoints do not outrank live ones.
 - `tubo grants pending` now makes grouped duplicate pending requests explicit in compact output with latest/oldest request IDs and an `approve latest` hint.
 - `tubo grants history` now also surfaces mixed groups where the latest row is approved but pending duplicates still exist, without suggesting `approve latest` from history.
