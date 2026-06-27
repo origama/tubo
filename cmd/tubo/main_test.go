@@ -5873,7 +5873,7 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" || authz.ServicePublishLeaseFile == "" {
 		t.Fatalf("expected approved authz to save claim, publish lease, and membership: %#v", authz)
 	}
-	if want := serviceMembershipCapabilityPath(configPath, "home", "default"); authz.MembershipCapabilityFile != want {
+	if want := serviceMembershipCapabilityPath(configPath, "home", "default", "myapi"); authz.MembershipCapabilityFile != want {
 		t.Fatalf("membership capability path = %q, want %q", authz.MembershipCapabilityFile, want)
 	}
 	membershipBytes, err := os.ReadFile(authz.MembershipCapabilityFile)

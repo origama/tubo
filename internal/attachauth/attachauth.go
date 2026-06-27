@@ -98,7 +98,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 	}
 
 	if err := r.deps.ArtifactStore.VerifyPublishLease(svc.ServicePublishLeaseFile, authorityPub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID); err == nil {
-		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc.ServiceSeed)
 		if err != nil {
 			return ResolveResult{}, err
 		}
@@ -132,7 +132,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		grantPeer = grantServicePeer(cluster)
 	}
 	if cluster.AuthorityPrivateKeyFile == "" && grantPeer == "" && claimErr == nil {
-		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc.ServiceSeed)
 		if err != nil {
 			return ResolveResult{}, err
 		}
@@ -146,7 +146,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
 			return ResolveResult{}, err
 		}
-		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc.ServiceSeed)
 		if err != nil {
 			return ResolveResult{}, err
 		}
@@ -164,7 +164,7 @@ func (r *resolver) Resolve(_ context.Context, req ResolveRequest) (ResolveResult
 		updatedCfg, updatedSvc, updatedShareToken, grantErr := r.deps.GrantClient.RequestPublishGrant(req.ConfigPath, cfg, svc, servicePeerID)
 		if grantErr == nil {
 			updatedCluster := updatedCfg.Clusters[updatedCfg.CurrentCluster]
-			updatedMembershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, updatedCluster, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace, updatedSvc.ServiceSeed)
+			updatedMembershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, updatedCluster, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace, updatedCfg.Service.Name, updatedSvc.ServiceSeed)
 			if err != nil {
 				return ResolveResult{}, err
 			}
@@ -228,7 +228,7 @@ func (r *resolver) Renew(_ context.Context, req RenewRequest) (ResolveResult, er
 		if err := r.deps.AuthoritySigner.MintLocalPublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
 			return ResolveResult{}, err
 		}
-		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, svc.ServiceSeed)
+		membershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc.ServiceSeed)
 		if err != nil {
 			return ResolveResult{}, err
 		}
@@ -244,7 +244,7 @@ func (r *resolver) Renew(_ context.Context, req RenewRequest) (ResolveResult, er
 			return ResolveResult{}, err
 		}
 		updatedCluster := updatedCfg.Clusters[updatedCfg.CurrentCluster]
-		updatedMembershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, updatedCluster, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace, updatedSvc.ServiceSeed)
+		updatedMembershipFile, err := r.deps.ArtifactStore.ResolveMembershipCapabilityFile(req.ConfigPath, updatedCluster, updatedCfg.CurrentCluster, updatedCfg.CurrentNamespace, updatedCfg.Service.Name, updatedSvc.ServiceSeed)
 		if err != nil {
 			return ResolveResult{}, err
 		}

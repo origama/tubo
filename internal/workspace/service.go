@@ -83,7 +83,7 @@ func (w *Workspace) CreateService(configPath, name string) (CreateServiceResult,
 	}
 	ctx := ensured.Context
 	cluster = ctx.Config.Clusters[ctx.ClusterName]
-	if _, err := w.ResolveMembershipCapabilityFile(configPath, cluster, ctx.ClusterName, ctx.Namespace, ctx.Service.ServiceSeed); err != nil {
+	if _, err := w.ResolveMembershipCapabilityFile(configPath, cluster, ctx.ClusterName, ctx.Namespace, ctx.Name, ctx.Service.ServiceSeed); err != nil {
 		return CreateServiceResult{}, err
 	}
 	if alreadyExists {
@@ -103,10 +103,24 @@ func (w *Workspace) ResolveServiceContext(configPath, serviceRef, clusterName, n
 	return w.resolveServiceContext(cfg, strings.TrimSpace(clusterName), strings.TrimSpace(namespaceName), strings.TrimSpace(serviceRef))
 }
 
-func (w *Workspace) ResolveMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
-	capPath := DerivePaths(configPath).ServiceMembershipCapability(clusterName, namespaceName)
+func (w *Workspace) ResolveMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName, serviceSeed string) (string, error) {
+	capPath := DerivePaths(configPath).ServiceMembershipCapability(clusterName, namespaceName, serviceName)
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		return "", fmt.Errorf("derive service peer id: %w", err)
+	}
 	if _, err := w.store.Stat(capPath); err == nil {
-		return capPath, nil
+		// File exists - verify the SubjectPeerID matches current service peer ID
+		if data, readErr := w.store.ReadFile(capPath); readErr == nil {
+			var existing capability.MembershipCapability
+			if jsonErr := json.Unmarshal(data, &existing); jsonErr == nil {
+				if existing.SubjectPeerID == servicePeerID.String() {
+					return capPath, nil
+				}
+				// Peer ID mismatch - need to regenerate
+			}
+		}
+		// If we can't read/parse or peer ID doesn't match, fall through to regenerate
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
@@ -121,10 +135,6 @@ func (w *Workspace) ResolveMembershipCapabilityFile(configPath string, cluster c
 		}
 		if cluster.AuthorityPublicKey != pubAuthorized {
 			return "", fmt.Errorf("cluster %q authority public key mismatch", clusterName)
-		}
-		servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
-		if err != nil {
-			return "", err
 		}
 		membership, err := capability.SignMembershipCapability(capability.MembershipCapability{
 			ClusterID:     cluster.ClusterID,

@@ -64,7 +64,7 @@ func (f fakeArtifactStore) VerifyServiceClaim(string, ed25519.PublicKey, string,
 	return f.serviceClaimErr
 }
 
-func (f fakeArtifactStore) ResolveMembershipCapabilityFile(string, cfgpkg.Cluster, string, string, string) (string, error) {
+func (f fakeArtifactStore) ResolveMembershipCapabilityFile(string, cfgpkg.Cluster, string, string, string, string) (string, error) {
 	return f.membershipFile, f.membershipErr
 }
 

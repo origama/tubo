@@ -335,7 +335,7 @@ func TestResolveMembershipCapabilityFileRequiresRuntimeEvidence(t *testing.T) {
 	}}}
 	path := writeTestConfig(t, cfg)
 	ws := Open(FSStore{})
-	if _, err := ws.ResolveMembershipCapabilityFile(path, cfg.Clusters["home"], "home", "default", "seed"); err == nil || !strings.Contains(err.Error(), "no membership capability file configured") {
+	if _, err := ws.ResolveMembershipCapabilityFile(path, cfg.Clusters["home"], "home", "default", "testservice", "seed"); err == nil || !strings.Contains(err.Error(), "no membership capability file configured") {
 		t.Fatalf("err=%v", err)
 	}
 }

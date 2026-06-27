@@ -45,8 +45,8 @@ func (p Paths) NamespaceDiscoveryPreviousSecret(cluster, namespace string) strin
 	return filepath.Join(p.NamespaceDir(cluster, namespace), "discovery-previous.secret")
 }
 
-func (p Paths) ServiceMembershipCapability(cluster, namespace string) string {
-	return filepath.Join(p.NamespaceDir(cluster, namespace), "cluster.membership.cap.json")
+func (p Paths) ServiceMembershipCapability(cluster, namespace, service string) string {
+	return filepath.Join(p.ServiceDir(cluster, namespace), sanitizeName(service)+".membership.cap.json")
 }
 
 func (p Paths) ServiceClaim(cluster, namespace, service string) string {

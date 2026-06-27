@@ -211,7 +211,7 @@ func handleGrantClientResponse(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 			}
 		}
 		if resp.MembershipCapability != nil {
-			membershipPath := serviceMembershipCapabilityPath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace)
+			membershipPath := serviceMembershipCapabilityPath(configPath, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name)
 			if err := writeCapabilityFile(membershipPath, *resp.MembershipCapability); err != nil {
 				return "", err
 			}

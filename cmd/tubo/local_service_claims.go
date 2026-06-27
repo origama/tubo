@@ -418,15 +418,29 @@ func verifyServiceClaimFile(path string, pub ed25519.PublicKey, clusterID, names
 	return capability.VerifyServiceClaim(claim, pub, clusterID, namespaceID, serviceID, servicePeerID)
 }
 
-func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
-	capPath := serviceMembershipCapabilityPath(configPath, clusterName, namespaceName)
+func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName, serviceSeed string) (string, error) {
+	capPath := serviceMembershipCapabilityPath(configPath, clusterName, namespaceName, serviceName)
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		return "", fmt.Errorf("derive service peer id: %w", err)
+	}
 	if _, err := os.Stat(capPath); err == nil {
-		return capPath, nil
+		// File exists - verify the SubjectPeerID matches current service peer ID
+		if data, readErr := os.ReadFile(capPath); readErr == nil {
+			var existing capability.MembershipCapability
+			if jsonErr := json.Unmarshal(data, &existing); jsonErr == nil {
+				if existing.SubjectPeerID == servicePeerID.String() {
+					return capPath, nil
+				}
+				// Peer ID mismatch - need to regenerate
+			}
+		}
+		// If we can't read/parse or peer ID doesn't match, fall through to regenerate
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	if cluster.AuthorityPrivateKeyFile != "" {
-		return ensureServiceMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
+		return ensureServiceMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceName, serviceSeed)
 	}
 	return capPath, nil
 }
@@ -735,10 +749,10 @@ func randomNonce() string {
 	return hex.EncodeToString(buf)
 }
 
-func serviceMembershipCapabilityPath(configPath, clusterName, namespaceName string) string {
-	return workspace.DerivePaths(configPath).ServiceMembershipCapability(clusterName, namespaceName)
+func serviceMembershipCapabilityPath(configPath, clusterName, namespaceName, serviceName string) string {
+	return workspace.DerivePaths(configPath).ServiceMembershipCapability(clusterName, namespaceName, serviceName)
 }
 
-func ensureServiceMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
-	return localWorkspace().ResolveMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
+func ensureServiceMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName, serviceSeed string) (string, error) {
+	return localWorkspace().ResolveMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceName, serviceSeed)
 }
