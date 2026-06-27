@@ -131,6 +131,23 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 		deps.PrintAttachShareHint(cfg, authz)
 		publishAuthorizationHandler := deps.StartAttachPublishLeaseRenewal(ctx, configPath, cfg, authz.Service, authz.ServicePeerID)
 		serviceKind := string(cfgpkg.NormalizeServiceKind(authz.Service.Kind, cfg.Service.Target))
+		bootstrapPeers := append([]string(nil), cfg.Network.BootstrapPeers...)
+		for _, peer := range cluster.DiscoveryQueryPeers {
+			peer = strings.TrimSpace(peer)
+			if peer == "" {
+				continue
+			}
+			seen := false
+			for _, existing := range bootstrapPeers {
+				if strings.TrimSpace(existing) == peer {
+					seen = true
+					break
+				}
+			}
+			if !seen {
+				bootstrapPeers = append(bootstrapPeers, peer)
+			}
+		}
 		runner, err := deps.NewService(ctx, service.Config{
 			Listen:                   cfg.Node.P2PListen,
 			Seed:                     authz.Service.ServiceSeed,
@@ -142,7 +159,7 @@ func Run(ctx context.Context, deps Deps, role, configPath string, cfg cfgpkg.Con
 			HealthListen:             cfg.HealthListen,
 			PrivateKeyFile:           cfg.Network.PrivateKeyFile,
 			PrivateKeyB64:            cfg.Network.PrivateKeyB64,
-			BootstrapPeers:           cfg.Network.BootstrapPeers,
+			BootstrapPeers:           bootstrapPeers,
 			RelayPeers:               cfg.Network.RelayPeers,
 			Autorelay:                cfg.Network.Autorelay,
 			HolePunching:             cfg.Network.HolePunching,

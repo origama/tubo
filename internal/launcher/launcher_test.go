@@ -88,7 +88,7 @@ func TestRunServiceUsesAttachAuthorizationAndStartsRunner(t *testing.T) {
 	cfg.HeartbeatInterval = cfgpkg.Duration(2 * time.Second)
 	cfg.Service.Name = "svc"
 	cfg.Service.Target = "http://127.0.0.1:9000"
-	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-1", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: testNamespaceDiscoveryRef(t, "cluster-1", "default")}}}
+	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-1", AuthorityPublicKey: "ssh-ed25519 AAA...", MembershipGrant: &cfgpkg.ClusterMembershipGrant{}, DiscoveryQueryPeers: []string{"/ip4/10.0.0.1/tcp/4001/p2p/12D3KooWAuthority"}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: testNamespaceDiscoveryRef(t, "cluster-1", "default")}}}
 	deps := &stubDeps{authz: AttachAuthorization{Config: cfg, Service: cfgpkg.NamespaceService{ServiceID: "svc-1", ServiceSeed: "seed-1"}, ServicePeerID: "12D3KooW...", MembershipCapabilityFile: "membership.cap", ServiceClaimFile: "claim.cap", ServicePublishLeaseFile: "lease.json"}}
 	if err := Run(context.Background(), deps, "service", "/tmp/config.yaml", cfg); err != nil {
 		t.Fatal(err)
@@ -98,6 +98,9 @@ func TestRunServiceUsesAttachAuthorizationAndStartsRunner(t *testing.T) {
 	}
 	if deps.serviceCfg.ServiceID != "svc-1" || deps.serviceCfg.Seed != "seed-1" {
 		t.Fatalf("unexpected service config: %#v", deps.serviceCfg)
+	}
+	if len(deps.serviceCfg.BootstrapPeers) == 0 || deps.serviceCfg.BootstrapPeers[len(deps.serviceCfg.BootstrapPeers)-1] != "/ip4/10.0.0.1/tcp/4001/p2p/12D3KooWAuthority" {
+		t.Fatalf("expected discovery query peer in service bootstrap peers, got %#v", deps.serviceCfg.BootstrapPeers)
 	}
 	if !deps.serviceRun.started {
 		t.Fatal("expected service runner to start")

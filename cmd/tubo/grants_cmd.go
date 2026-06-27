@@ -88,6 +88,26 @@ func grantServicePeersForTokens(addrs []string) []string {
 	return grantspkg.PreferredAdvertisedGrantServicePeers(addrs)
 }
 
+func grantServiceDiscoveryQueryPeers(addrs []string) []string {
+	peers := make([]string, 0, len(addrs))
+	seen := make(map[string]struct{}, len(addrs))
+	for _, raw := range addrs {
+		addr := strings.TrimSpace(raw)
+		if addr == "" || strings.Contains(addr, "/p2p-circuit/") {
+			continue
+		}
+		if !grantspkg.IsRemoteDialableGrantServicePeer(addr) {
+			continue
+		}
+		if _, ok := seen[addr]; ok {
+			continue
+		}
+		seen[addr] = struct{}{}
+		peers = append(peers, addr)
+	}
+	return peers
+}
+
 func grantsRequestCmd(args []string) error {
 	serviceArg, flagArgs := splitGrantIDArg(args)
 	fs := flag.NewFlagSet("grants request", flag.ContinueOnError)
@@ -716,26 +736,46 @@ func publishGrantServiceDiscovery(ctx context.Context, h host.Host, overlay *p2p
 	if priv == nil {
 		return fmt.Errorf("no private key for peer")
 	}
+	cache := discovery.NewCache(claimTTL, time.Second)
+	defer cache.Stop()
+	handleOpts := []discoveryquery.Option{}
+	var contexts []discovery.NamespaceDiscoveryContext
+	if runtime.Context != nil {
+		contexts = append(contexts, *runtime.Context)
+		if runtime.PreviousContext != nil {
+			contexts = append(contexts, *runtime.PreviousContext)
+		}
+	}
+	if authorityPub, ok := authorityPriv.Public().(ed25519.PublicKey); ok && len(authorityPub) > 0 && len(contexts) > 0 {
+		handleOpts = append(handleOpts, discoveryquery.WithAnnouncementV3Validation(authorityPub, contexts...))
+	}
+	subscriber := discovery.NewPubSubSubscriberV3([]*pubsub.Topic{topic}, cache, contexts)
+	if authorityPub, ok := authorityPriv.Public().(ed25519.PublicKey); ok && len(authorityPub) > 0 {
+		subscriber.SetAuthorityPublicKey(authorityPub)
+	}
+	stopSubscriber := subscriber.Start(ctx)
+	defer close(stopSubscriber)
+	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "authority", cache, handleOpts...))
 	publisher := discovery.NewPublisher(topic, priv)
 	publish := func() error {
 		peerWaitCtx, cancel := context.WithTimeout(ctx, grantServiceDiscoveryPeerWaitTimeout)
 		defer cancel()
 		log.Printf("grant service discovery waiting for a usable reachable grant-service address")
-		addrs, err := waitForGrantServiceDiscoveryAddrs(peerWaitCtx, func() []string {
-			combined := append([]string(nil), p2p.PeerAddrs(h)...)
-			if overlay != nil {
-				combined = append(combined, overlay.ReachableAddrs()...)
-			}
-			return combined
-		})
-		if err != nil {
+		rawAddrs := append([]string(nil), p2p.PeerAddrs(h)...)
+		if overlay != nil {
+			rawAddrs = append(rawAddrs, overlay.ReachableAddrs()...)
+		}
+		if _, err := waitForGrantServiceDiscoveryAddrs(peerWaitCtx, func() []string { return rawAddrs }); err != nil {
 			return fmt.Errorf("grant service discovery could not find a reachable peer address: %w", err)
 		}
-		service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, h, authorityPriv, claimTTL, addrs)
+		service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, h, authorityPriv, claimTTL, rawAddrs)
 		if err != nil {
 			return err
 		}
-		if err := persistClusterDiscoveryPeers(configPath, cfg, clusterName, runtime.ClusterID, service.Addresses); err != nil {
+		if err := cache.AddV2(h.ID(), runtime.ClusterID, runtime.NamespaceID, service.ServiceID, service.Name, service.Kind, service.ServiceKind, service.ServicePublicKey, service.ConnectPolicy, service.GrantService, service.Addresses, service.Capabilities, time.Duration(service.TTLSeconds)*time.Second); err != nil {
+			return err
+		}
+		if err := persistClusterDiscoveryPeers(configPath, cfg, clusterName, runtime.ClusterID, rawAddrs); err != nil {
 			return err
 		}
 		if err := publisher.PublishV3(ctx, ann); err != nil {
@@ -840,7 +880,7 @@ func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg c
 }
 
 func persistClusterDiscoveryPeers(configPath string, cfg cfgpkg.Config, clusterName, clusterID string, addrs []string) error {
-	peers := grantServicePeersForTokens(addrs)
+	peers := grantServiceDiscoveryQueryPeers(addrs)
 	if len(peers) == 0 {
 		return fmt.Errorf("cluster %q discovery peers unavailable", clusterName)
 	}

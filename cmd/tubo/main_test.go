@@ -7670,6 +7670,58 @@ func TestBuildGrantServiceDiscoveryArtifactsUsesScopedRuntime(t *testing.T) {
 	}
 }
 
+func TestPublishGrantServiceDiscoveryRegistersQueryableGrantService(t *testing.T) {
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/0.0.0.0/tcp/0", Seed: "grant-service-query-test", PrivateKeyFile: keyPath, Component: "grants"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer overlay.Close()
+	authorityQueryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: authorityQueryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	cfg := cfgpkg.Config{CurrentOverlay: "public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}}}}}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := publishGrantServiceDiscovery(ctx, overlay.Host, overlay, authorityPriv, cfg, "home", time.Minute, configPath); err != nil {
+		t.Fatal(err)
+	}
+	queryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	clientCfg := cfgpkg.Config{CurrentOverlay: "public", Node: cfgpkg.Node{Seed: "grant-service-query-client"}, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: clientMembershipPath, DiscoveryQueryPeers: []string{p2p.PeerAddrs(overlay.Host)[0]}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}}}}}
+	services, _, _, err := catalogpkg.FetchRemoteServiceCache(clientCfg, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalogpkg.RequireService(services, "grant-service"); err != nil {
+		t.Fatalf("expected grant-service in discovery cache, got services=%#v err=%v", services, err)
+	}
+}
+
 func TestPublishGrantServiceDiscoveryFailsWithoutRuntimeInDiscoverableScope(t *testing.T) {
 	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
