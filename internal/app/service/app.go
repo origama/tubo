@@ -673,6 +673,14 @@ func (a *App) publishCurrentAnnouncementV3(ctx context.Context) (AnnouncementBlo
 			return reason, false
 		}
 	}
+	if priv := a.host.Peerstore().PrivKey(a.host.ID()); priv != nil {
+		if err := ann.Sign(priv); err != nil {
+			log.Printf("heartbeat immediate sign failed: %v", err)
+			a.recordAnnouncementReachabilityFailure(AnnouncementBlockedPublisherUnavailable)
+			a.reportStatus(RuntimeStatus{Status: "degraded", Reason: announcementBlockDescription(AnnouncementBlockedPublisherUnavailable), AdvertisementStatus: "not advertised", AdvertisementReason: announcementBlockDescription(AnnouncementBlockedPublisherUnavailable), AuthorizationStatus: "authorized", LastRefreshError: err.Error()})
+			return AnnouncementReady, false
+		}
+	}
 	if err := a.publisher.PublishV3(ctx, ann); err != nil {
 		log.Printf("heartbeat immediate publish failed: %v", err)
 		a.recordAnnouncementReachabilityFailure(AnnouncementBlockedRelayNotReady)
@@ -810,8 +818,13 @@ func (a *App) syncAnnouncementToPeers(ctx context.Context, ann discovery.Announc
 		if err != nil {
 			continue
 		}
-		if _, err := discoveryquery.AnnounceAnnouncementV3(ctx, a.host, info, ann); err != nil {
+		resp, err := discoveryquery.AnnounceAnnouncementV3(ctx, a.host, info, ann)
+		if err != nil {
 			log.Printf("discovery sync announce failed peer=%s: %v", info.ID, err)
+			continue
+		}
+		if strings.TrimSpace(resp.Error) != "" {
+			log.Printf("discovery sync announce rejected peer=%s: %s", info.ID, resp.Error)
 		}
 	}
 	return nil

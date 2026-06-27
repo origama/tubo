@@ -757,17 +757,21 @@ func publishGrantServiceDiscovery(ctx context.Context, h host.Host, overlay *p2p
 	defer close(stopSubscriber)
 	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "authority", cache, handleOpts...))
 	publisher := discovery.NewPublisher(topic, priv)
+	currentAddrs := func() []string {
+		addrs := append([]string(nil), p2p.PeerAddrs(h)...)
+		if overlay != nil {
+			addrs = append(addrs, overlay.ReachableAddrs()...)
+		}
+		return addrs
+	}
 	publish := func() error {
 		peerWaitCtx, cancel := context.WithTimeout(ctx, grantServiceDiscoveryPeerWaitTimeout)
 		defer cancel()
 		log.Printf("grant service discovery waiting for a usable reachable grant-service address")
-		rawAddrs := append([]string(nil), p2p.PeerAddrs(h)...)
-		if overlay != nil {
-			rawAddrs = append(rawAddrs, overlay.ReachableAddrs()...)
-		}
-		if _, err := waitForGrantServiceDiscoveryAddrs(peerWaitCtx, func() []string { return rawAddrs }); err != nil {
+		if _, err := waitForGrantServiceDiscoveryAddrs(peerWaitCtx, currentAddrs); err != nil {
 			return fmt.Errorf("grant service discovery could not find a reachable peer address: %w", err)
 		}
+		rawAddrs := currentAddrs()
 		service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, h, authorityPriv, claimTTL, rawAddrs)
 		if err != nil {
 			return err
@@ -871,11 +875,16 @@ func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg c
 		if err != nil {
 			continue
 		}
-		if _, err := discoveryquery.AnnounceService(ctx, h, info, service); err != nil {
+		resp, err := discoveryquery.AnnounceService(ctx, h, info, service)
+		if err != nil {
 			log.Printf("grant service discovery announce failed peer=%s: %v", info.ID, err)
-		} else {
-			log.Printf("grant service discovery announced peer=%s service=%s", info.ID, service.ServiceID)
+			continue
 		}
+		if strings.TrimSpace(resp.Error) != "" {
+			log.Printf("grant service discovery announce rejected peer=%s: %s", info.ID, resp.Error)
+			continue
+		}
+		log.Printf("grant service discovery announced peer=%s service=%s", info.ID, service.ServiceID)
 	}
 }
 

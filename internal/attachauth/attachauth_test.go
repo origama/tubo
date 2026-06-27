@@ -348,7 +348,7 @@ func TestResolveReturnsReadyWhenOnlyStoredClaimIsAvailable(t *testing.T) {
 	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
 	resolver := New(Dependencies{
 		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
-		ArtifactStore: fakeArtifactStore{publishLeaseErr: os.ErrNotExist, membershipFile: "/tmp/membership.cap"},
+		ArtifactStore: fakeArtifactStore{publishLeaseErr: os.ErrNotExist, membershipFile: "/tmp/service-membership.cap"},
 		Clock:         SystemClock{},
 	})
 
@@ -361,6 +361,20 @@ func TestResolveReturnsReadyWhenOnlyStoredClaimIsAvailable(t *testing.T) {
 	}
 	if got.PublishLeaseReused {
 		t.Fatal("did not expect PublishLeaseReused")
+	}
+}
+
+func TestResolveOnlyStoredClaimDoesNotSilentlyFallBackWhenServiceMembershipIsMissing(t *testing.T) {
+	cfg := testAttachConfig()
+	svc := cfgpkg.NamespaceService{ServiceID: "service-1234567890abcdef", ServiceSeed: "seed", ServiceClaimFile: "/tmp/service.claim", ServicePublishLeaseFile: "/tmp/service.lease"}
+	resolver := New(Dependencies{
+		IdentityStore: fakeIdentityStore{cfg: cfg, svc: svc, peerID: "12D3KooWPeer"},
+		ArtifactStore: fakeArtifactStore{publishLeaseErr: os.ErrNotExist, membershipErr: fmt.Errorf("service membership capability file missing for home/default/myapi: /tmp/service-membership.cap")},
+		Clock:         SystemClock{},
+	})
+
+	if _, err := resolver.Resolve(context.Background(), ResolveRequest{ConfigPath: "/tmp/tubo.yaml", Config: cfg}); err == nil || !strings.Contains(err.Error(), "service membership capability file missing") {
+		t.Fatalf("Resolve error = %v, want service membership error", err)
 	}
 }
 

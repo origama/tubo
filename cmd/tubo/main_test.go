@@ -7722,6 +7722,125 @@ func TestPublishGrantServiceDiscoveryRegistersQueryableGrantService(t *testing.T
 	}
 }
 
+func TestPublishedServiceBecomesQueryableAndVisibleInDefaultListings(t *testing.T) {
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/0.0.0.0/tcp/0", Seed: "service-discovery-authority-test", PrivateKeyFile: keyPath, Component: "authority"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer overlay.Close()
+	authorityQueryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: authorityQueryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	authorityCfg := cfgpkg.Config{CurrentOverlay: "public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: authorityMembershipPath, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}}}}}
+	authorityConfigPath := filepath.Join(t.TempDir(), "authority-config.yaml")
+	if err := cfgpkg.WriteFile(authorityConfigPath, authorityCfg, true); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := publishGrantServiceDiscovery(ctx, overlay.Host, overlay, authorityPriv, authorityCfg, "home", time.Minute, authorityConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := authorityCfg.RequireDiscoveryRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceSeed := "service-discovery-lms-seed"
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	owner, err := serviceidentity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey), PublisherPeerID: servicePeerID.String(), RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: "lms-discovery-test"}, owner.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "lms", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseBytes, err := json.MarshalIndent(artifacts.Lease, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "lms.publish-lease.json")
+	if err := os.WriteFile(leasePath, append(leaseBytes, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app, err := serviceapp.New(ctx, serviceapp.Config{Listen: "/ip4/0.0.0.0/tcp/0", Seed: serviceSeed, ServiceName: "lms", ServiceKind: "http", ServiceID: owner.ServiceID, Target: "http://127.0.0.1:18080", PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(overlay.Host)[0]}, HeartbeatInterval: time.Second, BootstrapRetryInterval: 200 * time.Millisecond, DiscoveryEnabled: true, DiscoveryMode: runtime.Mode.String(), DiscoveryTopic: runtime.Topic, DiscoveryClusterID: runtime.ClusterID, DiscoveryNamespaceID: runtime.NamespaceID, DiscoveryContext: runtime.Context, DiscoveryPreviousTopic: runtime.PreviousTopic, DiscoveryPreviousContext: runtime.PreviousContext, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: serviceMembershipPath, ServicePublishLeaseFile: leasePath, ConnectPolicy: string(cfgpkg.ConnectPolicyNamespaceMember)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- app.Start(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("service app stop err=%v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out stopping service app")
+		}
+	}()
+	queryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	clientCfg := cfgpkg.Config{CurrentOverlay: "public", Node: cfgpkg.Node{Seed: "service-discovery-query-client"}, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: clientMembershipPath, DiscoveryQueryPeers: []string{p2p.PeerAddrs(overlay.Host)[0]}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}}}}}
+	var services []catalogpkg.Service
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		services, _, _, err = catalogpkg.FetchRemoteServiceCache(clientCfg, 3*time.Second)
+		if err == nil {
+			if _, svcErr := catalogpkg.RequireService(services, "lms"); svcErr == nil {
+				if _, grantErr := catalogpkg.RequireService(services, "grant-service"); grantErr == nil {
+					break
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for lms in authority cache: services=%#v err=%v", services, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if len(services) < 2 {
+		t.Fatalf("services=%#v want at least grant-service and lms", services)
+	}
+	listed := filterListedServices(fromCatalogServices(services), false)
+	if len(listed) != 1 || listed[0].Name != "lms" {
+		t.Fatalf("default listed services=%#v want only lms", listed)
+	}
+	systemListed := filterListedServices(fromCatalogServices(services), true)
+	if len(systemListed) != 1 || systemListed[0].Name != "grant-service" {
+		t.Fatalf("system listed services=%#v want only grant-service", systemListed)
+	}
+}
+
 func TestPublishGrantServiceDiscoveryFailsWithoutRuntimeInDiscoverableScope(t *testing.T) {
 	authorityPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {

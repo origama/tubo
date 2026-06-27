@@ -155,13 +155,7 @@ func (w *Workspace) ResolveMembershipCapabilityFile(configPath string, cluster c
 		}
 		return capPath, nil
 	}
-	if ns, ok := cluster.Namespaces[namespaceName]; ok && strings.TrimSpace(ns.MembershipCapabilityFile) != "" {
-		return ns.MembershipCapabilityFile, nil
-	}
-	if strings.TrimSpace(cluster.MembershipCapabilityFile) != "" {
-		return cluster.MembershipCapabilityFile, nil
-	}
-	return "", fmt.Errorf("no membership capability file configured for namespace %q", namespaceName)
+	return "", fmt.Errorf("service membership capability file missing for %s/%s/%s: %s", clusterName, namespaceName, serviceName, capPath)
 }
 
 func (w *Workspace) ensureServiceState(configPath string, cfg cfgpkg.Config, serviceName string) (cfgpkg.Config, ServiceContext, bool, bool, error) {
