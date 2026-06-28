@@ -285,15 +285,6 @@ func fetchRemoteServiceDetailed(cfg cfgpkg.Config, serviceName string, timeout t
 	return service, &resp.Metadata, recorder.messages, attempts, nil
 }
 
-func remoteAttemptsReachedAuthority(attempts []remoteQueryAttempt) bool {
-	for _, attempt := range attempts {
-		if attempt.reachedAuthority() {
-			return true
-		}
-	}
-	return false
-}
-
 func remoteAttemptsAllUnreachable(attempts []remoteQueryAttempt) bool {
 	if len(attempts) == 0 {
 		return false
