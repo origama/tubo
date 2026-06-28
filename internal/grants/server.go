@@ -377,16 +377,18 @@ func (s *Server) handleConnectRequest(msg Message, requester peer.ID) Message {
 	if strings.TrimSpace(msg.ClientPublicKey) == "" {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "client public key is required"}
 	}
-	// Verify service has active publish authorization before minting connect lease.
-	// This ensures the cluster grant server does not bypass service publish lease boundaries.
+	// Verify service has active publish authorization and get its expiry.
+	// Connect lease TTLs will be capped by the publish lease expiry.
+	var publishLeaseExpiry time.Time
 	if s.cfg.Store != nil {
-		hasPublish, err := s.cfg.Store.HasActivePublishLease(s.cfg.ClusterID, s.cfg.NamespaceID, msg.ServiceID, now)
+		expiry, hasPublish, err := s.cfg.Store.ActivePublishLeaseExpiry(s.cfg.ClusterID, s.cfg.NamespaceID, msg.ServiceID, now)
 		if err != nil {
 			return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: fmt.Sprintf("verify service publish authorization: %v", err)}
 		}
 		if !hasPublish {
 			return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "service does not have active publish authorization; cannot mint connect lease"}
 		}
+		publishLeaseExpiry = expiry
 	}
 	// Check if publish is revoked
 	if s.cfg.Revocations != nil {
@@ -408,10 +410,25 @@ func (s *Server) handleConnectRequest(msg Message, requester peer.ID) Message {
 	}
 	accessTTL := s.cfg.ConnectAccessTTL
 	refreshTTL := s.cfg.ConnectRefreshTTL
+	// Cap TTLs by membership expiry
 	if !membershipExpiry.IsZero() {
 		remaining := membershipExpiry.UTC().Sub(now)
 		if remaining <= 0 {
 			return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "namespace membership expired"}
+		}
+		if accessTTL > remaining {
+			accessTTL = remaining
+		}
+		if refreshTTL > remaining {
+			refreshTTL = remaining
+		}
+	}
+	// Cap TTLs by publish lease expiry - connect sessions should not outlive
+	// the service's publish authorization
+	if !publishLeaseExpiry.IsZero() {
+		remaining := publishLeaseExpiry.Sub(now)
+		if remaining <= 0 {
+			return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "service publish authorization expired"}
 		}
 		if accessTTL > remaining {
 			accessTTL = remaining
@@ -561,6 +578,13 @@ func (s *Server) consumeShareInvite(payload ServiceSharePayload, requester peer.
 func (s *Server) validateConnectRefreshRevocation(refresh ConnectRefreshLease) error {
 	if s.cfg.Revocations == nil {
 		return nil
+	}
+	// Check if publish is revoked - connect sessions should not refresh
+	// if the service is no longer authorized to publish
+	if revoked, _, err := s.cfg.Revocations.IsPublishRevoked(refresh.ServiceID); err != nil {
+		return err
+	} else if revoked {
+		return fmt.Errorf("service publish revoked for %q", refresh.ServiceID)
 	}
 	if revoked, _, err := s.cfg.Revocations.IsSessionRevoked(refresh.SessionID); err != nil {
 		return err

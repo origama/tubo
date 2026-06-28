@@ -358,11 +358,16 @@ func isRequestExpired(req Request, now time.Time) bool {
 // HasActivePublishLease returns true if the service has an approved grant request
 // with a non-expired publish lease. This is used to verify that a service is
 // authorized to accept connections before the cluster grant server mints connect leases.
-func (s *Store) HasActivePublishLease(clusterID, namespaceID, serviceID string, now time.Time) (bool, error) {
+// ActivePublishLeaseExpiry returns the expiry time of the active publish lease for the
+// given service, along with a boolean indicating whether an active lease exists.
+// A lease is active if it is approved, has a non-zero expiry, and hasn't expired yet.
+// Zero-expiry leases are not considered active.
+func (s *Store) ActivePublishLeaseExpiry(clusterID, namespaceID, serviceID string, now time.Time) (expiry time.Time, active bool, err error) {
 	state, err := s.load()
 	if err != nil {
-		return false, err
+		return time.Time{}, false, err
 	}
+	var latestExpiry time.Time
 	for _, req := range state.Requests {
 		if req.Status != StatusApproved {
 			continue
@@ -373,11 +378,28 @@ func (s *Store) HasActivePublishLease(clusterID, namespaceID, serviceID string, 
 		if req.PublishLease == nil {
 			continue
 		}
-		if req.PublishLease.ExpiresAt.IsZero() || now.Before(req.PublishLease.ExpiresAt.UTC()) {
-			return true, nil
+		// Zero-expiry leases are not considered active
+		if req.PublishLease.ExpiresAt.IsZero() {
+			continue
+		}
+		if now.Before(req.PublishLease.ExpiresAt.UTC()) {
+			// Track the latest expiry among active leases
+			if latestExpiry.IsZero() || req.PublishLease.ExpiresAt.UTC().After(latestExpiry) {
+				latestExpiry = req.PublishLease.ExpiresAt.UTC()
+			}
 		}
 	}
-	return false, nil
+	if !latestExpiry.IsZero() {
+		return latestExpiry, true, nil
+	}
+	return time.Time{}, false, nil
+}
+
+// HasActivePublishLease returns true if the service has an active publish lease.
+// Convenience wrapper around ActivePublishLeaseExpiry.
+func (s *Store) HasActivePublishLease(clusterID, namespaceID, serviceID string, now time.Time) (bool, error) {
+	_, active, err := s.ActivePublishLeaseExpiry(clusterID, namespaceID, serviceID, now)
+	return active, err
 }
 
 func randomID(prefix string) (string, error) {

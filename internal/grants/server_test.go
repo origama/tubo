@@ -872,6 +872,204 @@ func TestGrantServerConnectRequestDeniedWithRevokedPublish(t *testing.T) {
 	}
 }
 
+// TestGrantServerConnectLeaseCappedByPublishExpiry verifies that connect lease TTLs
+// are bounded by the service's publish lease expiry, not just membership expiry.
+func TestGrantServerConnectLeaseCappedByPublishExpiry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use real time for server, but we'll control publish lease TTL
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		ConnectAccessTTL:    10 * time.Minute,
+		ConnectRefreshTTL:   48 * time.Hour, // Long refresh TTL
+		AutoApprove:         true,
+		ClaimTTL:            5 * time.Minute, // Short publish TTL
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// Create an approved publish grant with short TTL (5 minutes)
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((5*time.Minute).Seconds()))
+	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
+	if submitResp.Type != TypeApproved {
+		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
+	}
+
+	// Create valid membership capability with long expiry (24 hours)
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Request connect lease
+	resp, err := RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, &memberCap, "")
+	if err != nil {
+		t.Fatalf("connect request failed: %v", err)
+	}
+
+	// Verify refresh lease is capped by publish lease expiry (5 min), not membership (24h) or config (48h)
+	// Allow some tolerance for test execution time
+	maxExpectedExpiry := now.Add(5*time.Minute + 10*time.Second)
+	if resp.RefreshLease.ExpiresAt.After(maxExpectedExpiry) {
+		t.Fatalf("refresh lease expiry %v exceeds publish lease expiry ~%v (membership was 24h, config was 48h)",
+			resp.RefreshLease.ExpiresAt, maxExpectedExpiry)
+	}
+
+	// Verify access lease is also capped (should be min of 10min config and 5min publish = 5min)
+	if resp.AccessLease.ExpiresAt.After(maxExpectedExpiry) {
+		t.Fatalf("access lease expiry %v exceeds publish lease expiry ~%v",
+			resp.AccessLease.ExpiresAt, maxExpectedExpiry)
+	}
+
+	// Verify leases are valid
+	if err := VerifyConnectAccessLease(resp.AccessLease, pub, "cluster-123", "default", serviceID); err != nil {
+		t.Fatalf("access lease signature invalid: %v", err)
+	}
+}
+
+// TestGrantServerConnectRequestDeniedWithExpiredPublishLease verifies that connect
+// requests fail after the service's publish lease expires.
+func TestGrantServerConnectRequestDeniedWithExpiredPublishLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Start with a time that allows the publish to be created
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		ConnectAccessTTL:    time.Hour,
+		ConnectRefreshTTL:   24 * time.Hour,
+		AutoApprove:         true,
+		ClaimTTL:            time.Minute, // 1 minute publish TTL
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// Create an approved publish grant with short TTL
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), 60) // 1 minute
+	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
+	if submitResp.Type != TypeApproved {
+		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
+	}
+
+	// Advance server time past the publish lease expiry
+	// Note: We advance the server's notion of time, but the actual publish lease
+	// was created with real time.Now() in BuildPublishLeaseArtifacts.
+	// So we need to wait for real time to pass, or we need to adjust our approach.
+	// For this test, we'll use a very short sleep to let the real-time-based
+	// publish lease expire, but that makes the test slow.
+	// Instead, we'll directly manipulate the store state for deterministic testing.
+
+	// Load the request and manually set the publish lease expiry to the past
+	state, _ := store.load()
+	for i := range state.Requests {
+		if state.Requests[i].ServiceID == serviceID && state.Requests[i].PublishLease != nil {
+			state.Requests[i].PublishLease.ExpiresAt = now.Add(-time.Minute) // Already expired
+		}
+	}
+	store.save(state)
+
+	// Create valid membership capability for client (that hasn't expired)
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Test: connect request should fail because service publish lease is expired
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, &memberCap, "")
+	if err == nil || !strings.Contains(err.Error(), "does not have active publish authorization") {
+		t.Fatalf("expected 'does not have active publish authorization' error, got: %v", err)
+	}
+}
+
 func buildTestPublishRequest(t *testing.T, ownerPub ed25519.PublicKey, ownerPriv ed25519.PrivateKey, serviceID, servicePeerID string, requestedTTLSeconds int64) Message {
 	t.Helper()
 	req, err := SignPublishLeaseRequest(PublishLeaseRequest{

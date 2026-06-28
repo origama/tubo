@@ -451,6 +451,39 @@ The membership capability verification supports:
 | Primary use | normal connect flow | rollover/recovery |
 | Share invite support | yes | not yet (members use capability) |
 
+### Connect lease TTL boundaries
+
+Connect leases issued by the relay grant server are bounded by multiple factors:
+
+1. **Server config**: `ConnectAccessTTL` (default 10m), `ConnectRefreshTTL` (default 48h)
+2. **Membership expiry**: the requester's membership capability expiry
+3. **Publish lease expiry**: the target service's publish authorization expiry
+
+The lease TTLs are capped to `min(config, membershipExpiry, publishLeaseExpiry)`. This
+ensures connect sessions cannot outlive either the client's membership or the
+service's publish authorization.
+
+### Refresh lease behavior
+
+When a connect refresh lease is used to mint a new access lease, the relay grant
+server checks:
+
+1. **Refresh lease validity**: not expired, signature valid
+2. **Session revocation**: the specific session hasn't been revoked
+3. **Access revocation**: service access epoch hasn't advanced past the lease
+4. **Publish revocation**: service publish hasn't been revoked
+
+Since the refresh lease expiry is already bounded by publish lease expiry at mint
+time, it will naturally expire when the publish lease would have expired. Additionally,
+explicit publish revocation (via `tubo revoke publish`) immediately invalidates
+refresh attempts even if the refresh lease hasn't technically expired.
+
+The relay grant server does **not** re-check publish lease expiry during refresh
+because:
+- The refresh lease expiry already encodes that boundary
+- Re-checking would create a mismatch with service-endpoint-issued refresh leases
+- Explicit revocation provides immediate invalidation when needed
+
 ### Troubleshooting connect lease rollover
 
 If connect rollover fails with `does not have active publish authorization`:
