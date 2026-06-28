@@ -116,11 +116,11 @@ func requestPublishGrantOnPeer(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 	if grantPeer == "" {
 		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
 	}
-	logging.Progressf("grants-client: selected peer=%s source=requestPublishGrant\n", grantPeer)
 	info, err := p2p.AddrInfoFromString(grantPeer)
 	if err != nil {
 		return cfg, svc, "", fmt.Errorf("failed to parse multiaddr %q: %w", grantPeer, err)
 	}
+	logging.Progressf("grants-client: selected peer=%s peer_id=%s path=%s protocol=%s source=requestPublishGrant\n", grantPeer, info.ID.String(), grantClientPeerPathClass(grantPeer), grantspkg.ProtocolID)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	overlay.StartBootstrapRetry(ctx, 5*time.Second)
@@ -230,6 +230,17 @@ func requestPublishGrantOnPeer(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 
 func grantRequestPendingError(serviceName string) string {
 	return fmt.Sprintf("grant request pending; approve it, then rerun tubo start service/%s", serviceName)
+}
+
+func grantClientPeerPathClass(peer string) string {
+	switch authorityPeerClass(peer) {
+	case authorityPeerClassRelayCircuit:
+		return "relayed"
+	case authorityPeerClassDirect:
+		return "direct"
+	default:
+		return "unknown"
+	}
 }
 
 func grantRequestTTL(opts grantRequestOptions) time.Duration {

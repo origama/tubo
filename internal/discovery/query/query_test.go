@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 
 	"github.com/origama/tubo/internal/capability"
 	"github.com/origama/tubo/internal/discovery"
@@ -121,6 +123,83 @@ func TestResponseForRequestListAndGetRequireMembershipVisibility(t *testing.T) {
 	notFound := responseForRequestWithConfig(h, "relay", emptyCache, cfg, clientPeerID, Request{Type: RequestTypeGet, Name: "missing", MembershipCapability: &valid})
 	if notFound.Error != "service not found" {
 		t.Fatalf("unexpected empty-ns get response: %#v", notFound)
+	}
+}
+
+func TestListServicesWorksOverRelayCircuitLimitedConnection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	relayHost, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "query-relay-test-relay", nil, libp2p.ForceReachabilityPublic())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relayHost.Close()
+	relayService, err := relayv2.New(relayHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relayService.Close()
+	relayAddrs := p2p.PeerAddrs(relayHost)
+	if len(relayAddrs) == 0 {
+		t.Fatal("relay has no addrs")
+	}
+	authority, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "query-relay-test-authority", RelayPeers: []string{relayAddrs[0]}, ForceReachability: "private"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authority.Close()
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	if err := cache.Add(authority.Host.ID(), "myapi", []string{p2p.PeerAddrs(authority.Host)[0]}, 30*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	authority.Host.SetStreamHandler(ProtocolID, HandleStream(authority.Host, "authority", cache))
+	authority.StartRelayReservations(ctx)
+	waitUntilQueryTest(t, ctx, func() bool { return authority.HasRelayReservation() }, "relay reservation")
+	relayed := firstCircuitAddrQueryTest(authority.ReachableAddrs())
+	if relayed == "" {
+		t.Fatalf("authority did not advertise relay circuit addr: %#v", authority.ReachableAddrs())
+	}
+	client, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-relay-test-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	info, err := p2p.AddrInfoFromString(relayed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := ListServices(ctx, client, info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Metadata.ServedByRole != "authority" || len(resp.Services) != 1 || resp.Services[0].Name != "myapi" {
+		t.Fatalf("unexpected relay query response: %#v", resp)
+	}
+}
+
+func firstCircuitAddrQueryTest(addrs []string) string {
+	for _, addr := range addrs {
+		if strings.Contains(addr, "/p2p-circuit") {
+			return addr
+		}
+	}
+	return ""
+}
+
+func waitUntilQueryTest(t *testing.T, ctx context.Context, pred func() bool, name string) {
+	t.Helper()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if pred() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("timeout waiting for %s", name)
+		case <-ticker.C:
+		}
 	}
 }
 

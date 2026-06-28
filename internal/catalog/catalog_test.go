@@ -154,6 +154,13 @@ func TestFetchRemoteServiceCacheFallsBackAcrossPeersWithinPerPeerTimeout(t *test
 	}
 }
 
+func TestRemoteAttemptsDoNotClassifyProtocolErrorsAsUnreachable(t *testing.T) {
+	attempts := []remoteQueryAttempt{{Peer: "/ip4/127.0.0.1/tcp/4001/p2p/12D3KooWPeer", PathClass: "direct", Err: fmt.Errorf("open discovery query stream: protocol not supported")}}
+	if remoteAttemptsAllUnreachable(attempts) {
+		t.Fatal("protocol negotiation failures should not be reported as unreachable peers")
+	}
+}
+
 func TestServiceFromQueryServicePreservesConnectMetadata(t *testing.T) {
 	service := ServiceFromQueryService(discoveryquery.Service{
 		Kind:          "service",

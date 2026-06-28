@@ -73,6 +73,14 @@ func (a remoteQueryAttempt) timedOut() bool {
 	return strings.Contains(strings.ToLower(a.Err.Error()), "deadline exceeded")
 }
 
+func (a remoteQueryAttempt) protocolUnsupported() bool {
+	if a.Err == nil {
+		return false
+	}
+	msg := strings.ToLower(a.Err.Error())
+	return strings.Contains(msg, "protocol not supported") || strings.Contains(msg, "protocols not supported") || strings.Contains(msg, "failed to negotiate protocol")
+}
+
 func discoveryPeerPathClass(raw string) string {
 	peer := strings.TrimSpace(raw)
 	switch {
@@ -209,6 +217,8 @@ func queryRemoteDiscovery(cfg cfgpkg.Config, timeout time.Duration, recorder *pr
 			attempts = append(attempts, attempt)
 			if attempt.timedOut() {
 				recorder.message("discovery peer %d/%d (%s) timed out after %s", i+1, len(peers), attempt.PathClass, attemptTimeout.Round(100*time.Millisecond))
+			} else if attempt.protocolUnsupported() {
+				recorder.message("discovery peer %d/%d (%s) does not serve discovery query protocol", i+1, len(peers), attempt.PathClass)
 			} else {
 				recorder.message("discovery peer %d/%d (%s) failed", i+1, len(peers), attempt.PathClass)
 			}
@@ -289,7 +299,7 @@ func remoteAttemptsAllUnreachable(attempts []remoteQueryAttempt) bool {
 		return false
 	}
 	for _, attempt := range attempts {
-		if attempt.reachedAuthority() || attempt.Err == nil {
+		if attempt.reachedAuthority() || attempt.Err == nil || attempt.protocolUnsupported() {
 			return false
 		}
 	}
