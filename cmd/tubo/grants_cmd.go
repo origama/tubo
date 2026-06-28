@@ -19,6 +19,7 @@ import (
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/origama/tubo/internal/capability"
+	clusterinvite "github.com/origama/tubo/internal/clusterinvite"
 	cfgpkg "github.com/origama/tubo/internal/config"
 	"github.com/origama/tubo/internal/discovery"
 	discoveryquery "github.com/origama/tubo/internal/discovery/query"
@@ -622,7 +623,7 @@ func grantsServeCmd(args []string) error {
 	}
 	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: *clusterName, ClusterID: cluster.ClusterID, NamespaceID: *namespaceName, Store: grantspkg.NewStore(*storePath), AutoApprove: *autoApprove, AuthorityPrivateKey: priv, ClaimTTL: *claimTTL, ServiceShareTTL: *shareTTL, GrantServicePeersProvider: func() []string {
 		return grantServicePeersForTokens(overlay.ReachableAddrs())
-	}, ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL, Revocations: grantspkg.NewRevocationStore(*revocationsPath)})
+	}, ConnectAccessTTL: *connectAccessTTL, ConnectRefreshTTL: *connectRefreshTTL, Revocations: grantspkg.NewRevocationStore(*revocationsPath), MembershipGrantTokenVerifier: verifyMembershipGrantToken})
 	if err != nil {
 		return err
 	}
@@ -955,4 +956,32 @@ func detachGrantsServeCommand(args []string) error {
 	}
 	printDetachedSummary("grants serve", started)
 	return nil
+}
+
+// verifyMembershipGrantToken validates a membership grant token for connect lease requests.
+// This is used by the grants server to authorize namespace-member connect lease requests.
+func verifyMembershipGrantToken(token string, authorityPub ed25519.PublicKey, clusterID, namespaceID string) (time.Time, error) {
+	payload, err := clusterinvite.ParseAndVerifyToken(token)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !clusterinvite.MatchesAuthority(payload, authorityPub) {
+		return time.Time{}, fmt.Errorf("membership invite authority does not match server authority")
+	}
+	if payload.ClusterID != clusterID || payload.Namespace != namespaceID {
+		return time.Time{}, fmt.Errorf("membership invite does not authorize server scope")
+	}
+	if !containsMembershipConnectPermission(payload.Grant.Permissions) {
+		return time.Time{}, fmt.Errorf("membership invite is missing connect permission")
+	}
+	return payload.ExpiresAt.UTC(), nil
+}
+
+func containsMembershipConnectPermission(perms []string) bool {
+	for _, perm := range perms {
+		if perm == capability.PermissionConnect {
+			return true
+		}
+	}
+	return false
 }

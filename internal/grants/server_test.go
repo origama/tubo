@@ -619,3 +619,599 @@ func seedApprovedGrant(t *testing.T, store *Store, clusterName, clusterID, names
 	}
 	return approved
 }
+
+func TestGrantServerConnectRequestWithMembershipCapability(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use real time for this test since lease verification uses time.Now() internally
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		ConnectAccessTTL:    time.Hour,
+		ConnectRefreshTTL:   24 * time.Hour,
+		AutoApprove:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// First, create an approved publish grant for my-service so it has active publish authorization
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24*time.Hour).Seconds()))
+	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
+	if submitResp.Type != TypeApproved {
+		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
+	}
+
+	// Create valid membership capability for client
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Test: valid connect request with membership capability
+	resp, err := RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, &memberCap, "")
+	if err != nil {
+		t.Fatalf("connect request failed: %v", err)
+	}
+	if resp.AccessLease.ServiceID != serviceID {
+		t.Fatalf("unexpected service id: got %s want %s", resp.AccessLease.ServiceID, serviceID)
+	}
+	if resp.AccessLease.ClusterID != "cluster-123" {
+		t.Fatalf("unexpected cluster id: %s", resp.AccessLease.ClusterID)
+	}
+	if resp.AccessLease.NamespaceID != "default" {
+		t.Fatalf("unexpected namespace id: %s", resp.AccessLease.NamespaceID)
+	}
+	if resp.RefreshLease.SessionID == "" {
+		t.Fatal("expected non-empty session id")
+	}
+	if !resp.AccessLease.ExpiresAt.After(now) {
+		t.Fatal("expected access lease to expire in future")
+	}
+	if !resp.RefreshLease.ExpiresAt.After(now) {
+		t.Fatal("expected refresh lease to expire in future")
+	}
+
+	// Verify lease signatures
+	if err := VerifyConnectAccessLease(resp.AccessLease, pub, "cluster-123", "default", serviceID); err != nil {
+		t.Fatalf("access lease signature invalid: %v", err)
+	}
+	if err := VerifyConnectRefreshLease(resp.RefreshLease, pub, "cluster-123", "default", serviceID); err != nil {
+		t.Fatalf("refresh lease signature invalid: %v", err)
+	}
+}
+
+func TestGrantServerConnectRequestDeniedWithoutActivePublishLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use real time
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		ConnectAccessTTL:    time.Hour,
+		ConnectRefreshTTL:   24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// Create valid membership capability for client (without any published service)
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Test: connect request should fail because service has no active publish authorization
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", "unpublished-service", clientPubKey, &memberCap, "")
+	if err == nil || !strings.Contains(err.Error(), "does not have active publish authorization") {
+		t.Fatalf("expected 'does not have active publish authorization' error, got: %v", err)
+	}
+}
+
+func TestGrantServerConnectRequestDeniedWithRevokedPublish(t *testing.T) {
+	// This test verifies that connect is denied when publish is revoked,
+	// which is a simpler way to test the publish authorization boundary
+	// without needing to mock time across multiple packages.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	revocationsPath := filepath.Join(t.TempDir(), "revocations.json")
+	revocations := NewRevocationStore(revocationsPath)
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		ConnectAccessTTL:    time.Hour,
+		ConnectRefreshTTL:   24 * time.Hour,
+		AutoApprove:         true,
+		Revocations:         revocations,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// Create an approved publish grant for service
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24*time.Hour).Seconds()))
+	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
+	if submitResp.Type != TypeApproved {
+		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
+	}
+
+	// Revoke the publish
+	if _, err := revocations.RevokePublish(serviceID, "test revocation"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create valid membership capability for client
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Test: connect request should fail because service publish is revoked
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, &memberCap, "")
+	if err == nil || !strings.Contains(err.Error(), "publish revoked") {
+		t.Fatalf("expected 'publish revoked' error, got: %v", err)
+	}
+}
+
+// TestGrantServerConnectLeaseCappedByPublishExpiry verifies that connect lease TTLs
+// are bounded by the service's publish lease expiry, not just membership expiry.
+func TestGrantServerConnectLeaseCappedByPublishExpiry(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use real time for server, but we'll control publish lease TTL
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		ConnectAccessTTL:    10 * time.Minute,
+		ConnectRefreshTTL:   48 * time.Hour, // Long refresh TTL
+		AutoApprove:         true,
+		ClaimTTL:            5 * time.Minute, // Short publish TTL
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// Create an approved publish grant with short TTL (5 minutes)
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((5*time.Minute).Seconds()))
+	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
+	if submitResp.Type != TypeApproved {
+		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
+	}
+
+	// Create valid membership capability with long expiry (24 hours)
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Request connect lease
+	resp, err := RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, &memberCap, "")
+	if err != nil {
+		t.Fatalf("connect request failed: %v", err)
+	}
+
+	// Verify refresh lease is capped by publish lease expiry (5 min), not membership (24h) or config (48h)
+	// Allow some tolerance for test execution time
+	maxExpectedExpiry := now.Add(5*time.Minute + 10*time.Second)
+	if resp.RefreshLease.ExpiresAt.After(maxExpectedExpiry) {
+		t.Fatalf("refresh lease expiry %v exceeds publish lease expiry ~%v (membership was 24h, config was 48h)",
+			resp.RefreshLease.ExpiresAt, maxExpectedExpiry)
+	}
+
+	// Verify access lease is also capped (should be min of 10min config and 5min publish = 5min)
+	if resp.AccessLease.ExpiresAt.After(maxExpectedExpiry) {
+		t.Fatalf("access lease expiry %v exceeds publish lease expiry ~%v",
+			resp.AccessLease.ExpiresAt, maxExpectedExpiry)
+	}
+
+	// Verify leases are valid
+	if err := VerifyConnectAccessLease(resp.AccessLease, pub, "cluster-123", "default", serviceID); err != nil {
+		t.Fatalf("access lease signature invalid: %v", err)
+	}
+}
+
+// TestGrantServerConnectRequestDeniedWithExpiredPublishLease verifies that connect
+// requests fail after the service's publish lease expires.
+func TestGrantServerConnectRequestDeniedWithExpiredPublishLease(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Start with a time that allows the publish to be created
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		ConnectAccessTTL:    time.Hour,
+		ConnectRefreshTTL:   24 * time.Hour,
+		AutoApprove:         true,
+		ClaimTTL:            time.Minute, // 1 minute publish TTL
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// Create an approved publish grant with short TTL
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), 60) // 1 minute
+	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
+	if submitResp.Type != TypeApproved {
+		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
+	}
+
+	// Advance server time past the publish lease expiry
+	// Note: We advance the server's notion of time, but the actual publish lease
+	// was created with real time.Now() in BuildPublishLeaseArtifacts.
+	// So we need to wait for real time to pass, or we need to adjust our approach.
+	// For this test, we'll use a very short sleep to let the real-time-based
+	// publish lease expire, but that makes the test slow.
+	// Instead, we'll directly manipulate the store state for deterministic testing.
+
+	// Load the request and manually set the publish lease expiry to the past
+	state, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range state.Requests {
+		if state.Requests[i].ServiceID == serviceID && state.Requests[i].PublishLease != nil {
+			state.Requests[i].PublishLease.ExpiresAt = now.Add(-time.Minute) // Already expired
+		}
+	}
+	if err := store.save(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create valid membership capability for client (that hasn't expired)
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Test: connect request should fail because service publish lease is expired
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, &memberCap, "")
+	if err == nil || !strings.Contains(err.Error(), "does not have active publish authorization") {
+		t.Fatalf("expected 'does not have active publish authorization' error, got: %v", err)
+	}
+}
+
+func buildTestPublishRequest(t *testing.T, ownerPub ed25519.PublicKey, ownerPriv ed25519.PrivateKey, serviceID, servicePeerID string, requestedTTLSeconds int64) Message {
+	t.Helper()
+	req, err := SignPublishLeaseRequest(PublishLeaseRequest{
+		Version:               PublishLeaseVersion,
+		Kind:                  PublishLeaseRequestKind,
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
+		PublisherPeerID:       servicePeerID,
+		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
+		Nonce:                 "test-nonce-" + serviceID,
+	}, ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Message{
+		Type:                 TypeSubmit,
+		Version:              VersionV1,
+		ClusterID:            "cluster-123",
+		NamespaceID:          "default",
+		ServiceName:          serviceID,
+		ServiceID:            serviceID,
+		ServicePublicKey:     serviceidentity.EncodePublicKey(ownerPub),
+		ServiceOwnerSignature: req.ServiceOwnerSignature,
+		ServicePeerID:        servicePeerID,
+		RequestNonce:         req.Nonce,
+		RequestedPermissions: req.RequestedCapabilities,
+		RequestedTTLSeconds:  requestedTTLSeconds,
+	}
+}
+
+func TestGrantServerConnectRequestRejectsInvalid(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+	serviceHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "service-publisher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serviceHost.Close()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use real time
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	store.now = func() time.Time { return now }
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		AutoApprove:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// Create an approved publish grant for service so we can test membership validation errors
+	ownerPub, ownerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24*time.Hour).Seconds()))
+	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
+	if submitResp.Type != TypeApproved {
+		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Test: wrong cluster id in request (scope check before publish check)
+	validMemberCap, _ := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	_, err = RequestConnectLease(ctx, clientHost, info, "other-cluster", "default", serviceID, clientPubKey, &validMemberCap, "")
+	if err == nil || !strings.Contains(err.Error(), "cluster id mismatch") {
+		t.Fatalf("expected cluster mismatch error, got: %v", err)
+	}
+
+	// Test: request scope mismatch (wrong namespace in request - scope check before publish check)
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "other-ns", serviceID, clientPubKey, &validMemberCap, "")
+	if err == nil || !strings.Contains(err.Error(), "namespace id mismatch") {
+		t.Fatalf("expected namespace mismatch error, got: %v", err)
+	}
+
+	// Test: missing membership capability (after publish check passes for service)
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, nil, "")
+	if err == nil || !strings.Contains(err.Error(), "membership capability or membership invite") {
+		t.Fatalf("expected membership required error, got: %v", err)
+	}
+
+	// Test: wrong cluster id in membership capability
+	memberCapWrongCluster, _ := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "other-cluster",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, &memberCapWrongCluster, "")
+	if err == nil || !strings.Contains(err.Error(), "cluster id mismatch") {
+		t.Fatalf("expected cluster mismatch error, got: %v", err)
+	}
+
+	// Test: missing connect permission (needs full membership permissions: subscribe, list, publish)
+	memberCapNoConnect, _ := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", serviceID, clientPubKey, &memberCapNoConnect, "")
+	if err == nil || !strings.Contains(err.Error(), "connect permission") {
+		t.Fatalf("expected missing connect permission error, got: %v", err)
+	}
+}

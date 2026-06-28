@@ -306,31 +306,9 @@ func (e *serviceGrantEndpoint) allowPublicConnect(requester peer.ID) bool {
 }
 
 func verifyConnectMembership(membership capability.MembershipCapability, authorityPub ed25519.PublicKey, clusterID, namespaceID, requesterPeerID string) (time.Time, error) {
-	var lastErr error
-	for _, subject := range []string{requesterPeerID, clusterID} {
-		candidateNamespaces := []string{namespaceID}
-		if membership.NamespaceID == "*" {
-			candidateNamespaces = append(candidateNamespaces, "*")
-		}
-		for _, candidateNamespace := range candidateNamespaces {
-			if err := capability.VerifyMembershipCapability(membership, authorityPub, clusterID, candidateNamespace, subject); err != nil {
-				lastErr = err
-				continue
-			}
-			if membership.NamespaceID != namespaceID && membership.NamespaceID != "*" {
-				lastErr = fmt.Errorf("membership capability does not authorize namespace %q", namespaceID)
-				continue
-			}
-			if !containsConnectPermission(membership.Permissions) {
-				return time.Time{}, errors.New("membership capability is missing connect permission")
-			}
-			return membership.ExpiresAt.UTC(), nil
-		}
-	}
-	if lastErr != nil {
-		return time.Time{}, lastErr
-	}
-	return time.Time{}, errors.New("membership capability rejected")
+	// Delegate to shared verification in grants package. Pass zero time to let
+	// capability.VerifyMembershipCapability handle expiry with real time.
+	return grantspkg.VerifyConnectMembershipCapability(membership, authorityPub, clusterID, namespaceID, requesterPeerID, time.Time{})
 }
 
 func (e *serviceGrantEndpoint) verifyConnectMembershipGrantToken(token string) (time.Time, error) {
@@ -344,7 +322,7 @@ func (e *serviceGrantEndpoint) verifyConnectMembershipGrantToken(token string) (
 	if payload.ClusterID != e.clusterID || payload.Namespace != e.namespaceID {
 		return time.Time{}, errors.New("membership invite does not authorize attached service scope")
 	}
-	if !containsConnectPermission(payload.Grant.Permissions) {
+	if !grantspkg.HasConnectPermission(payload.Grant.Permissions) {
 		return time.Time{}, errors.New("membership invite is missing connect permission")
 	}
 	if e.revocations != nil {
@@ -372,15 +350,6 @@ func (e *serviceGrantEndpoint) consumeShareInvite(payload grantspkg.ServiceShare
 		return err
 	}
 	return nil
-}
-
-func containsConnectPermission(perms []string) bool {
-	for _, perm := range perms {
-		if perm == capability.PermissionConnect {
-			return true
-		}
-	}
-	return false
 }
 
 func advertisedGrantServiceEndpoint(addrs []string) *grantspkg.GrantServiceEndpoint {
