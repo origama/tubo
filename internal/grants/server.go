@@ -27,25 +27,31 @@ const (
 //     minted connect leases are capped by that membership expiry.
 //   - connect refresh only extends an already bounded session; it never widens the
 //     membership/session window.
+// MembershipGrantTokenVerifier validates a membership grant token and returns
+// its expiry time. The caller is responsible for providing an implementation
+// that uses clusterinvite.ParseAndVerifyToken and clusterinvite.MatchesAuthority.
+type MembershipGrantTokenVerifier func(token string, authorityPub ed25519.PublicKey, clusterID, namespaceID string) (time.Time, error)
+
 type ServerConfig struct {
-	ClusterName               string
-	ClusterID                 string
-	NamespaceID               string
-	Store                     *Store
-	Now                       func() time.Time
-	MaxPendingRequests        int
-	MaxPendingPerRequester    int
-	MaxPendingPerService      int
-	AutoApprove               bool
-	AuthorityPrivateKey       ed25519.PrivateKey
-	ClaimTTL                  time.Duration
-	ServiceShareTTL           time.Duration
-	GrantServicePeers         []string
-	GrantServicePeersProvider func() []string
-	ConnectAccessTTL          time.Duration
-	ConnectRefreshTTL         time.Duration
-	Revocations               *RevocationStore
-	ShareRedemptions          *ShareRedemptionStore
+	ClusterName                    string
+	ClusterID                      string
+	NamespaceID                    string
+	Store                          *Store
+	Now                            func() time.Time
+	MaxPendingRequests             int
+	MaxPendingPerRequester         int
+	MaxPendingPerService           int
+	AutoApprove                    bool
+	AuthorityPrivateKey            ed25519.PrivateKey
+	ClaimTTL                       time.Duration
+	ServiceShareTTL                time.Duration
+	GrantServicePeers              []string
+	GrantServicePeersProvider      func() []string
+	ConnectAccessTTL               time.Duration
+	ConnectRefreshTTL              time.Duration
+	Revocations                    *RevocationStore
+	ShareRedemptions               *ShareRedemptionStore
+	MembershipGrantTokenVerifier   MembershipGrantTokenVerifier
 }
 
 type Server struct {
@@ -114,6 +120,8 @@ func (s *Server) HandleMessage(msg Message, requester peer.ID) Message {
 		return s.handleShareRedeem(msg, requester)
 	case TypeShareMintRequest:
 		return s.handleShareMint(msg, requester)
+	case TypeConnectRequest:
+		return s.handleConnectRequest(msg, requester)
 	case TypeConnectRefresh:
 		return s.handleConnectRefresh(msg)
 	default:
@@ -349,6 +357,128 @@ func (s *Server) handleShareMint(msg Message, requester peer.ID) Message {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), Reason: err.Error()}
 	}
 	return Message{Type: TypeShareMintGranted, Version: VersionV1, RequestID: fallbackRequestID(msg.RequestNonce), ServiceShareToken: artifacts.Token}
+}
+
+func (s *Server) handleConnectRequest(msg Message, requester peer.ID) Message {
+	requestID := fallbackRequestID(msg.RequestID)
+	if len(s.cfg.AuthorityPrivateKey) == 0 {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "connect lease request requires an authority private key"}
+	}
+	if msg.ClusterID != s.cfg.ClusterID {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "cluster id mismatch"}
+	}
+	if msg.NamespaceID != s.cfg.NamespaceID {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "namespace id mismatch"}
+	}
+	if strings.TrimSpace(msg.ServiceID) == "" {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "service id is required"}
+	}
+	if strings.TrimSpace(msg.ClientPublicKey) == "" {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "client public key is required"}
+	}
+	membershipExpiry, err := s.authorizeConnectRequest(requester, msg)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: err.Error()}
+	}
+	var accessEpoch int64
+	if s.cfg.Revocations != nil {
+		if epoch, err := s.cfg.Revocations.ServiceAccessEpoch(msg.ServiceID); err == nil && epoch > 0 {
+			accessEpoch = epoch
+		}
+	}
+	accessTTL := s.cfg.ConnectAccessTTL
+	refreshTTL := s.cfg.ConnectRefreshTTL
+	if !membershipExpiry.IsZero() {
+		remaining := time.Until(membershipExpiry.UTC())
+		if remaining <= 0 {
+			return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: "namespace membership expired"}
+		}
+		if accessTTL > remaining {
+			accessTTL = remaining
+		}
+		if refreshTTL > remaining {
+			refreshTTL = remaining
+		}
+	}
+	artifacts, err := BuildMemberConnectLeaseArtifacts(s.cfg.AuthorityPrivateKey, s.cfg.ClusterID, s.cfg.NamespaceID, msg.ServiceID, msg.ClientPublicKey, accessEpoch, accessTTL, refreshTTL, membershipExpiry)
+	if err != nil {
+		return Message{Type: TypeDenied, Version: VersionV1, RequestID: requestID, Reason: err.Error()}
+	}
+	return Message{Type: TypeConnectGranted, Version: VersionV1, RequestID: requestID, ConnectAccessLease: &artifacts.AccessLease, ConnectRefreshLease: &artifacts.RefreshLease}
+}
+
+func (s *Server) authorizeConnectRequest(requester peer.ID, msg Message) (time.Time, error) {
+	if msg.MembershipCapability == nil && strings.TrimSpace(msg.MembershipGrantToken) == "" {
+		return time.Time{}, fmt.Errorf("namespace_members policy requires a membership capability or membership invite with connect permission")
+	}
+	var errs []string
+	if msg.MembershipCapability != nil {
+		if expiry, err := s.verifyConnectMembership(*msg.MembershipCapability, requester.String()); err == nil {
+			return expiry, nil
+		} else {
+			errs = append(errs, err.Error())
+		}
+	}
+	if strings.TrimSpace(msg.MembershipGrantToken) != "" {
+		if expiry, err := s.verifyConnectMembershipGrantToken(msg.MembershipGrantToken); err == nil {
+			return expiry, nil
+		} else {
+			errs = append(errs, err.Error())
+		}
+	}
+	return time.Time{}, fmt.Errorf("namespace_members policy denied connect: %s", strings.Join(errs, "; "))
+}
+
+func (s *Server) verifyConnectMembership(membership capability.MembershipCapability, requesterPeerID string) (time.Time, error) {
+	if len(s.cfg.AuthorityPrivateKey) == 0 {
+		return time.Time{}, fmt.Errorf("membership verification requires authority key")
+	}
+	authorityPub := s.cfg.AuthorityPrivateKey.Public().(ed25519.PublicKey)
+	var lastErr error
+	for _, subject := range []string{requesterPeerID, s.cfg.ClusterID} {
+		candidateNamespaces := []string{s.cfg.NamespaceID}
+		if membership.NamespaceID == "*" {
+			candidateNamespaces = append(candidateNamespaces, "*")
+		}
+		for _, candidateNamespace := range candidateNamespaces {
+			if err := capability.VerifyMembershipCapability(membership, authorityPub, s.cfg.ClusterID, candidateNamespace, subject); err != nil {
+				lastErr = err
+				continue
+			}
+			if membership.NamespaceID != s.cfg.NamespaceID && membership.NamespaceID != "*" {
+				lastErr = fmt.Errorf("membership capability does not authorize namespace %q", s.cfg.NamespaceID)
+				continue
+			}
+			if !containsConnectPermission(membership.Permissions) {
+				return time.Time{}, fmt.Errorf("membership capability is missing connect permission")
+			}
+			return membership.ExpiresAt.UTC(), nil
+		}
+	}
+	if lastErr != nil {
+		return time.Time{}, lastErr
+	}
+	return time.Time{}, fmt.Errorf("membership capability rejected")
+}
+
+func (s *Server) verifyConnectMembershipGrantToken(token string) (time.Time, error) {
+	if s.cfg.MembershipGrantTokenVerifier == nil {
+		return time.Time{}, fmt.Errorf("membership grant token verification not configured")
+	}
+	if len(s.cfg.AuthorityPrivateKey) == 0 {
+		return time.Time{}, fmt.Errorf("membership verification requires authority key")
+	}
+	authorityPub := s.cfg.AuthorityPrivateKey.Public().(ed25519.PublicKey)
+	return s.cfg.MembershipGrantTokenVerifier(token, authorityPub, s.cfg.ClusterID, s.cfg.NamespaceID)
+}
+
+func containsConnectPermission(perms []string) bool {
+	for _, perm := range perms {
+		if perm == capability.PermissionConnect {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleConnectRefresh(msg Message) Message {

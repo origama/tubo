@@ -619,3 +619,170 @@ func seedApprovedGrant(t *testing.T, store *Store, clusterName, clusterID, names
 	}
 	return approved
 }
+
+func TestGrantServerConnectRequestWithMembershipCapability(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+		ConnectAccessTTL:    time.Hour,
+		ConnectRefreshTTL:   24 * time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	// Create valid membership capability for client
+	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Test: valid connect request with membership capability
+	resp, err := RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", "my-service", clientPubKey, &memberCap, "")
+	if err != nil {
+		t.Fatalf("connect request failed: %v", err)
+	}
+	if resp.AccessLease.ServiceID != "my-service" {
+		t.Fatalf("unexpected service id: %s", resp.AccessLease.ServiceID)
+	}
+	if resp.AccessLease.ClusterID != "cluster-123" {
+		t.Fatalf("unexpected cluster id: %s", resp.AccessLease.ClusterID)
+	}
+	if resp.AccessLease.NamespaceID != "default" {
+		t.Fatalf("unexpected namespace id: %s", resp.AccessLease.NamespaceID)
+	}
+	if resp.RefreshLease.SessionID == "" {
+		t.Fatal("expected non-empty session id")
+	}
+	if !resp.AccessLease.ExpiresAt.After(now) {
+		t.Fatal("expected access lease to expire in future")
+	}
+	if !resp.RefreshLease.ExpiresAt.After(now) {
+		t.Fatal("expected refresh lease to expire in future")
+	}
+
+	// Verify lease signatures
+	if err := VerifyConnectAccessLease(resp.AccessLease, pub, "cluster-123", "default", "my-service"); err != nil {
+		t.Fatalf("access lease signature invalid: %v", err)
+	}
+	if err := VerifyConnectRefreshLease(resp.RefreshLease, pub, "cluster-123", "default", "my-service"); err != nil {
+		t.Fatalf("refresh lease signature invalid: %v", err)
+	}
+}
+
+func TestGrantServerConnectRequestRejectsInvalid(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	clientHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "grant-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientHost.Close()
+
+	_, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := NewServer(ServerConfig{
+		ClusterName:         "home",
+		ClusterID:           "cluster-123",
+		NamespaceID:         "default",
+		Store:               store,
+		Now:                 func() time.Time { return now },
+		AuthorityPrivateKey: priv,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	info := peer.AddrInfo{ID: serverHost.ID(), Addrs: serverHost.Addrs()}
+
+	clientPubKey := testAuthorizedClientKey(t)
+
+	// Test: missing membership capability
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", "my-service", clientPubKey, nil, "")
+	if err == nil || !strings.Contains(err.Error(), "membership capability or membership invite") {
+		t.Fatalf("expected membership required error, got: %v", err)
+	}
+
+	// Test: wrong cluster id
+	memberCap, _ := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "other-cluster",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", "my-service", clientPubKey, &memberCap, "")
+	if err == nil || !strings.Contains(err.Error(), "cluster id mismatch") {
+		t.Fatalf("expected cluster mismatch error, got: %v", err)
+	}
+
+	// Test: missing connect permission (needs full membership permissions: subscribe, list, publish)
+	memberCapNoConnect, _ := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "default", "my-service", clientPubKey, &memberCapNoConnect, "")
+	if err == nil || !strings.Contains(err.Error(), "connect permission") {
+		t.Fatalf("expected missing connect permission error, got: %v", err)
+	}
+
+	// Test: request scope mismatch (wrong namespace in request)
+	validMemberCap, _ := capability.SignMembershipCapability(capability.MembershipCapability{
+		ClusterID:     "cluster-123",
+		NamespaceID:   "default",
+		SubjectPeerID: clientHost.ID().String(),
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     now.Add(24 * time.Hour),
+	}, priv)
+	_, err = RequestConnectLease(ctx, clientHost, info, "cluster-123", "other-ns", "my-service", clientPubKey, &validMemberCap, "")
+	if err == nil || !strings.Contains(err.Error(), "namespace id mismatch") {
+		t.Fatalf("expected namespace mismatch error, got: %v", err)
+	}
+}

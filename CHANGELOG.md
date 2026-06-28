@@ -17,6 +17,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - `grants serve` now registers as a cluster authority process in `tubo ps` and carries cluster-level discovery-cache/query capabilities.
 
 ### Fixed
+- Namespace-member connect lease rollover now succeeds against relay grant servers (`tubo grants serve`): the grant server now handles `connect_lease.request` (TypeConnectRequest) messages with membership capability or membership grant token verification, fixing the `unsupported grant operation "connect_lease.request"` regression.
 - `tubo connect` now treats rollover artifacts with a near-expired delegated refresh lease as non-useful, backs off instead of storming the service grant endpoint, and surfaces clearer rate-limit / publish-renewal status reasons.
 - Private `tubo get services` discovery now prefers the configured cluster authority peer and fails clearly when that peer is missing instead of silently using the public relay path.
 - Grant minting now keeps derived share-invite and namespace-member connect lifetimes inside the live publish/membership expiry they were authorized from, including connect refresh on the service-side grant endpoint.

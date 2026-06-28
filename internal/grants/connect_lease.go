@@ -88,6 +88,76 @@ type canonicalConnectLease struct {
 	ExpiresAt           string   `json:"expires_at"`
 }
 
+// BuildMemberConnectLeaseArtifacts creates connect lease artifacts for namespace-member
+// connect requests without a share invite. The membershipExpiry caps the lease duration.
+func BuildMemberConnectLeaseArtifacts(priv ed25519.PrivateKey, clusterID, namespaceID, serviceID, clientPublicKey string, accessEpoch int64, accessTTL, refreshTTL time.Duration, membershipExpiry time.Time) (ConnectLeaseArtifacts, error) {
+	if len(priv) == 0 {
+		return ConnectLeaseArtifacts{}, errors.New("private key is required")
+	}
+	if accessTTL <= 0 {
+		accessTTL = DefaultConnectAccessLeaseTTL
+	}
+	if refreshTTL <= 0 {
+		refreshTTL = DefaultConnectRefreshLeaseTTL
+	}
+	if refreshTTL < accessTTL {
+		accessTTL = refreshTTL
+	}
+	thumbprint, err := ConnectClientKeyThumbprint(clientPublicKey)
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	now := time.Now().UTC()
+	if !membershipExpiry.IsZero() {
+		remaining := time.Until(membershipExpiry.UTC())
+		if remaining <= 0 {
+			return ConnectLeaseArtifacts{}, errors.New("membership expired")
+		}
+		if refreshTTL > remaining {
+			refreshTTL = remaining
+		}
+		if accessTTL > remaining {
+			accessTTL = remaining
+		}
+	}
+	sessionID, err := newConnectLeaseJTI("cs")
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	refreshJTI, err := newConnectLeaseJTI("cr")
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	accessJTI, err := newConnectLeaseJTI("ca")
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	refresh := ConnectRefreshLease{
+		Version:             ConnectAccessLeaseVersion,
+		Kind:                ConnectRefreshLeaseKind,
+		JTI:                 refreshJTI,
+		SessionID:           sessionID,
+		ClusterID:           clusterID,
+		NamespaceID:         namespaceID,
+		ServiceID:           serviceID,
+		ClientPublicKey:     strings.TrimSpace(clientPublicKey),
+		ClientKeyThumbprint: thumbprint,
+		AccessEpoch:         accessEpoch,
+		Permissions:         []string{capability.PermissionConnect},
+		IssuedAt:            now,
+		ExpiresAt:           now.Add(refreshTTL),
+	}
+	refresh, err = SignConnectRefreshLease(refresh, priv)
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	access, err := signConnectAccessForRefresh(priv, refresh, accessJTI, accessTTL, now)
+	if err != nil {
+		return ConnectLeaseArtifacts{}, err
+	}
+	return ConnectLeaseArtifacts{AccessLease: access, RefreshLease: refresh}, nil
+}
+
 func BuildConnectLeaseArtifacts(priv ed25519.PrivateKey, invite ServiceSharePayload, clientPublicKey string, accessTTL, refreshTTL time.Duration) (ConnectLeaseArtifacts, error) {
 	if len(priv) == 0 {
 		return ConnectLeaseArtifacts{}, errors.New("private key is required")
