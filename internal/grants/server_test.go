@@ -1041,13 +1041,18 @@ func TestGrantServerConnectRequestDeniedWithExpiredPublishLease(t *testing.T) {
 	// Instead, we'll directly manipulate the store state for deterministic testing.
 
 	// Load the request and manually set the publish lease expiry to the past
-	state, _ := store.load()
+	state, err := store.load()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for i := range state.Requests {
 		if state.Requests[i].ServiceID == serviceID && state.Requests[i].PublishLease != nil {
 			state.Requests[i].PublishLease.ExpiresAt = now.Add(-time.Minute) // Already expired
 		}
 	}
-	store.save(state)
+	if err := store.save(state); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create valid membership capability for client (that hasn't expired)
 	memberCap, err := capability.SignMembershipCapability(capability.MembershipCapability{
