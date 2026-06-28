@@ -18,7 +18,7 @@ func startCmd(args []string) error {
 		case "--config":
 			i++
 			if i >= len(args) {
-				return errors.New("usage: tubo start [--config <path>] service/<name>")
+				return errors.New("usage: tubo start [--config <path>] <service/name|pipe/name|cluster/name>")
 			}
 			configPath = args[i]
 		default:
@@ -33,7 +33,7 @@ func startCmd(args []string) error {
 		}
 	}
 	if len(positionals) != 1 {
-		return errors.New("usage: tubo start [--config <path>] <service/name|pipe/name>")
+		return errors.New("usage: tubo start [--config <path>] <service/name|pipe/name|cluster/name>")
 	}
 	kind, name, err := parseLocalResourceRef(positionals[0])
 	if err != nil {
@@ -54,9 +54,33 @@ func startCmd(args []string) error {
 		}
 		printDetachedSummary("start", state)
 		return nil
+	case "cluster":
+		if err := startClusterAuthorityLifecycle(name, configPath); err != nil {
+			return err
+		}
+		return nil
 	default:
-		return fmt.Errorf("start currently supports only service/<name> and pipe/<name>")
+		return fmt.Errorf("start currently supports only service/<name>, pipe/<name>, and cluster/<name>")
 	}
+}
+
+func startClusterAuthorityLifecycle(clusterName, configPath string) error {
+	cfg, err := loadLocalConfigOrError(configPath)
+	if err != nil {
+		return err
+	}
+	cluster, ok := cfg.Clusters[clusterName]
+	if !ok {
+		return fmt.Errorf("cluster %q not found", clusterName)
+	}
+	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" || cluster.AuthorityPrivateKeyFile == "" {
+		return fmt.Errorf("cluster %q is missing authority material", clusterName)
+	}
+	namespaceName := strings.TrimSpace(cfg.CurrentNamespace)
+	if namespaceName == "" {
+		namespaceName = "default"
+	}
+	return detachGrantsServeCommand([]string{"--config", configPath, "--cluster", clusterName, "--namespace", namespaceName})
 }
 
 func startServiceLifecycle(serviceName, configPath string) (detachedProcessState, error) {

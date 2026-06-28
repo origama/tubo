@@ -51,6 +51,7 @@ BIN_DIR="$(mktemp -d "${ROOT_DIR}/.tmp-smoke-workflow-bin.XXXXXX")"
 TUBO_BIN="$BIN_DIR/tubo"
 connect_process_ref=""
 connect_log_path=""
+authority_process_ref=""
 
 tubo() {
   "$TUBO_BIN" "$@"
@@ -62,6 +63,11 @@ cleanup() {
     tubo stop "$connect_process_ref" >/dev/null 2>&1 || true
     tubo rm --stale >/dev/null 2>&1 || true
     connect_process_ref=""
+  fi
+  if [[ -n "$authority_process_ref" ]]; then
+    tubo stop "$authority_process_ref" >/dev/null 2>&1 || true
+    tubo rm --stale >/dev/null 2>&1 || true
+    authority_process_ref=""
   fi
   pkill -f 'generated/tubo-workflow/tubo/client.yaml' >/dev/null 2>&1 || true
   for _ in $(seq 1 40); do
@@ -237,8 +243,10 @@ authority_public_key="$(extract_field "authority public key" "$cluster_out")"
 host_authority_key_file="${config_dir}/clusters/home/authority.key"
 host_tenant_a_cluster_cap_file="${config_dir}/clusters/home/namespaces/tenant-a/cluster.membership.cap.json"
 host_tenant_a_namespace_cap_file="${config_dir}/clusters/home/namespaces/tenant-a/membership.cap.json"
+host_service_a_membership_cap_file="${config_dir}/clusters/home/namespaces/tenant-a/services/myapi.membership.cap.json"
 host_tenant_b_cluster_cap_file="${config_dir}/clusters/home/namespaces/tenant-b/cluster.membership.cap.json"
 host_tenant_b_namespace_cap_file="${config_dir}/clusters/home/namespaces/tenant-b/membership.cap.json"
+host_service_b_membership_cap_file="${config_dir}/clusters/home/namespaces/tenant-b/services/myapi.membership.cap.json"
 host_swarm_key_file="${config_dir}/swarm.key"
 authority_key_file="${container_root}/clusters/home/authority.key"
 tenant_a_cluster_cap_file="${container_root}/clusters/home/namespaces/tenant-a/cluster.membership.cap.json"
@@ -272,9 +280,9 @@ service_a_publish_lease_file="${container_root}/clusters/home/namespaces/tenant-
 service_a_peer_id="$(tubo id from-seed "$service_a_seed" | tr -d '\n')"
 query_seed="discovery-query-${cluster_id}-tenant-a"
 query_peer_id="$(tubo id from-seed "$query_seed" | tr -d '\n')"
-generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_tenant_a_cluster_cap_file"
-generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_tenant_a_cluster_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$query_peer_id" "$host_tenant_a_cluster_cap_file"
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$query_peer_id" "$host_tenant_a_namespace_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-a "$service_a_peer_id" "$host_service_a_membership_cap_file"
 
 tenant_b_ns_out="$(tubo create namespace/tenant-b --config "$config_path")"
 host_tenant_b_discovery_secret_file="$(extract_field "discovery secret file" "$tenant_b_ns_out")"
@@ -292,9 +300,9 @@ service_b_owner_key_file_container="${container_root}/clusters/home/namespaces/t
 service_b_claim_file="${container_root}/clusters/home/namespaces/tenant-b/services/myapi.claim.json"
 service_b_publish_lease_file="${container_root}/clusters/home/namespaces/tenant-b/services/myapi.publish-lease.json"
 service_b_peer_id="$(tubo id from-seed "$service_b_seed" | tr -d '\n')"
-generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$service_b_peer_id" "$host_tenant_b_cluster_cap_file"
-generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$service_b_peer_id" "$host_tenant_b_cluster_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$query_peer_id" "$host_tenant_b_cluster_cap_file"
 generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$query_peer_id" "$host_tenant_b_namespace_cap_file"
+generate_membership_cap "$host_authority_key_file" "$cluster_id" tenant-b "$service_b_peer_id" "$host_service_b_membership_cap_file"
 
 if [[ -z "$service_a_id" || -z "$service_a_seed" || -z "$service_a_owner_key_file" ]]; then
   echo "[smoke-tubo-workflow] tenant-a service metadata incomplete"
@@ -549,7 +557,7 @@ clusters:
     cluster_id: ${cluster_id}
     authority_public_key: ${authority_public_key}
     authority_private_key_file: ${host_authority_key_file}
-    membership_capability_file: ${tenant_a_namespace_cap_file}
+    membership_capability_file: ${host_tenant_a_namespace_cap_file}
     namespaces:
       tenant-a:
         discovery: enabled
@@ -614,7 +622,7 @@ YAML
 
 find "$config_dir" -type d -exec chmod 755 {} +
 find "$config_dir" -type f -exec chmod 644 {} +
-chmod 644 "$host_authority_key_file" "$host_tenant_a_cluster_cap_file" "$host_tenant_a_namespace_cap_file" "$host_tenant_b_cluster_cap_file" "$host_tenant_b_namespace_cap_file" "$host_service_a_owner_key_file" "$host_service_a_claim_file" "$host_service_b_owner_key_file" "$host_service_b_claim_file" "$host_swarm_key_file"
+chmod 644 "$host_authority_key_file" "$host_tenant_a_cluster_cap_file" "$host_tenant_a_namespace_cap_file" "$host_service_a_membership_cap_file" "$host_tenant_b_cluster_cap_file" "$host_tenant_b_namespace_cap_file" "$host_service_b_membership_cap_file" "$host_service_a_owner_key_file" "$host_service_a_claim_file" "$host_service_b_owner_key_file" "$host_service_b_claim_file" "$host_swarm_key_file"
 chmod 600 "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"
 if [[ "$TUBO_SMOKE_UID:$TUBO_SMOKE_GID" != "$(id -u):$(id -g)" ]]; then
   if ! chown "$TUBO_SMOKE_UID:$TUBO_SMOKE_GID" "$host_tenant_a_discovery_secret_file" "$host_tenant_b_discovery_secret_file"; then
@@ -636,6 +644,28 @@ wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_SERVICE_B_HEALTH_PORT}/healthz"
 wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_EDGE_HTTP_PORT}/healthz"
 wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_EDGE_ADMIN_PORT}/healthz"
 wait_http_ok "http://127.0.0.1:${TUBO_SMOKE_RELAY_HEALTH_PORT}/healthz"
+
+echo "[smoke-tubo-workflow] starting host cluster authority"
+start_cluster_out="$(tubo start cluster/home --config "$config_path")"
+authority_process_ref="$(extract_field "id" "$start_cluster_out")"
+if [[ -z "$authority_process_ref" ]]; then
+  echo "[smoke-tubo-workflow] failed to parse cluster authority process metadata"
+  echo "$start_cluster_out"
+  exit 1
+fi
+python3 - "$config_path" "${config_dir}/client.yaml" <<'PY'
+import sys, yaml
+config_path, client_path = sys.argv[1], sys.argv[2]
+config = yaml.safe_load(open(config_path, 'r', encoding='utf-8'))
+client = yaml.safe_load(open(client_path, 'r', encoding='utf-8'))
+peers = list(config['clusters']['home'].get('discovery_query_peers') or [])
+if not peers:
+    raise SystemExit('cluster/home missing discovery_query_peers after start cluster')
+client.setdefault('clusters', {}).setdefault('home', {})['discovery_query_peers'] = peers
+with open(client_path, 'w', encoding='utf-8') as f:
+    yaml.safe_dump(client, f, sort_keys=False)
+PY
+chmod 644 "${config_dir}/client.yaml"
 
 echo "[smoke-tubo-workflow] waiting for tenant-a discovery cache and route"
 for i in $(seq 1 90); do

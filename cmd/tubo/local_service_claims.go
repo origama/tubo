@@ -20,6 +20,7 @@ import (
 	attachauth "github.com/origama/tubo/internal/attachauth"
 	capability "github.com/origama/tubo/internal/capability"
 	cfgpkg "github.com/origama/tubo/internal/config"
+	"github.com/origama/tubo/internal/discovery"
 	grantspkg "github.com/origama/tubo/internal/grants"
 	logging "github.com/origama/tubo/internal/logging"
 	"github.com/origama/tubo/internal/p2p"
@@ -201,6 +202,15 @@ func (c *attachPublishAuthorizationCoordinator) handle(ctx context.Context, req 
 	if !c.nextAttempt.IsZero() && now.Before(c.nextAttempt) {
 		nextAttempt := c.nextAttempt
 		return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: fmt.Sprintf("retry backoff active until %s", nextAttempt.UTC().Format(time.RFC3339)), RetryAfter: &nextAttempt}
+	}
+	if (reason == serviceapp.AnnouncementBlockedMembershipCapabilityMissing || reason == serviceapp.AnnouncementBlockedMembershipCapabilityInvalid) && strings.TrimSpace(c.svc.GrantRequestID) == "" {
+		if err := verifyCurrentAttachPublishLease(c.cfg, c.svc, c.servicePeerID); err == nil {
+			message := strings.TrimSpace(req.Detail)
+			if message == "" {
+				message = "membership capability still blocks announcement"
+			}
+			return serviceapp.PublishAuthorizationResult{Outcome: serviceapp.PublishAuthorizationOutcomeSkipped, Message: message}
+		}
 	}
 	renew := c.renew
 	if renew == nil {
@@ -408,17 +418,31 @@ func verifyServiceClaimFile(path string, pub ed25519.PublicKey, clusterID, names
 	return capability.VerifyServiceClaim(claim, pub, clusterID, namespaceID, serviceID, servicePeerID)
 }
 
-func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
-	capPath := serviceMembershipCapabilityPath(configPath, clusterName, namespaceName)
+func resolveAttachMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName, serviceSeed string) (string, error) {
+	capPath := serviceMembershipCapabilityPath(configPath, clusterName, namespaceName, serviceName)
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		return "", fmt.Errorf("derive service peer id: %w", err)
+	}
 	if _, err := os.Stat(capPath); err == nil {
-		return capPath, nil
+		// File exists - verify the SubjectPeerID matches current service peer ID
+		if data, readErr := os.ReadFile(capPath); readErr == nil {
+			var existing capability.MembershipCapability
+			if jsonErr := json.Unmarshal(data, &existing); jsonErr == nil {
+				if existing.SubjectPeerID == servicePeerID.String() {
+					return capPath, nil
+				}
+				// Peer ID mismatch - need to regenerate
+			}
+		}
+		// If we can't read/parse or peer ID doesn't match, fall through to regenerate
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return "", err
 	}
 	if cluster.AuthorityPrivateKeyFile != "" {
-		return ensureServiceMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
+		return ensureServiceMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceName, serviceSeed)
 	}
-	return namespaceMembershipCapabilityFile(cluster, namespaceName)
+	return capPath, nil
 }
 
 func serviceEndpointAddrsForTokens(cfg cfgpkg.Config, servicePeerID string) []string {
@@ -670,6 +694,18 @@ func verifyPublishLeaseFile(path string, pub ed25519.PublicKey, clusterID, names
 	return grantspkg.VerifyPublishLease(lease, pub, clusterID, namespaceID, serviceID, servicePeerID)
 }
 
+func verifyCurrentAttachPublishLease(cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) error {
+	cluster, ok := cfg.Clusters[cfg.CurrentCluster]
+	if !ok {
+		return fmt.Errorf("current cluster %q not found", cfg.CurrentCluster)
+	}
+	authorityPub, err := discovery.ParseAuthorityPublicKey(cluster.AuthorityPublicKey)
+	if err != nil {
+		return err
+	}
+	return verifyPublishLeaseFile(svc.ServicePublishLeaseFile, authorityPub, cluster.ClusterID, cfg.CurrentNamespace, svc.ServiceID, servicePeerID)
+}
+
 func readPublishLeaseFile(path string) (grantspkg.PublishLease, error) {
 	if strings.TrimSpace(path) == "" {
 		return grantspkg.PublishLease{}, os.ErrNotExist
@@ -713,10 +749,10 @@ func randomNonce() string {
 	return hex.EncodeToString(buf)
 }
 
-func serviceMembershipCapabilityPath(configPath, clusterName, namespaceName string) string {
-	return workspace.DerivePaths(configPath).ServiceMembershipCapability(clusterName, namespaceName)
+func serviceMembershipCapabilityPath(configPath, clusterName, namespaceName, serviceName string) string {
+	return workspace.DerivePaths(configPath).ServiceMembershipCapability(clusterName, namespaceName, serviceName)
 }
 
-func ensureServiceMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
-	return localWorkspace().ResolveMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
+func ensureServiceMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName, serviceSeed string) (string, error) {
+	return localWorkspace().ResolveMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceName, serviceSeed)
 }

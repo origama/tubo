@@ -49,7 +49,9 @@ mints publish leases locally without any grant protocol round-trip.
 
 1. The authority starts `tubo grants serve` — this makes the Grant Service
    reachable and, when namespace discovery is enabled, publishes a discoverable
-   `grant-service` system record so members can find it automatically.
+   `grant-service` system record so members can find it automatically. `grants serve`
+   now waits for a usable reachable peer address before publishing, so the first
+   discovery record already carries a dialable grant endpoint.
 2. The member runs `tubo attach` — it discovers the grant endpoint, submits a
    `PublishLease` request, and waits for approval.
 3. The authority approves the request — the member's next `tubo attach` (or an
@@ -104,14 +106,18 @@ Keep these separate:
 Run this on the **authority node** (the machine that holds `authority_private_key_file`):
 
 ```bash
-tubo grants serve --cluster <cluster-name> --namespace <namespace-name>
+tubo start cluster/<cluster-name>
 ```
 
-To run it in the background:
+For private clusters, make sure the cluster config has an explicit discovery authority peer in `clusters.<cluster-name>.discovery_query_peers`; `tubo start cluster/<cluster-name>` will persist the live peer list on the authority node.
+
+If you want the foreground form instead, use `tubo grants serve --cluster <cluster-name> [--namespace <namespace-name>]`.
+
+To run it in the background explicitly:
 
 ```bash
 tubo grants serve --cluster <cluster-name> --namespace <namespace-name> -d
-tubo logs process/grants-serve-<cluster-name>-<namespace-name>
+tubo logs process/grants-serve-<cluster-name>
 ```
 
 Expected output:
@@ -231,8 +237,8 @@ tubo attach <service-name> --port <port>
 This time:
 
 1. `attach` polls the grant service with the saved `grant_request_id`;
-2. receives `TypeApproved` with the signed `PublishLease`;
-3. saves the lease locally and clears the saved request id;
+2. receives `TypeApproved` with the signed `PublishLease` and the service-publisher membership capability for the service peer;
+3. saves that publish/membership material locally and clears the saved request id;
 4. starts publishing the service to the swarm.
 
 Expected output:
@@ -246,6 +252,10 @@ scope: public/<cluster-name>/<namespace-name>
 
 From this point forward the saved `PublishLease` is reused on every `attach`
 until it expires (after the TTL approved in step 3).
+If the refreshed publish authorization is still blocked by bad membership material,
+`attach` now reports the exact membership failure (for example subject mismatch,
+expiry, wrong scope, missing permission, or missing file) and stops minting new
+publish grant requests until that membership problem is fixed.
 If you reissue/import membership while `attach` or `connect` is already running,
 Tubo retries with backoff and recovers without a restart once the refreshed
 membership material is visible on disk.
@@ -344,6 +354,12 @@ tubo rotate secret namespace/<namespace-name>
 
 The service name contains characters not allowed by the grant protocol. Rename
 the service to match `^[a-z0-9][a-z0-9@._-]{0,62}$`.
+
+### `grants serve` waits and then fails with `grant service discovery could not find a reachable peer address`
+
+The authority never obtained a usable relay/direct address for the grant service.
+Check that the relay is up and reachable, then restart `tubo start cluster/<name>`
+(or `tubo grants serve`).
 
 ### Grant request never appears in `tubo grants pending`
 

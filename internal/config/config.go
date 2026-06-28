@@ -102,6 +102,7 @@ type Cluster struct {
 	AuthorityPublicKey       string                  `yaml:"authority_public_key,omitempty" json:"authority_public_key,omitempty"`
 	AuthorityPrivateKeyFile  string                  `yaml:"authority_private_key_file,omitempty" json:"authority_private_key_file,omitempty"`
 	MembershipCapabilityFile string                  `yaml:"membership_capability_file,omitempty" json:"membership_capability_file,omitempty"`
+	DiscoveryQueryPeers      []string                `yaml:"discovery_query_peers,omitempty" json:"discovery_query_peers,omitempty"`
 	MembershipGrant          *ClusterMembershipGrant `yaml:"membership_grant,omitempty" json:"membership_grant,omitempty"`
 	Capabilities             []string                `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
 	Namespaces               map[string]Namespace    `yaml:"namespaces,omitempty" json:"namespaces,omitempty"`
@@ -572,6 +573,7 @@ func cloneCluster(in Cluster) Cluster {
 		AuthorityPublicKey:       in.AuthorityPublicKey,
 		AuthorityPrivateKeyFile:  in.AuthorityPrivateKeyFile,
 		MembershipCapabilityFile: in.MembershipCapabilityFile,
+		DiscoveryQueryPeers:      cloneStrings(in.DiscoveryQueryPeers),
 		Capabilities:             cloneStrings(in.Capabilities),
 	}
 	if in.MembershipGrant != nil {
@@ -912,6 +914,11 @@ func Validate(c Config) error {
 		}
 	}
 	for clusterName, cluster := range c.Clusters {
+		for i, peer := range cluster.DiscoveryQueryPeers {
+			if _, err := multiaddr.NewMultiaddr(peer); err != nil {
+				return fmt.Errorf("clusters.%s.discovery_query_peers[%d]: %w", clusterName, i, err)
+			}
+		}
 		for namespaceName, namespace := range cluster.Namespaces {
 			if namespace.Discovery != "" && namespace.Discovery != NamespaceDiscoveryEnabled && namespace.Discovery != NamespaceDiscoveryDisabled {
 				return fmt.Errorf("clusters.%s.namespaces.%s.discovery: unsupported value %q", clusterName, namespaceName, namespace.Discovery)

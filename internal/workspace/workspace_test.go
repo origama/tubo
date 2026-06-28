@@ -335,8 +335,36 @@ func TestResolveMembershipCapabilityFileRequiresRuntimeEvidence(t *testing.T) {
 	}}}
 	path := writeTestConfig(t, cfg)
 	ws := Open(FSStore{})
-	if _, err := ws.ResolveMembershipCapabilityFile(path, cfg.Clusters["home"], "home", "default", "seed"); err == nil || !strings.Contains(err.Error(), "no membership capability file configured") {
+	if _, err := ws.ResolveMembershipCapabilityFile(path, cfg.Clusters["home"], "home", "default", "testservice", "seed"); err == nil || !strings.Contains(err.Error(), "service membership capability file missing") {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestResolveMembershipCapabilityFileDoesNotFallBackToNamespaceOrClusterMembership(t *testing.T) {
+	namespaceCap := filepath.Join(t.TempDir(), "namespace-membership.cap.json")
+	if err := os.WriteFile(namespaceCap, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	clusterCap := filepath.Join(t.TempDir(), "cluster-membership.cap.json")
+	if err := os.WriteFile(clusterCap, []byte("{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgpkg.Config{Clusters: map[string]cfgpkg.Cluster{"home": {
+		ClusterID:                "cluster-123",
+		AuthorityPublicKey:       "ssh-ed25519 AAAATEST home",
+		MembershipCapabilityFile: clusterCap,
+		Namespaces: map[string]cfgpkg.Namespace{"default": {
+			MembershipCapabilityFile: namespaceCap,
+		}},
+	}}}
+	path := writeTestConfig(t, cfg)
+	ws := Open(FSStore{})
+	got, err := ws.ResolveMembershipCapabilityFile(path, cfg.Clusters["home"], "home", "default", "testservice", "seed")
+	if err == nil || !strings.Contains(err.Error(), "service membership capability file missing") {
+		t.Fatalf("err=%v", err)
+	}
+	if got != "" {
+		t.Fatalf("path=%q want empty", got)
 	}
 }
 

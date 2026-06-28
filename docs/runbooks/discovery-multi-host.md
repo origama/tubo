@@ -169,7 +169,8 @@ For this private deployment:
 2. do not use random bootstrap peers;
 3. do not use external public relays;
 4. use only opaque Discovery V3 topics derived from namespace discovery entries;
-5. continue discovery with signed announcements and verified capabilities.
+5. configure the cluster authority peer explicitly for private clusters (persisted as `clusters.<name>.discovery_query_peers` by `tubo start cluster/<name>` on the authority node); `tubo get services` now fails clearly if that peer is missing instead of falling back to the public relay;
+6. continue discovery with signed announcements and verified capabilities.
 
 ## 5) Private relay, AutoRelay, and NAT reachability
 

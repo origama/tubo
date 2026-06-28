@@ -46,11 +46,15 @@ func printOverlayViews(items []overlayView) {
 
 func printClusterViews(items []clusterView) {
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tCURRENT\tCLUSTER_ID\tCAPABILITIES\tNAMESPACES")
+	fmt.Fprintln(w, "NAME\tCURRENT\tCLUSTER_ID\tDISCOVERY_PEERS\tCAPABILITIES\tNAMESPACES")
 	for _, item := range items {
 		current := ""
 		if item.Current {
 			current = "*"
+		}
+		peers := strings.Join(item.DiscoveryQueryPeers, ",")
+		if peers == "" {
+			peers = "-"
 		}
 		caps := strings.Join(item.Capabilities, ",")
 		if caps == "" {
@@ -64,7 +68,7 @@ func printClusterViews(items []clusterView) {
 		if clusterID == "" {
 			clusterID = "-"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", item.Name, current, clusterID, caps, namespaces)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, current, clusterID, peers, caps, namespaces)
 	}
 	_ = w.Flush()
 }
@@ -134,6 +138,14 @@ func printClusterDescription(desc workspace.ClusterDescription) {
 	fmt.Printf("Current: %t\n", desc.Current)
 	fmt.Printf("Cluster ID: %s\n", desc.ClusterID)
 	fmt.Printf("Authority public key: %s\n", desc.AuthorityPublicKey)
+	fmt.Println("Discovery query peers:")
+	if len(desc.DiscoveryQueryPeers) == 0 {
+		fmt.Println("  - none")
+	} else {
+		for _, peer := range desc.DiscoveryQueryPeers {
+			fmt.Printf("  - %s\n", peer)
+		}
+	}
 	fmt.Println("Capabilities:")
 	if len(desc.Capabilities) == 0 {
 		fmt.Println("  - none")

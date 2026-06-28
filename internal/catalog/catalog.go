@@ -280,10 +280,55 @@ func LoadDiscoveryConfig(path string) (cfgpkg.Config, error) {
 	if cfg.Network.PrivateKeyFile == "" && cfg.Network.PrivateKeyB64 == "" {
 		return cfgpkg.Config{}, errors.New("config is missing swarm key settings; run `tubo join --relay ... --swarm-key ...` first")
 	}
-	if len(cfg.Network.BootstrapPeers) == 0 && len(cfg.Network.RelayPeers) == 0 {
-		return cfgpkg.Config{}, errors.New("config is missing relay/bootstrap peers; run `tubo join --relay ... --swarm-key ...` first")
+	if _, err := discoveryPeersForConfig(cfg); err != nil {
+		return cfgpkg.Config{}, err
 	}
 	return cfg, nil
+}
+
+func clusterDiscoveryPeerError(clusterName, namespace string) error {
+	if strings.TrimSpace(namespace) == "" {
+		namespace = "default"
+	}
+	return fmt.Errorf("no discovery authority/cache peer configured for cluster %q namespace %q; run \"tubo start cluster/%s\" on an authority node and re-join/import the updated cluster config", clusterName, namespace, clusterName)
+}
+
+func discoveryPeersForConfig(cfg cfgpkg.Config) ([]string, error) {
+	clusterName := strings.TrimSpace(cfg.CurrentCluster)
+	if clusterName == "" {
+		peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+		if len(peers) > 0 {
+			return peers, nil
+		}
+		return nil, errors.New("no bootstrap or relay peers configured")
+	}
+	cluster, ok := cfg.Clusters[clusterName]
+	if !ok {
+		return nil, clusterDiscoveryPeerError(clusterName, cfg.CurrentNamespace)
+	}
+	if peers := uniqueStrings(cluster.DiscoveryQueryPeers); len(peers) > 0 {
+		return peers, nil
+	}
+	if cluster.MembershipGrant != nil {
+		if peers := uniqueStrings(cluster.MembershipGrant.GrantServicePeers); len(peers) > 0 {
+			return peers, nil
+		}
+	}
+	if cfgpkg.IsPublicDefaultScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: clusterName, Namespace: cfg.CurrentNamespace}) {
+		peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+		if len(peers) > 0 {
+			return peers, nil
+		}
+		return nil, errors.New("no bootstrap or relay peers configured")
+	}
+	if cluster.ClusterID != "" || strings.TrimSpace(cluster.AuthorityPublicKey) != "" || strings.TrimSpace(cluster.MembershipCapabilityFile) != "" || cluster.MembershipGrant != nil {
+		return nil, clusterDiscoveryPeerError(clusterName, cfg.CurrentNamespace)
+	}
+	peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+	if len(peers) > 0 {
+		return peers, nil
+	}
+	return nil, errors.New("no bootstrap or relay peers configured")
 }
 
 func FetchLocalServiceCache(cfg cfgpkg.Config) ([]Service, string, error) {
@@ -434,9 +479,12 @@ func isDiscoveryAuthorizationError(err error) bool {
 }
 
 func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Service, *discoveryquery.Metadata, []string, error) {
-	peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+	peers, err := discoveryPeersForConfig(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	if len(peers) == 0 {
-		return nil, nil, nil, errors.New("no bootstrap or relay peers configured")
+		return nil, nil, nil, errors.New("no discovery peers configured")
 	}
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -459,7 +507,7 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 	for _, raw := range peers {
 		info, err := p2p.AddrInfoFromString(raw)
 		if err != nil {
-			lastErr = fmt.Errorf("invalid bootstrap peer %q: %w", raw, err)
+			lastErr = fmt.Errorf("invalid discovery peer %q: %w", raw, err)
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -478,9 +526,8 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 			services = append(services, ServiceFromQueryService(service))
 		}
 		SortServices(services)
-		metadata := resp.Metadata
-		messages := []string{fmt.Sprintf("querying configured discovery peer fallback from %s %s", metadata.ServedByRole, metadata.ServedBy), fmt.Sprintf("received %d services", len(services))}
-		return services, &metadata, messages, nil
+		messages := []string{fmt.Sprintf("querying configured cluster discovery peer %s", raw), fmt.Sprintf("received %d services", len(services))}
+		return services, &resp.Metadata, messages, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("remote discovery query failed")
@@ -489,9 +536,12 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 }
 
 func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Duration) (Service, *discoveryquery.Metadata, []string, error) {
-	peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+	peers, err := discoveryPeersForConfig(cfg)
+	if err != nil {
+		return Service{}, nil, nil, err
+	}
 	if len(peers) == 0 {
-		return Service{}, nil, nil, errors.New("no bootstrap or relay peers configured")
+		return Service{}, nil, nil, errors.New("no discovery peers configured")
 	}
 	if timeout <= 0 {
 		timeout = DefaultTimeout
@@ -514,7 +564,7 @@ func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 	for _, raw := range peers {
 		info, err := p2p.AddrInfoFromString(raw)
 		if err != nil {
-			lastErr = fmt.Errorf("invalid bootstrap peer %q: %w", raw, err)
+			lastErr = fmt.Errorf("invalid discovery peer %q: %w", raw, err)
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -533,9 +583,8 @@ func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 			continue
 		}
 		service := ServiceFromQueryService(*resp.Service)
-		metadata := resp.Metadata
-		messages := []string{fmt.Sprintf("querying configured discovery peer fallback from %s %s", metadata.ServedByRole, metadata.ServedBy), fmt.Sprintf("received service %s", service.Name)}
-		return service, &metadata, messages, nil
+		messages := []string{fmt.Sprintf("querying configured cluster discovery peer %s", raw), fmt.Sprintf("received service %s", service.Name)}
+		return service, &resp.Metadata, messages, nil
 	}
 	if lastErr == nil {
 		lastErr = errors.New("remote discovery query failed")
@@ -544,9 +593,12 @@ func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 }
 
 func ObserveServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(WatchEvent)) ([]Service, error) {
-	peers := uniqueStrings(append(append([]string{}, cfg.Network.BootstrapPeers...), cfg.Network.RelayPeers...))
+	peers, err := discoveryPeersForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
 	if len(peers) == 0 {
-		return nil, errors.New("no bootstrap or relay peers configured")
+		return nil, errors.New("no discovery peers configured")
 	}
 	if timeout <= 0 {
 		timeout = DefaultTimeout

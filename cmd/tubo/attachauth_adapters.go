@@ -47,8 +47,8 @@ func (attachAuthArtifactStore) VerifyServiceClaim(path string, authorityPublicKe
 	return verifyServiceClaimFile(path, authorityPublicKey, clusterID, namespaceID, serviceID, servicePeerID)
 }
 
-func (attachAuthArtifactStore) ResolveMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error) {
-	return resolveAttachMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceSeed)
+func (attachAuthArtifactStore) ResolveMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName, serviceSeed string) (string, error) {
+	return resolveAttachMembershipCapabilityFile(configPath, cluster, clusterName, namespaceName, serviceName, serviceSeed)
 }
 
 func (attachAuthArtifactStore) BuildShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) (string, error) {

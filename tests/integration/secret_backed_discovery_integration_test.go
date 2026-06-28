@@ -148,6 +148,7 @@ func TestSecretBackedDiscoveryObserveServicesHandlesMismatchAndRotation(t *testi
 				ClusterID:                "cluster-194",
 				AuthorityPublicKey:       authorityKey,
 				MembershipCapabilityFile: capPath,
+				DiscoveryQueryPeers:      append([]string(nil), bootstrapPeers...),
 				Namespaces: map[string]cfgpkg.Namespace{
 					"team": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: oldRef},
 				},

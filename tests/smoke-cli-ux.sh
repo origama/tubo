@@ -106,7 +106,7 @@ cleanup() {
     kill "$grants_pid" >/dev/null 2>&1 || true
     wait "$grants_pid" >/dev/null 2>&1 || true
   fi
-  for ref in process/gateway-default process/attach-lmstudio process/relay-default process/grants-serve-lab-default; do
+  for ref in process/gateway-default process/attach-lmstudio process/relay-default process/grants-serve-lab; do
     "$BIN" stop "$ref" >/dev/null 2>&1 || true
   done
   if [[ -n "$detached_connect_ref" ]]; then
@@ -196,6 +196,12 @@ assert_contains "relay running" "$WORK_DIR/relay.out"
 assert_contains "process/relay-default" "$WORK_DIR/relay.out"
 wait_http_ok "http://127.0.0.1:$relay_health_port/healthz"
 
+echo "[smoke-cli-ux] starting detached cluster authority"
+"$BIN" start cluster/lab >"$WORK_DIR/start-cluster.out"
+assert_contains 'started cluster authority for cluster "lab"' "$WORK_DIR/start-cluster.out"
+assert_contains 'process/grants-serve-lab' "$WORK_DIR/start-cluster.out"
+wait_process_registered "grants-serve-lab"
+
 echo "[smoke-cli-ux] starting detached attach publisher"
 FORCE_REACHABILITY_PRIVATE=true \
 SERVICE_HEALTH_LISTEN="127.0.0.1:$service_health_port" \
@@ -240,6 +246,16 @@ wait_file_nonempty "$XDG_DATA_HOME/tubo/logs/attach-lmstudio.log"
 
 # resource discovery without a local gateway cache
 for i in $(seq 1 20); do
+  "$BIN" get services --system --timeout 8s >"$WORK_DIR/get-services-system.out" 2>&1
+  if grep -F "grant-service" "$WORK_DIR/get-services-system.out" >/dev/null 2>&1; then
+    break
+  fi
+  sleep 0.5
+done
+assert_contains "no local discovery endpoint available" "$WORK_DIR/get-services-system.out"
+assert_contains "querying configured cluster discovery peer" "$WORK_DIR/get-services-system.out"
+assert_contains "grant-service" "$WORK_DIR/get-services-system.out"
+for i in $(seq 1 20); do
   "$BIN" get services --timeout 8s >"$WORK_DIR/get-services-live.out" 2>&1
   if grep -F "lmstudio" "$WORK_DIR/get-services-live.out" >/dev/null 2>&1; then
     break
@@ -247,19 +263,11 @@ for i in $(seq 1 20); do
   sleep 0.5
 done
 assert_contains "no local discovery endpoint available" "$WORK_DIR/get-services-live.out"
-assert_contains "querying configured discovery peer fallback from relay" "$WORK_DIR/get-services-live.out"
-if grep -F "received 1 services" "$WORK_DIR/get-services-live.out" >/dev/null 2>&1; then
-  true
-else
-  assert_contains "received 0 services" "$WORK_DIR/get-services-live.out"
-  assert_contains "starting temporary observer" "$WORK_DIR/get-services-live.out"
-fi
-if ! grep -F "lmstudio" "$WORK_DIR/get-services-live.out" >/dev/null 2>&1; then
-  echo "[smoke-cli-ux] discovery cache did not surface lmstudio; skipping discovery/connect assertions"
-  exit 0
-fi
+assert_contains "querying configured cluster discovery peer" "$WORK_DIR/get-services-live.out"
+assert_contains "received 2 services" "$WORK_DIR/get-services-live.out"
+assert_contains "lmstudio" "$WORK_DIR/get-services-live.out"
 "$BIN" get service/lmstudio >"$WORK_DIR/get-service.out" 2>&1
-assert_contains "querying configured discovery peer fallback from relay" "$WORK_DIR/get-service.out"
+assert_contains "querying configured cluster discovery peer" "$WORK_DIR/get-service.out"
 assert_contains "received service lmstudio" "$WORK_DIR/get-service.out"
 assert_contains "lmstudio" "$WORK_DIR/get-service.out"
 "$BIN" describe service/lmstudio >"$WORK_DIR/describe-service.out" 2>&1
@@ -271,14 +279,14 @@ assert_contains "fallback: relay" "$WORK_DIR/describe-service.out"
 assert_contains "  Direct:" "$WORK_DIR/describe-service.out"
 assert_contains "  Relayed:" "$WORK_DIR/describe-service.out"
 assert_contains "Observed from:" "$WORK_DIR/describe-service.out"
-assert_contains "querying configured discovery peer fallback from relay" "$WORK_DIR/describe-service.out"
+assert_contains "querying configured cluster discovery peer" "$WORK_DIR/describe-service.out"
 "$BIN" inspect service/lmstudio --json >"$WORK_DIR/inspect-service.json"
 python3 - "$WORK_DIR/inspect-service.json" <<'PY'
 import json, sys
 with open(sys.argv[1], 'r', encoding='utf-8') as f:
     payload = json.load(f)
 assert payload['mode'] == 'remote-query', payload
-assert payload['metadata']['served_by_role'] == 'relay', payload
+assert payload['metadata']['served_by_role'] == 'authority', payload
 assert payload['item']['name'] == 'lmstudio', payload
 assert payload['item']['kind'] == 'service', payload
 assert payload['item']['status'] == 'online', payload
@@ -385,11 +393,13 @@ wait "$fg_attach_pid" >/dev/null 2>&1 || true
 fg_attach_pid=""
 
 echo "[smoke-cli-ux] validating foreground grants serve registration"
-"$BIN" grants serve --cluster lab --namespace default --p2p-listen /ip4/127.0.0.1/tcp/0 >"$WORK_DIR/grants-foreground.out" 2>&1 &
+"$BIN" stop process/grants-serve-lab >"$WORK_DIR/stop-detached-grants.out"
+assert_contains 'stopped process/grants-serve-lab' "$WORK_DIR/stop-detached-grants.out"
+"$BIN" grants serve --cluster lab --namespace default --p2p-listen /ip4/0.0.0.0/tcp/0 >"$WORK_DIR/grants-foreground.out" 2>&1 &
 grants_pid=$!
 wait_file_nonempty "$WORK_DIR/grants-foreground.out"
-wait_process_registered "grants-serve-lab-default"
-"$BIN" describe process/grants-serve-lab-default >"$WORK_DIR/describe-grants-process.out"
+wait_process_registered "grants-serve-lab"
+"$BIN" describe process/grants-serve-lab >"$WORK_DIR/describe-grants-process.out"
 assert_contains 'Command: grants serve' "$WORK_DIR/describe-grants-process.out"
 assert_contains 'Source: foreground' "$WORK_DIR/describe-grants-process.out"
 kill "$grants_pid"

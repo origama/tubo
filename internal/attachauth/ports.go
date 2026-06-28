@@ -16,7 +16,7 @@ type IdentityStore interface {
 type ArtifactStore interface {
 	VerifyPublishLease(path string, authorityPublicKey ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error
 	VerifyServiceClaim(path string, authorityPublicKey ed25519.PublicKey, clusterID, namespaceID, serviceID, servicePeerID string) error
-	ResolveMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceSeed string) (string, error)
+	ResolveMembershipCapabilityFile(configPath string, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName, serviceSeed string) (string, error)
 	BuildShareToken(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) (string, error)
 	ReadPublishLease(path string) (grantspkg.PublishLease, error)
 }

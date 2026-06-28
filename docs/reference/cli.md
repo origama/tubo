@@ -66,7 +66,7 @@ ps        = show locally registered processes
 top       = show live local traffic stats for registered processes
 peers     = manage local peer display aliases
 logs      = follow or tail local logs when Tubo knows the file
-start     = start a service runtime from the stored local definition
+start     = start a service runtime, pipe runtime, or cluster authority from stored material
 restart   = stop/start a service runtime from the stored local definition
 stop      = stop a local process or an initial service/pipe lifecycle runtime
 rm        = remove a service definition or stale process artifacts
@@ -562,6 +562,8 @@ Notes:
 Authority nodes can start the grant protocol listener and review local requests. Manual approval remains the safest default. `--public-auto-approve` is the current legacy auto-approval switch: it can be useful for tightly controlled private clusters, but it should not be used on public or weakly controlled grant services. The long-term policy vocabulary is expected to move toward `--approve-policy-*` names; those are target/future direction only and are not implemented yet.
 
 ```bash
+tubo start cluster/home
+# or:
 tubo grants serve --cluster home --namespace default --public-auto-approve \
   --claim-ttl 24h --connect-access-ttl 10m --connect-refresh-ttl 48h
 # prints direct addr plus relay addr when relay peers are configured
@@ -590,7 +592,7 @@ tubo peers alias 12D3KooW... --name oripi --note "verified via SSH"
 
 `--claim-ttl` sets the approved ServiceClaim lifetime. `--publish-lease-ttl` sets the PublishLease lifetime and defaults to `--claim-ttl` when omitted. `--share-ttl` sets the share invite token lifetime and defaults to `min(ServiceShareDefaultTTL, publish-lease-ttl)` when omitted. `--publish-lease-ttl` must not exceed `--claim-ttl`, and `--share-ttl` must not exceed `--publish-lease-ttl`. `--ttl` is no longer accepted because it was ambiguous.
 
-The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` uses the configured overlay bootstrap/relay peers, enables AutoRelay/hole punching from config, maintains relay reservations, and now publishes a system `grant-service` discovery record when namespace discovery is enabled, so members can discover the grant endpoint even without local `grant_service_peers`. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, reuses an existing pending request for equivalent service/requester/service-peer retries, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `tubo grants request` / `attach` now prefer fresh grant-service discovery records and ignore expired remote-cache entries when rediscovering a grant peer.
+The listener uses `/tubo/grants/1.0`, stores pending requests under the local Tubo data dir, derives the requester PeerID from the libp2p stream, and never signs publication material without approval. `grants serve` / `start cluster/<name>` treat the authority as cluster-level, register as a cluster authority process, and publish a system `grant-service` discovery record when namespace discovery is enabled so members can discover the grant endpoint even without local `grant_service_peers`. On private clusters, the authority peer should be persisted in `clusters.<name>.discovery_query_peers`; `tubo start cluster/<name>` writes that peer list from the running authority process. Approval is explicit and signs a service-scoped `PublishLease`/`ServiceClaim` with the local authority key plus an optional connect-only `service_share_token`. The grant server also reads `--revocations` (default local data dir) to reject revoked invite redemption, revoked session refresh, stale service-access epochs, and publish-revoked services. The grant server bounds pending requests globally/per requester/per `service_id`, clamps share TTL, reuses an existing pending request for equivalent service/requester/service-peer retries, and rejects active `service_id` collisions for a different service peer; duplicate display names are allowed. `tubo grants request` / `attach` now prefer fresh grant-service discovery records and ignore expired remote-cache entries when rediscovering a grant peer.
 
 Manual review flow:
 

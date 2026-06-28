@@ -1436,6 +1436,37 @@ func TestStartCmdUsesPersistedServiceTargetAfterAttachStop(t *testing.T) {
 	}
 }
 
+func TestStartCmdStartsClusterAuthorityProcess(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	oldStart := startDetachedProcessFn
+	var captured detachedSpec
+	startDetachedProcessFn = func(spec detachedSpec) (detachedProcessState, error) {
+		captured = spec
+		return detachedProcessState{ID: spec.State.ID, Cluster: spec.State.Cluster, PID: 1234, LogFile: spec.State.LogFile}, nil
+	}
+	defer func() { startDetachedProcessFn = oldStart }()
+	stdout, _, err := captureOutputs(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout, "started cluster authority") {
+		t.Fatalf("unexpected start output: %s", stdout)
+	}
+	if captured.State.ResourceKind != "cluster/authority" || captured.State.PrimaryKind != "authority" || captured.State.PrimaryRef != "authority/home" || captured.State.Namespace != "" || captured.State.Purpose != "cluster-authority" {
+		t.Fatalf("unexpected cluster authority state: %#v", captured.State)
+	}
+	if captured.State.Name != "grants-serve-home" || !strings.Contains(captured.State.LogFile, "grants-serve-home") {
+		t.Fatalf("unexpected cluster authority naming: %#v", captured.State)
+	}
+	if len(captured.ChildArgs) < 3 || captured.ChildArgs[0] != "grants" || captured.ChildArgs[1] != "serve" || captured.ChildArgs[2] != "--config" {
+		t.Fatalf("unexpected child args: %#v", captured.ChildArgs)
+	}
+}
+
 func TestStartCmdFailsWhenServiceTargetMissing(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := writeCreateClusterConfig(t)
@@ -2043,6 +2074,21 @@ func TestProcessListingCommandsUseCompactWideAndJSONPaths(t *testing.T) {
 	}
 }
 
+func TestProcessListingShowsClusterAuthorityScope(t *testing.T) {
+	out, err := capture(func() error {
+		printProcessesTable([]processView{{ID: "process/grants-serve-home", Name: "grants-serve-home", Command: "grants serve", ResourceKind: "cluster/authority", PrimaryKind: "authority", PrimaryName: "home", PrimaryRef: "authority/home", Cluster: "home", Capabilities: []string{"grants", "discovery.cache", "discovery.query", "discovery.sync"}, Status: "running", PID: 1234, LogFile: "/tmp/grants-serve-home.log", StateFile: "/tmp/grants-serve-home.json", PIDFile: "/tmp/grants-serve-home.pid"}})
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"home/authority", "cluster", "grants,discovery.cache,discovery.query,discovery.sync"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("cluster authority listing missing %q: %s", want, out)
+		}
+	}
+}
+
 func TestLogsCmdShowsSystemdHintWhenNoLogFile(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	if err := os.MkdirAll(processStateDir(), 0700); err != nil {
@@ -2419,7 +2465,7 @@ func TestHelpTextExplainsInviteOnlyPublicDefaultAndCollaborationPaths(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"tubo start [--config <path>] <service/name|pipe/name>", "stored local service definition or start a pipe runtime", "already running"} {
+	for _, want := range []string{"tubo start [--config <path>] <service/name|pipe/name|cluster/name>", "stored local service definition, start a pipe runtime from the saved pipe definition, or start the cluster authority process", "already running"} {
 		if !strings.Contains(startHelp, want) {
 			t.Fatalf("start help missing %q: %s", want, startHelp)
 		}
@@ -2488,6 +2534,8 @@ clusters:
   home:
     cluster_id: home-cluster
     authority_public_key: home-pub
+    discovery_query_peers:
+      - /dns4/authority.example/tcp/4001/p2p/12D3KooWAuthority
     capabilities:
       - discovery
     namespaces:
@@ -2748,6 +2796,14 @@ func TestLocalRotateSecretCommand(t *testing.T) {
 	cfg, err := cfgpkg.LoadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	if len(cluster.DiscoveryQueryPeers) == 0 {
+		cluster.DiscoveryQueryPeers = []string{"/dns4/authority.example/tcp/4001/p2p/12D3KooWBDXSkfRCux8NFenVRDUKQLUDPC4LAbaB6x1bpm8YBHLd"}
+		cfg.Clusters["home"] = cluster
+		if err := saveLocalConfig(configPath, cfg); err != nil {
+			t.Fatal(err)
+		}
 	}
 	before := cfg.Clusters["home"].Namespaces["default"].DiscoverySecretCurrent
 	beforeBytes, err := os.ReadFile(before.File)
@@ -3123,6 +3179,16 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	if _, err := capture(func() error { return run([]string{"create", "namespace/observability", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := capture(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	startedCfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(startedCfg.Clusters["home"].DiscoveryQueryPeers) == 0 {
+		t.Fatal("expected start cluster to persist discovery query peers")
+	}
 
 	out, err := capture(func() error {
 		return run([]string{"share", "cluster/home", "--config", configPath, "--namespace", "observability", "--permission", "member", "--expires", "2h"})
@@ -3214,6 +3280,9 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 func TestClusterInvitationShareAndJoinJSONStayParseable(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
 	stdout, stderr, err := captureOutputs(func() error {
@@ -3318,6 +3387,9 @@ func TestViewerClusterInvitationShareJoinAllowsListButNotConnect(t *testing.T) {
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := capture(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
 	out, err := capture(func() error {
 		return run([]string{"share", "cluster/home", "--config", configPath, "--role", clusterInviteViewerRole, "--expires", "2h"})
 	})
@@ -3348,6 +3420,9 @@ func TestViewerClusterInvitationShareJoinAllowsListButNotConnect(t *testing.T) {
 func TestGrantRequesterClusterInvitationShareJoinAndRequest(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := cfgpkg.LoadFile(configPath)
@@ -3434,6 +3509,9 @@ func TestClusterInviteReuseRejectedLocally(t *testing.T) {
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := capture(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
 	out, err := capture(func() error { return run([]string{"share", "cluster/home", "--config", configPath}) })
 	if err != nil {
 		t.Fatal(err)
@@ -3454,6 +3532,9 @@ func TestClusterInviteReuseRejectedLocally(t *testing.T) {
 func TestClusterInvitationShareFailsWithoutNamespaceDiscoveryEntry(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := cfgpkg.LoadFile(configPath)
@@ -3479,6 +3560,9 @@ func TestClusterInvitationShareFailsWithoutNamespaceDiscoveryEntry(t *testing.T)
 func TestGrantRequesterInviteRequiresGrantPeer(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
 	_, err := capture(func() error {
@@ -3549,6 +3633,9 @@ func TestNamespaceMembershipCapabilityFilePrefersNamespaceSpecificFile(t *testin
 func TestClusterInvitationRejectsExpiredAndTamperedTokens(t *testing.T) {
 	configPath := writeCreateClusterConfig(t)
 	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := capture(func() error { return run([]string{"start", "cluster/home", "--config", configPath}) }); err != nil {
 		t.Fatal(err)
 	}
 
@@ -3796,33 +3883,49 @@ func TestBuildAttachServiceShareTokenPublicDefaultRejectsMissingServiceEndpoint(
 	}
 }
 
-func TestBuildAttachServiceShareTokenUsesTcpServiceKind(t *testing.T) {
-	configPath := writeCreateClusterConfig(t)
-	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
-		t.Fatal(err)
+func TestBuildAttachServiceShareTokenUsesEffectiveServiceKind(t *testing.T) {
+	cases := []struct {
+		name     string
+		kind     cfgpkg.ServiceKind
+		target   string
+		wantKind string
+	}{
+		{name: "http", kind: cfgpkg.ServiceKindHTTP, target: "http://127.0.0.1:8080", wantKind: "http"},
+		{name: "tcp", kind: cfgpkg.ServiceKindTCP, target: "tcp://ifconfig.net:80", wantKind: "tcp"},
 	}
-	cfg, err := cfgpkg.LoadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.Service.Name = "ifconfig"
-	cfg.Service.Target = "tcp://ifconfig.net:80"
-	cfg.Service.Kind = cfgpkg.ServiceKindTCP
-	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cluster := cfg.Clusters["home"]
-	token, err := buildAttachServiceShareToken(cfg, cluster, "home", "default", "ifconfig", svc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	payload, err := parseAndVerifyServiceShareToken(token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if payload.ServiceKind != "tcp" {
-		t.Fatalf("expected tcp share token, got %#v", payload)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := writeCreateClusterConfig(t)
+			if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := cfgpkg.LoadFile(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Service.Name = "ifconfig"
+			cfg.Service.Target = tc.target
+			cfg.Service.Kind = tc.kind
+			cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cluster := cfg.Clusters["home"]
+			token, err := buildAttachServiceShareToken(cfg, cluster, "home", "default", "ifconfig", svc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err := parseAndVerifyServiceShareToken(token)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if payload.ServiceKind != tc.wantKind {
+				t.Fatalf("expected %s share token, got %#v", tc.wantKind, payload)
+			}
+			if payload.ServiceID != svc.ServiceID || payload.TargetServiceID != svc.ServiceID {
+				t.Fatalf("expected token service ids to match current service, got %#v want %q", payload, svc.ServiceID)
+			}
+		})
 	}
 }
 
@@ -3830,6 +3933,7 @@ func writeCreateClusterConfig(t *testing.T) string {
 	t.Helper()
 	configHome := filepath.Join(t.TempDir(), "xdg")
 	t.Setenv("XDG_CONFIG_HOME", configHome)
+	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	configPath := filepath.Join(configHome, "tubo", "config.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
@@ -4338,14 +4442,17 @@ func TestGrantsApproveTTLFlagsControlClaimPublishAndShareExpiry(t *testing.T) {
 
 func TestGrantsServeProcessStateHasLogFile(t *testing.T) {
 	// grantsServeProcessState must always include a non-empty LogFile path so
-	// that 'tubo logs grants-serve-<cluster>-<namespace>' can read it when the
-	// process is launched with -d.
+	// that 'tubo logs grants-serve-<cluster>' can read it when the process is
+	// launched with -d.
 	state := grantsServeProcessState("mycluster", "myns", "/ip4/0.0.0.0/tcp/0")
 	if state.LogFile == "" {
 		t.Fatal("LogFile must not be empty in grantsServeProcessState")
 	}
-	if !strings.Contains(state.LogFile, "grants-serve-mycluster-myns") {
+	if !strings.Contains(state.LogFile, "grants-serve-mycluster") {
 		t.Fatalf("LogFile path %q does not contain expected process name segment", state.LogFile)
+	}
+	if state.ResourceKind != "cluster/authority" || state.PrimaryKind != "authority" || state.PrimaryRef != "authority/mycluster" || state.Namespace != "" || state.Purpose != "cluster-authority" {
+		t.Fatalf("unexpected cluster authority metadata: %#v", state)
 	}
 	if !strings.HasSuffix(state.LogFile, ".log") {
 		t.Fatalf("LogFile %q should end in .log", state.LogFile)
@@ -4359,7 +4466,7 @@ func TestGrantsServeCmdStripsDetachFlagBeforeParsingFlags(t *testing.T) {
 	// it will fail with a config-not-found error (not a flag-parse error).
 	err := grantsCmd([]string{"serve", "-d", "--cluster", "home", "--namespace", "default"})
 	if err == nil {
-		// may succeed if a real grants-serve-home-default is already registered;
+		// may succeed if a real cluster authority process is already registered;
 		// that is fine for this test.
 		return
 	}
@@ -5264,7 +5371,7 @@ func newStaleGrantPeerRecoveryFixture(t *testing.T) (string, cfgpkg.Config, cfgp
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
-	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: querySeed}, CurrentCluster: "home", CurrentNamespace: "observability", Service: cfgpkg.Service{Name: "myapi", Target: "http://127.0.0.1:8080"}, Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSHKey))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
+	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: querySeed}, CurrentCluster: "home", CurrentNamespace: "observability", Service: cfgpkg.Service{Name: "myapi", Target: "http://127.0.0.1:8080"}, Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSHKey))), MembershipCapabilityFile: membershipPath, DiscoveryQueryPeers: []string{addr}, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
 	if err := saveLocalConfig(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -5765,6 +5872,20 @@ func TestResolveAttachAuthorizationRequestsGrantAndReceivesShareToken(t *testing
 	}
 	if authz.ServiceClaimFile == "" || authz.MembershipCapabilityFile == "" || authz.ServicePublishLeaseFile == "" {
 		t.Fatalf("expected approved authz to save claim, publish lease, and membership: %#v", authz)
+	}
+	if want := serviceMembershipCapabilityPath(configPath, "home", "default", "myapi"); authz.MembershipCapabilityFile != want {
+		t.Fatalf("membership capability path = %q, want %q", authz.MembershipCapabilityFile, want)
+	}
+	membershipBytes, err := os.ReadFile(authz.MembershipCapabilityFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var membership capability.MembershipCapability
+	if err := json.Unmarshal(membershipBytes, &membership); err != nil {
+		t.Fatal(err)
+	}
+	if err := capability.VerifyMembershipCapability(membership, authorityPriv.Public().(ed25519.PublicKey), cluster.ClusterID, "default", authz.ServicePeerID); err != nil {
+		t.Fatalf("approved membership capability invalid: %v", err)
 	}
 }
 
@@ -6488,7 +6609,7 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
 		Edge:             cfgpkg.Edge{AdminListen: "127.0.0.1:1"},
-		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}},
+		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, DiscoveryQueryPeers: []string{p2p.PeerAddrs(server)[0]}, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}},
 	}
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
@@ -6510,7 +6631,7 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatalf("unexpected services: %#v", result.Services)
 	}
 	joined := strings.Join(result.Messages, "\n")
-	if !strings.Contains(joined, "querying configured discovery peer fallback from relay") || !strings.Contains(joined, "received 1 services") {
+	if !strings.Contains(joined, "querying configured cluster discovery peer") || !strings.Contains(joined, "received 1 services") {
 		t.Fatalf("unexpected messages: %s", joined)
 	}
 }
@@ -6571,7 +6692,7 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(server)[0]}},
 		Edge:             cfgpkg.Edge{AdminListen: "127.0.0.1:1"},
-		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}},
+		Clusters:         map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, DiscoveryQueryPeers: []string{p2p.PeerAddrs(server)[0]}, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}},
 	}
 	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
 		t.Fatal(err)
@@ -6593,7 +6714,7 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatalf("unexpected service: %#v", service)
 	}
 	joined := strings.Join(result.Messages, "\n")
-	if !strings.Contains(joined, "querying configured discovery peer fallback from relay") || !strings.Contains(joined, "received service myapi") {
+	if !strings.Contains(joined, "querying configured cluster discovery peer") || !strings.Contains(joined, "received service myapi") {
 		t.Fatalf("unexpected messages: %s", joined)
 	}
 }
@@ -6668,7 +6789,7 @@ func newDuplicateServiceDiscoveryFixture(t *testing.T) (cfgpkg.Config, serviceSc
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
 		Clusters: map[string]cfgpkg.Cluster{
-			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, DiscoveryQueryPeers: []string{addr}, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
 		},
 	}
 	return cfg, serviceScope{Cluster: "home", Namespace: "observability"}, addr, serviceIDA, serviceIDB
@@ -6764,7 +6885,7 @@ func TestDiscoverServiceExactFallsBackToDisplayNameWhenServiceIDMissing(t *testi
 		CurrentNamespace: "observability",
 		Network:          cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}},
 		Clusters: map[string]cfgpkg.Cluster{
-			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
+			"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, DiscoveryQueryPeers: []string{addr}, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}},
 		},
 	}
 	result, service, err := discoverServiceExactWithConfig(cfg, 5*time.Second, false, false, serviceScope{Cluster: "home", Namespace: "observability"}, "myapi", "service-fallback")
@@ -6965,7 +7086,7 @@ func newSystemGrantServiceDiscoveryFixture(t *testing.T) (string, cfgpkg.Config,
 	configRoot := filepath.Join(t.TempDir(), "xdg-config")
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
 	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
-	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: querySeed}, CurrentCluster: "home", CurrentNamespace: "observability", Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
+	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: querySeed}, CurrentCluster: "home", CurrentNamespace: "observability", Network: cfgpkg.Network{PrivateKeyFile: keyPath, BootstrapPeers: []string{addr}}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, DiscoveryQueryPeers: []string{addr}, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}}}
 	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -7020,6 +7141,9 @@ func newLocalServiceInventoryFixture(t *testing.T) string {
 	server.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(server, "relay", cache))
 	cfg.Network.PrivateKeyFile = keyPath
 	cfg.Network.BootstrapPeers = []string{addr}
+	cluster := cfg.Clusters["home"]
+	cluster.DiscoveryQueryPeers = []string{addr}
+	cfg.Clusters["home"] = cluster
 	if err := saveLocalConfig(configPath, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -7196,7 +7320,7 @@ func TestGetServicesFallsBackToConfiguredDiscoveryPeersWhenNoLocalDiscoveryEndpo
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"no local discovery endpoint available", "querying configured discovery peer fallback from relay", "received 3 services"} {
+	for _, want := range []string{"no local discovery endpoint available", "querying configured cluster discovery peer", "received 3 services"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("fallback stderr missing %q: %s", want, stderr)
 		}
@@ -7227,7 +7351,7 @@ func TestGetServicesLiveModeKeepsTemporaryObserverPath(t *testing.T) {
 	if !strings.Contains(stderr, "starting temporary observer for 5s...") {
 		t.Fatalf("live mode stderr missing observer message: %s", stderr)
 	}
-	if strings.Contains(stderr, "no local discovery endpoint available") || strings.Contains(stderr, "querying configured discovery peer fallback") {
+	if strings.Contains(stderr, "no local discovery endpoint available") || strings.Contains(stderr, "querying configured cluster discovery peer") {
 		t.Fatalf("live mode stderr leaked fallback diagnostics: %s", stderr)
 	}
 	_ = stdout
@@ -7256,7 +7380,7 @@ func TestGetServicesJSONRemainsParseableWithoutLocalDiscoveryEndpoint(t *testing
 		t.Fatalf("unexpected json payload: %#v", payload)
 	}
 	joined := strings.Join(payload.Messages, "\n")
-	if !strings.Contains(joined, "no local discovery endpoint available") || !strings.Contains(joined, "querying configured discovery peer fallback from relay") {
+	if !strings.Contains(joined, "no local discovery endpoint available") || !strings.Contains(joined, "querying configured cluster discovery peer") {
 		t.Fatalf("unexpected json messages: %#v", payload.Messages)
 	}
 }
@@ -7371,7 +7495,7 @@ func TestGetServicesCommandPathsUsePeerAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)}), Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}
+	cfg.Clusters["home"] = cfgpkg.Cluster{ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "observability", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)}), DiscoveryQueryPeers: []string{addr}, Namespaces: map[string]cfgpkg.Namespace{"observability": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "observability")}}}
 	configRoot := filepath.Join(t.TempDir(), "config")
 	t.Setenv("XDG_CONFIG_HOME", configRoot)
 	configPath := filepath.Join(configRoot, "tubo", "config.yaml")
@@ -7530,7 +7654,7 @@ func TestBuildGrantServiceDiscoveryArtifactsUsesScopedRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer overlay.Close()
-	service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, overlay.Host, overlay, authorityPriv, time.Minute)
+	service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, overlay.Host, authorityPriv, time.Minute, overlay.ReachableAddrs())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -7543,6 +7667,177 @@ func TestBuildGrantServiceDiscoveryArtifactsUsesScopedRuntime(t *testing.T) {
 	}
 	if payload.NamespaceID != "team" || payload.ClusterID != "cluster-123" {
 		t.Fatalf("unexpected discovery payload scope: %#v", payload)
+	}
+}
+
+func TestPublishGrantServiceDiscoveryRegistersQueryableGrantService(t *testing.T) {
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/0.0.0.0/tcp/0", Seed: "grant-service-query-test", PrivateKeyFile: keyPath, Component: "grants"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer overlay.Close()
+	authorityQueryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	membershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: authorityQueryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	cfg := cfgpkg.Config{CurrentOverlay: "public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: membershipPath, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}}}}}
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := publishGrantServiceDiscovery(ctx, overlay.Host, overlay, authorityPriv, cfg, "home", time.Minute, configPath); err != nil {
+		t.Fatal(err)
+	}
+	queryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	clientCfg := cfgpkg.Config{CurrentOverlay: "public", Node: cfgpkg.Node{Seed: "grant-service-query-client"}, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: clientMembershipPath, DiscoveryQueryPeers: []string{p2p.PeerAddrs(overlay.Host)[0]}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}}}}}
+	services, _, _, err := catalogpkg.FetchRemoteServiceCache(clientCfg, 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := catalogpkg.RequireService(services, "grant-service"); err != nil {
+		t.Fatalf("expected grant-service in discovery cache, got services=%#v err=%v", services, err)
+	}
+}
+
+func TestPublishedServiceBecomesQueryableAndVisibleInDefaultListings(t *testing.T) {
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/0.0.0.0/tcp/0", Seed: "service-discovery-authority-test", PrivateKeyFile: keyPath, Component: "authority"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer overlay.Close()
+	authorityQueryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: authorityQueryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	authorityCfg := cfgpkg.Config{CurrentOverlay: "public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: authorityMembershipPath, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}}}}}
+	authorityConfigPath := filepath.Join(t.TempDir(), "authority-config.yaml")
+	if err := cfgpkg.WriteFile(authorityConfigPath, authorityCfg, true); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := publishGrantServiceDiscovery(ctx, overlay.Host, overlay, authorityPriv, authorityCfg, "home", time.Minute, authorityConfigPath); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := authorityCfg.RequireDiscoveryRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceSeed := "service-discovery-lms-seed"
+	servicePeerID, err := p2p.PeerIDFromSeed(serviceSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: servicePeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	owner, err := serviceidentity.Generate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseReq, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{ClusterID: "cluster-123", NamespaceID: "default", ServiceID: owner.ServiceID, ServicePublicKey: serviceidentity.EncodePublicKey(owner.PublicKey), PublisherPeerID: servicePeerID.String(), RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint}, Nonce: "lms-discovery-test"}, owner.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifacts, err := grantspkg.BuildPublishLeaseArtifacts(authorityPriv, leaseReq, "lms", time.Hour, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaseBytes, err := json.MarshalIndent(artifacts.Lease, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leasePath := filepath.Join(t.TempDir(), "lms.publish-lease.json")
+	if err := os.WriteFile(leasePath, append(leaseBytes, '\n'), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app, err := serviceapp.New(ctx, serviceapp.Config{Listen: "/ip4/0.0.0.0/tcp/0", Seed: serviceSeed, ServiceName: "lms", ServiceKind: "http", ServiceID: owner.ServiceID, Target: "http://127.0.0.1:18080", PrivateKeyFile: keyPath, BootstrapPeers: []string{p2p.PeerAddrs(overlay.Host)[0]}, HeartbeatInterval: time.Second, BootstrapRetryInterval: 200 * time.Millisecond, DiscoveryEnabled: true, DiscoveryMode: runtime.Mode.String(), DiscoveryTopic: runtime.Topic, DiscoveryClusterID: runtime.ClusterID, DiscoveryNamespaceID: runtime.NamespaceID, DiscoveryContext: runtime.Context, DiscoveryPreviousTopic: runtime.PreviousTopic, DiscoveryPreviousContext: runtime.PreviousContext, AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: serviceMembershipPath, ServicePublishLeaseFile: leasePath, ConnectPolicy: string(cfgpkg.ConnectPolicyNamespaceMember)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() { errCh <- app.Start(ctx) }()
+	defer func() {
+		cancel()
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("service app stop err=%v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out stopping service app")
+		}
+	}()
+	queryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	clientCfg := cfgpkg.Config{CurrentOverlay: "public", Node: cfgpkg.Node{Seed: "service-discovery-query-client"}, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: clientMembershipPath, DiscoveryQueryPeers: []string{p2p.PeerAddrs(overlay.Host)[0]}, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")}}}}}
+	var services []catalogpkg.Service
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		services, _, _, err = catalogpkg.FetchRemoteServiceCache(clientCfg, 3*time.Second)
+		if err == nil {
+			if _, svcErr := catalogpkg.RequireService(services, "lms"); svcErr == nil {
+				if _, grantErr := catalogpkg.RequireService(services, "grant-service"); grantErr == nil {
+					break
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for lms in authority cache: services=%#v err=%v", services, err)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if len(services) < 2 {
+		t.Fatalf("services=%#v want at least grant-service and lms", services)
+	}
+	listed := filterListedServices(fromCatalogServices(services), false)
+	if len(listed) != 1 || listed[0].Name != "lms" {
+		t.Fatalf("default listed services=%#v want only lms", listed)
+	}
+	systemListed := filterListedServices(fromCatalogServices(services), true)
+	if len(systemListed) != 1 || systemListed[0].Name != "grant-service" {
+		t.Fatalf("system listed services=%#v want only grant-service", systemListed)
 	}
 }
 
@@ -7568,7 +7863,7 @@ func TestPublishGrantServiceDiscoveryFailsWithoutRuntimeInDiscoverableScope(t *t
 			},
 		},
 	}
-	err = publishGrantServiceDiscovery(context.Background(), nil, nil, nil, cfg, time.Minute)
+	err = publishGrantServiceDiscovery(context.Background(), nil, nil, nil, cfg, "home", time.Minute, "")
 	if err == nil || !strings.Contains(err.Error(), "requires a valid discovery runtime") {
 		t.Fatalf("expected explicit discovery runtime error, got %v", err)
 	}

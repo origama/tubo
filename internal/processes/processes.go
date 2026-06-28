@@ -946,6 +946,8 @@ func fallbackStateFromPath(dataRoot, path string) State {
 			state.ResourceKind = "service"
 		case "connect":
 			state.ResourceKind = "pipe"
+		case "grants serve":
+			state.ResourceKind = "cluster"
 		default:
 			state.ResourceKind = "process"
 		}
@@ -1247,6 +1249,8 @@ func resourceKindForCommand(command string) string {
 		return "service"
 	case "connect":
 		return "pipe"
+	case "grants serve":
+		return "cluster"
 	default:
 		return "process"
 	}
@@ -1258,6 +1262,8 @@ func primaryKindForCommand(command string) string {
 		return "service"
 	case "connect":
 		return "service"
+	case "grants serve":
+		return "authority"
 	default:
 		return ""
 	}
@@ -1291,6 +1297,8 @@ func purposeForCommand(command string) string {
 		return "gateway"
 	case "relay":
 		return "relay"
+	case "grants serve":
+		return "cluster-authority"
 	default:
 		return ""
 	}
@@ -1319,7 +1327,7 @@ func CapabilitiesForCommand(command string) []string {
 	case "relay":
 		return []string{"relay", "discovery.cache", "discovery.query"}
 	case "grants serve":
-		return []string{"grant"}
+		return []string{"grants", "discovery.cache", "discovery.query", "discovery.sync"}
 	default:
 		return nil
 	}
