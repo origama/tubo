@@ -355,6 +355,31 @@ func isRequestExpired(req Request, now time.Time) bool {
 	return ok && now.After(expiry)
 }
 
+// HasActivePublishLease returns true if the service has an approved grant request
+// with a non-expired publish lease. This is used to verify that a service is
+// authorized to accept connections before the cluster grant server mints connect leases.
+func (s *Store) HasActivePublishLease(clusterID, namespaceID, serviceID string, now time.Time) (bool, error) {
+	state, err := s.load()
+	if err != nil {
+		return false, err
+	}
+	for _, req := range state.Requests {
+		if req.Status != StatusApproved {
+			continue
+		}
+		if req.ClusterID != clusterID || req.NamespaceID != namespaceID || req.ServiceID != serviceID {
+			continue
+		}
+		if req.PublishLease == nil {
+			continue
+		}
+		if req.PublishLease.ExpiresAt.IsZero() || now.Before(req.PublishLease.ExpiresAt.UTC()) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func randomID(prefix string) (string, error) {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {

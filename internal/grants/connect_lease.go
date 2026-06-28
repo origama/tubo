@@ -90,10 +90,15 @@ type canonicalConnectLease struct {
 
 // BuildMemberConnectLeaseArtifacts creates connect lease artifacts for namespace-member
 // connect requests without a share invite. The membershipExpiry caps the lease duration.
-func BuildMemberConnectLeaseArtifacts(priv ed25519.PrivateKey, clusterID, namespaceID, serviceID, clientPublicKey string, accessEpoch int64, accessTTL, refreshTTL time.Duration, membershipExpiry time.Time) (ConnectLeaseArtifacts, error) {
+// The now parameter should be the current time for deterministic testing.
+func BuildMemberConnectLeaseArtifacts(priv ed25519.PrivateKey, clusterID, namespaceID, serviceID, clientPublicKey string, accessEpoch int64, accessTTL, refreshTTL time.Duration, membershipExpiry, now time.Time) (ConnectLeaseArtifacts, error) {
 	if len(priv) == 0 {
 		return ConnectLeaseArtifacts{}, errors.New("private key is required")
 	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
 	if accessTTL <= 0 {
 		accessTTL = DefaultConnectAccessLeaseTTL
 	}
@@ -107,9 +112,8 @@ func BuildMemberConnectLeaseArtifacts(priv ed25519.PrivateKey, clusterID, namesp
 	if err != nil {
 		return ConnectLeaseArtifacts{}, err
 	}
-	now := time.Now().UTC()
 	if !membershipExpiry.IsZero() {
-		remaining := time.Until(membershipExpiry.UTC())
+		remaining := membershipExpiry.UTC().Sub(now)
 		if remaining <= 0 {
 			return ConnectLeaseArtifacts{}, errors.New("membership expired")
 		}
@@ -652,4 +656,57 @@ func newConnectLeaseJTI(prefix string) (string, error) {
 		return "", err
 	}
 	return prefix + "_" + fmt.Sprintf("%x", b[:]), nil
+}
+
+// VerifyConnectMembershipCapability validates a membership capability for connect
+// authorization. It checks:
+// - signature validity against authority public key
+// - cluster ID match
+// - namespace match (with wildcard support)
+// - subject match (tries requesterPeerID first, then clusterID for cluster-scoped membership)
+// - connect permission presence
+// - expiry (if now is non-zero)
+//
+// Returns the expiry time on success, or an error describing the validation failure.
+func VerifyConnectMembershipCapability(membership capability.MembershipCapability, authorityPub ed25519.PublicKey, clusterID, namespaceID, requesterPeerID string, now time.Time) (time.Time, error) {
+	// Check expiry with provided time for deterministic testing
+	if !now.IsZero() && !membership.ExpiresAt.IsZero() && now.After(membership.ExpiresAt.UTC()) {
+		return time.Time{}, fmt.Errorf("membership capability expired")
+	}
+
+	var lastErr error
+	for _, subject := range []string{requesterPeerID, clusterID} {
+		candidateNamespaces := []string{namespaceID}
+		if membership.NamespaceID == "*" {
+			candidateNamespaces = append(candidateNamespaces, "*")
+		}
+		for _, candidateNamespace := range candidateNamespaces {
+			if err := capability.VerifyMembershipCapability(membership, authorityPub, clusterID, candidateNamespace, subject); err != nil {
+				lastErr = err
+				continue
+			}
+			if membership.NamespaceID != namespaceID && membership.NamespaceID != "*" {
+				lastErr = fmt.Errorf("membership capability does not authorize namespace %q", namespaceID)
+				continue
+			}
+			if !HasConnectPermission(membership.Permissions) {
+				return time.Time{}, fmt.Errorf("membership capability missing connect permission")
+			}
+			return membership.ExpiresAt.UTC(), nil
+		}
+	}
+	if lastErr != nil {
+		return time.Time{}, lastErr
+	}
+	return time.Time{}, fmt.Errorf("membership capability rejected")
+}
+
+// HasConnectPermission checks if the permission list includes the connect permission.
+func HasConnectPermission(perms []string) bool {
+	for _, perm := range perms {
+		if perm == capability.PermissionConnect {
+			return true
+		}
+	}
+	return false
 }

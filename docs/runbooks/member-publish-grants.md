@@ -403,6 +403,72 @@ Fix the service publication path:
 
 ---
 
+## Member Connect Leases
+
+Namespace members can request connect leases (short-lived access tokens for
+tunneling to a published service) from two endpoints:
+
+1. **Service grant endpoint** — the service publisher's local grant server that
+   runs alongside `attach`. This is the primary path.
+2. **Relay grant server** — the authority's grant server started by
+   `tubo grants serve`. This is the fallback/rollover path.
+
+The relay grant server path enables connect lease rollover when:
+
+- the service grant endpoint is temporarily unreachable;
+- the connect process needs to renew its access lease but can't reach the service.
+
+### Authorization model for relay grant server connect requests
+
+When a member sends a `connect_lease.request` to the relay grant server, the
+server performs these checks:
+
+1. **Scope validation**: the request cluster/namespace must match the server's
+   configured scope.
+2. **Publish authorization**: the target service must have an active (non-expired,
+   non-revoked) publish lease in the grant store. This prevents minting connect
+   leases for services that are no longer authorized to publish.
+3. **Membership verification**: the requester must present either:
+   - a valid `membership_capability` signed by the cluster authority with
+     `connect` permission for the target namespace, or
+   - a valid `membership_grant_token` (cluster invite) that authorizes connect.
+4. **Artifact generation**: if all checks pass, the server mints:
+   - a short-lived `connect_access_lease` (default 10m);
+   - a longer-lived `connect_refresh_lease` (default 48h) for renewal.
+
+The membership capability verification supports:
+
+- **Dual subject lookup**: tries requester peer ID first, then cluster ID for
+  cluster-scoped membership.
+- **Namespace wildcard**: `namespace_id: "*"` authorizes all namespaces.
+- **Connect permission**: requires `connect` in the permission list.
+
+### Differences from service grant endpoint
+
+| Aspect | Service endpoint | Relay grant server |
+|--------|-----------------|-------------------|
+| Publish check | implicit (service is running) | explicit (checks grant store) |
+| Primary use | normal connect flow | rollover/recovery |
+| Share invite support | yes | not yet (members use capability) |
+
+### Troubleshooting connect lease rollover
+
+If connect rollover fails with `does not have active publish authorization`:
+
+1. Check that the service publisher's `attach` process is running and has a
+   valid publish lease.
+2. Check pending publish grant requests: `tubo grants pending`.
+3. Verify the publish lease hasn't expired: `tubo grants history`.
+4. If revoked, re-approve: `tubo grants approve <request-id>`.
+
+If connect rollover fails with `membership capability` errors:
+
+1. Verify the member's capability hasn't expired.
+2. Check that the capability includes `connect` permission.
+3. Re-join the cluster if needed: `tubo join cluster/<name> --token <invite>`.
+
+---
+
 ## Security notes
 
 - The authority never signs a `PublishLease` without explicit `tubo grants approve`.
