@@ -1726,8 +1726,15 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 				}
 				// Delegated lease cannot be refreshed at cluster grant server, and no
 				// rollover capability (no membership credentials). Provide actionable error.
+				// If current access lease is still valid, don't fail traffic early.
 				wrapped := fmt.Errorf("delegated connect lease cannot be refreshed at cluster grant server (signature mismatch); configure namespace membership credentials to enable rollover, or ask the service owner for a fresh token/invite")
 				log.Printf("bridge connect lease action=no_compatible_refresh_path reason=delegated_no_rollover service=%s", refresh.ServiceID)
+				if current != nil && now.Before(current.ExpiresAt.UTC()) {
+					a.recordRefreshFailureLocked(wrapped, current.ExpiresAt.UTC())
+					a.connectMu.Unlock()
+					a.reportStatus()
+					return *current, nil
+				}
 				a.recordRefreshFailureLocked(wrapped, refresh.ExpiresAt.UTC())
 				a.connectMu.Unlock()
 				return grantspkg.ConnectAccessLease{}, wrapped
