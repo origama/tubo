@@ -43,6 +43,13 @@ type LookupResult struct {
 	Metadata *discoveryquery.Metadata `json:"metadata,omitempty"`
 }
 
+type ProgressUpdate struct {
+	Message   string
+	Verbosity int
+}
+
+type ProgressFunc func(ProgressUpdate)
+
 type WatchEvent struct {
 	Type   string `json:"type"`
 	Name   string `json:"name"`

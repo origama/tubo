@@ -29,6 +29,8 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - Service advertisement no longer falls back to namespace- or cluster-scoped membership capability files when the service-scoped membership artifact is missing; attach now fails closed on missing per-service membership proof instead of advertising with the wrong subject binding.
 - `grants serve` discovery publication now recomputes host and overlay reachable addresses on each wait poll before publishing `grant-service`, so the first usable announcement no longer gets stuck on a stale empty address snapshot.
 - Service discovery heartbeat now signs the `AnnouncementV3` object before both pubsub publish and direct authority sync; the authority-side sync path no longer rejects attach advertisements with `announcement signature invalid`, and approved attached services now appear in default `tubo get services` listings instead of only `grant-service` appearing in `--system` output.
+- Private cluster invites now persist explicit reachable authority bootstrap metadata for members: `discovery_query_peers` are stored relay-circuit first when available, `membership_grant.grant_service_peers` are carried through share/join, and attach bootstrap now surfaces clearer missing-peer vs unreachable-authority diagnostics instead of requiring manual config patching after join.
+- `tubo get services` now streams discovery fallback progress to stderr in human mode, budgets remote query time across configured authority peers instead of stalling on the first peer, and explains empty results as cache-empty, unreachable-peer, scope-filtered, or default/system-view filtered outcomes while keeping `--json` stdout clean.
 
 ### Compatibility
 - Product version: unreleased

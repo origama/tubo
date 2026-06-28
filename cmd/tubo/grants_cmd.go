@@ -66,15 +66,11 @@ func grantsFirstNonEmpty(v, def string) string {
 }
 
 func clusterGrantServicePeer(cluster cfgpkg.Cluster) string {
-	if cluster.MembershipGrant == nil || cluster.MembershipGrant.GrantServiceProtocol != grantspkg.ProtocolID {
+	peers := clusterGrantServicePeers(cluster)
+	if len(peers) == 0 {
 		return ""
 	}
-	for _, peer := range cluster.MembershipGrant.GrantServicePeers {
-		if strings.TrimSpace(peer) != "" {
-			return strings.TrimSpace(peer)
-		}
-	}
-	return ""
+	return peers[0]
 }
 
 func shareGrantServicePeer(cluster cfgpkg.Cluster, svc cfgpkg.NamespaceService) string {
@@ -89,23 +85,7 @@ func grantServicePeersForTokens(addrs []string) []string {
 }
 
 func grantServiceDiscoveryQueryPeers(addrs []string) []string {
-	peers := make([]string, 0, len(addrs))
-	seen := make(map[string]struct{}, len(addrs))
-	for _, raw := range addrs {
-		addr := strings.TrimSpace(raw)
-		if addr == "" || strings.Contains(addr, "/p2p-circuit/") {
-			continue
-		}
-		if !grantspkg.IsRemoteDialableGrantServicePeer(addr) {
-			continue
-		}
-		if _, ok := seen[addr]; ok {
-			continue
-		}
-		seen[addr] = struct{}{}
-		peers = append(peers, addr)
-	}
-	return peers
+	return sanitizeAuthorityBootstrapPeers(addrs)
 }
 
 func grantsRequestCmd(args []string) error {
@@ -904,7 +884,7 @@ func persistClusterDiscoveryPeers(configPath string, cfg cfgpkg.Config, clusterN
 	if strings.TrimSpace(cluster.ClusterID) != "" && strings.TrimSpace(cluster.ClusterID) != strings.TrimSpace(clusterID) {
 		return fmt.Errorf("cluster %q id mismatch while persisting discovery peers", clusterName)
 	}
-	cluster.DiscoveryQueryPeers = append([]string(nil), peers...)
+	cluster.DiscoveryQueryPeers = mergeAuthorityBootstrapPeers(cluster.DiscoveryQueryPeers, peers)
 	cfg.Clusters[clusterName] = cluster
 	return saveLocalConfig(configPath, cfg)
 }

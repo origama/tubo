@@ -10,6 +10,7 @@ import (
 	"time"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
+	grantspkg "github.com/origama/tubo/internal/grants"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -52,9 +53,11 @@ func testInvitePayload(t *testing.T, priv ed25519.PrivateKey) Payload {
 			Secret:    base64.RawURLEncoding.EncodeToString(secret),
 			CreatedAt: time.Date(2026, 6, 2, 10, 0, 0, 0, time.UTC),
 		},
-		Grant:     Grant{Role: RoleMember, Permissions: []string{"subscribe", "list", "publish", "connect"}},
-		IssuedAt:  time.Now().Add(-time.Minute).UTC(),
-		ExpiresAt: time.Now().Add(time.Hour).UTC(),
+		DiscoveryQueryPeers: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1/p2p-circuit/p2p/12D3KooWEXvUnq9rZryQaFBxsvwGWyu6s2rtfJULvm6NCwQtMgYw"},
+		Grant:               Grant{Role: RoleMember, Permissions: []string{"subscribe", "list", "publish", "connect"}},
+		GrantService:        GrantService{Protocol: grantspkg.ProtocolID, Peers: []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWFAEdvKQVbtqdo435wBxoCJxXSUpjC77MEwjVHmZk31t1/p2p-circuit/p2p/12D3KooWEXvUnq9rZryQaFBxsvwGWyu6s2rtfJULvm6NCwQtMgYw"}},
+		IssuedAt:            time.Now().Add(-time.Minute).UTC(),
+		ExpiresAt:           time.Now().Add(time.Hour).UTC(),
 	}
 }
 
@@ -71,6 +74,12 @@ func TestParseAndVerifyTokenKeepsDiscoveryEntry(t *testing.T) {
 	}
 	if got.Discovery == nil || got.Discovery.KeyID != payload.Discovery.KeyID || got.Discovery.Secret != payload.Discovery.Secret {
 		t.Fatalf("unexpected discovery entry after parse: %#v", got.Discovery)
+	}
+	if len(got.DiscoveryQueryPeers) != 1 || got.DiscoveryQueryPeers[0] != payload.DiscoveryQueryPeers[0] {
+		t.Fatalf("unexpected discovery peers after parse: %#v", got.DiscoveryQueryPeers)
+	}
+	if got.GrantService.Protocol != grantspkg.ProtocolID || len(got.GrantService.Peers) != 1 {
+		t.Fatalf("unexpected grant service after parse: %#v", got.GrantService)
 	}
 }
 

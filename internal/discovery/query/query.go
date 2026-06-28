@@ -39,12 +39,12 @@ type Cache interface {
 }
 
 type Request struct {
-	Type                 string                    `json:"type"`
-	Name                 string                    `json:"name,omitempty"`
-	Service              *Service                  `json:"service,omitempty"`
-	Announcement         *discovery.AnnouncementV3 `json:"announcement_v3,omitempty"`
+	Type                 string                           `json:"type"`
+	Name                 string                           `json:"name,omitempty"`
+	Service              *Service                         `json:"service,omitempty"`
+	Announcement         *discovery.AnnouncementV3        `json:"announcement_v3,omitempty"`
 	MembershipCapability *capability.MembershipCapability `json:"membership_capability,omitempty"`
-	MembershipGrantToken string                    `json:"membership_grant_token,omitempty"`
+	MembershipGrantToken string                           `json:"membership_grant_token,omitempty"`
 }
 
 type Metadata struct {
@@ -281,11 +281,12 @@ func validateMembershipGrantTokenForContext(token string, ctx discovery.Namespac
 
 func Query(ctx context.Context, h host.Host, info peer.AddrInfo, req Request) (Response, error) {
 	if err := h.Connect(ctx, info); err != nil {
-		return Response{}, err
+		return Response{}, fmt.Errorf("connect discovery query peer: %w", err)
 	}
-	stream, err := h.NewStream(ctx, info.ID, ProtocolID)
+	streamCtx := network.WithAllowLimitedConn(ctx, "discovery query stream")
+	stream, err := h.NewStream(streamCtx, info.ID, ProtocolID)
 	if err != nil {
-		return Response{}, err
+		return Response{}, fmt.Errorf("open discovery query stream: %w", err)
 	}
 	defer stream.Close()
 	if deadline, ok := ctx.Deadline(); ok {
@@ -293,12 +294,12 @@ func Query(ctx context.Context, h host.Host, info peer.AddrInfo, req Request) (R
 	}
 	if err := json.NewEncoder(stream).Encode(req); err != nil {
 		_ = stream.Reset()
-		return Response{}, err
+		return Response{}, fmt.Errorf("write discovery query request: %w", err)
 	}
 	_ = stream.CloseWrite()
 	var resp Response
 	if err := json.NewDecoder(io.LimitReader(stream, maxResponseBytes)).Decode(&resp); err != nil {
-		return Response{}, err
+		return Response{}, fmt.Errorf("read discovery query response: %w", err)
 	}
 	return resp, nil
 }

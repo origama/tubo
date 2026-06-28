@@ -252,8 +252,8 @@ for i in $(seq 1 20); do
   fi
   sleep 0.5
 done
-assert_contains "no local discovery endpoint available" "$WORK_DIR/get-services-system.out"
-assert_contains "querying configured cluster discovery peer" "$WORK_DIR/get-services-system.out"
+assert_contains "local discovery cache unavailable" "$WORK_DIR/get-services-system.out"
+assert_contains "querying cluster discovery peer" "$WORK_DIR/get-services-system.out"
 assert_contains "grant-service" "$WORK_DIR/get-services-system.out"
 for i in $(seq 1 20); do
   "$BIN" get services --timeout 8s >"$WORK_DIR/get-services-live.out" 2>&1
@@ -262,12 +262,12 @@ for i in $(seq 1 20); do
   fi
   sleep 0.5
 done
-assert_contains "no local discovery endpoint available" "$WORK_DIR/get-services-live.out"
-assert_contains "querying configured cluster discovery peer" "$WORK_DIR/get-services-live.out"
-assert_contains "received 2 services" "$WORK_DIR/get-services-live.out"
+assert_contains "local discovery cache unavailable" "$WORK_DIR/get-services-live.out"
+assert_contains "querying cluster discovery peer" "$WORK_DIR/get-services-live.out"
+assert_contains "received 2 records from cluster discovery authority" "$WORK_DIR/get-services-live.out"
 assert_contains "lmstudio" "$WORK_DIR/get-services-live.out"
 "$BIN" get service/lmstudio >"$WORK_DIR/get-service.out" 2>&1
-assert_contains "querying configured cluster discovery peer" "$WORK_DIR/get-service.out"
+assert_contains "querying cluster discovery peer" "$WORK_DIR/get-service.out"
 assert_contains "received service lmstudio" "$WORK_DIR/get-service.out"
 assert_contains "lmstudio" "$WORK_DIR/get-service.out"
 "$BIN" describe service/lmstudio >"$WORK_DIR/describe-service.out" 2>&1
@@ -279,7 +279,7 @@ assert_contains "fallback: relay" "$WORK_DIR/describe-service.out"
 assert_contains "  Direct:" "$WORK_DIR/describe-service.out"
 assert_contains "  Relayed:" "$WORK_DIR/describe-service.out"
 assert_contains "Observed from:" "$WORK_DIR/describe-service.out"
-assert_contains "querying configured cluster discovery peer" "$WORK_DIR/describe-service.out"
+assert_contains "querying cluster discovery peer" "$WORK_DIR/describe-service.out"
 "$BIN" inspect service/lmstudio --json >"$WORK_DIR/inspect-service.json"
 python3 - "$WORK_DIR/inspect-service.json" <<'PY'
 import json, sys

@@ -34,16 +34,16 @@ func requestPublishGrant(configPath string, cfg cfgpkg.Config, svc cfgpkg.Namesp
 }
 
 func grantDiscoveryAvailable(cfg cfgpkg.Config) bool {
-	return strings.TrimSpace(cfg.Network.PrivateKeyFile) != "" || strings.TrimSpace(cfg.Network.PrivateKeyB64) != ""
+	return len(clusterDiscoveryQueryPeers(cfg)) > 0 && (strings.TrimSpace(cfg.Network.PrivateKeyFile) != "" || strings.TrimSpace(cfg.Network.PrivateKeyB64) != "")
 }
 
 func requestPublishGrantWithRecovery(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string, opts grantRequestOptions) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
 	cluster := cfg.Clusters[cfg.CurrentCluster]
-	configuredPeers := uniqueStrings([]string{strings.TrimSpace(svc.GrantServicePeer), clusterGrantServicePeer(cluster)})
+	configuredPeers := uniqueStrings(append([]string{strings.TrimSpace(svc.GrantServicePeer)}, clusterGrantServicePeers(cluster)...))
 	configuredPeers = filterNonEmptyStrings(configuredPeers)
 	if len(configuredPeers) == 0 {
 		if !grantDiscoveryAvailable(cfg) {
-			return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
+			return cfg, svc, "", missingGrantServicePeerBootstrapError(cfg)
 		}
 		return requestPublishGrantFromDiscovery(configPath, cfg, svc, servicePeerID, opts, nil)
 	}
@@ -59,7 +59,7 @@ func requestPublishGrantWithRecovery(configPath string, cfg cfgpkg.Config, svc c
 		lastErr = err
 	}
 	if !grantDiscoveryAvailable(cfg) {
-		return cfg, svc, "", fmt.Errorf("configured grant service peer failed: %w", lastErr)
+		return cfg, svc, "", authorityPeerUnreachableError("grant-service request", configuredPeers, lastErr)
 	}
 	return requestPublishGrantFromDiscovery(configPath, cfg, svc, servicePeerID, opts, lastErr)
 }
@@ -68,25 +68,25 @@ func requestPublishGrantFromDiscovery(configPath string, cfg cfgpkg.Config, svc 
 	freshPeers, discoveryErr := discoverGrantServicePeersFn(configPath, cfg)
 	if discoveryErr != nil {
 		if initialErr != nil {
-			return cfg, svc, "", fmt.Errorf("configured grant service peer failed: %w; fresh discovery failed: %v", initialErr, discoveryErr)
+			return cfg, svc, "", fmt.Errorf("configured grant service peer failed: %w; discovery query failed: %v", initialErr, discoveryErr)
 		}
 		return cfg, svc, "", discoveryErr
 	}
 	freshPeers = filterNonEmptyStrings(uniqueStrings(freshPeers))
 	if len(freshPeers) == 0 {
 		if initialErr != nil {
-			return cfg, svc, "", fmt.Errorf("configured grant service peer failed: %w; no fresh grant service endpoint discovered for cluster %q namespace %q", initialErr, cfg.CurrentCluster, cfg.CurrentNamespace)
+			return cfg, svc, "", fmt.Errorf("configured grant service peer failed: %w; no fresh grant-service endpoint discovered for cluster %q namespace %q", initialErr, cfg.CurrentCluster, cfg.CurrentNamespace)
 		}
-		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
+		return cfg, svc, "", missingGrantServicePeerBootstrapError(cfg)
 	}
 	if initialErr != nil {
 		freshPeers = dropPeers(freshPeers, []string{svc.GrantServicePeer, clusterGrantServicePeer(cfg.Clusters[cfg.CurrentCluster])})
 	}
 	if len(freshPeers) == 0 {
 		if initialErr != nil {
-			return cfg, svc, "", fmt.Errorf("configured grant service peer failed: %w; discovery returned no fresh endpoint for cluster %q namespace %q", initialErr, cfg.CurrentCluster, cfg.CurrentNamespace)
+			return cfg, svc, "", fmt.Errorf("configured grant service peer failed: %w; discovery returned no fresh grant-service endpoint for cluster %q namespace %q", initialErr, cfg.CurrentCluster, cfg.CurrentNamespace)
 		}
-		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
+		return cfg, svc, "", missingGrantServicePeerBootstrapError(cfg)
 	}
 	var lastErr error
 	for _, peer := range freshPeers {
@@ -116,11 +116,11 @@ func requestPublishGrantOnPeer(configPath string, cfg cfgpkg.Config, svc cfgpkg.
 	if grantPeer == "" {
 		return cfg, svc, "", errors.New("missing grant service peer; cluster scope does not advertise a discoverable grant service")
 	}
-	logging.Progressf("grants-client: selected peer=%s source=requestPublishGrant\n", grantPeer)
 	info, err := p2p.AddrInfoFromString(grantPeer)
 	if err != nil {
 		return cfg, svc, "", fmt.Errorf("failed to parse multiaddr %q: %w", grantPeer, err)
 	}
+	logging.Progressf("grants-client: selected peer=%s peer_id=%s path=%s protocol=%s source=requestPublishGrant\n", grantPeer, info.ID.String(), grantClientPeerPathClass(grantPeer), grantspkg.ProtocolID)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	overlay.StartBootstrapRetry(ctx, 5*time.Second)
@@ -232,6 +232,17 @@ func grantRequestPendingError(serviceName string) string {
 	return fmt.Sprintf("grant request pending; approve it, then rerun tubo start service/%s", serviceName)
 }
 
+func grantClientPeerPathClass(peer string) string {
+	switch authorityPeerClass(peer) {
+	case authorityPeerClassRelayCircuit:
+		return "relayed"
+	case authorityPeerClassDirect:
+		return "direct"
+	default:
+		return "unknown"
+	}
+}
+
 func grantRequestTTL(opts grantRequestOptions) time.Duration {
 	if opts.requestedTTL > 0 {
 		return opts.requestedTTL
@@ -284,11 +295,15 @@ func isGrantPeerRetryableError(err error) bool {
 }
 
 func discoverGrantServicePeers(configPath string, cfg cfgpkg.Config) ([]string, error) {
+	discoveryPeers := clusterDiscoveryQueryPeers(cfg)
+	if len(discoveryPeers) == 0 {
+		return nil, missingDiscoveryQueryPeerError(cfg.CurrentCluster)
+	}
 	scope := serviceScope{Cluster: cfg.CurrentCluster, Namespace: cfg.CurrentNamespace}
 	result, err := discoverServices(configPath, 5*time.Second, false, false, scope)
 	if err != nil {
 		logging.Progressf("grant service discovery: discovery query failed: %v\n", err)
-		return nil, err
+		return nil, authorityPeerUnreachableError("discovery query", discoveryPeers, err)
 	}
 	logging.Progressf("grant service discovery: query returned %d services (mode=%s)\n", len(result.Services), result.Mode)
 	clusterID := ""
@@ -375,6 +390,49 @@ func filterNonEmptyStrings(in []string) []string {
 		}
 	}
 	return out
+}
+
+func clusterDiscoveryQueryPeers(cfg cfgpkg.Config) []string {
+	clusterName := strings.TrimSpace(cfg.CurrentCluster)
+	if clusterName == "" {
+		return nil
+	}
+	cluster, ok := cfg.Clusters[clusterName]
+	if !ok {
+		return nil
+	}
+	return canonicalAuthorityBootstrapPeers(cluster.DiscoveryQueryPeers)
+}
+
+func missingDiscoveryQueryPeerError(clusterName string) error {
+	clusterName = strings.TrimSpace(clusterName)
+	if clusterName == "" {
+		return errors.New("missing discovery query peer; run `tubo start cluster/<name>` on the authority and reissue/rejoin invite")
+	}
+	return fmt.Errorf("missing discovery query peer for cluster %q; run `tubo start cluster/%s` on the authority and reissue/rejoin invite", clusterName, clusterName)
+}
+
+func missingGrantServicePeerBootstrapError(cfg cfgpkg.Config) error {
+	clusterName := strings.TrimSpace(cfg.CurrentCluster)
+	if len(clusterDiscoveryQueryPeers(cfg)) == 0 {
+		return missingDiscoveryQueryPeerError(clusterName)
+	}
+	if clusterName == "" {
+		return errors.New("missing grant service peer; the invite/config lacks grant-service endpoints")
+	}
+	return fmt.Errorf("missing grant service peer for cluster %q; the invite/config lacks grant-service endpoints", clusterName)
+}
+
+func authorityPeerUnreachableError(operation string, peers []string, err error) error {
+	peers = canonicalAuthorityBootstrapPeers(peers)
+	if len(peers) == 0 {
+		return err
+	}
+	operation = strings.TrimSpace(operation)
+	if operation == "" {
+		operation = "authority peer"
+	}
+	return fmt.Errorf("%s failed: authority peer unreachable (candidates=%d path_classes=%s): %w", operation, len(peers), authorityPeerPathSummary(peers), err)
 }
 
 func dropPeers(in []string, remove []string) []string {

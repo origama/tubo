@@ -101,7 +101,7 @@ func TestWaitForGrantServiceDiscoveryAddrsTimesOutCleanly(t *testing.T) {
 	}
 }
 
-func TestGrantServiceDiscoveryQueryPeersPrefersDirectRemoteAddresses(t *testing.T) {
+func TestGrantServiceDiscoveryQueryPeersPrefersRelayCircuitAddressesButKeepsDirectFallbacks(t *testing.T) {
 	addrs := []string{
 		"/ip4/127.0.0.1/tcp/39385/p2p/12D3KooWGrant",
 		"/ip4/203.0.113.10/tcp/39385/p2p/12D3KooWGrant",
@@ -109,9 +109,25 @@ func TestGrantServiceDiscoveryQueryPeersPrefersDirectRemoteAddresses(t *testing.
 		"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWGrant",
 	}
 	got := grantServiceDiscoveryQueryPeers(addrs)
-	want := []string{"/ip4/203.0.113.10/tcp/39385/p2p/12D3KooWGrant", "/dns4/grants.tubo.click/tcp/39385/p2p/12D3KooWGrant"}
+	want := []string{
+		"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWGrant",
+		"/ip4/203.0.113.10/tcp/39385/p2p/12D3KooWGrant",
+		"/dns4/grants.tubo.click/tcp/39385/p2p/12D3KooWGrant",
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("grantServiceDiscoveryQueryPeers() = %#v, want %#v", got, want)
+	}
+}
+
+func TestMergeAuthorityBootstrapPeersKeepsBetterExistingPeersWhenIncomingIsWorse(t *testing.T) {
+	existing := []string{"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWAuthority"}
+	incoming := []string{"/ip4/203.0.113.10/tcp/39385/p2p/12D3KooWAuthority"}
+	got := mergeAuthorityBootstrapPeers(existing, incoming)
+	if !reflect.DeepEqual(got, []string{
+		"/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWAuthority",
+		"/ip4/203.0.113.10/tcp/39385/p2p/12D3KooWAuthority",
+	}) {
+		t.Fatalf("mergeAuthorityBootstrapPeers() = %#v", got)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -3210,6 +3211,12 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	if payload.Discovery == nil || payload.Discovery.Type != cfgpkg.SecretTypeNamespaceDiscovery || payload.Discovery.KeyID == "" || payload.Discovery.Secret == "" {
 		t.Fatalf("cluster invite missing discovery entry: %#v", payload.Discovery)
 	}
+	if len(payload.DiscoveryQueryPeers) == 0 {
+		t.Fatalf("cluster invite missing discovery query peers: %#v", payload)
+	}
+	if payload.GrantService.Protocol != grantspkg.ProtocolID || len(payload.GrantService.Peers) == 0 {
+		t.Fatalf("cluster invite missing grant service peers: %#v", payload.GrantService)
+	}
 	if strings.TrimSpace(payload.MembershipToken) == "" {
 		t.Fatal("cluster invite missing embedded membership token")
 	}
@@ -3248,6 +3255,12 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	joinedCfg, err := cfgpkg.LoadFile(joinedConfigPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(joinedCfg.Clusters["home"].DiscoveryQueryPeers, payload.DiscoveryQueryPeers) {
+		t.Fatalf("joined discovery_query_peers = %#v, want %#v", joinedCfg.Clusters["home"].DiscoveryQueryPeers, payload.DiscoveryQueryPeers)
+	}
+	if joinedCfg.Clusters["home"].MembershipGrant == nil || !reflect.DeepEqual(joinedCfg.Clusters["home"].MembershipGrant.GrantServicePeers, payload.GrantService.Peers) {
+		t.Fatalf("joined grant_service_peers = %#v, want %#v", joinedCfg.Clusters["home"].MembershipGrant, payload.GrantService.Peers)
 	}
 	membershipTokenPath := joinedCfg.Clusters["home"].MembershipGrant.InviteTokenFile
 	membershipTokenBytes, err := os.ReadFile(membershipTokenPath)
@@ -3501,6 +3514,75 @@ func TestGrantRequesterClusterInvitationShareJoinAndRequest(t *testing.T) {
 	}
 	if _, err := os.Stat(svc.ServiceClaimFile); !os.IsNotExist(err) {
 		t.Fatalf("pending grant requester invite must not create ServiceClaim, stat err=%v", err)
+	}
+}
+
+func TestMemberClusterInviteJoinBootstrapsGrantServicePeersForAttach(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	authorityPriv := mustClusterAuthorityKey(t, configPath)
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	serverHost, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "member-join-grant-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverHost.Close()
+	store := grantspkg.NewStore(filepath.Join(t.TempDir(), "requests.json"))
+	server, err := grantspkg.NewServer(grantspkg.ServerConfig{ClusterName: "home", ClusterID: cluster.ClusterID, NamespaceID: "default", Store: store, AuthorityPrivateKey: authorityPriv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.Register(serverHost)
+	cluster.DiscoveryQueryPeers = []string{p2p.PeerAddrs(serverHost)[0]}
+	cfg.Clusters["home"] = cluster
+	if err := cfgpkg.WriteFile(configPath, cfg, true); err != nil {
+		t.Fatal(err)
+	}
+	out, err := capture(func() error {
+		return run([]string{"share", "cluster/home", "--config", configPath, "--expires", "2h"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := extractClusterInviteToken(t, out)
+	joinHome := filepath.Join(t.TempDir(), "join-member-bootstrap")
+	if _, err := capture(func() error { return run([]string{"join", "cluster/home", "--token", token, "--config-dir", joinHome}) }); err != nil {
+		t.Fatal(err)
+	}
+	joinedPath := filepath.Join(joinHome, "config.yaml")
+	joinedCfg, err := cfgpkg.LoadFile(joinedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinedCfg.Service.Name = "myapi"
+	joinedCfg.Service.Target = "http://127.0.0.1:8080"
+	joinedCfg, _, err = ensureAttachServiceIdentity(joinedPath, joinedCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joinedCluster := joinedCfg.Clusters["home"]
+	if joinedCluster.MembershipGrant == nil || len(joinedCluster.MembershipGrant.GrantServicePeers) == 0 {
+		t.Fatalf("joined membership grant missing grant service peers: %#v", joinedCluster.MembershipGrant)
+	}
+	if _, err := resolveAttachAuthorization(joinedPath, joinedCfg); err == nil || !strings.Contains(err.Error(), "grant request pending") {
+		t.Fatalf("expected pending grant request, got %v", err)
+	}
+	reloaded, err := cfgpkg.LoadFile(joinedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := reloaded.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if svc.GrantRequestID == "" {
+		t.Fatal("expected grant request id after joined attach bootstrap")
+	}
+	if svc.GrantServicePeer == "" {
+		t.Fatal("expected attached service to persist resolved grant service peer")
 	}
 }
 
@@ -6032,8 +6114,8 @@ func TestResolveAttachAuthorizationReportsMissingGrantServicePeerForExpiredPubli
 		t.Fatal(err)
 	}
 	_, err = resolveAttachAuthorization(configPath, cfg)
-	if err == nil || !strings.Contains(err.Error(), "missing grant service peer") {
-		t.Fatalf("expected missing grant service peer error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "missing discovery query peer") {
+		t.Fatalf("expected missing discovery query peer error, got %v", err)
 	}
 	if strings.Contains(err.Error(), "no service publish grant") {
 		t.Fatalf("unexpected generic grant error, got %v", err)
@@ -6048,7 +6130,7 @@ func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *t
 	}{
 		{
 			name:    "missing claim",
-			wantErr: "missing grant service peer",
+			wantErr: "missing discovery query peer",
 		},
 		{
 			name: "wrong peer claim",
@@ -6096,7 +6178,7 @@ func TestResolveAttachAuthorizationRejectsMissingOrBadClaimWithoutAuthority(t *t
 					t.Fatal(err)
 				}
 			},
-			wantErr: "missing grant service peer",
+			wantErr: "missing discovery query peer",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -6631,8 +6713,10 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatalf("unexpected services: %#v", result.Services)
 	}
 	joined := strings.Join(result.Messages, "\n")
-	if !strings.Contains(joined, "querying configured cluster discovery peer") || !strings.Contains(joined, "received 1 services") {
-		t.Fatalf("unexpected messages: %s", joined)
+	for _, want := range []string{"checking local discovery cache", "local discovery cache unavailable", "querying cluster discovery peer 1/1 (direct)", "received 1 records from cluster discovery authority", "retained 1 scoped records for home/observability"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("unexpected messages missing %q: %s", want, joined)
+		}
 	}
 }
 
@@ -6714,8 +6798,10 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatalf("unexpected service: %#v", service)
 	}
 	joined := strings.Join(result.Messages, "\n")
-	if !strings.Contains(joined, "querying configured cluster discovery peer") || !strings.Contains(joined, "received service myapi") {
-		t.Fatalf("unexpected messages: %s", joined)
+	for _, want := range []string{"no local discovery endpoint available", "querying cluster discovery peer 1/1 (direct)", "received 1 records from cluster discovery authority", "received service myapi"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("unexpected messages missing %q: %s", want, joined)
+		}
 	}
 }
 
@@ -7302,8 +7388,10 @@ func TestGetServicesWithoutAllRemainsNetworkOnly(t *testing.T) {
 			t.Fatalf("expected default get services output to include %q: %s", want, stdout)
 		}
 	}
-	if !strings.Contains(stderr, "using local discovery admin endpoint at") {
-		t.Fatalf("expected local discovery message on stderr, got: %s", stderr)
+	for _, want := range []string{"checking local discovery cache", "using local discovery cache at"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("expected local discovery progress %q on stderr, got: %s", want, stderr)
+		}
 	}
 	for _, want := range []string{"SOURCE", "available", "stopped-api", "incomplete-api", "running-api", "degraded-api", "stale-api", "local+network", "local cache"} {
 		if strings.Contains(stdout, want) {
@@ -7320,13 +7408,38 @@ func TestGetServicesFallsBackToConfiguredDiscoveryPeersWhenNoLocalDiscoveryEndpo
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"no local discovery endpoint available", "querying configured cluster discovery peer", "received 3 services"} {
+	for _, want := range []string{"checking local discovery cache", "local discovery cache unavailable", "querying cluster discovery peer 1/1 (direct)", "received 3 records from cluster discovery authority", "retained 1 scoped records for home/observability", "retained 0 records for default view in home/observability; 1 system-service records hidden (use --system)"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("fallback stderr missing %q: %s", want, stderr)
 		}
 	}
 	if strings.Contains(stdout, "local cache") {
 		t.Fatalf("fallback stdout leaked local-cache wording: %s", stdout)
+	}
+}
+
+func TestGetServicesReportsPerPeerFallbackProgress(t *testing.T) {
+	configPath, cfg, addr, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	badPeerID, err := p2p.PeerIDFromSeed("bad-discovery-peer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	cluster.DiscoveryQueryPeers = []string{fmt.Sprintf("/ip4/127.0.0.1/tcp/1/p2p/%s", badPeerID), addr}
+	cfg.Clusters["home"] = cluster
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := captureOutputs(func() error {
+		return run([]string{"get", "services", "--no-init", "--config", configPath, "--timeout", "6s"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"querying cluster discovery peer 1/2 (direct)", "discovery peer 1/2 (direct) failed", "querying cluster discovery peer 2/2 (direct)", "received 3 records from cluster discovery authority"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr missing %q: %s", want, stderr)
+		}
 	}
 }
 
@@ -7380,8 +7493,10 @@ func TestGetServicesJSONRemainsParseableWithoutLocalDiscoveryEndpoint(t *testing
 		t.Fatalf("unexpected json payload: %#v", payload)
 	}
 	joined := strings.Join(payload.Messages, "\n")
-	if !strings.Contains(joined, "no local discovery endpoint available") || !strings.Contains(joined, "querying configured cluster discovery peer") {
-		t.Fatalf("unexpected json messages: %#v", payload.Messages)
+	for _, want := range []string{"checking local discovery cache", "local discovery cache unavailable", "querying cluster discovery peer 1/1 (direct)", "received 3 records from cluster discovery authority", "retained 0 records for default view in home/observability; 1 system-service records hidden (use --system)"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("unexpected json messages missing %q: %#v", want, payload.Messages)
+		}
 	}
 }
 
