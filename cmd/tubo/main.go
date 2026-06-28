@@ -2110,7 +2110,7 @@ func getCmd(args []string) error {
 			return nil
 		}
 		scope := scopes[0]
-		catalogResult, err := catalog.DiscoverServicesWithConfig(cfg, *timeout, *cachedOnly, *live, toCatalogScope(scope))
+		catalogResult, err := catalog.DiscoverServicesWithConfigAndProgress(cfg, *timeout, *cachedOnly, *live, toCatalogScope(scope), catalogProgressReporter(!*jsonOut))
 		if err != nil {
 			return err
 		}
@@ -2122,7 +2122,11 @@ func getCmd(args []string) error {
 			}
 			result.Services = inventory
 		}
+		scopeLabel := serviceScopeLabel(scope)
+		beforeView := len(result.Services)
 		result.Services = filterListedServices(result.Services, *systemOnly)
+		viewMessages := listedServiceViewMessages(scopeLabel, beforeView, len(result.Services), *systemOnly)
+		result.Messages = append(result.Messages, viewMessages...)
 		if *jsonOut {
 			return printJSON(struct {
 				Mode     string                   `json:"mode"`
@@ -2133,8 +2137,8 @@ func getCmd(args []string) error {
 				Items    []serviceResource        `json:"items"`
 			}{Mode: result.Mode, Messages: result.Messages, Scope: result.Scope, Metadata: result.Metadata, Count: len(result.Services), Items: result.Services})
 		}
-		printMessages(result.Messages)
-		printServiceList(result.Services, *wide, *systemOnly, serviceScopeLabel(scope))
+		printMessages(viewMessages)
+		printServiceList(result.Services, *wide, *systemOnly, scopeLabel)
 		return nil
 	case strings.HasPrefix(resource, "service/"):
 		if useAllNamespaces {
@@ -2421,6 +2425,33 @@ func isSystemServiceResource(service serviceResource) bool {
 
 func hasStrictSystemServiceScope(service serviceResource) bool {
 	return strings.TrimSpace(service.ClusterID) != "" && strings.TrimSpace(service.NamespaceID) != ""
+}
+
+func catalogProgressReporter(enabled bool) catalog.ProgressFunc {
+	if !enabled {
+		return nil
+	}
+	return func(update catalog.ProgressUpdate) {
+		if strings.TrimSpace(update.Message) == "" {
+			return
+		}
+		if update.Verbosity > 0 {
+			logging.Verbosef(update.Verbosity, "%s\n", update.Message)
+			return
+		}
+		logging.Warnf("%s\n", update.Message)
+	}
+}
+
+func listedServiceViewMessages(scopeLabel string, before, after int, systemOnly bool) []string {
+	if before <= 0 || before == after {
+		return nil
+	}
+	hidden := before - after
+	if systemOnly {
+		return []string{fmt.Sprintf("retained %d records for system view in %s; %d user-service records hidden", after, scopeLabel, hidden)}
+	}
+	return []string{fmt.Sprintf("retained %d records for default view in %s; %d system-service records hidden (use --system)", after, scopeLabel, hidden)}
 }
 
 func printServiceList(services []serviceResource, wide bool, systemOnly bool, scopeLabel string) {

@@ -42,56 +42,65 @@ func DiscoverServices(configPath string, timeout time.Duration, cachedOnly, live
 }
 
 func DiscoverServicesWithConfig(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope Scope) (LookupResult, error) {
+	return DiscoverServicesWithConfigAndProgress(cfg, timeout, cachedOnly, live, scope, nil)
+}
+
+func DiscoverServicesWithConfigAndProgress(cfg cfgpkg.Config, timeout time.Duration, cachedOnly, live bool, scope Scope, progress ProgressFunc) (LookupResult, error) {
 	if err := cfgpkg.RequireAmbientDiscoveryScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: scope.Cluster, Namespace: scope.Namespace, AllNamespaces: scope.AllNamespaces}); err != nil {
 		return LookupResult{}, err
 	}
 	if _, err := cfg.RequireDiscoveryRuntime(); err != nil {
 		return LookupResult{}, err
 	}
+	recorder := newProgressRecorder(progress)
 	if !live {
+		recorder.message("checking local discovery cache...")
 		if services, adminAddr, err := FetchLocalServiceCache(cfg); err == nil {
+			recorder.message("using local discovery cache at %s", adminAddr)
 			services = applyRequestedScope(cfg, scope, services)
-			return LookupResult{Services: services, Messages: []string{fmt.Sprintf("using local discovery admin endpoint at %s", adminAddr)}, Mode: "cache", Scope: scopePtr(scope)}, nil
+			return LookupResult{Services: services, Messages: recorder.messages, Mode: "cache", Scope: scopePtr(scope)}, nil
+		} else {
+			recorder.message("local discovery cache unavailable")
+			recorder.verbose(1, "local discovery cache unavailable: %v", err)
 		}
 		if cachedOnly {
 			return LookupResult{}, cachedOnlyRequiresLocalDiscoveryEndpointError()
 		}
-		if services, metadata, messages, err := FetchRemoteServiceCache(cfg, timeout); err == nil {
-			messages = append([]string{"no local discovery endpoint available"}, messages...)
-			services = applyRequestedScope(cfg, scope, services)
-			if len(services) > 0 {
-				return LookupResult{Services: services, Messages: messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, nil
+		remoteServices, metadata, remoteMessages, attempts, err := fetchRemoteServiceCacheDetailed(cfg, timeout, progress)
+		recorder.messages = append(recorder.messages, remoteMessages...)
+		if err == nil {
+			scopedServices := applyRequestedScope(cfg, scope, remoteServices)
+			recorder.message("%s", scopedDiscoveryMessage(cfg, scope, len(scopedServices), len(remoteServices)))
+			if len(scopedServices) == 0 {
+				recorder.message("%s", emptyScopedDiscoveryMessage(cfg, scope, len(remoteServices)))
 			}
-			services, obsErr := ObserveServices(cfg, timeout, nil)
-			if obsErr != nil {
-				return LookupResult{}, obsErr
-			}
-			services = applyRequestedScope(cfg, scope, services)
-			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
-			return LookupResult{Services: services, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, nil
-		} else if isDiscoveryAuthorizationError(err) {
-			return LookupResult{}, err
-		} else {
-			messages := []string{"no local discovery endpoint available", fmt.Sprintf("configured discovery peer fallback failed: %v", err)}
-			services, obsErr := ObserveServices(cfg, timeout, nil)
-			if obsErr != nil {
-				return LookupResult{}, obsErr
-			}
-			services = applyRequestedScope(cfg, scope, services)
-			messages = append(messages, fmt.Sprintf("starting temporary observer for %s...", timeout.String()))
-			return LookupResult{Services: services, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, nil
+			return LookupResult{Services: scopedServices, Messages: recorder.messages, Mode: "remote-query", Scope: scopePtr(scope), Metadata: metadata}, nil
 		}
+		if isDiscoveryAuthorizationError(err) || remoteAttemptsAuthRejected(attempts) {
+			return LookupResult{}, err
+		}
+		recorder.message("starting temporary observer for %s...", timeout.String())
+		services, obsErr := ObserveServices(cfg, timeout, nil)
+		if obsErr != nil {
+			return LookupResult{}, obsErr
+		}
+		services = applyRequestedScope(cfg, scope, services)
+		recorder.message("temporary observer completed")
+		recorder.message("%s", scopedDiscoveryMessage(cfg, scope, len(services), len(services)))
+		if len(services) == 0 && remoteAttemptsAllUnreachable(attempts) {
+			recorder.message("%s", emptyUnreachableDiscoveryMessage(cfg, scope, attempts))
+		}
+		return LookupResult{Services: services, Messages: recorder.messages, Mode: "live", Scope: scopePtr(scope)}, nil
 	}
+	recorder.message("starting temporary observer for %s...", timeout.String())
 	services, err := ObserveServices(cfg, timeout, nil)
 	if err != nil {
 		return LookupResult{}, err
 	}
 	services = applyRequestedScope(cfg, scope, services)
-	messages := []string{fmt.Sprintf("starting temporary observer for %s...", timeout.String())}
-	if !live {
-		messages = append([]string{"no local discovery endpoint available"}, messages...)
-	}
-	return LookupResult{Services: services, Messages: messages, Mode: "live", Scope: scopePtr(scope)}, nil
+	recorder.message("temporary observer completed")
+	recorder.message("%s", scopedDiscoveryMessage(cfg, scope, len(services), len(services)))
+	return LookupResult{Services: services, Messages: recorder.messages, Mode: "live", Scope: scopePtr(scope)}, nil
 }
 
 func DiscoverService(configPath, serviceName string, timeout time.Duration, cachedOnly, live bool, scope Scope) (LookupResult, Service, error) {
@@ -306,11 +315,11 @@ func discoveryPeersForConfig(cfg cfgpkg.Config) ([]string, error) {
 	if !ok {
 		return nil, clusterDiscoveryPeerError(clusterName, cfg.CurrentNamespace)
 	}
-	if peers := uniqueStrings(cluster.DiscoveryQueryPeers); len(peers) > 0 {
+	if peers := canonicalDiscoveryPeers(cluster.DiscoveryQueryPeers); len(peers) > 0 {
 		return peers, nil
 	}
 	if cluster.MembershipGrant != nil {
-		if peers := uniqueStrings(cluster.MembershipGrant.GrantServicePeers); len(peers) > 0 {
+		if peers := canonicalDiscoveryPeers(cluster.MembershipGrant.GrantServicePeers); len(peers) > 0 {
 			return peers, nil
 		}
 	}
@@ -479,139 +488,13 @@ func isDiscoveryAuthorizationError(err error) bool {
 }
 
 func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Service, *discoveryquery.Metadata, []string, error) {
-	peers, err := discoveryPeersForConfig(cfg)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if len(peers) == 0 {
-		return nil, nil, nil, errors.New("no discovery peers configured")
-	}
-	if timeout <= 0 {
-		timeout = DefaultTimeout
-	}
-	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("load private network key: %w", err)
-	}
-	authMembership, authGrantToken, err := discoveryQueryAuthorizationForConfig(cfg)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	seed := discoveryQuerySeedForConfig(cfg)
-	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", seed, psk)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("create remote query host: %w", err)
-	}
-	defer h.Close()
-	perPeerTimeout := discoveryPeerAttemptTimeout(timeout, len(peers))
-	var lastErr error
-	for _, raw := range peers {
-		info, err := p2p.AddrInfoFromString(raw)
-		if err != nil {
-			lastErr = fmt.Errorf("invalid discovery peer %q: %w", raw, err)
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), perPeerTimeout)
-		resp, err := discoveryquery.ListServicesWithAuthorization(ctx, h, info, authMembership, authGrantToken)
-		cancel()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.Error != "" {
-			lastErr = errors.New(resp.Error)
-			continue
-		}
-		services := make([]Service, 0, len(resp.Services))
-		for _, service := range resp.Services {
-			services = append(services, ServiceFromQueryService(service))
-		}
-		SortServices(services)
-		messages := []string{fmt.Sprintf("querying configured cluster discovery peer %s", raw), fmt.Sprintf("received %d services", len(services))}
-		return services, &resp.Metadata, messages, nil
-	}
-	if lastErr == nil {
-		lastErr = errors.New("remote discovery query failed")
-	}
-	return nil, nil, nil, lastErr
-}
-
-func discoveryPeerAttemptTimeout(total time.Duration, peerCount int) time.Duration {
-	if total <= 0 {
-		return DefaultTimeout
-	}
-	if peerCount <= 1 {
-		return total
-	}
-	perPeer := total / time.Duration(peerCount)
-	if perPeer < 3*time.Second {
-		perPeer = 3 * time.Second
-	}
-	if perPeer > 10*time.Second {
-		perPeer = 10 * time.Second
-	}
-	if perPeer > total {
-		return total
-	}
-	return perPeer
+	services, metadata, messages, _, err := fetchRemoteServiceCacheDetailed(cfg, timeout, nil)
+	return services, metadata, messages, err
 }
 
 func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Duration) (Service, *discoveryquery.Metadata, []string, error) {
-	peers, err := discoveryPeersForConfig(cfg)
-	if err != nil {
-		return Service{}, nil, nil, err
-	}
-	if len(peers) == 0 {
-		return Service{}, nil, nil, errors.New("no discovery peers configured")
-	}
-	if timeout <= 0 {
-		timeout = DefaultTimeout
-	}
-	psk, _, err := p2p.LoadPrivateNetworkPSK(cfg.Network.PrivateKeyFile, cfg.Network.PrivateKeyB64)
-	if err != nil {
-		return Service{}, nil, nil, fmt.Errorf("load private network key: %w", err)
-	}
-	authMembership, authGrantToken, err := discoveryQueryAuthorizationForConfig(cfg)
-	if err != nil {
-		return Service{}, nil, nil, err
-	}
-	seed := discoveryQuerySeedForConfig(cfg)
-	h, err := p2p.NewHostWithSeedAndPSK("/ip4/127.0.0.1/tcp/0", seed, psk)
-	if err != nil {
-		return Service{}, nil, nil, fmt.Errorf("create remote query host: %w", err)
-	}
-	defer h.Close()
-	perPeerTimeout := discoveryPeerAttemptTimeout(timeout, len(peers))
-	var lastErr error
-	for _, raw := range peers {
-		info, err := p2p.AddrInfoFromString(raw)
-		if err != nil {
-			lastErr = fmt.Errorf("invalid discovery peer %q: %w", raw, err)
-			continue
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), perPeerTimeout)
-		resp, err := discoveryquery.GetServiceWithAuthorization(ctx, h, info, serviceName, authMembership, authGrantToken)
-		cancel()
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.Error != "" {
-			lastErr = errors.New(resp.Error)
-			continue
-		}
-		if resp.Service == nil {
-			lastErr = errors.New("service not found")
-			continue
-		}
-		service := ServiceFromQueryService(*resp.Service)
-		messages := []string{fmt.Sprintf("querying configured cluster discovery peer %s", raw), fmt.Sprintf("received service %s", service.Name)}
-		return service, &resp.Metadata, messages, nil
-	}
-	if lastErr == nil {
-		lastErr = errors.New("remote discovery query failed")
-	}
-	return Service{}, nil, nil, lastErr
+	service, metadata, messages, _, err := fetchRemoteServiceDetailed(cfg, serviceName, timeout, nil)
+	return service, metadata, messages, err
 }
 
 func ObserveServices(cfg cfgpkg.Config, timeout time.Duration, onEvent func(WatchEvent)) ([]Service, error) {

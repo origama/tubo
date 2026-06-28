@@ -6713,8 +6713,10 @@ func TestDiscoverServicesUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatalf("unexpected services: %#v", result.Services)
 	}
 	joined := strings.Join(result.Messages, "\n")
-	if !strings.Contains(joined, "querying configured cluster discovery peer") || !strings.Contains(joined, "received 1 services") {
-		t.Fatalf("unexpected messages: %s", joined)
+	for _, want := range []string{"checking local discovery cache", "local discovery cache unavailable", "querying cluster discovery peer 1/1 (direct)", "received 1 records from cluster discovery authority", "retained 1 scoped records for home/observability"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("unexpected messages missing %q: %s", want, joined)
+		}
 	}
 }
 
@@ -6796,8 +6798,10 @@ func TestDiscoverServiceUsesRemoteQueryBeforeLiveObserver(t *testing.T) {
 		t.Fatalf("unexpected service: %#v", service)
 	}
 	joined := strings.Join(result.Messages, "\n")
-	if !strings.Contains(joined, "querying configured cluster discovery peer") || !strings.Contains(joined, "received service myapi") {
-		t.Fatalf("unexpected messages: %s", joined)
+	for _, want := range []string{"no local discovery endpoint available", "querying cluster discovery peer 1/1 (direct)", "received 1 records from cluster discovery authority", "received service myapi"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("unexpected messages missing %q: %s", want, joined)
+		}
 	}
 }
 
@@ -7384,8 +7388,10 @@ func TestGetServicesWithoutAllRemainsNetworkOnly(t *testing.T) {
 			t.Fatalf("expected default get services output to include %q: %s", want, stdout)
 		}
 	}
-	if !strings.Contains(stderr, "using local discovery admin endpoint at") {
-		t.Fatalf("expected local discovery message on stderr, got: %s", stderr)
+	for _, want := range []string{"checking local discovery cache", "using local discovery cache at"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("expected local discovery progress %q on stderr, got: %s", want, stderr)
+		}
 	}
 	for _, want := range []string{"SOURCE", "available", "stopped-api", "incomplete-api", "running-api", "degraded-api", "stale-api", "local+network", "local cache"} {
 		if strings.Contains(stdout, want) {
@@ -7402,13 +7408,38 @@ func TestGetServicesFallsBackToConfiguredDiscoveryPeersWhenNoLocalDiscoveryEndpo
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"no local discovery endpoint available", "querying configured cluster discovery peer", "received 3 services"} {
+	for _, want := range []string{"checking local discovery cache", "local discovery cache unavailable", "querying cluster discovery peer 1/1 (direct)", "received 3 records from cluster discovery authority", "retained 1 scoped records for home/observability", "retained 0 records for default view in home/observability; 1 system-service records hidden (use --system)"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("fallback stderr missing %q: %s", want, stderr)
 		}
 	}
 	if strings.Contains(stdout, "local cache") {
 		t.Fatalf("fallback stdout leaked local-cache wording: %s", stdout)
+	}
+}
+
+func TestGetServicesReportsPerPeerFallbackProgress(t *testing.T) {
+	configPath, cfg, addr, _, _ := newSystemGrantServiceDiscoveryFixture(t)
+	badPeerID, err := p2p.PeerIDFromSeed("bad-discovery-peer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := cfg.Clusters["home"]
+	cluster.DiscoveryQueryPeers = []string{fmt.Sprintf("/ip4/127.0.0.1/tcp/1/p2p/%s", badPeerID), addr}
+	cfg.Clusters["home"] = cluster
+	if err := saveLocalConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	_, stderr, err := captureOutputs(func() error {
+		return run([]string{"get", "services", "--no-init", "--config", configPath, "--timeout", "6s"})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"querying cluster discovery peer 1/2 (direct)", "discovery peer 1/2 (direct) failed", "querying cluster discovery peer 2/2 (direct)", "received 3 records from cluster discovery authority"} {
+		if !strings.Contains(stderr, want) {
+			t.Fatalf("stderr missing %q: %s", want, stderr)
+		}
 	}
 }
 
@@ -7462,8 +7493,10 @@ func TestGetServicesJSONRemainsParseableWithoutLocalDiscoveryEndpoint(t *testing
 		t.Fatalf("unexpected json payload: %#v", payload)
 	}
 	joined := strings.Join(payload.Messages, "\n")
-	if !strings.Contains(joined, "no local discovery endpoint available") || !strings.Contains(joined, "querying configured cluster discovery peer") {
-		t.Fatalf("unexpected json messages: %#v", payload.Messages)
+	for _, want := range []string{"checking local discovery cache", "local discovery cache unavailable", "querying cluster discovery peer 1/1 (direct)", "received 3 records from cluster discovery authority", "retained 0 records for default view in home/observability; 1 system-service records hidden (use --system)"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("unexpected json messages missing %q: %#v", want, payload.Messages)
+		}
 	}
 }
 

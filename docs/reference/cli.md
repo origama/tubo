@@ -327,9 +327,10 @@ tubo watch services --timeout 20s
 Behavior:
 
 - if a local edge is already listening on the admin API, it uses its local discovery cache;
-- otherwise it first tries a remote discovery query toward the first available bootstrap/relay peer;
-- if the remote query also fails or is insufficient, it starts an ephemeral observer, connects to the swarm for an explicit timeout, and then exits; the default is intended to cover at least one initial discovery heartbeat;
-- output messages explicitly indicate whether it is using local cache, remote query, live observer, or a fallback between them.
+- otherwise it tries the configured cluster discovery peers in order, preferring relayed authority paths before direct fallbacks, with a short per-peer timeout instead of spending the whole budget on the first peer;
+- in human mode, progress is streamed to stderr as phases happen: local-cache check, peer `N/M` query attempts, relayed/direct path class, per-peer timeout/failure/auth rejection, records received, records retained for the requested scope, and live-observer fallback start/end when used;
+- if the remote query still fails, it can start an ephemeral observer, connect to the swarm for an explicit timeout, and then exit; the default is intended to cover at least one initial discovery heartbeat;
+- empty results now explain whether discovery peers were missing/unreachable, the authority cache was empty, records were filtered out by scope, or only system/default-view filtering hid the returned records; `--json` keeps stdout machine-readable and carries the same messages in the payload.
 
 Useful flags in this MVP:
 
