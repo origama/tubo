@@ -59,6 +59,11 @@ type clusterJoinResult struct {
 }
 
 func clusterMembershipGrantMetadata(payload clusterInvitePayload) cfgpkg.ClusterMembershipGrant {
+	peers := canonicalAuthorityBootstrapPeers(payload.GrantService.Peers)
+	protocol := strings.TrimSpace(payload.GrantService.Protocol)
+	if len(peers) == 0 {
+		protocol = ""
+	}
 	return cfgpkg.ClusterMembershipGrant{
 		InviteVersion:        payload.Version,
 		InviteID:             payload.JTI,
@@ -68,8 +73,8 @@ func clusterMembershipGrantMetadata(payload clusterInvitePayload) cfgpkg.Cluster
 		Namespace:            payload.Namespace,
 		Role:                 payload.Grant.Role,
 		Permissions:          append([]string(nil), payload.Grant.Permissions...),
-		GrantServiceProtocol: payload.GrantService.Protocol,
-		GrantServicePeers:    append([]string(nil), payload.GrantService.Peers...),
+		GrantServiceProtocol: protocol,
+		GrantServicePeers:    peers,
 		IssuedAt:             payload.IssuedAt,
 		ExpiresAt:            payload.ExpiresAt,
 	}
@@ -175,8 +180,11 @@ func localShareCmd(args []string) error {
 		IssuedAt:            now,
 		ExpiresAt:           now.Add(*expires),
 	}
+	if len(grantPeers) == 0 {
+		grantPeers = clusterInviteGrantServicePeers(cluster)
+	}
 	if len(grantPeers) > 0 {
-		payload.GrantService = clusterInviteGrantService{Protocol: grantspkg.ProtocolID, Peers: grantPeers}
+		payload.GrantService = clusterInviteGrantService{Protocol: grantspkg.ProtocolID, Peers: append([]string(nil), grantPeers...)}
 	}
 	membershipPayload, err := clusterinvite.MembershipGrantPayloadFromInvite(payload)
 	if err != nil {
@@ -365,11 +373,11 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	}
 	cluster.ClusterID = payload.ClusterID
 	cluster.AuthorityPublicKey = payload.AuthorityPublicKey
-	if peers := payload.DiscoveryQueryPeers; len(peers) > 0 {
-		cluster.DiscoveryQueryPeers = append([]string(nil), peers...)
-	} else if payload.GrantService.Protocol == grantspkg.ProtocolID && len(payload.GrantService.Peers) > 0 {
-		cluster.DiscoveryQueryPeers = append([]string(nil), payload.GrantService.Peers...)
+	incomingDiscoveryPeers := canonicalAuthorityBootstrapPeers(payload.DiscoveryQueryPeers)
+	if len(incomingDiscoveryPeers) == 0 && payload.GrantService.Protocol == grantspkg.ProtocolID {
+		incomingDiscoveryPeers = canonicalAuthorityBootstrapPeers(payload.GrantService.Peers)
 	}
+	cluster.DiscoveryQueryPeers = mergeAuthorityBootstrapPeers(cluster.DiscoveryQueryPeers, incomingDiscoveryPeers)
 	// Bug fix: preserve the existing namespace entry (discovery policy, connect
 	// policy, services, capability files) instead of overwriting with an empty
 	// struct. We only add the namespace if it does not exist yet.
@@ -395,6 +403,12 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	_ = token
 	grant := clusterMembershipGrantMetadata(payload)
 	grant.InviteTokenFile = membershipTokenFile
+	if existing := cluster.MembershipGrant; existing != nil {
+		grant.GrantServicePeers = mergeAuthorityBootstrapPeers(existing.GrantServicePeers, grant.GrantServicePeers)
+		if strings.TrimSpace(grant.GrantServiceProtocol) == "" && strings.TrimSpace(existing.GrantServiceProtocol) != "" && len(grant.GrantServicePeers) > 0 {
+			grant.GrantServiceProtocol = existing.GrantServiceProtocol
+		}
+	}
 	cluster.MembershipGrant = &grant
 	joined.Clusters[payload.ClusterName] = cluster
 	// Preserve the current cluster if the user is already working elsewhere,
@@ -574,18 +588,16 @@ func isClusterInviteToken(token string) bool {
 }
 
 func clusterInviteDiscoveryPeers(cfg cfgpkg.Config, clusterName string, cluster cfgpkg.Cluster) ([]string, error) {
-	if peers := uniqueStrings(cluster.DiscoveryQueryPeers); len(peers) > 0 {
+	if peers := canonicalAuthorityBootstrapPeers(cluster.DiscoveryQueryPeers); len(peers) > 0 {
 		return peers, nil
 	}
-	if cluster.MembershipGrant != nil {
-		if peers := uniqueStrings(cluster.MembershipGrant.GrantServicePeers); len(peers) > 0 {
-			return peers, nil
-		}
+	if peers := clusterGrantServicePeers(cluster); len(peers) > 0 {
+		return peers, nil
 	}
 	if cfgpkg.IsPublicDefaultScope(cfg, cfgpkg.Scope{Overlay: cfg.CurrentOverlay, Cluster: clusterName, Namespace: cfg.CurrentNamespace}) {
 		return nil, nil
 	}
-	return nil, fmt.Errorf("cluster %q is missing discovery_query_peers; run `tubo start cluster/%s` first", clusterName, clusterName)
+	return nil, fmt.Errorf("cluster %q is missing discovery_query_peers; run `tubo start cluster/%s` on the authority and reissue/rejoin invite", clusterName, clusterName)
 }
 
 func clusterInviteDiscoveryEntry(cluster cfgpkg.Cluster, namespace string) (*clusterinvite.NamespaceDiscoveryEntry, error) {
@@ -641,6 +653,13 @@ func installClusterInviteDiscoveryEntry(configDir, clusterName, namespace string
 		return nil, err
 	}
 	return ref, nil
+}
+
+func clusterInviteGrantServicePeers(cluster cfgpkg.Cluster) []string {
+	if peers := clusterGrantServicePeers(cluster); len(peers) > 0 {
+		return peers
+	}
+	return canonicalAuthorityBootstrapPeers(cluster.DiscoveryQueryPeers)
 }
 
 func installClusterInviteMembershipToken(configDir string, payload clusterInvitePayload) (string, error) {

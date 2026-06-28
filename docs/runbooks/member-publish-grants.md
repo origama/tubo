@@ -139,7 +139,9 @@ grant service discovery announced peer=<relay-peer> service=service-...
 
 ### Verify discoverability from the member
 
-Once `grants serve` is running, verify from the member:
+Once `grants serve` is running, `tubo share cluster/<cluster> --role member` should embed both `discovery_query_peers` and `grant_service` peers for the authority, preferring relay-circuit peers first when available. After `tubo join cluster/<cluster> --token ...`, the member config should persist those values under `clusters.<cluster>.discovery_query_peers` and `clusters.<cluster>.membership_grant.grant_service_peers`, so the member can discover `grant-service` and submit publish requests without manual config patching.
+
+Verify from the member:
 
 ```bash
 tubo get services --system --cluster <cluster-name> --namespace <namespace-name> \
@@ -301,7 +303,13 @@ hostnames.
 
 ### `attach` fails with `missing grant service peer`
 
-The member could not discover or reach the Grant Service. Debug steps:
+The member could not discover or reach the Grant Service. First distinguish the failure mode:
+
+- `missing discovery query peer ... reissue/rejoin invite` → the invite/config does not contain usable authority discovery peers;
+- `missing grant service peer ... invite/config lacks grant-service endpoints` → the invite/config does not contain usable grant-service peers;
+- `authority peer unreachable (candidates=..., path_classes=...)` → peers were configured, but the authority was not reachable on those paths.
+
+Debug steps:
 
 ```bash
 # 1. Check that the grant-service record is visible from the member

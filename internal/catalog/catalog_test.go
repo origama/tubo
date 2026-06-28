@@ -76,6 +76,18 @@ func TestDiscoveryPeersRequireConfiguredClusterAuthorityPeer(t *testing.T) {
 	}
 }
 
+func TestDiscoveryPeerAttemptTimeoutCapsPerPeerBudget(t *testing.T) {
+	if got := discoveryPeerAttemptTimeout(30*time.Second, 4); got != 7500*time.Millisecond {
+		t.Fatalf("discoveryPeerAttemptTimeout() = %s, want 7.5s", got)
+	}
+	if got := discoveryPeerAttemptTimeout(2*time.Second, 4); got != 2*time.Second {
+		t.Fatalf("discoveryPeerAttemptTimeout() short total = %s, want 2s", got)
+	}
+	if got := discoveryPeerAttemptTimeout(90*time.Second, 2); got != 10*time.Second {
+		t.Fatalf("discoveryPeerAttemptTimeout() capped = %s, want 10s", got)
+	}
+}
+
 func TestServiceFromQueryServicePreservesConnectMetadata(t *testing.T) {
 	service := ServiceFromQueryService(discoveryquery.Service{
 		Kind:          "service",

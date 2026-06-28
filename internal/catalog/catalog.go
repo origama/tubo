@@ -503,6 +503,7 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 		return nil, nil, nil, fmt.Errorf("create remote query host: %w", err)
 	}
 	defer h.Close()
+	perPeerTimeout := discoveryPeerAttemptTimeout(timeout, len(peers))
 	var lastErr error
 	for _, raw := range peers {
 		info, err := p2p.AddrInfoFromString(raw)
@@ -510,7 +511,7 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 			lastErr = fmt.Errorf("invalid discovery peer %q: %w", raw, err)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), perPeerTimeout)
 		resp, err := discoveryquery.ListServicesWithAuthorization(ctx, h, info, authMembership, authGrantToken)
 		cancel()
 		if err != nil {
@@ -533,6 +534,26 @@ func FetchRemoteServiceCache(cfg cfgpkg.Config, timeout time.Duration) ([]Servic
 		lastErr = errors.New("remote discovery query failed")
 	}
 	return nil, nil, nil, lastErr
+}
+
+func discoveryPeerAttemptTimeout(total time.Duration, peerCount int) time.Duration {
+	if total <= 0 {
+		return DefaultTimeout
+	}
+	if peerCount <= 1 {
+		return total
+	}
+	perPeer := total / time.Duration(peerCount)
+	if perPeer < 3*time.Second {
+		perPeer = 3 * time.Second
+	}
+	if perPeer > 10*time.Second {
+		perPeer = 10 * time.Second
+	}
+	if perPeer > total {
+		return total
+	}
+	return perPeer
 }
 
 func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Duration) (Service, *discoveryquery.Metadata, []string, error) {
@@ -560,6 +581,7 @@ func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 		return Service{}, nil, nil, fmt.Errorf("create remote query host: %w", err)
 	}
 	defer h.Close()
+	perPeerTimeout := discoveryPeerAttemptTimeout(timeout, len(peers))
 	var lastErr error
 	for _, raw := range peers {
 		info, err := p2p.AddrInfoFromString(raw)
@@ -567,7 +589,7 @@ func FetchRemoteService(cfg cfgpkg.Config, serviceName string, timeout time.Dura
 			lastErr = fmt.Errorf("invalid discovery peer %q: %w", raw, err)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(context.Background(), perPeerTimeout)
 		resp, err := discoveryquery.GetServiceWithAuthorization(ctx, h, info, serviceName, authMembership, authGrantToken)
 		cancel()
 		if err != nil {

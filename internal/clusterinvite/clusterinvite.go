@@ -250,6 +250,14 @@ func validateCommonPayload(payload Payload, kind string) error {
 }
 
 func validateGrant(payload Payload, label string) error {
+	if len(payload.GrantService.Peers) > 0 {
+		if strings.TrimSpace(payload.GrantService.Protocol) != grantspkg.ProtocolID {
+			return fmt.Errorf("%s grant service protocol must be %q", label, grantspkg.ProtocolID)
+		}
+		if err := validatePeerList(payload.GrantService.Peers, label+" grant_service.peers"); err != nil {
+			return err
+		}
+	}
 	switch payload.Grant.Role {
 	case RoleMember:
 		if !hasAllPermissions(payload.Grant.Permissions, []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect}) {
@@ -265,11 +273,6 @@ func validateGrant(payload Payload, label string) error {
 		}
 		if payload.GrantService.Protocol != grantspkg.ProtocolID || len(payload.GrantService.Peers) == 0 {
 			return fmt.Errorf("%s grant-requester is missing grant service metadata", label)
-		}
-		for _, peer := range payload.GrantService.Peers {
-			if !strings.Contains(peer, "/p2p/") {
-				return fmt.Errorf("cluster invite grant service peer %q is invalid", peer)
-			}
 		}
 	default:
 		return fmt.Errorf("%s is missing grant role", label)
