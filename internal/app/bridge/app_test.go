@@ -760,6 +760,187 @@ func TestBridgeConnectPathTransitionMessage(t *testing.T) {
 	}
 }
 
+func TestConnectRefreshLeaseIsDelegated(t *testing.T) {
+	// Authority-signed refresh lease: no DelegationPublishLease
+	authorityLease := grantspkg.ConnectRefreshLease{JTI: "authority-refresh"}
+	if connectRefreshLeaseIsDelegated(authorityLease) {
+		t.Fatal("expected authority-signed lease not to be detected as delegated")
+	}
+
+	// Delegated refresh lease: DelegationPublishLease populated
+	delegatedLease := grantspkg.ConnectRefreshLease{JTI: "delegated-refresh", DelegationPublishLease: []byte(`{"version":"v1"}`)}
+	if !connectRefreshLeaseIsDelegated(delegatedLease) {
+		t.Fatal("expected delegated lease to be detected as delegated")
+	}
+
+	// ShareInviteJTI alone does not make a lease delegated
+	shareInviteLease := grantspkg.ConnectRefreshLease{JTI: "share-refresh", ShareInviteJTI: "invite-123"}
+	if connectRefreshLeaseIsDelegated(shareInviteLease) {
+		t.Fatal("ShareInviteJTI alone should not make lease delegated; only DelegationPublishLease matters")
+	}
+}
+
+func TestConnectRefreshErrorIsSignatureMismatch(t *testing.T) {
+	cases := []struct {
+		err    error
+		wantIs bool
+	}{
+		{errors.New("invalid connect lease signature"), true},
+		{errors.New("Invalid Connect Lease Signature"), true}, // case insensitive
+		{errors.New("signature mismatch"), true},
+		{errors.New("the signature is invalid"), true},
+		{errors.New("connect lease expired"), false},
+		{errors.New("network timeout"), false},
+		{nil, false},
+	}
+	for _, tc := range cases {
+		got := connectRefreshErrorIsSignatureMismatch(tc.err)
+		if got != tc.wantIs {
+			errStr := "<nil>"
+			if tc.err != nil {
+				errStr = tc.err.Error()
+			}
+			t.Errorf("connectRefreshErrorIsSignatureMismatch(%q) = %v, want %v", errStr, got, tc.wantIs)
+		}
+	}
+}
+
+func TestBridgeDelegatedRefreshLeaseTriggersRolloverOnSignatureError(t *testing.T) {
+	// When a delegated refresh lease fails with signature error at the cluster
+	// grant server, and rollover is possible, ensureConnectAccessLease should
+	// perform member rollover to obtain fresh authority-signed leases.
+	now := time.Now().UTC()
+	current := grantspkg.ConnectAccessLease{JTI: "access-delegated", ExpiresAt: now.Add(-time.Minute)} // expired
+	refresh := grantspkg.ConnectRefreshLease{
+		JTI:                    "refresh-delegated",
+		ExpiresAt:              now.Add(time.Hour),
+		DelegationPublishLease: []byte(`{"version":"v1"}`), // delegated
+	}
+	var rolloverCalls, refreshCalls int32
+	app := &App{
+		cfg: Config{
+			ConnectRefreshLease:         &refresh,
+			ConnectGrantPeers:           []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWRolloverPeer"},
+			ConnectClusterID:            "cluster-123",
+			ConnectNamespaceID:          "default",
+			ConnectServiceID:            "svc-123",
+			ConnectMembershipGrantToken: "membership-token",
+			ConnectLeaseRefresher: func(ctx context.Context, refresh grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+				atomic.AddInt32(&refreshCalls, 1)
+				// Simulate cluster grant server rejecting delegated lease
+				return grantspkg.ConnectAccessLease{}, errors.New("invalid connect lease signature")
+			},
+		},
+		connectLease: &current,
+		requestConnectLeaseFn: func(_ context.Context, _ hostpkg.Host, _ []string, _ string, _ string, _ string, _ *capability.MembershipCapability, _ string) (grantspkg.ConnectLeaseArtifacts, error) {
+			atomic.AddInt32(&rolloverCalls, 1)
+			return grantspkg.ConnectLeaseArtifacts{
+				AccessLease:  grantspkg.ConnectAccessLease{JTI: "access-new-authority", ExpiresAt: now.Add(2 * time.Hour)},
+				RefreshLease: grantspkg.ConnectRefreshLease{JTI: "refresh-new-authority", ExpiresAt: now.Add(48 * time.Hour)},
+			}, nil
+		},
+	}
+	got, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("ensureConnectAccessLease: %v", err)
+	}
+	if got.JTI != "access-new-authority" {
+		t.Fatalf("got access lease %q, want authority-signed rollover", got.JTI)
+	}
+	if gotRefresh := atomic.LoadInt32(&refreshCalls); gotRefresh != 1 {
+		t.Fatalf("direct refresh calls = %d, want 1 (try direct refresh first)", gotRefresh)
+	}
+	if gotRollover := atomic.LoadInt32(&rolloverCalls); gotRollover != 1 {
+		t.Fatalf("rollover calls = %d, want 1", gotRollover)
+	}
+}
+
+func TestBridgeDelegatedRefreshLeaseSucceedsAtServiceEndpoint(t *testing.T) {
+	// When a delegated refresh lease is sent to a grant endpoint that can handle
+	// it (the service endpoint), refresh succeeds without rollover.
+	now := time.Now().UTC()
+	current := grantspkg.ConnectAccessLease{JTI: "access-delegated", ExpiresAt: now.Add(-time.Minute)} // expired
+	refresh := grantspkg.ConnectRefreshLease{
+		JTI:                    "refresh-delegated",
+		ExpiresAt:              now.Add(time.Hour),
+		DelegationPublishLease: []byte(`{"version":"v1"}`), // delegated
+	}
+	var rolloverCalls, refreshCalls int32
+	app := &App{
+		cfg: Config{
+			ConnectRefreshLease:         &refresh,
+			ConnectGrantPeers:           []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWServiceEndpoint"},
+			ConnectClusterID:            "cluster-123",
+			ConnectNamespaceID:          "default",
+			ConnectServiceID:            "svc-123",
+			ConnectMembershipGrantToken: "membership-token",
+			ConnectLeaseRefresher: func(ctx context.Context, refresh grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+				atomic.AddInt32(&refreshCalls, 1)
+				// Simulate service endpoint successfully refreshing delegated lease
+				return grantspkg.ConnectAccessLease{JTI: "access-refreshed-delegated", ExpiresAt: now.Add(10 * time.Minute)}, nil
+			},
+		},
+		connectLease: &current,
+		requestConnectLeaseFn: func(_ context.Context, _ hostpkg.Host, _ []string, _ string, _ string, _ string, _ *capability.MembershipCapability, _ string) (grantspkg.ConnectLeaseArtifacts, error) {
+			atomic.AddInt32(&rolloverCalls, 1)
+			return grantspkg.ConnectLeaseArtifacts{}, errors.New("rollover should not be attempted")
+		},
+	}
+	got, err := app.ensureConnectAccessLease(context.Background())
+	if err != nil {
+		t.Fatalf("ensureConnectAccessLease: %v", err)
+	}
+	if got.JTI != "access-refreshed-delegated" {
+		t.Fatalf("got access lease %q, want refreshed delegated lease", got.JTI)
+	}
+	if gotRefresh := atomic.LoadInt32(&refreshCalls); gotRefresh != 1 {
+		t.Fatalf("direct refresh calls = %d, want 1", gotRefresh)
+	}
+	if gotRollover := atomic.LoadInt32(&rolloverCalls); gotRollover != 0 {
+		t.Fatalf("rollover calls = %d, want 0 (successful refresh should not trigger rollover)", gotRollover)
+	}
+}
+
+func TestBridgeDelegatedRefreshLeaseWithoutRolloverCapabilityFails(t *testing.T) {
+	// When a delegated refresh lease fails with signature error and rollover is
+	// NOT possible, fail with a clear actionable error message.
+	now := time.Now().UTC()
+	current := grantspkg.ConnectAccessLease{JTI: "access-delegated", ExpiresAt: now.Add(-time.Minute)} // expired
+	refresh := grantspkg.ConnectRefreshLease{
+		JTI:                    "refresh-delegated",
+		ExpiresAt:              now.Add(time.Hour),
+		DelegationPublishLease: []byte(`{"version":"v1"}`), // delegated
+	}
+	var refreshCalls int32
+	app := &App{
+		cfg: Config{
+			ConnectRefreshLease: &refresh,
+			ConnectGrantPeers:   []string{"/ip4/127.0.0.1/tcp/1/p2p/12D3KooWRolloverPeer"},
+			// Missing ConnectClusterID/ConnectNamespaceID/ConnectServiceID/membership
+			// means rollover is not possible
+			ConnectLeaseRefresher: func(ctx context.Context, refresh grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+				atomic.AddInt32(&refreshCalls, 1)
+				return grantspkg.ConnectAccessLease{}, errors.New("invalid connect lease signature")
+			},
+		},
+		connectLease: &current,
+	}
+	_, err := app.ensureConnectAccessLease(context.Background())
+	if err == nil {
+		t.Fatal("expected error when delegated lease refresh fails without rollover capability")
+	}
+	// Should get actionable error, not just the raw signature error
+	if !strings.Contains(err.Error(), "delegated connect lease cannot be refreshed") {
+		t.Fatalf("expected actionable error about delegated lease, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "configure namespace membership credentials") {
+		t.Fatalf("expected hint about membership credentials, got: %v", err)
+	}
+	if gotRefresh := atomic.LoadInt32(&refreshCalls); gotRefresh != 1 {
+		t.Fatalf("direct refresh calls = %d, want 1 (must try direct refresh first)", gotRefresh)
+	}
+}
+
 func TestBridgeCurrentRuntimeStatusIncludesSelectedBinding(t *testing.T) {
 	app := &App{cfg: Config{ServiceKind: "tcp"}, selectedAddr: "/ip4/1.2.3.4/tcp/4001/p2p/peer", selectedPath: "relayed"}
 	snap := app.CurrentRuntimeStatus()

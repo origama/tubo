@@ -1696,9 +1696,11 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 			prevExpiry = current.ExpiresAt.UTC()
 		}
 		if rolloverDue {
+			log.Printf("bridge connect lease action=member_rollover reason=refresh_lease_expiring service=%s", refresh.ServiceID)
 			return a.rolloverConnectLeaseLocked(ctx, current, *refresh, now, false)
 		}
-		log.Printf("bridge connect access lease refresh requested service=%s expires_at=%s", refresh.ServiceID, refresh.ExpiresAt.UTC().Format(time.RFC3339))
+		isDelegated := connectRefreshLeaseIsDelegated(*refresh)
+		log.Printf("bridge connect access lease refresh requested service=%s expires_at=%s delegated=%t", refresh.ServiceID, refresh.ExpiresAt.UTC().Format(time.RFC3339), isDelegated)
 		refreshCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		a.refreshingLease = true
 		a.refreshDone = make(chan struct{})
@@ -1713,6 +1715,23 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 			close(done)
 		}
 		if err != nil {
+			// Delegated refresh leases (with DelegationPublishLease) are signed by the
+			// service owner key, not the cluster authority key. If refresh failed with
+			// a signature error and the lease is delegated, try member rollover to get
+			// fresh authority-signed leases that can be refreshed at any grant server.
+			if isDelegated && connectRefreshErrorIsSignatureMismatch(err) {
+				if canRollover {
+					log.Printf("bridge connect lease action=member_rollover reason=delegated_signature_mismatch service=%s", refresh.ServiceID)
+					return a.rolloverConnectLeaseLocked(ctx, current, *refresh, now, true)
+				}
+				// Delegated lease cannot be refreshed at cluster grant server, and no
+				// rollover capability (no membership credentials). Provide actionable error.
+				wrapped := fmt.Errorf("delegated connect lease cannot be refreshed at cluster grant server (signature mismatch); configure namespace membership credentials to enable rollover, or ask the service owner for a fresh token/invite")
+				log.Printf("bridge connect lease action=no_compatible_refresh_path reason=delegated_no_rollover service=%s", refresh.ServiceID)
+				a.recordRefreshFailureLocked(wrapped, refresh.ExpiresAt.UTC())
+				a.connectMu.Unlock()
+				return grantspkg.ConnectAccessLease{}, wrapped
+			}
 			wrapped := fmt.Errorf("refresh connect access lease: %w", err)
 			retryAt := connectLeaseFailureRetryAt(err, current, *refresh, now)
 			if current != nil && now.Before(current.ExpiresAt.UTC()) {
@@ -1746,7 +1765,11 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 		}
 		a.applyConnectLeaseArtifactsLocked(grantspkg.ConnectLeaseArtifacts{AccessLease: access, RefreshLease: *refresh})
 		a.connectMu.Unlock()
-		log.Printf("bridge connect access lease refreshed service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
+		if isDelegated {
+			log.Printf("bridge connect lease action=delegated_refresh service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
+		} else {
+			log.Printf("bridge connect lease action=authority_refresh service=%s expires_at=%s", access.ServiceID, access.ExpiresAt.UTC().Format(time.RFC3339))
+		}
 		a.reportStatus()
 		return access, nil
 	}
@@ -1827,6 +1850,27 @@ func connectRefreshResultUseful(previousExpiry, newExpiry, now time.Time) bool {
 		return true
 	}
 	return newExpiry.After(previousExpiry.Add(connectRefreshMinExtension))
+}
+
+// connectRefreshLeaseIsDelegated returns true if the refresh lease was issued
+// as a delegated/service-signed lease (contains DelegationPublishLease). Such
+// leases cannot be refreshed at the cluster grant server because they are signed
+// by the service owner key, not the cluster authority key.
+func connectRefreshLeaseIsDelegated(refresh grantspkg.ConnectRefreshLease) bool {
+	return len(refresh.DelegationPublishLease) > 0
+}
+
+// connectRefreshErrorIsSignatureMismatch returns true if the error indicates
+// a signature verification failure, which happens when a delegated refresh
+// lease is sent to the cluster grant server (which verifies with authority key).
+func connectRefreshErrorIsSignatureMismatch(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "invalid connect lease signature") ||
+		strings.Contains(s, "signature") && strings.Contains(s, "invalid") ||
+		strings.Contains(s, "signature") && strings.Contains(s, "mismatch")
 }
 
 func (a *App) recordRefreshFailure(err error, retryAt time.Time) {
