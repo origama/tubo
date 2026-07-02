@@ -63,8 +63,20 @@ func ensureAttachServiceIdentity(configPath string, cfg cfgpkg.Config) (cfgpkg.C
 }
 
 func mintLocalServicePublishLease(cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService) error {
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		return err
+	}
+	return mintLocalServicePublishLeaseForPeer(cluster, clusterName, namespaceName, serviceName, svc, servicePeerID.String())
+}
+
+func mintLocalServicePublishLeaseForPeer(cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, servicePeerID string) error {
 	if svc.ServiceClaimFile == "" || svc.ServicePublishLeaseFile == "" {
 		return errors.New("service claim and publish lease files are required")
+	}
+	servicePeerID = strings.TrimSpace(servicePeerID)
+	if servicePeerID == "" {
+		return errors.New("service peer id is required")
 	}
 	privKey, err := loadClusterAuthorityPrivateKey(cluster.AuthorityPrivateKeyFile)
 	if err != nil {
@@ -81,23 +93,19 @@ func mintLocalServicePublishLease(cluster cfgpkg.Cluster, clusterName, namespace
 	if err != nil {
 		return fmt.Errorf("load service owner key: %w", err)
 	}
-	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
-	if err != nil {
-		return err
-	}
 	req, err := grantspkg.SignPublishLeaseRequest(grantspkg.PublishLeaseRequest{
 		ClusterID:             cluster.ClusterID,
 		NamespaceID:           namespaceName,
 		ServiceID:             svc.ServiceID,
 		ServicePublicKey:      serviceidentity.EncodePublicKey(owner.PublicKey),
-		PublisherPeerID:       servicePeerID.String(),
+		PublisherPeerID:       servicePeerID,
 		RequestedCapabilities: []string{capability.PermissionAttach, capability.PermissionAnnounce, capability.PermissionShareMint},
 		Nonce:                 randomNonce(),
 	}, owner.PrivateKey)
 	if err != nil {
 		return err
 	}
-	artifacts, err := grantspkg.BuildApprovalArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID.String(), string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), 365*24*time.Hour, attachPublishLeaseTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
+	artifacts, err := grantspkg.BuildApprovalArtifacts(privKey, clusterName, cluster.ClusterID, namespaceName, serviceName, svc.ServiceID, servicePeerID, string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), 365*24*time.Hour, attachPublishLeaseTTL(), req.RequestedCapabilities, req.ServicePublicKey, req.Nonce, req.ServiceOwnerSignature)
 	if err != nil {
 		return err
 	}
@@ -106,6 +114,38 @@ func mintLocalServicePublishLease(cluster cfgpkg.Cluster, clusterName, namespace
 	}
 	if err := writePublishLeaseFile(svc.ServicePublishLeaseFile, artifacts.PublishLease); err != nil {
 		return err
+	}
+	if err := recordLocalPublishApproval(clusterName, namespaceName, serviceName, svc, servicePeerID, string(cfgpkg.NormalizeServiceKind(svc.Kind, "")), req, artifacts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func recordLocalPublishApproval(clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, servicePeerID, serviceKind string, req grantspkg.PublishLeaseRequest, artifacts grantspkg.ApprovalArtifacts) error {
+	store := grantspkg.NewStore(grantspkg.DefaultStorePath())
+	now := time.Now().UTC()
+	pending, err := store.CreatePending(grantspkg.Request{
+		ClusterName:           clusterName,
+		ClusterID:             req.ClusterID,
+		NamespaceID:           namespaceName,
+		RequesterPeerID:       servicePeerID,
+		ServiceName:           serviceName,
+		ServiceID:             svc.ServiceID,
+		ServiceKind:           serviceKind,
+		ServicePublicKey:      req.ServicePublicKey,
+		ServiceOwnerSignature: append([]byte(nil), req.ServiceOwnerSignature...),
+		RequestNonce:          req.Nonce,
+		ServicePeerID:         servicePeerID,
+		RequestedPermissions:  append([]string(nil), req.RequestedCapabilities...),
+		RequestedTTLSeconds:   int64(attachPublishLeaseTTL().Seconds()),
+		RequestedAt:           now,
+		ExpiresAt:             now.Add(24 * time.Hour),
+	})
+	if err != nil {
+		return fmt.Errorf("record local publish approval: %w", err)
+	}
+	if _, err := store.Approve(pending.ID, artifacts.ServiceClaim, &artifacts.PublishLease, &artifacts.MembershipCapability, artifacts.ServiceShareToken); err != nil {
+		return fmt.Errorf("record local publish approval: %w", err)
 	}
 	return nil
 }
@@ -255,6 +295,12 @@ func refreshAttachAuthorizationMaterial(configPath string, cfg cfgpkg.Config) (c
 	loaded.Service.Name = cfg.Service.Name
 	loaded.Service.Target = cfg.Service.Target
 	loaded.Service.Kind = cfg.Service.Kind
+	loaded, mergedService := preserveRunningAttachServiceDefinition(loaded, cfg)
+	if mergedService {
+		if err := saveLocalConfig(configPath, loaded); err != nil {
+			return cfg, cfgpkg.NamespaceService{}, err
+		}
+	}
 	cfg = loaded
 	cfg, svc, err := ensureAttachServiceIdentity(configPath, cfg)
 	if err != nil {
@@ -262,6 +308,46 @@ func refreshAttachAuthorizationMaterial(configPath string, cfg cfgpkg.Config) (c
 	}
 	cfg = seedDiscoveredGrantServicePeer(configPath, cfg)
 	return cfg, svc, nil
+}
+
+func preserveRunningAttachServiceDefinition(loaded, current cfgpkg.Config) (cfgpkg.Config, bool) {
+	clusterName := strings.TrimSpace(current.CurrentCluster)
+	namespaceName := strings.TrimSpace(current.CurrentNamespace)
+	serviceName := strings.TrimSpace(current.Service.Name)
+	if clusterName == "" || namespaceName == "" || serviceName == "" {
+		return loaded, false
+	}
+	currentCluster, ok := current.Clusters[clusterName]
+	if !ok {
+		return loaded, false
+	}
+	currentNamespace, ok := currentCluster.Namespaces[namespaceName]
+	if !ok {
+		return loaded, false
+	}
+	currentSvc, ok := currentNamespace.Services[serviceName]
+	if !ok || strings.TrimSpace(currentSvc.ServiceID) == "" || strings.TrimSpace(currentSvc.ServiceSeed) == "" {
+		return loaded, false
+	}
+	loadedCluster, ok := loaded.Clusters[clusterName]
+	if !ok {
+		return loaded, false
+	}
+	loadedNamespace, ok := loadedCluster.Namespaces[namespaceName]
+	if !ok {
+		return loaded, false
+	}
+	if loadedNamespace.Services != nil {
+		if loadedSvc, ok := loadedNamespace.Services[serviceName]; ok && strings.TrimSpace(loadedSvc.ServiceID) != "" && strings.TrimSpace(loadedSvc.ServiceSeed) != "" {
+			return loaded, false
+		}
+	} else {
+		loadedNamespace.Services = make(map[string]cfgpkg.NamespaceService)
+	}
+	loadedNamespace.Services[serviceName] = currentSvc
+	loadedCluster.Namespaces[namespaceName] = loadedNamespace
+	loaded.Clusters[clusterName] = loadedCluster
+	return loaded, true
 }
 
 func (c *attachPublishAuthorizationCoordinator) run(ctx context.Context) {
@@ -342,6 +428,11 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 	if err != nil {
 		return attachAuthorization{}, err
 	}
+	if merged, err := persistResolvedAttachServiceDefinition(configPath, result.Config, result.Service); err != nil {
+		return attachAuthorization{}, err
+	} else {
+		result.Config = merged
+	}
 	switch result.Decision {
 	case attachauth.DecisionReady:
 		return attachAuthorization{Config: result.Config, Service: result.Service, ServicePeerID: result.ServicePeerID, ServiceClaimFile: result.ServiceClaimFile, ServicePublishLeaseFile: result.ServicePublishLeaseFile, MembershipCapabilityFile: result.MembershipCapabilityFile, ServiceShareToken: result.ServiceShareToken, ShareRecoveryHint: result.ShareRecoveryHint, PublishLeaseReused: result.PublishLeaseReused, MintedServiceClaim: result.MintedLocally}, nil
@@ -367,12 +458,64 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 	}
 }
 
+func persistResolvedAttachServiceDefinition(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService) (cfgpkg.Config, error) {
+	clusterName := strings.TrimSpace(cfg.CurrentCluster)
+	namespaceName := strings.TrimSpace(cfg.CurrentNamespace)
+	serviceName := strings.TrimSpace(cfg.Service.Name)
+	if clusterName == "" || namespaceName == "" || serviceName == "" || strings.TrimSpace(svc.ServiceID) == "" || strings.TrimSpace(svc.ServiceSeed) == "" {
+		return cfg, nil
+	}
+	loaded, err := loadLocalConfigOrError(configPath)
+	if err != nil {
+		loaded = cfg
+	}
+	cluster, ok := loaded.Clusters[clusterName]
+	if !ok {
+		cluster = cfg.Clusters[clusterName]
+	}
+	if cluster.Namespaces == nil {
+		cluster.Namespaces = make(map[string]cfgpkg.Namespace)
+	}
+	ns := cluster.Namespaces[namespaceName]
+	if ns.Services == nil {
+		ns.Services = make(map[string]cfgpkg.NamespaceService)
+	}
+	ns.Services[serviceName] = svc
+	cluster.Namespaces[namespaceName] = ns
+	if loaded.Clusters == nil {
+		loaded.Clusters = make(map[string]cfgpkg.Cluster)
+	}
+	loaded.Clusters[clusterName] = cluster
+	loaded.CurrentCluster = clusterName
+	loaded.CurrentNamespace = namespaceName
+	loaded.Service.Name = serviceName
+	loaded.Service.Kind = cfg.Service.Kind
+	loaded.Service.Target = cfg.Service.Target
+	if err := saveLocalConfig(configPath, loaded); err != nil {
+		return cfg, err
+	}
+	return loaded, nil
+}
+
 func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
 	return requestPublishGrant(configPath, cfg, svc, servicePeerID, grantRequestOptions{requireApprovedLease: true, responseMode: grantClientResponseInternal})
 }
 
 func renewAttachPublishAuthorization(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
 	cluster := cfg.Clusters[cfg.CurrentCluster]
+	if cluster.AuthorityPrivateKeyFile != "" {
+		if err := mintLocalServicePublishLeaseForPeer(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc, servicePeerID); err != nil {
+			return cfg, svc, "", err
+		}
+		if err := verifyCurrentAttachPublishLease(cfg, svc, servicePeerID); err != nil {
+			return cfg, svc, "", fmt.Errorf("refreshed publish lease rejected: %w", err)
+		}
+		shareToken, err := buildAttachServiceShareToken(cfg, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
+		if err != nil {
+			return cfg, svc, "", err
+		}
+		return cfg, svc, shareToken, nil
+	}
 	grantPeer := svc.GrantServicePeer
 	if grantPeer == "" {
 		grantPeer = clusterGrantServicePeer(cluster)
@@ -382,23 +525,7 @@ func renewAttachPublishAuthorization(configPath string, cfg cfgpkg.Config, svc c
 	}
 	if grantPeer != "" {
 		svc.GrantServicePeer = grantPeer
-		updatedCfg, updatedSvc, shareToken, err := requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID)
-		if err == nil {
-			return updatedCfg, updatedSvc, shareToken, nil
-		}
-		if cluster.AuthorityPrivateKeyFile == "" {
-			return cfg, svc, "", err
-		}
-	}
-	if cluster.AuthorityPrivateKeyFile != "" {
-		if err := mintLocalServicePublishLease(cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc); err != nil {
-			return cfg, svc, "", err
-		}
-		shareToken, err := buildAttachServiceShareToken(cfg, cluster, cfg.CurrentCluster, cfg.CurrentNamespace, cfg.Service.Name, svc)
-		if err != nil {
-			return cfg, svc, "", err
-		}
-		return cfg, svc, shareToken, nil
+		return requestPublishGrantForAttach(configPath, cfg, svc, servicePeerID)
 	}
 	return cfg, svc, "", fmt.Errorf("service publish lease renewal requires a grant service peer or local authority key")
 }

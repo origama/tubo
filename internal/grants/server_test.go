@@ -119,15 +119,17 @@ func TestGrantServerDuplicateRequest(t *testing.T) {
 	store := NewStore(filepath.Join(t.TempDir(), "requests.json"))
 	now := time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC)
 	store.now = func() time.Time { return now }
-	server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: store, Now: func() time.Time { return now }})
+	server, err := NewServer(ServerConfig{ClusterName: "home", ClusterID: "cluster-123", NamespaceID: "default", Store: store, Now: func() time.Time { return now }, MaxPendingPerService: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	requester := peer.ID("12D3-requester")
-	first := server.HandleMessage(signedSubmitWithNonce("default", "myapi", "12D3-service", "nonce-a"), requester)
-	second := server.HandleMessage(signedSubmitWithNonce("default", "myapi", "12D3-service", "nonce-b"), requester)
+	first := server.HandleMessage(signedSubmitWithNonce("default", "myapi", "12D3-service", "nonce-a"), peer.ID("12D3-requester-a"))
+	second := server.HandleMessage(signedSubmitWithNonce("default", "myapi", "12D3-service", "nonce-b"), peer.ID("12D3-requester-b"))
 	if first.RequestID == "" || first.RequestID != second.RequestID {
 		t.Fatalf("duplicate requests not deduped: first=%#v second=%#v", first, second)
+	}
+	if second.Type != TypePending {
+		t.Fatalf("expected duplicate to bypass per-service pending limit, got %#v", second)
 	}
 	pending, err := store.ListPending()
 	if err != nil {
@@ -671,7 +673,7 @@ func TestGrantServerConnectRequestWithMembershipCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
-	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24*time.Hour).Seconds()))
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24 * time.Hour).Seconds()))
 	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
 	if submitResp.Type != TypeApproved {
 		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
@@ -840,7 +842,7 @@ func TestGrantServerConnectRequestDeniedWithRevokedPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
-	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24*time.Hour).Seconds()))
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24 * time.Hour).Seconds()))
 	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
 	if submitResp.Type != TypeApproved {
 		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
@@ -926,7 +928,7 @@ func TestGrantServerConnectLeaseCappedByPublishExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
-	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((5*time.Minute).Seconds()))
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((5 * time.Minute).Seconds()))
 	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
 	if submitResp.Type != TypeApproved {
 		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
@@ -1092,18 +1094,18 @@ func buildTestPublishRequest(t *testing.T, ownerPub ed25519.PublicKey, ownerPriv
 		t.Fatal(err)
 	}
 	return Message{
-		Type:                 TypeSubmit,
-		Version:              VersionV1,
-		ClusterID:            "cluster-123",
-		NamespaceID:          "default",
-		ServiceName:          serviceID,
-		ServiceID:            serviceID,
-		ServicePublicKey:     serviceidentity.EncodePublicKey(ownerPub),
+		Type:                  TypeSubmit,
+		Version:               VersionV1,
+		ClusterID:             "cluster-123",
+		NamespaceID:           "default",
+		ServiceName:           serviceID,
+		ServiceID:             serviceID,
+		ServicePublicKey:      serviceidentity.EncodePublicKey(ownerPub),
 		ServiceOwnerSignature: req.ServiceOwnerSignature,
-		ServicePeerID:        servicePeerID,
-		RequestNonce:         req.Nonce,
-		RequestedPermissions: req.RequestedCapabilities,
-		RequestedTTLSeconds:  requestedTTLSeconds,
+		ServicePeerID:         servicePeerID,
+		RequestNonce:          req.Nonce,
+		RequestedPermissions:  req.RequestedCapabilities,
+		RequestedTTLSeconds:   requestedTTLSeconds,
 	}
 }
 
@@ -1156,7 +1158,7 @@ func TestGrantServerConnectRequestRejectsInvalid(t *testing.T) {
 		t.Fatal(err)
 	}
 	serviceID := serviceidentity.ServiceIDFromPublicKey(ownerPub)
-	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24*time.Hour).Seconds()))
+	publishReq := buildTestPublishRequest(t, ownerPub, ownerPriv, serviceID, serviceHost.ID().String(), int64((24 * time.Hour).Seconds()))
 	submitResp := server.HandleMessage(publishReq, serviceHost.ID())
 	if submitResp.Type != TypeApproved {
 		t.Fatalf("expected approved, got %s: %s", submitResp.Type, submitResp.Reason)
