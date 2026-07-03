@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +149,51 @@ func TestResolveAttachAuthorizationPersistsServiceDefinition(t *testing.T) {
 	}
 	if _, ok := persisted.Clusters["home"].Namespaces["default"].Services["myapi"]; !ok {
 		t.Fatalf("attach authorization did not persist service definition: %#v", persisted.Clusters["home"].Namespaces["default"].Services)
+	}
+}
+
+func TestResolveAttachAuthorizationTolerantOfReadOnlyConfig(t *testing.T) {
+	configPath := writeCreateClusterConfig(t)
+	if _, err := capture(func() error { return run([]string{"create", "cluster/home", "--config", configPath}) }); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Service.Name = "myapi"
+	cfg.Service.Target = "http://127.0.0.1:8080"
+	// First resolve to materialize service identity and persist definition.
+	if _, err := resolveAttachAuthorization(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a read-only config volume (e.g. compose `:ro` mount) by removing
+	// write permission from the file. The second resolve must not fail: the
+	// service definition is already up to date, so persistResolvedAttachServiceDefinition
+	// should short-circuit before attempting to write.
+	if err := os.Chmod(configPath, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(configPath, 0o600) })
+	reloaded, err := cfgpkg.LoadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.Service.Name = "myapi"
+	reloaded.Service.Target = "http://127.0.0.1:8080"
+	if _, err := resolveAttachAuthorization(configPath, reloaded); err != nil {
+		t.Fatalf("resolveAttachAuthorization must tolerate read-only config when definition is already persisted: %v", err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("read-only resolve rewrote config file:\nbefore:\n%s\nafter:\n%s", before, after)
 	}
 }
 

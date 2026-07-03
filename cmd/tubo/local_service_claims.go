@@ -298,7 +298,10 @@ func refreshAttachAuthorizationMaterial(configPath string, cfg cfgpkg.Config) (c
 	loaded, mergedService := preserveRunningAttachServiceDefinition(loaded, cfg)
 	if mergedService {
 		if err := saveLocalConfig(configPath, loaded); err != nil {
-			return cfg, cfgpkg.NamespaceService{}, err
+			if !isReadOnlyFilesystemError(err) {
+				return cfg, cfgpkg.NamespaceService{}, err
+			}
+			// Read-only volume (compose smoke): keep merged in-memory config.
 		}
 	}
 	cfg = loaded
@@ -480,6 +483,21 @@ func persistResolvedAttachServiceDefinition(configPath string, cfg cfgpkg.Config
 	if ns.Services == nil {
 		ns.Services = make(map[string]cfgpkg.NamespaceService)
 	}
+	// If the loaded service definition already matches the resolved one and the
+	// top-level service selector already points at it, there is nothing to
+	// persist. Skipping the write avoids touching the config file when it lives
+	// on a read-only volume (containerized smoke/e2e mounts) or when the caller
+	// only wants to confirm the running definition.
+	existingSvc, existingOK := ns.Services[serviceName]
+	if existingOK &&
+		existingSvc == svc &&
+		loaded.CurrentCluster == clusterName &&
+		loaded.CurrentNamespace == namespaceName &&
+		loaded.Service.Name == serviceName &&
+		loaded.Service.Kind == cfg.Service.Kind &&
+		loaded.Service.Target == cfg.Service.Target {
+		return loaded, nil
+	}
 	ns.Services[serviceName] = svc
 	cluster.Namespaces[namespaceName] = ns
 	if loaded.Clusters == nil {
@@ -492,9 +510,26 @@ func persistResolvedAttachServiceDefinition(configPath string, cfg cfgpkg.Config
 	loaded.Service.Kind = cfg.Service.Kind
 	loaded.Service.Target = cfg.Service.Target
 	if err := saveLocalConfig(configPath, loaded); err != nil {
+		if isReadOnlyFilesystemError(err) {
+			// Config volume is read-only (e.g. compose smoke). The in-memory
+			// resolved config still has the correct service definition, so the
+			// running process can proceed; we just cannot persist the merge.
+			return loaded, nil
+		}
 		return cfg, err
 	}
 	return loaded, nil
+}
+
+func isReadOnlyFilesystemError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "read-only file system") || strings.Contains(msg, "permission denied")
 }
 
 func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
