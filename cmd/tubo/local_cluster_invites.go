@@ -411,6 +411,19 @@ func installClusterInviteConfig(configDir string, payload clusterInvitePayload, 
 	}
 	cluster.MembershipGrant = &grant
 	joined.Clusters[payload.ClusterName] = cluster
+	// Ensure a stable node.seed exists before we persist the joined config so
+	// that peer-bound membership capabilities keep matching across restarts and
+	// candidate retries of `tubo connect`. namespace_members authorization
+	// requires requester peer id == SubjectPeerID, and an empty seed would pick
+	// a fresh ephemeral peer id every time libp2p starts.
+	var seeded bool
+	joined, seeded, err = cfgpkg.EnsureNodeSeed("", joined)
+	if err != nil {
+		return err
+	}
+	if seeded {
+		logging.Verbosef(2, "generated node.seed for peer-bound namespace membership\n")
+	}
 	// Preserve the current cluster if the user is already working elsewhere,
 	// but follow the invited namespace when joining the same cluster so the
 	// newly granted scope becomes the active one.

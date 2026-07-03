@@ -258,6 +258,7 @@ func Resolve(ctx context.Context, deps Deps, req Request) (Result, error) {
 		if membership, membershipGrantToken, err := loadConnectMembership(cfg, scope); err == nil {
 			bridgeCfg.ConnectMembershipCapability = membership
 			bridgeCfg.ConnectMembershipGrantToken = membershipGrantToken
+			warnPeerBoundMembershipWithoutSeed(cfg, scope, membership)
 		}
 	}
 	if bridgeCfg.P2PListen == "" {
@@ -578,4 +579,51 @@ func splitServiceAddresses(addresses []string) (direct []string, relayed []strin
 func scopePtr(scope catalog.Scope) *catalog.Scope {
 	copy := scope
 	return &copy
+}
+
+// peerBoundMembershipWarned protects the peer-bound-without-seed warning
+// from being emitted more than once per process. This warning is diagnostic
+// and does not change authorization behavior — it is meant to help users
+// notice a foot-gun where namespace_members connect authorization would fail
+// silently because the connect process picks an ephemeral libp2p peer id.
+var peerBoundMembershipWarned bool
+
+// resetPeerBoundMembershipWarnedForTest is exported for tests only. It resets
+// the once-per-process warning state so subtests can independently assert
+// warning emission.
+func resetPeerBoundMembershipWarnedForTest() { peerBoundMembershipWarned = false }
+
+// warnPeerBoundMembershipWithoutSeed emits a single stderr warning when the
+// loaded membership capability is bound to a specific peer id (i.e. not
+// cluster-scoped) but the local config has no stable node.seed. In that case
+// the connect libp2p host would use a fresh ephemeral peer id every start
+// (including candidate retries in ConnectBridge), which cannot match the
+// membership SubjectPeerID and will be denied by namespace_members.
+//
+// This is purely diagnostic and is expected to be replaced by an
+// automatically-persisted node.seed at cluster join time (see
+// cfgpkg.EnsureNodeSeed / ensureJoinedConfigSeed in cmd/tubo). We keep the
+// warning as a safety net for pre-existing configs that predate that fix.
+func warnPeerBoundMembershipWithoutSeed(cfg cfgpkg.Config, scope catalog.Scope, membership *capability.MembershipCapability) {
+	if peerBoundMembershipWarned {
+		return
+	}
+	if membership == nil {
+		return
+	}
+	subject := strings.TrimSpace(membership.SubjectPeerID)
+	if subject == "" {
+		return
+	}
+	cluster := cfg.Clusters[scope.Cluster]
+	if subject == strings.TrimSpace(cluster.ClusterID) {
+		// Cluster-scoped membership: authorization does not require a
+		// specific peer id, so an ephemeral peer id is fine.
+		return
+	}
+	if strings.TrimSpace(cfg.Node.Seed) != "" {
+		return
+	}
+	peerBoundMembershipWarned = true
+	logging.Warnf("namespace membership capability is bound to peer id %q; node.seed is not configured, so this process will use an ephemeral libp2p peer id that will be rejected by namespace_members. Configure node.seed to the seed that produced %q, or re-issue the membership capability for the peer id resulting from the current seed.\n", subject, subject)
 }

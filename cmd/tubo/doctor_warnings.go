@@ -24,12 +24,38 @@ func doctorWarnings(cfg cfgpkg.Config) []string {
 		return nil
 	}
 	if clusterMembershipGrantAuthorizesConnect(cluster, clusterName, namespaceName) {
-		return nil
+		return peerBoundMembershipWithoutSeedWarnings(cfg, cluster, clusterName, namespaceName)
 	}
 	if membershipCapabilityAuthorizesConnect(cluster, namespaceName) {
+		return peerBoundMembershipWithoutSeedWarnings(cfg, cluster, clusterName, namespaceName)
+	}
+	warnings := []string{fmt.Sprintf("warning: current identity lacks connect permission for discovery-enabled namespace %s/%s; `tubo connect <service>` will be denied until you import a connect-capable membership invite or rotate the namespace membership capability", clusterName, namespaceName)}
+	warnings = append(warnings, peerBoundMembershipWithoutSeedWarnings(cfg, cluster, clusterName, namespaceName)...)
+	return warnings
+}
+
+// peerBoundMembershipWithoutSeedWarnings surfaces a doctor warning when a
+// peer-bound namespace membership capability is present but node.seed is not
+// configured. In that case the local peer id is ephemeral and connect will
+// be denied by namespace_members authorization even though the capability
+// itself is otherwise valid.
+func peerBoundMembershipWithoutSeedWarnings(cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName string) []string {
+	if strings.TrimSpace(cfg.Node.Seed) != "" {
 		return nil
 	}
-	return []string{fmt.Sprintf("warning: current identity lacks connect permission for discovery-enabled namespace %s/%s; `tubo connect <service>` will be denied until you import a connect-capable membership invite or rotate the namespace membership capability", clusterName, namespaceName)}
+	capPath, err := namespaceMembershipCapabilityFile(cluster, namespaceName)
+	if err != nil {
+		return nil
+	}
+	cap, err := loadMembershipCapability(capPath)
+	if err != nil {
+		return nil
+	}
+	subject := strings.TrimSpace(cap.SubjectPeerID)
+	if subject == "" || subject == strings.TrimSpace(cluster.ClusterID) {
+		return nil
+	}
+	return []string{fmt.Sprintf("warning: namespace membership capability for %s/%s is bound to peer id %q but node.seed is not configured; `tubo connect` will use an ephemeral libp2p peer id and be denied by namespace_members. Configure node.seed or re-issue the membership capability.", clusterName, namespaceName, subject)}
 }
 
 func membershipCapabilityAuthorizesConnect(cluster cfgpkg.Cluster, namespace string) bool {
