@@ -191,6 +191,101 @@ func TestDelegatedConnectLeaseRejectsMissingDelegationAndScopeMismatch(t *testin
 	}
 }
 
+func TestVerifyConnectMembershipCapabilityPeerIDMismatch(t *testing.T) {
+	// This test reproduces the three-machine failure where oripi's connect
+	// process has a different peer ID than the membership capability's SubjectPeerID.
+	//
+	// Root cause: connect process uses ephemeral peer ID (no node.seed configured)
+	// but membership capability is bound to a specific SubjectPeerID.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Membership capability signed for one peer ID
+	capSubjectPeerID := "12D3KooWCapabilitySubjectPeerID"
+	// But the connect process uses a different (ephemeral) peer ID
+	requesterPeerID := "12D3KooWDifferentConnectProcessPeerID"
+	clusterID := "cluster-test"
+	namespaceID := "default"
+
+	membership := capability.MembershipCapability{
+		ClusterID:     clusterID,
+		NamespaceID:   namespaceID,
+		SubjectPeerID: capSubjectPeerID,
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}
+	signed, err := capability.SignMembershipCapability(membership, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verification should fail because requesterPeerID != SubjectPeerID
+	_, err = VerifyConnectMembershipCapability(signed, pub, clusterID, namespaceID, requesterPeerID, time.Time{})
+	if err == nil {
+		t.Fatal("expected verification to fail due to peer ID mismatch")
+	}
+
+	// The error message must clearly show all diagnostic information:
+	// 1. capability.SubjectPeerID - what peer ID the capability is bound to
+	// 2. requesterPeerID - what peer ID made the request
+	// 3. clusterID - cluster-scoped subject that was also tried
+	// 4. cluster/namespace context
+	errMsg := err.Error()
+
+	// Must contain capability's SubjectPeerID
+	if !strings.Contains(errMsg, capSubjectPeerID) {
+		t.Errorf("error should contain capability.SubjectPeerID %q, got: %s", capSubjectPeerID, errMsg)
+	}
+	// Must contain requester peer ID
+	if !strings.Contains(errMsg, requesterPeerID) {
+		t.Errorf("error should contain requester peer ID %q, got: %s", requesterPeerID, errMsg)
+	}
+	// Must contain cluster ID (tried as fallback subject)
+	if !strings.Contains(errMsg, clusterID) {
+		t.Errorf("error should contain cluster ID %q (tried as cluster-scoped subject), got: %s", clusterID, errMsg)
+	}
+	// Must NOT only show "want cluster-xxx" which was the misleading old error
+	if strings.Contains(errMsg, "want \""+clusterID+"\"") && !strings.Contains(errMsg, "want \""+requesterPeerID+"\"") {
+		t.Errorf("error should not only show 'want cluster-id' without showing requester peer ID, got: %s", errMsg)
+	}
+
+	// Verification should succeed when requesterPeerID matches SubjectPeerID
+	_, err = VerifyConnectMembershipCapability(signed, pub, "cluster-test", "default", capSubjectPeerID, time.Time{})
+	if err != nil {
+		t.Fatalf("expected verification to succeed with matching peer ID, got: %v", err)
+	}
+}
+
+func TestVerifyConnectMembershipCapabilityClusterScoped(t *testing.T) {
+	// Cluster-scoped membership (SubjectPeerID == clusterID) should also work
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	clusterID := "cluster-test"
+	membership := capability.MembershipCapability{
+		ClusterID:     clusterID,
+		NamespaceID:   "default",
+		SubjectPeerID: clusterID, // cluster-scoped
+		Permissions:   []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish, capability.PermissionConnect},
+		ExpiresAt:     time.Now().Add(time.Hour),
+	}
+	signed, err := capability.SignMembershipCapability(membership, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Any requesterPeerID should work with cluster-scoped membership
+	requesterPeerID := "12D3KooWAnyPeerID"
+	_, err = VerifyConnectMembershipCapability(signed, pub, clusterID, "default", requesterPeerID, time.Time{})
+	if err != nil {
+		t.Fatalf("cluster-scoped membership should authorize any peer, got: %v", err)
+	}
+}
+
 func testAuthorizedClientKey(t *testing.T) string {
 	t.Helper()
 	pub, _, err := ed25519.GenerateKey(rand.Reader)

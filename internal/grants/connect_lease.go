@@ -674,8 +674,12 @@ func VerifyConnectMembershipCapability(membership capability.MembershipCapabilit
 		return time.Time{}, fmt.Errorf("membership capability expired")
 	}
 
+	// Try requesterPeerID first (peer-bound membership), then clusterID (cluster-scoped membership)
+	subjectsToTry := []string{requesterPeerID, clusterID}
 	var lastErr error
-	for _, subject := range []string{requesterPeerID, clusterID} {
+	var subjectMismatchCount int
+
+	for _, subject := range subjectsToTry {
 		candidateNamespaces := []string{namespaceID}
 		if membership.NamespaceID == "*" {
 			candidateNamespaces = append(candidateNamespaces, "*")
@@ -683,6 +687,10 @@ func VerifyConnectMembershipCapability(membership capability.MembershipCapabilit
 		for _, candidateNamespace := range candidateNamespaces {
 			if err := capability.VerifyMembershipCapability(membership, authorityPub, clusterID, candidateNamespace, subject); err != nil {
 				lastErr = err
+				// Track subject peer id mismatches specifically
+				if strings.Contains(err.Error(), "subject peer id mismatch") {
+					subjectMismatchCount++
+				}
 				continue
 			}
 			if membership.NamespaceID != namespaceID && membership.NamespaceID != "*" {
@@ -690,11 +698,24 @@ func VerifyConnectMembershipCapability(membership capability.MembershipCapabilit
 				continue
 			}
 			if !HasConnectPermission(membership.Permissions) {
-				return time.Time{}, fmt.Errorf("membership capability missing connect permission")
+				return time.Time{}, fmt.Errorf("membership capability missing connect permission (has: %v)",
+					membership.Permissions)
 			}
 			return membership.ExpiresAt.UTC(), nil
 		}
 	}
+
+	// If all failures were subject peer id mismatches, return an informative error
+	// that shows the actual peer IDs involved (not just the fallback cluster-scoped error)
+	if subjectMismatchCount == len(subjectsToTry) {
+		return time.Time{}, fmt.Errorf(
+			"membership capability subject mismatch for %s/%s: "+
+				"capability.SubjectPeerID=%q, requester=%q, cluster-scoped=%q",
+			clusterID, namespaceID,
+			membership.SubjectPeerID, requesterPeerID, clusterID)
+	}
+
+	// Return the last specific error (e.g., cluster mismatch, namespace mismatch, signature invalid)
 	if lastErr != nil {
 		return time.Time{}, lastErr
 	}
