@@ -304,9 +304,16 @@ func (s *fileState) sort() {
 }
 
 func equivalentActive(a, b Request) bool {
-	// Retry submissions for the same logical request should reuse the existing
-	// pending record even if the client generated a new nonce.
-	return a.ClusterID == b.ClusterID && a.NamespaceID == b.NamespaceID && a.RequesterPeerID == b.RequesterPeerID && a.ServiceID == b.ServiceID && a.ServicePeerID == b.ServicePeerID
+	// Retry submissions for the same logical publish request should reuse the
+	// existing pending record even if the client generated a new nonce or used a
+	// different transient requester PeerID. The stable identity for publication is
+	// the service owner/public key plus the service runtime peer, not the short-
+	// lived grant-client peer used to submit the request.
+	return a.ClusterID == b.ClusterID &&
+		a.NamespaceID == b.NamespaceID &&
+		a.ServiceID == b.ServiceID &&
+		a.ServicePeerID == b.ServicePeerID &&
+		a.ServicePublicKey == b.ServicePublicKey
 }
 
 func validateStoreRequest(req Request) error {

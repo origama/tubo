@@ -772,12 +772,27 @@ func runRole(commandName, role string, args []string) error {
 	if err != nil {
 		return err
 	}
+	var attachAuthz attachAuthorization
+	if commandName == "attach" {
+		authz, err := resolveAttachAuthorization(configPath, c)
+		if err != nil {
+			return err
+		}
+		c = authz.Config
+		attachAuthz = authz
+	}
 	printForegroundRuntimeNotice(commandName, role, c)
 	spec, err := buildDetachedSpec(commandName, c, args)
 	if err != nil {
 		return err
 	}
 	if commandName == "attach" {
+		if attachAuthz.Service.ServiceID != "" {
+			spec.State.ServiceID = attachAuthz.Service.ServiceID
+		}
+		if attachAuthz.ServicePeerID != "" {
+			spec.State.PeerID = attachAuthz.ServicePeerID
+		}
 		updateAttachProcessState(&spec.State, c)
 	}
 	spec.State.LogFile = ""

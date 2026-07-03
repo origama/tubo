@@ -6,6 +6,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -193,22 +194,28 @@ func (e *serviceGrantEndpoint) handleConnectRefresh(msg grantspkg.Message, reque
 	if lease.ClusterID != e.clusterID || lease.NamespaceID != e.namespaceID || lease.ServiceID != e.serviceID {
 		return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: lease.JTI, Reason: "connect refresh lease does not match attached service scope"}
 	}
+	isDelegated := len(lease.DelegationPublishLease) > 0
 	owner, _, delegation, _, err := e.loadDelegatedSigner()
 	if err == nil {
 		accessTTL := grantspkg.DefaultConnectAccessLeaseTTL
 		if remaining := time.Until(delegation.ExpiresAt.UTC()); remaining <= 0 {
+			log.Printf("grant endpoint connect refresh denied requester=%s service_id=%s issuer=delegated reason=%q", requester, e.serviceID, "publish lease expired")
 			return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: lease.JTI, Reason: "publish lease expired"}
 		} else if accessTTL > remaining {
 			accessTTL = remaining
 		}
 		access, err := grantspkg.RefreshDelegatedConnectAccessLease(e.authorityPub, owner.PrivateKey, *lease, accessTTL, delegation.PublisherPeerID)
 		if err == nil {
+			log.Printf("grant endpoint connect refresh accepted requester=%s service_id=%s issuer=delegated expires_at=%s", requester, e.serviceID, access.ExpiresAt.UTC().Format(time.RFC3339))
 			return grantspkg.Message{Type: grantspkg.TypeConnectRefresh, Version: grantspkg.VersionV1, RequestID: lease.JTI, ConnectAccessLease: &access}
 		}
+		log.Printf("grant endpoint connect refresh delegated verify failed requester=%s service_id=%s err=%q", requester, e.serviceID, err.Error())
 	}
 	if len(e.authorityPriv) > 0 {
+		log.Printf("grant endpoint connect refresh fallback to authority requester=%s service_id=%s lease_delegated=%t", requester, e.serviceID, isDelegated)
 		return e.server.HandleMessage(msg, requester)
 	}
+	log.Printf("grant endpoint connect refresh denied requester=%s service_id=%s issuer=unavailable reason=%q", requester, e.serviceID, "connect refresh requires a valid local service delegation")
 	return grantspkg.Message{Type: grantspkg.TypeDenied, Version: grantspkg.VersionV1, RequestID: lease.JTI, Reason: "connect refresh requires a valid local service delegation"}
 }
 

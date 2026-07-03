@@ -106,6 +106,39 @@ func TestStoreCreateReloadApproveDenyExpireAndDedupe(t *testing.T) {
 	}
 }
 
+func TestStoreDedupesPublishRetriesAcrossTransientRequesterPeers(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "requests.json")
+	base := time.Date(2026, 6, 28, 19, 0, 0, 0, time.UTC)
+	store := NewStore(path)
+	store.now = func() time.Time { return base }
+
+	first := sampleRequest(base)
+	created, err := store.CreatePending(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < DefaultMaxPendingPerService+2; i++ {
+		retry := sampleRequest(base.Add(time.Duration(i+1) * time.Second))
+		retry.RequesterPeerID = "12D3-transient-requester-" + string(rune('a'+i))
+		retry.RequestNonce = "retry-nonce-" + string(rune('a'+i))
+		retry.ServiceOwnerSignature = first.ServiceOwnerSignature
+		got, err := store.CreatePending(retry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != created.ID {
+			t.Fatalf("retry %d created request %q, want existing %q", i, got.ID, created.ID)
+		}
+	}
+	pending, err := store.ListPending()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("pending requests = %d, want 1: %#v", len(pending), pending)
+	}
+}
+
 func TestStoreCorruptFileFailsClearly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.json")
 	if err := os.WriteFile(path, []byte("not-json"), 0600); err != nil {

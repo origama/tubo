@@ -543,7 +543,10 @@ func classifyMembershipCapabilityBlockReason(err error, capBytes []byte) Announc
 	return AnnouncementBlockedMembershipCapabilityInvalid
 }
 
-func announcementBlockMissingDetail(reason AnnouncementBlockReason, path string) string {
+func announcementBlockDetail(reason AnnouncementBlockReason, path string, err error) string {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err.Error()
+	}
 	switch reason {
 	case AnnouncementBlockedMembershipCapabilityMissing:
 		if strings.TrimSpace(path) != "" {
@@ -578,7 +581,7 @@ func (a *App) currentAnnouncementV3Detailed() (discovery.AnnouncementV3, discove
 	payload := discovery.AnnouncementV3Payload{ClusterID: a.discoveryClusterID(), NamespaceID: a.discoveryNamespaceID(), Kind: discovery.ResourceKindService, ServiceName: a.cfg.ServiceName, ServiceKind: a.cfg.ServiceKind, ServiceID: a.serviceID, ConnectPolicy: strings.TrimSpace(a.cfg.ConnectPolicy), GrantService: grantService, Addresses: addrs, Capabilities: protocol.SupportedCapabilities(), RegisteredAt: time.Now().UTC()}
 	capBytes, err := a.loadMembershipCapabilityBytes()
 	if blockReason := classifyMembershipCapabilityBlockReason(err, capBytes); blockReason != AnnouncementReady {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, announcementBlockMissingDetail(blockReason, a.serviceCapabilityFile), false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, announcementBlockDetail(blockReason, a.serviceCapabilityFile, err), false
 	}
 	if err := a.verifyMembershipCapabilityBytes(capBytes); err != nil {
 		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, classifyMembershipCapabilityBlockReason(err, capBytes), err.Error(), false
@@ -586,7 +589,7 @@ func (a *App) currentAnnouncementV3Detailed() (discovery.AnnouncementV3, discove
 	payload.MembershipCapability = capBytes
 	leaseBytes, lease, err := a.loadPublishLeaseBytes()
 	if blockReason := classifyPublishLeaseBlockReason(err, leaseBytes); blockReason != AnnouncementReady {
-		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, announcementBlockMissingDetail(blockReason, a.servicePublishLeaseFile), false
+		return discovery.AnnouncementV3{}, discovery.AnnouncementV3Payload{}, blockReason, announcementBlockDetail(blockReason, a.servicePublishLeaseFile, err), false
 	}
 	payload.PublishLease = leaseBytes
 	payload.ServicePublicKey = lease.ServicePublicKey

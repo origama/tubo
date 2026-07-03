@@ -75,6 +75,15 @@ func localShareServiceCmd(args []string) error {
 	}
 	ctx, err := localWorkspace().ResolveServiceContext(*configPath, name, scope.Cluster, scope.Namespace)
 	if err != nil {
+		if result, ok, fallbackErr := localShareFromActiveApproval(scope.Cluster, scope.Namespace, name); fallbackErr != nil {
+			return fallbackErr
+		} else if ok {
+			if *jsonOut {
+				return printJSON(result)
+			}
+			printServiceShareResult(result)
+			return nil
+		}
 		return err
 	}
 	cfg = ctx.Config
@@ -115,13 +124,51 @@ func localShareServiceCmd(args []string) error {
 	if *jsonOut {
 		return printJSON(result)
 	}
-	logging.Resultf("shared service %q in cluster %q namespace %q\n", name, scope.Cluster, scope.Namespace)
-	logging.Resultf("service id: %s\n", serviceID)
-	logging.Resultf("service kind: %s\n", artifacts.Payload.ServiceKind)
-	logging.Resultf("permission: connect\n")
-	logging.Resultf("expires: %s\n", artifacts.Payload.ExpiresAt.Format(time.RFC3339))
-	logging.Resultf("connect: %s\n", result.ConnectCmd)
+	printServiceShareResult(result)
 	return nil
+}
+
+func printServiceShareResult(result serviceShareResult) {
+	logging.Resultf("shared service %q in cluster %q namespace %q\n", result.ServiceName, result.ClusterName, result.Namespace)
+	logging.Resultf("service id: %s\n", result.ServiceID)
+	logging.Resultf("service kind: %s\n", result.ServiceKind)
+	logging.Resultf("permission: %s\n", result.Permission)
+	logging.Resultf("expires: %s\n", result.ExpiresAt)
+	logging.Resultf("connect: %s\n", result.ConnectCmd)
+}
+
+func localShareFromActiveApproval(clusterName, namespaceName, serviceName string) (serviceShareResult, bool, error) {
+	requests, err := grantspkg.NewStore(grantspkg.DefaultStorePath()).ListAll()
+	if err != nil {
+		return serviceShareResult{}, false, err
+	}
+	now := time.Now().UTC()
+	for i := len(requests) - 1; i >= 0; i-- {
+		req := requests[i]
+		if req.Status != grantspkg.StatusApproved || req.ClusterName != clusterName || req.NamespaceID != namespaceName || req.ServiceName != serviceName || strings.TrimSpace(req.ServiceShareToken) == "" || req.ExpiresAt.Before(now) {
+			continue
+		}
+		payload, err := parseAndVerifyServiceShareToken(req.ServiceShareToken)
+		if err != nil {
+			return serviceShareResult{}, false, err
+		}
+		serviceKind := payload.ServiceKind
+		if serviceKind == "" {
+			serviceKind = req.ServiceKind
+		}
+		return serviceShareResult{
+			ClusterName: clusterName,
+			Namespace:   namespaceName,
+			ServiceName: serviceName,
+			ServiceKind: serviceKind,
+			ServiceID:   req.ServiceID,
+			Permission:  "connect",
+			ExpiresAt:   payload.ExpiresAt.Format(time.RFC3339),
+			Token:       req.ServiceShareToken,
+			ConnectCmd:  fmt.Sprintf("tubo connect --token %s", req.ServiceShareToken),
+		}, true, nil
+	}
+	return serviceShareResult{}, false, nil
 }
 
 func mintServiceShareArtifacts(configPath string, cfg cfgpkg.Config, cluster cfgpkg.Cluster, clusterName, namespaceName, serviceName string, svc cfgpkg.NamespaceService, shareTTL time.Duration) (grantspkg.ServiceShareArtifacts, error) {

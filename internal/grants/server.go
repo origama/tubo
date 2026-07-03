@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
@@ -500,16 +501,25 @@ func (s *Server) handleConnectRefresh(msg Message) Message {
 	if msg.ConnectRefreshLease == nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "connect-refresh", Reason: "connect_refresh_lease is required"}
 	}
+	isDelegated := len(msg.ConnectRefreshLease.DelegationPublishLease) > 0
+	issuerClass := "authority"
+	if isDelegated {
+		issuerClass = "delegated"
+	}
 	if msg.ConnectRefreshLease.ClusterID != s.cfg.ClusterID || msg.ConnectRefreshLease.NamespaceID != s.cfg.NamespaceID {
+		log.Printf("grant server connect refresh denied service_id=%s issuer=%s reason=%q", msg.ConnectRefreshLease.ServiceID, issuerClass, "scope mismatch")
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, Reason: "connect refresh lease scope does not match authority server"}
 	}
 	if err := s.validateConnectRefreshRevocation(*msg.ConnectRefreshLease); err != nil {
+		log.Printf("grant server connect refresh denied service_id=%s issuer=%s reason=%q", msg.ConnectRefreshLease.ServiceID, issuerClass, err.Error())
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, Reason: err.Error()}
 	}
 	access, err := RefreshConnectAccessLease(s.cfg.AuthorityPrivateKey, *msg.ConnectRefreshLease, s.cfg.ConnectAccessTTL)
 	if err != nil {
+		log.Printf("grant server connect refresh denied service_id=%s issuer=%s reason=%q", msg.ConnectRefreshLease.ServiceID, issuerClass, err.Error())
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, Reason: err.Error()}
 	}
+	log.Printf("grant server connect refresh accepted service_id=%s issuer=%s expires_at=%s", msg.ConnectRefreshLease.ServiceID, issuerClass, access.ExpiresAt.UTC().Format(time.RFC3339))
 	return Message{Type: TypeConnectRefresh, Version: VersionV1, RequestID: msg.ConnectRefreshLease.JTI, ConnectAccessLease: &access}
 }
 
