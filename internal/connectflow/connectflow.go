@@ -454,6 +454,10 @@ func ConnectRelayMessage(service catalog.Service, selectedAddr, selectedPath str
 	return "selected"
 }
 
+// loadConnectMembership loads the membership capability or grant token for connect authorization.
+//
+// TODO(#344): warn when membership is peer-bound (SubjectPeerID != clusterID) but node.seed is
+// unset — connect will otherwise use an ephemeral peer id that fails namespace_members policy.
 func loadConnectMembership(cfg cfgpkg.Config, scope catalog.Scope) (*capability.MembershipCapability, string, error) {
 	cluster, ok := cfg.Clusters[scope.Cluster]
 	if !ok {
