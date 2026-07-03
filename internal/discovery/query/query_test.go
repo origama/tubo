@@ -542,3 +542,153 @@ func TestResponseForRequestAnnounceV3RejectsExpiredPublishLease(t *testing.T) {
 		t.Fatalf("expected publish lease expiry rejection, got %#v", resp)
 	}
 }
+
+// --- Opaque relay forwarding (#346) ---
+
+// TestResponseForRequestAnnounceV3ReportsValidationUnavailableWhenNoStore keeps
+// the old behavior when neither a validation context nor an opaque store is
+// configured: relay refuses AnnouncementV3 rather than silently swallowing it.
+func TestResponseForRequestAnnounceV3ReportsValidationUnavailableWhenNoStore(t *testing.T) {
+	ann, _, _, _, signerPeerID := buildQueryV3Fixture(t)
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-v3-no-store-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+	resp := responseForRequestWithConfig(h, "relay", cache, serverConfig{}, signerPeerID, Request{Type: RequestTypeAnnounceV3, Announcement: &ann})
+	if resp.Error != "announcement_v3 validation unavailable" {
+		t.Fatalf("expected validation-unavailable error, got %#v", resp)
+	}
+}
+
+// TestResponseForRequestAnnounceV3OpaqueForwarding verifies that a relay
+// without a cluster validation context accepts a syntactically valid
+// AnnouncementV3 as an opaque record and returns it to consumers via
+// list_services responses. The relay never validates the signature; that is
+// the consumer's job.
+func TestResponseForRequestAnnounceV3OpaqueForwarding(t *testing.T) {
+	ann, _, _, _, signerPeerID := buildQueryV3Fixture(t)
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-v3-opaque-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	store := discovery.NewOpaqueAnnouncementCache(4, 32<<10, time.Minute)
+	cfg := serverConfig{}
+	WithOpaqueAnnouncementV3Forwarding(store)(&cfg)
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+
+	resp := responseForRequestWithConfig(h, "relay", cache, cfg, signerPeerID, Request{Type: RequestTypeAnnounceV3, Announcement: &ann})
+	if resp.Error != "" {
+		t.Fatalf("unexpected opaque forwarding error: %#v", resp)
+	}
+	if got := store.Count(); got != 1 {
+		t.Fatalf("opaque store count = %d, want 1", got)
+	}
+	if got := cache.Count(); got != 0 {
+		t.Fatalf("validated cache should stay empty when relay lacks context; got %d", got)
+	}
+
+	list := responseForRequestWithConfig(h, "relay", cache, cfg, "", Request{Type: RequestTypeList})
+	if list.Error != "" {
+		t.Fatalf("unexpected list error: %#v", list)
+	}
+	if len(list.OpaqueAnnouncementsV3) != 1 || list.OpaqueAnnouncementsV3[0].PeerID != ann.PeerID {
+		t.Fatalf("expected opaque record returned in list; got %#v", list.OpaqueAnnouncementsV3)
+	}
+	if len(list.Services) != 0 {
+		t.Fatalf("opaque records must NOT appear as trusted services: %#v", list.Services)
+	}
+}
+
+// TestResponseForRequestAnnounceV3OpaqueRejectsPeerIDMismatch keeps a minimal
+// transport-level check: the observed libp2p peer id must match the
+// announcement's peer id, so a relay cannot be tricked into forwarding
+// announcements on behalf of arbitrary peer ids.
+func TestResponseForRequestAnnounceV3OpaqueRejectsPeerIDMismatch(t *testing.T) {
+	ann, _, _, _, _ := buildQueryV3Fixture(t)
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-v3-opaque-mismatch-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	store := discovery.NewOpaqueAnnouncementCache(4, 32<<10, time.Minute)
+	cfg := serverConfig{}
+	WithOpaqueAnnouncementV3Forwarding(store)(&cfg)
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+
+	// Simulate a wrong observed peer id.
+	wrongObserved := peer.ID("12D3KooWNotTheSigner")
+	resp := responseForRequestWithConfig(h, "relay", cache, cfg, wrongObserved, Request{Type: RequestTypeAnnounceV3, Announcement: &ann})
+	if resp.Error == "" || !strings.Contains(strings.ToLower(resp.Error), "peer id mismatch") {
+		t.Fatalf("expected peer-id-mismatch rejection, got %#v", resp)
+	}
+	if got := store.Count(); got != 0 {
+		t.Fatalf("opaque store should reject mismatch; got count %d", got)
+	}
+}
+
+// TestResponseForRequestAnnounceV3OpaqueEnforcesTTLCap caps stored TTL to the
+// relay's configured maximum to bound record lifetime.
+func TestResponseForRequestAnnounceV3OpaqueCapsTTL(t *testing.T) {
+	ann, _, _, _, signerPeerID := buildQueryV3Fixture(t)
+	// Force a large TTL by mutating a valid announcement (envelope only; opaque
+	// path does not verify signature).
+	ann.TTL = time.Hour
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-v3-opaque-ttl-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	store := discovery.NewOpaqueAnnouncementCache(4, 32<<10, 2*time.Minute)
+	cfg := serverConfig{}
+	WithOpaqueAnnouncementV3Forwarding(store)(&cfg)
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+
+	resp := responseForRequestWithConfig(h, "relay", cache, cfg, signerPeerID, Request{Type: RequestTypeAnnounceV3, Announcement: &ann})
+	if resp.Error != "" {
+		t.Fatalf("unexpected opaque forwarding error: %#v", resp)
+	}
+	records := store.List()
+	if len(records) != 1 {
+		t.Fatalf("record count = %d, want 1", len(records))
+	}
+	if records[0].TTL > 2*time.Minute {
+		t.Fatalf("stored ttl = %s, expected relay ttl cap 2m", records[0].TTL)
+	}
+}
+
+// TestResponseForRequestAnnounceV3ValidationTakesPrecedence guarantees we do
+// NOT downgrade to opaque forwarding when the relay has a real cluster
+// context: bad announcements are still rejected.
+func TestResponseForRequestAnnounceV3ValidationTakesPrecedence(t *testing.T) {
+	ann, ctx, authorityPub, _, signerPeerID := buildQueryV3Fixture(t)
+	// Tamper the signature to force validation failure.
+	ann.Signature = append([]byte(nil), ann.Signature...)
+	ann.Signature[0] ^= 0xff
+
+	h, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "query-v3-validation-precedence-host")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	store := discovery.NewOpaqueAnnouncementCache(4, 32<<10, time.Minute)
+	cfg := serverConfig{}
+	WithAnnouncementV3Validation(authorityPub, ctx)(&cfg)
+	WithOpaqueAnnouncementV3Forwarding(store)(&cfg)
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	defer cache.Stop()
+
+	resp := responseForRequestWithConfig(h, "relay", cache, cfg, signerPeerID, Request{Type: RequestTypeAnnounceV3, Announcement: &ann})
+	if resp.Error == "" || !strings.Contains(strings.ToLower(resp.Error), "signature") {
+		t.Fatalf("expected validation failure, got %#v", resp)
+	}
+	if got := store.Count(); got != 0 {
+		t.Fatalf("opaque store must not receive announcements when validation context is present; count=%d", got)
+	}
+}

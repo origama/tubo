@@ -69,7 +69,8 @@ That scope is intentionally invite/token driven, not ambient-discovery driven.
 Relays remain:
 - bootstrap peers;
 - circuit relay v2 transport nodes;
-- optional remote discovery-query cache/sync helpers.
+- optional remote discovery-query cache/sync helpers;
+- optional opaque forwarders for `AnnouncementV3` records they cannot themselves verify (see 6.1).
 
 Relays are **not**:
 - namespace discovery authorities;
@@ -77,6 +78,52 @@ Relays are **not**:
 - a substitute for cluster authority or membership state.
 
 Running more relays improves transport reachability, not namespace authorization.
+
+### 6.1 Opaque `AnnouncementV3` forwarding
+
+A relay serves discovery for many overlays. It typically does not hold the
+authority public key or the namespace discovery entries for every private
+cluster whose members reach it.
+
+To let members of a private cluster discover each other through a shared relay
+without making the relay authority-aware, relays accept `announce_service_v3`
+requests as **opaque** transport payloads when they lack a validation context
+for that cluster:
+
+- the relay does **not** verify the announcement signature;
+- the relay does **not** decrypt or interpret the payload beyond routing hints
+  (peer id, envelope size, TTL);
+- the relay caps stored records by count, per-record size, and TTL to bound
+  DoS/spam surface;
+- the relay returns opaque records to consumers via `list_services` responses
+  in a separate `opaque_announcements_v3` field, never mixed with validated
+  services.
+
+The **consumer** is the trust boundary. Before surfacing any opaque record as a
+trusted service, the consumer re-verifies the announcement locally against:
+
+- the cluster authority public key it trusts;
+- the current (and optionally previous) namespace discovery context;
+- the announcement's own signature envelope and payload constraints.
+
+Records that fail local verification are silently dropped by the consumer and
+never appear in `tubo get services`.
+
+When the relay does have a validation context for the announcement's cluster,
+the classic strict path is used and opaque forwarding never runs for that
+announcement — validation always takes precedence.
+
+Opaque forwarding does not weaken the security model:
+
+- membership capability, publish lease, and service claim signatures are all
+  still checked by the consumer;
+- a tampering relay can drop or reorder records but cannot forge a service
+  that passes local verification;
+- the relay never becomes an implicit authority.
+
+Opaque forwarding does not reintroduce the legacy namespace-scoped
+`announce_service` (v2) accept path. Namespace-scoped v2 announcements are
+still rejected at the relay.
 
 ## 7. Rotation model
 

@@ -9,6 +9,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 ### Added
 - Detached process state now stores stable runtime capabilities, and `tubo ps` / `tubo ps --wide` / `inspect process/... --json` expose them.
 - `tubo start cluster/<name>` now starts the cluster authority process for private-cluster grants and discovery cache/query.
+- Relay opaque `AnnouncementV3` forwarding (spike for #346): a relay that lacks a cluster's authority/discovery context accepts syntactically valid `announce_service_v3` records as opaque transport payloads (bounded by count/size/TTL caps) and forwards them to querying consumers via a new `opaque_announcements_v3` field on `list_services` responses. Consumers verify signatures locally against their own cluster authority before surfacing a record as a trusted service; unverifiable records are silently dropped. Relays remain non-authoritative and are never treated as trust roots; strict validation still takes precedence when a validation context is configured. Legacy namespace-scoped `announce_service` (v2) is still rejected.
 
 ### Changed
 - Human process listings now show a `CAPS` column in both compact and wide views.

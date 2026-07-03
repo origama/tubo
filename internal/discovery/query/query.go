@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"strings"
 	"time"
 
@@ -29,6 +30,16 @@ const (
 	maxRequestBytes                      = 64 << 10
 	maxResponseBytes                     = 1 << 20
 	maxServices                          = 256
+
+	// Opaque forwarding: relay caches without cluster validation context accept
+	// AnnouncementV3 records as raw bytes and forwards them to consumers, which
+	// verify signatures against their own local cluster authority.
+	//
+	// The relay never treats opaque records as trusted; they are transport-level
+	// only. Limits below cap DoS/spam surface.
+	OpaqueAnnouncementV3MaxRecords = 1024
+	OpaqueAnnouncementV3MaxBytes   = 32 << 10
+	OpaqueAnnouncementV3MaxTTL     = 15 * time.Minute
 )
 
 type Cache interface {
@@ -36,6 +47,21 @@ type Cache interface {
 	List() []*discovery.ServiceEntry
 	Add(peer.ID, string, []string, time.Duration) error
 	AddV2(peer.ID, string, string, string, string, string, string, string, string, *grantspkg.GrantServiceEndpoint, []string, []string, time.Duration) error
+}
+
+// OpaqueAnnouncementV3Store is an optional relay-side store for opaque
+// AnnouncementV3 records that the relay itself cannot verify (private clusters
+// whose authority is not known to the relay).
+//
+// The relay treats these records as opaque transport payloads:
+//   - it does NOT verify the announcement signature;
+//   - it does NOT decrypt or interpret the payload beyond routing hints
+//     (peer id, TTL);
+//   - trust boundary is enforced by consumers, which re-verify the announcement
+//     against their own cluster authority before surfacing it as a service.
+type OpaqueAnnouncementV3Store interface {
+	Put(peerID peer.ID, ann discovery.AnnouncementV3, ttl time.Duration, size int) error
+	List() []discovery.OpaqueAnnouncementV3Record
 }
 
 type Request struct {
@@ -80,6 +106,12 @@ type Response struct {
 	Services []Service `json:"services,omitempty"`
 	Service  *Service  `json:"service,omitempty"`
 	Error    string    `json:"error,omitempty"`
+
+	// OpaqueAnnouncementsV3 carries raw AnnouncementV3 records forwarded by a
+	// relay that lacks the cluster validation context. Consumers MUST verify
+	// each announcement against their local cluster authority before treating
+	// it as a trusted service. Records that fail verification are discarded.
+	OpaqueAnnouncementsV3 []discovery.AnnouncementV3 `json:"opaque_announcements_v3,omitempty"`
 }
 
 // Option configures request handling behavior.
@@ -90,6 +122,7 @@ type serverConfig struct {
 	announcementV3Contexts           []discovery.NamespaceDiscoveryContext
 	membershipAuthorityPublicKey     ed25519.PublicKey
 	membershipContexts               []discovery.NamespaceDiscoveryContext
+	opaqueStore                      OpaqueAnnouncementV3Store
 }
 
 // WithAnnouncementV3Validation enables namespace-scoped AnnouncementV3
@@ -100,6 +133,17 @@ func WithAnnouncementV3Validation(authorityPublicKey ed25519.PublicKey, contexts
 		cfg.announcementV3Contexts = append([]discovery.NamespaceDiscoveryContext(nil), contexts...)
 		cfg.membershipAuthorityPublicKey = append(ed25519.PublicKey(nil), authorityPublicKey...)
 		cfg.membershipContexts = append([]discovery.NamespaceDiscoveryContext(nil), contexts...)
+	}
+}
+
+// WithOpaqueAnnouncementV3Forwarding enables opaque relay forwarding for
+// AnnouncementV3 records the relay cannot verify. The relay accepts syntactically
+// valid announcements bounded by size/TTL limits and returns them to consumers
+// via list_services responses. Consumers must re-verify signatures against their
+// own cluster authority before treating any record as trusted.
+func WithOpaqueAnnouncementV3Forwarding(store OpaqueAnnouncementV3Store) Option {
+	return func(cfg *serverConfig) {
+		cfg.opaqueStore = store
 	}
 }
 
@@ -149,6 +193,9 @@ func responseForRequestWithConfig(h host.Host, role string, cache Cache, cfg ser
 			entries = entries[:maxServices]
 		}
 		resp.Services = servicesFromEntries(entries)
+		if cfg.opaqueStore != nil {
+			resp.OpaqueAnnouncementsV3 = opaqueAnnouncementsForList(cfg.opaqueStore)
+		}
 		return resp
 	case RequestTypeGet:
 		if req.Name == "" {
@@ -195,24 +242,37 @@ func responseForRequestWithConfig(h host.Host, role string, cache Cache, cfg ser
 			resp.Error = "missing announcement payload"
 			return resp
 		}
-		if len(cfg.announcementV3Contexts) == 0 {
+		if len(cfg.announcementV3Contexts) > 0 {
+			peerPub, err := req.Announcement.PeerID.ExtractPublicKey()
+			if err != nil {
+				resp.Error = fmt.Sprintf("extract announcement signer public key: %v", err)
+				return resp
+			}
+			validated, err := discovery.ValidateAnnouncementV3AcrossContexts(*req.Announcement, peerPub, cfg.announcementV3AuthorityPublicKey, observedPeerID, cfg.announcementV3Contexts...)
+			if err != nil {
+				resp.Error = fmt.Sprintf("validate announcement_v3: %v", err)
+				return resp
+			}
+			if err := cache.AddV2(validated.PeerID, validated.ClusterID, validated.NamespaceID, validated.ServiceID, validated.ServiceName, validated.Kind, validated.ServiceKind, validated.ServicePublicKey, validated.ConnectPolicy, validated.GrantService, append([]string(nil), validated.Addresses...), append([]string(nil), validated.Capabilities...), validated.TTL); err != nil {
+				resp.Error = fmt.Sprintf("cache announce: %v", err)
+				return resp
+			}
+			return resp
+		}
+		// Opaque forwarding path: relay has no cluster context for this
+		// announcement's cluster. Accept the record as opaque bytes if a store
+		// is configured and basic sanity/size/TTL limits pass. The relay is
+		// NOT trusted; consumers verify the signature locally against their
+		// own cluster authority before surfacing anything as a service.
+		if cfg.opaqueStore == nil {
 			resp.Error = "announcement_v3 validation unavailable"
 			return resp
 		}
-		peerPub, err := req.Announcement.PeerID.ExtractPublicKey()
-		if err != nil {
-			resp.Error = fmt.Sprintf("extract announcement signer public key: %v", err)
+		if err := acceptOpaqueAnnouncementV3(cfg.opaqueStore, observedPeerID, *req.Announcement); err != nil {
+			resp.Error = fmt.Sprintf("opaque announcement_v3 rejected: %v", err)
 			return resp
 		}
-		validated, err := discovery.ValidateAnnouncementV3AcrossContexts(*req.Announcement, peerPub, cfg.announcementV3AuthorityPublicKey, observedPeerID, cfg.announcementV3Contexts...)
-		if err != nil {
-			resp.Error = fmt.Sprintf("validate announcement_v3: %v", err)
-			return resp
-		}
-		if err := cache.AddV2(validated.PeerID, validated.ClusterID, validated.NamespaceID, validated.ServiceID, validated.ServiceName, validated.Kind, validated.ServiceKind, validated.ServicePublicKey, validated.ConnectPolicy, validated.GrantService, append([]string(nil), validated.Addresses...), append([]string(nil), validated.Capabilities...), validated.TTL); err != nil {
-			resp.Error = fmt.Sprintf("cache announce: %v", err)
-			return resp
-		}
+		log.Printf("accepted opaque announcement_v3 peer=%s key_id=%s ttl=%s", req.Announcement.PeerID, req.Announcement.KeyID, req.Announcement.TTL)
 		return resp
 	default:
 		resp.Error = fmt.Sprintf("unsupported request type %q", req.Type)
@@ -382,6 +442,61 @@ func splitAddresses(addresses []string) (direct []string, relayed []string) {
 		direct = append(direct, addr)
 	}
 	return direct, relayed
+}
+
+// acceptOpaqueAnnouncementV3 validates only transport-level invariants of an
+// opaque AnnouncementV3 record: version, size, TTL cap, observed peer id. It
+// does NOT verify signature or decrypt payload; those checks are the
+// consumer's responsibility.
+//
+// Trust boundary: the relay is a dumb forwarder here. Any tampering by the
+// relay would be caught on the consumer by signature verification against the
+// cluster authority the consumer trusts locally.
+func acceptOpaqueAnnouncementV3(store OpaqueAnnouncementV3Store, observedPeerID peer.ID, ann discovery.AnnouncementV3) error {
+	if strings.TrimSpace(ann.Version) != discovery.AnnouncementVersionV3 {
+		return fmt.Errorf("unsupported announcement version %q", ann.Version)
+	}
+	if ann.PeerID == "" {
+		return fmt.Errorf("announcement peer id missing")
+	}
+	if observedPeerID != "" && observedPeerID != ann.PeerID {
+		return fmt.Errorf("peer id mismatch: got %q want %q", observedPeerID, ann.PeerID)
+	}
+	if ann.TTL <= 0 {
+		return fmt.Errorf("non-positive ttl")
+	}
+	ttl := ann.TTL
+	if ttl > OpaqueAnnouncementV3MaxTTL {
+		ttl = OpaqueAnnouncementV3MaxTTL
+	}
+	if len(ann.Nonce) == 0 || len(ann.Ciphertext) == 0 || len(ann.Signature) == 0 {
+		return fmt.Errorf("announcement missing envelope fields")
+	}
+	raw, err := ann.Marshal()
+	if err != nil {
+		return fmt.Errorf("marshal announcement: %w", err)
+	}
+	if len(raw) > OpaqueAnnouncementV3MaxBytes {
+		return fmt.Errorf("announcement size %d exceeds cap %d", len(raw), OpaqueAnnouncementV3MaxBytes)
+	}
+	return store.Put(ann.PeerID, ann, ttl, len(raw))
+}
+
+// opaqueAnnouncementsForList returns non-expired opaque announcement records
+// for inclusion in a list_services response, capped to a maximum count.
+func opaqueAnnouncementsForList(store OpaqueAnnouncementV3Store) []discovery.AnnouncementV3 {
+	records := store.List()
+	if len(records) > OpaqueAnnouncementV3MaxRecords {
+		records = records[:OpaqueAnnouncementV3MaxRecords]
+	}
+	out := make([]discovery.AnnouncementV3, 0, len(records))
+	for _, r := range records {
+		if r.Expired() {
+			continue
+		}
+		out = append(out, r.Announcement)
+	}
+	return out
 }
 
 func pathFromAddresses(addresses []string) string {
