@@ -32,6 +32,7 @@ type App struct {
 	health         *http.Server
 	cache          *discovery.Cache
 	stopSubscriber chan struct{}
+	opaqueStore    *discovery.OpaqueAnnouncementCache
 }
 
 func LoadConfigFromEnv(g func(string) string) (Config, error) {
@@ -120,8 +121,19 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		}
 		handleOpts = append(handleOpts, discoveryquery.WithAnnouncementV3Validation(authorityPub, contexts...))
 	}
+	// Opaque forwarding: the relay is intentionally not authority-aware for
+	// private clusters. It accepts AnnouncementV3 records it cannot verify as
+	// opaque bytes and forwards them to querying consumers, which verify
+	// signatures against their own local cluster authority. Trust boundary is
+	// on the consumer side; the relay must never be treated as authoritative.
+	opaqueStore := discovery.NewOpaqueAnnouncementCache(
+		discoveryquery.OpaqueAnnouncementV3MaxRecords,
+		discoveryquery.OpaqueAnnouncementV3MaxBytes,
+		discoveryquery.OpaqueAnnouncementV3MaxTTL,
+	)
+	handleOpts = append(handleOpts, discoveryquery.WithOpaqueAnnouncementV3Forwarding(opaqueStore))
 	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "relay", cache, handleOpts...))
-	return &App{cfg: cfg, host: h, cache: cache, stopSubscriber: stopSubscriber}, nil
+	return &App{cfg: cfg, host: h, cache: cache, stopSubscriber: stopSubscriber, opaqueStore: opaqueStore}, nil
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()

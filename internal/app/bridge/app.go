@@ -435,10 +435,19 @@ func (a *App) handleTCPConn(conn net.Conn) {
 	}
 	if err != nil {
 		opErr = err
-		a.markTunnelDegraded(err)
+		if tcpProxyErrorDegradesRuntime(err) {
+			a.markTunnelDegraded(err)
+		} else {
+			// Connection-level closes like EOF / reset / broken pipe are expected on
+			// detached TCP tunnels and must not poison whole-runtime health. The
+			// tunnel was already established successfully for this connection, so
+			// keep runtime healthy and retain auth/backoff state separately.
+			a.markTunnelHealthy()
+		}
 		log.Printf("bridge tcp proxy closed local=%s bytes_in=%d bytes_out=%d err=%v duration=%s", conn.RemoteAddr(), received, sent, err, time.Since(start))
 		return
 	}
+	a.markTunnelHealthy()
 	log.Printf("bridge tcp proxy completed local=%s bytes_in=%d bytes_out=%d duration=%s", conn.RemoteAddr(), received, sent, time.Since(start))
 }
 
@@ -656,6 +665,8 @@ func (a *App) recordPeerPingSuccess(peerID peer.ID, rtt time.Duration) {
 	a.connectMu.Unlock()
 	if previousFails > 0 {
 		log.Printf("bridge peer ping recovered peer=%s rtt=%s", peerID, rtt.Round(time.Millisecond))
+		a.clearStaleTunnelDegradedStateAfterPeerRecovery(now)
+		a.recordRenewalReachabilitySuccess()
 	}
 	a.reportStatus()
 }
@@ -939,6 +950,7 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 	a.healthMu.RUnlock()
 	a.connectMu.Lock()
 	defer a.connectMu.Unlock()
+	current := a.connectLease
 	if a.connectLease != nil {
 		t := a.connectLease.ExpiresAt.UTC()
 		snap.ConnectAccessExpiresAt = &t
@@ -959,8 +971,15 @@ func (a *App) statusSnapshot(now time.Time) statusSnapshot {
 		}
 	}
 	if a.lastRefreshError != "" && snap.Reason == "" && connectRefreshFailureIsCurrent(a.lastRefreshHealthyAt, a.lastRefreshErrorAt) {
-		snap.Status = "degraded"
-		snap.Reason = connectRefreshFailureDisplayReason(a.lastRefreshError)
+		refreshReason := connectRefreshFailureDisplayReason(a.lastRefreshError)
+		// Keep runtime status focused on data-plane usability. Transient refresh /
+		// rollover failures already surface under AuthorizationStatus, and should
+		// not keep the whole detached TCP runtime globally degraded once the tunnel
+		// itself is healthy and current access lease remains usable.
+		if a.lastRefreshErrorClass == reachability.ErrorAuth || a.lastRefreshErrorClass == reachability.ErrorConfig || current == nil || !now.Before(current.ExpiresAt.UTC()) {
+			snap.Status = "degraded"
+			snap.Reason = refreshReason
+		}
 	}
 	if !a.lastPeerPingAt.IsZero() {
 		t := a.lastPeerPingAt
@@ -1094,6 +1113,9 @@ func (a *App) applyConnectLeaseArtifactsLocked(artifacts grantspkg.ConnectLeaseA
 	a.cfg.ConnectRefreshLease = &refresh
 	now := time.Now().UTC()
 	a.lastRefreshHealthyAt = now
+	a.lastRefreshError = ""
+	a.lastRefreshErrorAt = time.Time{}
+	a.lastRefreshErrorClass = reachability.ErrorUnknown
 	a.clearPeerPingStateLocked(now)
 	a.clearStaleTunnelDegradedStateAfterLeaseRecovery(now)
 	a.recordRenewalReachabilitySuccess()
@@ -1106,6 +1128,14 @@ func connectRefreshFailureIsCurrent(lastHealthyAt, lastErrorAt time.Time) bool {
 }
 
 func (a *App) clearStaleTunnelDegradedStateAfterLeaseRecovery(now time.Time) {
+	a.clearStaleTunnelDegradedState(now)
+}
+
+func (a *App) clearStaleTunnelDegradedStateAfterPeerRecovery(now time.Time) {
+	a.clearStaleTunnelDegradedState(now)
+}
+
+func (a *App) clearStaleTunnelDegradedState(now time.Time) {
 	if a == nil {
 		return
 	}
@@ -1122,6 +1152,33 @@ func (a *App) clearStaleTunnelDegradedStateAfterLeaseRecovery(now time.Time) {
 func connectTunnelErrorIsRecoverable(errText string) bool {
 	class := reachability.Classify(errors.New(errText)).Class
 	return class == reachability.ErrorTransient || class == reachability.ErrorUnknown
+}
+
+func tcpProxyErrorDegradesRuntime(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(err.Error()))
+	if s == "" {
+		return false
+	}
+	// These are normal per-connection shutdowns for long-lived detached TCP
+	// tunnels. They describe one client session ending, not a broken runtime.
+	benign := []string{
+		"broken pipe",
+		"connection reset by peer",
+		"use of closed network connection",
+		"eof",
+	}
+	for _, phrase := range benign {
+		if strings.Contains(s, phrase) {
+			return false
+		}
+	}
+	return true
 }
 
 func ConnectPathTransitionMessage(previous, current string) (string, bool) {

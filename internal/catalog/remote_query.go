@@ -264,6 +264,14 @@ func fetchRemoteServiceCacheDetailed(cfg cfgpkg.Config, timeout time.Duration, p
 	for _, service := range resp.Services {
 		services = append(services, ServiceFromQueryService(service))
 	}
+	// Opaque relay forwarding: the relay may include AnnouncementV3 records
+	// that it did not itself validate (private clusters). We MUST verify each
+	// one locally against our own cluster authority before showing it as a
+	// trusted service. Records that fail verification are silently dropped.
+	if opaque := validateOpaqueAnnouncementsV3(cfg, resp.OpaqueAnnouncementsV3); len(opaque) > 0 {
+		services = mergeOpaqueServices(services, opaque)
+		recorder.message("validated %d relayed announcement_v3 record(s) locally", len(opaque))
+	}
 	SortServices(services)
 	recorder.message("received %d records from cluster discovery authority", len(services))
 	return services, &resp.Metadata, recorder.messages, attempts, nil
@@ -277,12 +285,23 @@ func fetchRemoteServiceDetailed(cfg cfgpkg.Config, serviceName string, timeout t
 	if err != nil {
 		return Service{}, nil, recorder.messages, attempts, err
 	}
-	if resp.Service == nil {
-		return Service{}, &resp.Metadata, recorder.messages, attempts, errors.New("service not found")
+	if resp.Service != nil {
+		service := ServiceFromQueryService(*resp.Service)
+		recorder.message("received service %s", service.Name)
+		return service, &resp.Metadata, recorder.messages, attempts, nil
 	}
-	service := ServiceFromQueryService(*resp.Service)
-	recorder.message("received service %s", service.Name)
-	return service, &resp.Metadata, recorder.messages, attempts, nil
+	// Opaque relay forwarding fallback: if the relay didn't have a validated
+	// service, look for a matching AnnouncementV3 record in the opaque list
+	// and verify it locally.
+	if opaque := validateOpaqueAnnouncementsV3(cfg, resp.OpaqueAnnouncementsV3); len(opaque) > 0 {
+		for _, svc := range opaque {
+			if svc.Name == serviceName {
+				recorder.message("validated relayed announcement_v3 for service %s", serviceName)
+				return svc, &resp.Metadata, recorder.messages, attempts, nil
+			}
+		}
+	}
+	return Service{}, &resp.Metadata, recorder.messages, attempts, errors.New("service not found")
 }
 
 func remoteAttemptsAllUnreachable(attempts []remoteQueryAttempt) bool {

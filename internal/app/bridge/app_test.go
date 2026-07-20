@@ -468,6 +468,108 @@ func TestBridgeTunnelHealthTracksDegradedAndHealthy(t *testing.T) {
 	}
 }
 
+func TestTCPProxyErrorDegradesRuntimeClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "eof", err: io.EOF, want: false},
+		{name: "net closed", err: net.ErrClosed, want: false},
+		{name: "broken pipe", err: errors.New("write tcp 127.0.0.1:19997->127.0.0.1:55555: broken pipe"), want: false},
+		{name: "connection reset by peer", err: errors.New("read tcp 127.0.0.1:19997->127.0.0.1:55555: connection reset by peer"), want: false},
+		{name: "closed network connection", err: errors.New("use of closed network connection"), want: false},
+		{name: "dial failure", err: errors.New("failed to dial grant endpoint"), want: true},
+		{name: "auth failure", err: errors.New("membership capability is missing connect permission"), want: true},
+		{name: "connect proof failure", err: errors.New("connect proof invalid"), want: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tcpProxyErrorDegradesRuntime(tc.err); got != tc.want {
+				t.Fatalf("tcpProxyErrorDegradesRuntime(%v) = %t, want %t", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTCPSetupFailuresStillDegradeRuntime(t *testing.T) {
+	tests := []struct {
+		name   string
+		newApp func(t *testing.T) *App
+	}{
+		{
+			name: "open stream failure",
+			newApp: func(t *testing.T) *App {
+				return &App{
+					openTunnelStream:   func(context.Context) (network.Stream, error) { return nil, errors.New("failed to dial service peer") },
+					reconnectServiceFn: func(context.Context) error { return errors.New("self-heal disabled") },
+				}
+			},
+		},
+		{
+			name: "connect proof failure",
+			newApp: func(t *testing.T) *App {
+				h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-tcp-setup-proof-failure", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = h.Close() })
+				return &App{
+					host:             h,
+					openTunnelStream: func(context.Context) (network.Stream, error) { return stubNetworkStream{}, nil },
+					cfg:              Config{ConnectRefreshLease: nil},
+					connectLease:     &grantspkg.ConnectAccessLease{ExpiresAt: time.Now().Add(-time.Minute)},
+					reconnectServiceFn: func(context.Context) error {
+						return errors.New("self-heal disabled")
+					},
+				}
+			},
+		},
+		{
+			name: "start tunnel failure",
+			newApp: func(t *testing.T) *App {
+				h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-tcp-setup-start-failure", nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = h.Close() })
+				return &App{
+					host:             h,
+					openTunnelStream: func(context.Context) (network.Stream, error) { return stubNetworkStream{}, nil },
+					startClientTCPTunnel: func(network.Stream, string, *iprotocol.ConnectProof) error {
+						return errors.New("start tunnel handshake failed")
+					},
+					reconnectServiceFn: func(context.Context) error { return errors.New("self-heal disabled") },
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			app := tc.newApp(t)
+			client, server := net.Pipe()
+			defer client.Close()
+			done := make(chan struct{})
+			go func() {
+				app.handleTCPConn(server)
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("handleTCPConn timed out")
+			}
+			snap := app.CurrentRuntimeStatus()
+			if snap.Status != "degraded" {
+				t.Fatalf("expected setup failure to degrade runtime, got %#v", snap)
+			}
+			if snap.LastTunnelError == "" {
+				t.Fatalf("expected setup failure to record tunnel error, got %#v", snap)
+			}
+		})
+	}
+}
+
 func TestBridgeCurrentRuntimeStatusClearsRecoverableTunnelFailureAfterLeaseSuccess(t *testing.T) {
 	app := &App{cfg: Config{ServiceKind: "tcp"}}
 	app.markTunnelDegraded(errors.New("rollover connect lease: failed to dial grant endpoint"))
@@ -482,8 +584,8 @@ func TestBridgeCurrentRuntimeStatusClearsRecoverableTunnelFailureAfterLeaseSucce
 	if snap.LastTunnelError == "" || !strings.Contains(snap.LastTunnelError, "failed to dial") {
 		t.Fatalf("expected historical tunnel error to remain visible, got %#v", snap)
 	}
-	if snap.LastRefreshError != "grant service unavailable" {
-		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+	if snap.LastRefreshError != "" {
+		t.Fatalf("expected successful lease recovery to clear refresh error, got %#v", snap)
 	}
 }
 
@@ -506,6 +608,40 @@ func TestBridgeStatusSnapshotDegradesWhenRefreshLeaseNearExpiry(t *testing.T) {
 	}
 	if !strings.Contains(snap.Reason, "fresh token/invite") {
 		t.Fatalf("reason = %q", snap.Reason)
+	}
+}
+
+func TestBridgePeerPingRecoveryClearsRecoverableTunnelDegradedState(t *testing.T) {
+	peerID := corepeer.ID("12D3KooWPeerPingRecovery")
+	app := &App{cfg: Config{ServiceKind: "tcp"}, service: corepeer.AddrInfo{ID: peerID}, peerPingFailureThreshold: 3}
+	app.markTunnelDegraded(errors.New("refresh connect access lease: failed to dial grant endpoint"))
+	before := app.CurrentRuntimeStatus()
+	if before.Status != "degraded" {
+		t.Fatalf("expected initial degraded runtime, got %#v", before)
+	}
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingSuccess(peerID, 9*time.Millisecond)
+	after := app.CurrentRuntimeStatus()
+	if after.Status != "running" || after.Reason != "" {
+		t.Fatalf("expected peer recovery to clear recoverable tunnel degraded state, got %#v", after)
+	}
+}
+
+func TestBridgeCurrentRuntimeStatusKeepsTransientRefreshFailureInHistoryButNotRuntimeAfterTunnelRecovery(t *testing.T) {
+	app := &App{cfg: Config{ServiceKind: "tcp", ConnectRefreshLease: &grantspkg.ConnectRefreshLease{ExpiresAt: time.Now().Add(time.Hour)}}, connectLease: &grantspkg.ConnectAccessLease{ExpiresAt: time.Now().Add(time.Hour)}}
+	app.lastRefreshError = "refresh connect access lease: failed to dial grant endpoint"
+	app.lastRefreshErrorAt = time.Now().Add(-time.Minute)
+	app.lastRefreshErrorClass = reachability.ErrorTransient
+	app.nextRefreshRetryAt = time.Now().Add(time.Minute)
+	app.markTunnelHealthy()
+	runtime := app.CurrentRuntimeStatus()
+	if runtime.Status != "running" || runtime.Reason != "" {
+		t.Fatalf("expected data plane to recover to running, got %#v", runtime)
+	}
+	if runtime.LastRefreshError == "" || !strings.Contains(strings.ToLower(runtime.LastRefreshError), "failed to dial") {
+		t.Fatalf("expected transient refresh failure to remain visible as history, got %#v", runtime)
 	}
 }
 
@@ -569,11 +705,11 @@ func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseNotUseful(t *testing.T)
 		t.Fatalf("retry wait = %s, want conservative backoff", wait)
 	}
 	snap := app.CurrentRuntimeStatus()
-	if snap.Status != "degraded" {
-		t.Fatalf("status = %q", snap.Status)
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected runtime to stay usable during rollover deferral, got %#v", snap)
 	}
-	if !strings.Contains(strings.ToLower(snap.Reason), "publish lease is near expiry") {
-		t.Fatalf("reason = %q", snap.Reason)
+	if snap.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(snap.AuthorizationReason), "publish lease is near expiry") {
+		t.Fatalf("expected rollover deferral warning in auth status, got %#v", snap)
 	}
 }
 
@@ -614,11 +750,11 @@ func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseExtensionBelowThreshold
 		t.Fatalf("retry wait = %s, want conservative backoff", wait)
 	}
 	snap := app.CurrentRuntimeStatus()
-	if snap.Status != "degraded" {
-		t.Fatalf("status = %q", snap.Status)
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected runtime to stay usable during rollover deferral, got %#v", snap)
 	}
-	if !strings.Contains(strings.ToLower(snap.Reason), "publish lease is near expiry") {
-		t.Fatalf("reason = %q", snap.Reason)
+	if snap.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(snap.AuthorizationReason), "publish lease is near expiry") {
+		t.Fatalf("expected rollover deferral warning in auth status, got %#v", snap)
 	}
 }
 
@@ -1045,7 +1181,7 @@ func TestBridgeCurrentRuntimeStatusClearsStaleRefreshErrorAfterTrafficRecovery(t
 		t.Fatalf("expected running status after traffic recovery, got %#v", snap)
 	}
 	if snap.LastRefreshError != "grant service unavailable" {
-		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+		t.Fatalf("expected traffic recovery to keep auth warning history until lease success, got %#v", snap)
 	}
 }
 
@@ -1059,8 +1195,8 @@ func TestBridgeCurrentRuntimeStatusClearsTransientRefreshErrorAfterLeaseSuccess(
 	if snap.Status != "running" || snap.Reason != "" {
 		t.Fatalf("expected running status after lease success, got %#v", snap)
 	}
-	if snap.LastRefreshError != "grant service unavailable" {
-		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+	if snap.LastRefreshError != "" {
+		t.Fatalf("expected lease success to clear refresh error, got %#v", snap)
 	}
 }
 
@@ -1087,8 +1223,8 @@ func TestBridgeCurrentRuntimeStatusClearsConfigRefreshFailureAfterLeaseSuccess(t
 	if snap.Status != "running" || snap.Reason != "" {
 		t.Fatalf("expected config failure to clear after lease success, got %#v", snap)
 	}
-	if snap.LastRefreshError != "publish lease service public key mismatch" {
-		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+	if snap.LastRefreshError != "" {
+		t.Fatalf("expected lease success to clear config refresh error, got %#v", snap)
 	}
 }
 
@@ -1462,9 +1598,12 @@ func TestBridgeNoUsefulRefreshResultDoesNotImmediatelyRetry(t *testing.T) {
 	if got := atomic.LoadInt32(&refreshes); got != 1 {
 		t.Fatalf("refresh calls = %d, want 1", got)
 	}
-	snap := app.statusSnapshot(time.Now().UTC())
-	if snap.Status != "degraded" || !strings.Contains(snap.Reason, "fresh token/invite") {
-		t.Fatalf("expected degraded token hint, got %#v", snap)
+	snap := app.CurrentRuntimeStatus()
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected runtime to stay usable after no-op refresh result, got %#v", snap)
+	}
+	if snap.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(snap.AuthorizationReason), "fresh token/invite") {
+		t.Fatalf("expected token hint in auth status, got %#v", snap)
 	}
 }
 
@@ -1541,6 +1680,113 @@ func TestBridgeConnectLeaseRenewalWakesOnRecoveredEventBeforeCooldown(t *testing
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("expected renewal loop to stop after cancel")
+	}
+}
+
+func TestBridgeConnectLeaseRenewalRecoveryWakesOnPeerPingSuccess(t *testing.T) {
+	_, authPriv, err := ed25519.GenerateKey(crand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", "bridge-renewal-ping-recovery-test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	peerID := corepeer.ID("12D3KooWPeerPingRecovery")
+	clientKey := bridgeHostAuthorizedKey(t, h)
+	artifacts, err := grantspkg.BuildConnectLeaseArtifacts(authPriv, grantspkg.ServiceSharePayload{JTI: "bridge-renewal-ping-recovery", ClusterID: "cluster-123", NamespaceID: "default", TargetServiceID: "svc-123", ExpiresAt: time.Now().Add(time.Hour)}, clientKey, 2*time.Minute, 10*time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	current := artifacts.AccessLease
+	current.IssuedAt = now.Add(-7 * time.Second)
+	current.ExpiresAt = now.Add(2 * time.Second)
+	refresh := artifacts.RefreshLease
+	var refreshes int32
+	secondRefreshStarted := make(chan struct{})
+	allowSecondRefresh := make(chan struct{})
+	app := &App{host: h, service: corepeer.AddrInfo{ID: peerID}, connectLease: &current, cfg: Config{ConnectRefreshLease: &refresh, ConnectLeaseRefresher: func(context.Context, grantspkg.ConnectRefreshLease) (grantspkg.ConnectAccessLease, error) {
+		switch atomic.AddInt32(&refreshes, 1) {
+		case 1:
+			return grantspkg.ConnectAccessLease{}, errors.New("grant service unavailable")
+		case 2:
+			close(secondRefreshStarted)
+			<-allowSecondRefresh
+			return grantspkg.RefreshConnectAccessLease(authPriv, refresh, 10*time.Minute)
+		default:
+			return grantspkg.ConnectAccessLease{}, errors.New("unexpected retry")
+		}
+	}}, renewalReachability: reachability.NewManager(reachability.ManagerConfig{Buffer: 4})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		app.startConnectLeaseRenewal(ctx)
+		close(done)
+	}()
+	deadline := time.After(2 * time.Second)
+	for atomic.LoadInt32(&refreshes) < 1 {
+		select {
+		case <-deadline:
+			t.Fatal("expected initial transient renewal failure")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.NextRefreshRetryAt == nil || !snap.NextRefreshRetryAt.After(now) {
+		t.Fatalf("expected retry backoff to be scheduled in future, got %#v", snap.NextRefreshRetryAt)
+	}
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingFailure(peerID, errors.New("peer timeout"))
+	app.recordPeerPingSuccess(peerID, 9*time.Millisecond)
+	select {
+	case <-secondRefreshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("expected peer ping recovery to trigger retry before cooldown elapsed")
+	}
+	snap = app.CurrentRuntimeStatus()
+	if snap.Status != "running" {
+		t.Fatalf("expected runtime to leave sticky degraded state after peer recovery, got %#v", snap)
+	}
+	if snap.NextRefreshRetryAt != nil {
+		t.Fatalf("expected peer recovery wake to clear nextRefreshRetryAt before retry, got %#v", snap.NextRefreshRetryAt)
+	}
+	close(allowSecondRefresh)
+	for atomic.LoadInt32(&refreshes) < 2 {
+		select {
+		case <-time.After(time.Second):
+			t.Fatal("expected second refresh attempt")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	deadlineTime := time.Now().Add(time.Second)
+	for time.Now().Before(deadlineTime) {
+		snap = app.CurrentRuntimeStatus()
+		if snap.LastRefreshError == "" && snap.NextRefreshRetryAt == nil && snap.Status == "running" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	snap = app.CurrentRuntimeStatus()
+	if snap.LastRefreshError != "" {
+		t.Fatalf("expected successful refresh to clear lastRefreshError, got %#v", snap)
+	}
+	if snap.NextRefreshRetryAt != nil {
+		t.Fatalf("expected successful refresh to clear nextRefreshRetryAt, got %#v", snap)
+	}
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected running status after successful retry, got %#v", snap)
 	}
 	cancel()
 	select {
@@ -1646,8 +1892,11 @@ func TestBridgeConnectAccessLeaseRefreshTransientFailureBacksOff(t *testing.T) {
 		t.Fatalf("refresh calls = %d, want 1", got)
 	}
 	snap := app.CurrentRuntimeStatus()
-	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "grant service unavailable") {
-		t.Fatalf("expected degraded transient grant failure, got %#v", snap)
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected runtime to stay usable during transient refresh backoff, got %#v", snap)
+	}
+	if snap.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(snap.AuthorizationReason), "grant service unavailable") {
+		t.Fatalf("expected auth backoff warning, got %#v", snap)
 	}
 	if snap.NextRefreshRetryAt == nil {
 		t.Fatal("expected retry backoff to be scheduled")
@@ -1766,8 +2015,8 @@ func TestBridgeConnectLeaseRolloverClearsStaleRefreshErrorAfterSuccess(t *testin
 	if snap.Status != "running" || snap.Reason != "" {
 		t.Fatalf("expected running status after rollover recovery, got %#v", snap)
 	}
-	if snap.LastRefreshError != "grant service unavailable" {
-		t.Fatalf("expected historical refresh error to remain visible, got %#v", snap)
+	if snap.LastRefreshError != "" {
+		t.Fatalf("expected rollover success to clear refresh error, got %#v", snap)
 	}
 }
 
@@ -2038,8 +2287,11 @@ func TestBridgeConnectLeaseRolloverTemporaryFailureBacksOff(t *testing.T) {
 	if snap.NextRefreshRetryAt == nil {
 		t.Fatal("expected retry backoff to be scheduled")
 	}
-	if snap.Status != "degraded" || !strings.Contains(strings.ToLower(snap.Reason), "grant service unavailable") {
-		t.Fatalf("expected degraded transient grant failure, got %#v", snap)
+	if snap.Status != "running" || snap.Reason != "" {
+		t.Fatalf("expected runtime to stay usable during transient rollover backoff, got %#v", snap)
+	}
+	if snap.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(snap.AuthorizationReason), "grant service unavailable") {
+		t.Fatalf("expected auth backoff warning, got %#v", snap)
 	}
 	lease, err = app.ensureConnectAccessLease(context.Background())
 	if err != nil {
