@@ -424,8 +424,13 @@ func (s *Server) handleConnectRequest(msg Message, requester peer.ID) Message {
 			refreshTTL = remaining
 		}
 	}
-	// Cap TTLs by publish lease expiry - connect sessions should not outlive
-	// the service's publish authorization
+	// Cap access TTL by publish lease expiry - the tunnel should not outlive
+	// the service's publish authorization. Refresh TTL is NOT capped by publish
+	// lease expiry because the refresh lease is an authorization artifact for
+	// requesting new access leases, not a tunnel lifetime extension. If the
+	// service stops publishing, the next refresh will fail because the publish
+	// lease is no longer active, and the access lease (already capped) will
+	// expire within its remaining TTL.
 	if !publishLeaseExpiry.IsZero() {
 		remaining := publishLeaseExpiry.Sub(now)
 		if remaining <= 0 {
@@ -433,9 +438,6 @@ func (s *Server) handleConnectRequest(msg Message, requester peer.ID) Message {
 		}
 		if accessTTL > remaining {
 			accessTTL = remaining
-		}
-		if refreshTTL > remaining {
-			refreshTTL = remaining
 		}
 	}
 	artifacts, err := BuildMemberConnectLeaseArtifacts(s.cfg.AuthorityPrivateKey, s.cfg.ClusterID, s.cfg.NamespaceID, msg.ServiceID, msg.ClientPublicKey, accessEpoch, accessTTL, refreshTTL, membershipExpiry, now)

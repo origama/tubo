@@ -1913,7 +1913,16 @@ func connectRefreshResultUseful(previousExpiry, newExpiry, now time.Time) bool {
 	if previousExpiry.IsZero() {
 		return true
 	}
-	return newExpiry.After(previousExpiry.Add(connectRefreshMinExtension))
+	if newExpiry.After(previousExpiry.Add(connectRefreshMinExtension)) {
+		return true
+	}
+	// The new lease is shorter than the previous one, which happens when the
+	// member_rollover path is used after delegated_refresh failed (e.g., the
+	// publish lease was renewed and the delegation signature no longer matches).
+	// In this case the old refresh lease is effectively broken even though its
+	// absolute expiry is further out. Accept the new lease if it provides at
+	// least the minimum extension beyond now.
+	return newExpiry.After(now.Add(connectRefreshMinExtension))
 }
 
 // connectRefreshLeaseIsDelegated returns true if the refresh lease was issued

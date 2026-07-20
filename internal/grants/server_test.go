@@ -954,18 +954,21 @@ func TestGrantServerConnectLeaseCappedByPublishExpiry(t *testing.T) {
 		t.Fatalf("connect request failed: %v", err)
 	}
 
-	// Verify refresh lease is capped by publish lease expiry (5 min), not membership (24h) or config (48h)
-	// Allow some tolerance for test execution time
-	maxExpectedExpiry := now.Add(5*time.Minute + 10*time.Second)
-	if resp.RefreshLease.ExpiresAt.After(maxExpectedExpiry) {
-		t.Fatalf("refresh lease expiry %v exceeds publish lease expiry ~%v (membership was 24h, config was 48h)",
-			resp.RefreshLease.ExpiresAt, maxExpectedExpiry)
+	// Verify access lease is capped by publish lease expiry (5 min), not by membership (24h) or config (10min)
+	// Access TTL should be min(10min config, 5min publish) = 5min
+	maxExpectedAccessExpiry := now.Add(5*time.Minute + 10*time.Second)
+	if resp.AccessLease.ExpiresAt.After(maxExpectedAccessExpiry) {
+		t.Fatalf("access lease expiry %v exceeds publish lease expiry ~%v (config was 10min, publish was 5min)",
+			resp.AccessLease.ExpiresAt, maxExpectedAccessExpiry)
 	}
 
-	// Verify access lease is also capped (should be min of 10min config and 5min publish = 5min)
-	if resp.AccessLease.ExpiresAt.After(maxExpectedExpiry) {
-		t.Fatalf("access lease expiry %v exceeds publish lease expiry ~%v",
-			resp.AccessLease.ExpiresAt, maxExpectedExpiry)
+	// Verify refresh lease is NOT capped by publish lease expiry.
+	// Refresh TTL should use the full config value (48h) because it is an
+	// authorization artifact, not a tunnel lifetime extension.
+	minExpectedRefreshExpiry := now.Add(12 * time.Hour)
+	if resp.RefreshLease.ExpiresAt.Before(minExpectedRefreshExpiry) {
+		t.Fatalf("refresh lease expiry %v is too short, expected ~48h (config) not capped by publish lease expiry",
+			resp.RefreshLease.ExpiresAt)
 	}
 
 	// Verify leases are valid
