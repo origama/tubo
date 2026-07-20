@@ -668,7 +668,7 @@ func TestBridgeCurrentRuntimeStatusShowsRefreshRetryReasons(t *testing.T) {
 	}
 }
 
-func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseNotUseful(t *testing.T) {
+func TestBridgeConnectLeaseRolloverSucceedsWhenRefreshLeaseNotUseful(t *testing.T) {
 	now := time.Now().UTC()
 	current := grantspkg.ConnectAccessLease{JTI: "access-current", ExpiresAt: now.Add(time.Hour)}
 	refresh := grantspkg.ConnectRefreshLease{JTI: "refresh-current", ExpiresAt: now.Add(2 * time.Second)}
@@ -695,25 +695,19 @@ func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseNotUseful(t *testing.T)
 	if err != nil {
 		t.Fatalf("ensureConnectAccessLease: %v", err)
 	}
-	if got.JTI != current.JTI {
-		t.Fatalf("got access lease %q, want %q", got.JTI, current.JTI)
+	if got.JTI != "access-new" {
+		t.Fatalf("got access lease %q, want %q", got.JTI, "access-new")
 	}
 	if gotCalls := atomic.LoadInt32(&calls); gotCalls != 1 {
 		t.Fatalf("request calls = %d, want 1", gotCalls)
 	}
-	if wait := time.Until(app.nextRefreshRetryAt); wait < 55*time.Second {
-		t.Fatalf("retry wait = %s, want conservative backoff", wait)
-	}
 	snap := app.CurrentRuntimeStatus()
-	if snap.Status != "running" || snap.Reason != "" {
-		t.Fatalf("expected runtime to stay usable during rollover deferral, got %#v", snap)
-	}
-	if snap.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(snap.AuthorizationReason), "publish lease is near expiry") {
-		t.Fatalf("expected rollover deferral warning in auth status, got %#v", snap)
+	if snap.AuthorizationStatus != "authorized" {
+		t.Fatalf("expected authorized after rollover, got %#v", snap)
 	}
 }
 
-func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseExtensionBelowThreshold(t *testing.T) {
+func TestBridgeConnectLeaseRolloverSucceedsWhenRefreshLeaseExtensionBelowThreshold(t *testing.T) {
 	now := time.Now().UTC()
 	current := grantspkg.ConnectAccessLease{JTI: "access-current", ExpiresAt: now.Add(time.Hour)}
 	refresh := grantspkg.ConnectRefreshLease{JTI: "refresh-current", ExpiresAt: now.Add(2 * time.Second)}
@@ -740,21 +734,15 @@ func TestBridgeConnectLeaseRolloverDefersWhenRefreshLeaseExtensionBelowThreshold
 	if err != nil {
 		t.Fatalf("ensureConnectAccessLease: %v", err)
 	}
-	if got.JTI != current.JTI {
-		t.Fatalf("got access lease %q, want %q", got.JTI, current.JTI)
+	if got.JTI != "access-new" {
+		t.Fatalf("got access lease %q, want %q", got.JTI, "access-new")
 	}
 	if gotCalls := atomic.LoadInt32(&calls); gotCalls != 1 {
 		t.Fatalf("request calls = %d, want 1", gotCalls)
 	}
-	if wait := time.Until(app.nextRefreshRetryAt); wait < 55*time.Second {
-		t.Fatalf("retry wait = %s, want conservative backoff", wait)
-	}
 	snap := app.CurrentRuntimeStatus()
-	if snap.Status != "running" || snap.Reason != "" {
-		t.Fatalf("expected runtime to stay usable during rollover deferral, got %#v", snap)
-	}
-	if snap.AuthorizationStatus != "waiting for reauthorization" || !strings.Contains(strings.ToLower(snap.AuthorizationReason), "publish lease is near expiry") {
-		t.Fatalf("expected rollover deferral warning in auth status, got %#v", snap)
+	if snap.AuthorizationStatus != "authorized" {
+		t.Fatalf("expected authorized after rollover, got %#v", snap)
 	}
 }
 
