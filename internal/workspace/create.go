@@ -92,6 +92,12 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 	}
 	cfg.CurrentCluster = name
 	cfg.CurrentNamespace = "default"
+	// Ensure a stable node.seed so connect processes use the same peer id
+	// that the cluster's membership capability is bound to. The query seed
+	// deterministically matches SubjectPeerID in the membership capability.
+	if strings.TrimSpace(cfg.Node.Seed) == "" {
+		cfg.Node.Seed = querySeed
+	}
 	if err := w.SaveConfig(configPath, cfg); err != nil {
 		return ClusterView{}, err
 	}
