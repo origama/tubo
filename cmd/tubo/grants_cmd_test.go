@@ -11,6 +11,33 @@ import (
 	"github.com/origama/tubo/internal/p2p"
 )
 
+func TestGrantServiceSeedUsesRoleSpecificDefault(t *testing.T) {
+	clusterID := "cluster-123"
+	got := grantServiceSeed("", clusterID)
+	want := "grants-" + clusterID
+	if got != want {
+		t.Fatalf("grantServiceSeed() = %q, want %q", got, want)
+	}
+
+	queryPeerID, err := p2p.PeerIDFromSeed(discoveryQuerySeed(clusterID, "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPeerID, err := p2p.PeerIDFromSeed(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorityPeerID == queryPeerID {
+		t.Fatalf("authority peer id %s collides with discovery-query peer id", authorityPeerID)
+	}
+}
+
+func TestGrantServiceSeedPreservesExplicitSeed(t *testing.T) {
+	if got := grantServiceSeed(" explicit-authority-seed ", "cluster-123"); got != "explicit-authority-seed" {
+		t.Fatalf("grantServiceSeed() = %q, want explicit seed", got)
+	}
+}
+
 func TestGrantServicePeersForTokensPrefersRelayCircuitAddresses(t *testing.T) {
 	addrs := []string{
 		"/ip4/127.0.0.1/tcp/39385/p2p/12D3KooWGrant",
@@ -128,6 +155,44 @@ func TestMergeAuthorityBootstrapPeersKeepsBetterExistingPeersWhenIncomingIsWorse
 		"/ip4/203.0.113.10/tcp/39385/p2p/12D3KooWAuthority",
 	}) {
 		t.Fatalf("mergeAuthorityBootstrapPeers() = %#v", got)
+	}
+}
+
+func TestMergeCurrentAuthorityPeersDropsStaleAuthorityIdentity(t *testing.T) {
+	oldPeer, err := p2p.PeerIDFromSeed("old-authority")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPeer, err := p2p.PeerIDFromSeed("new-authority")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayPeer, err := p2p.PeerIDFromSeed("authority-relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRelay := "/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeer.String() + "/p2p-circuit/p2p/" + oldPeer.String()
+	newDirect := "/ip4/203.0.113.10/tcp/39385/p2p/" + newPeer.String()
+	got := mergeCurrentAuthorityPeers([]string{oldRelay}, []string{newDirect})
+	if !reflect.DeepEqual(got, []string{newDirect}) {
+		t.Fatalf("mergeCurrentAuthorityPeers() = %#v, want only current authority", got)
+	}
+}
+
+func TestMergeCurrentAuthorityPeersPreservesBetterPathsForSameIdentity(t *testing.T) {
+	authorityPeer, err := p2p.PeerIDFromSeed("current-authority")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayPeer, err := p2p.PeerIDFromSeed("current-authority-relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := "/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeer.String() + "/p2p-circuit/p2p/" + authorityPeer.String()
+	direct := "/ip4/203.0.113.10/tcp/39385/p2p/" + authorityPeer.String()
+	got := mergeCurrentAuthorityPeers([]string{relay}, []string{direct})
+	if !reflect.DeepEqual(got, []string{relay, direct}) {
+		t.Fatalf("mergeCurrentAuthorityPeers() = %#v, want same-identity relay and direct paths", got)
 	}
 }
 
