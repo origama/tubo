@@ -7792,6 +7792,16 @@ func TestBuildGrantServiceDiscoveryArtifactsUsesScopedRuntime(t *testing.T) {
 	if payload.NamespaceID != "team" || payload.ClusterID != "cluster-123" {
 		t.Fatalf("unexpected discovery payload scope: %#v", payload)
 	}
+	if len(ann.Nonce) == 0 || len(ann.Ciphertext) == 0 || len(ann.Signature) == 0 {
+		t.Fatalf("grant-service announcement missing signed envelope fields: %#v", ann)
+	}
+	valid, err := ann.Verify(overlay.Host.Peerstore().PubKey(overlay.Host.ID()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !valid {
+		t.Fatal("grant-service announcement signature is invalid")
+	}
 }
 
 func TestPublishGrantServiceDiscoveryRegistersQueryableGrantService(t *testing.T) {

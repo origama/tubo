@@ -838,6 +838,13 @@ func buildGrantServiceDiscoveryArtifacts(runtime cfgpkg.DiscoveryRuntime, h host
 	if err != nil {
 		return discoveryquery.Service{}, discovery.AnnouncementV3{}, err
 	}
+	privKey := h.Peerstore().PrivKey(h.ID())
+	if privKey == nil {
+		return discoveryquery.Service{}, discovery.AnnouncementV3{}, fmt.Errorf("missing private key for peer %s", h.ID())
+	}
+	if err := ann.Sign(privKey); err != nil {
+		return discoveryquery.Service{}, discovery.AnnouncementV3{}, fmt.Errorf("sign announcement v3: %w", err)
+	}
 	return service, ann, nil
 }
 
