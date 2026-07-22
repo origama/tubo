@@ -766,7 +766,7 @@ func publishGrantServiceDiscovery(ctx context.Context, h host.Host, overlay *p2p
 		if err := publisher.PublishV3(ctx, ann); err != nil {
 			return err
 		}
-		syncGrantServiceAnnouncementToPeers(ctx, h, cfg, service)
+		syncGrantServiceAnnouncementToPeers(ctx, h, cfg, ann)
 		return nil
 	}
 	if err := publish(); err != nil {
@@ -839,7 +839,7 @@ func buildGrantServiceDiscoveryArtifacts(runtime cfgpkg.DiscoveryRuntime, h host
 	return service, ann, nil
 }
 
-func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg cfgpkg.Config, service discoveryquery.Service) {
+func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg cfgpkg.Config, ann discovery.AnnouncementV3) {
 	peers := append([]string(nil), cfg.Network.BootstrapPeers...)
 	peers = append(peers, cfg.Network.RelayPeers...)
 	seen := make(map[string]struct{}, len(peers))
@@ -856,7 +856,7 @@ func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg c
 		if err != nil {
 			continue
 		}
-		resp, err := discoveryquery.AnnounceService(ctx, h, info, service)
+		resp, err := discoveryquery.AnnounceAnnouncementV3(ctx, h, info, ann)
 		if err != nil {
 			log.Printf("grant service discovery announce failed peer=%s: %v", info.ID, err)
 			continue
@@ -865,7 +865,7 @@ func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg c
 			log.Printf("grant service discovery announce rejected peer=%s: %s", info.ID, resp.Error)
 			continue
 		}
-		log.Printf("grant service discovery announced peer=%s service=%s", info.ID, service.ServiceID)
+		log.Printf("grant service discovery announced v3 peer=%s key_id=%s", info.ID, ann.KeyID)
 	}
 }
 
