@@ -3187,8 +3187,17 @@ func TestClusterInvitationShareAndJoin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(startedCfg.Clusters["home"].DiscoveryQueryPeers) == 0 {
+	discoveryPeers := startedCfg.Clusters["home"].DiscoveryQueryPeers
+	if len(discoveryPeers) == 0 {
 		t.Fatal("expected start cluster to persist discovery query peers")
+	}
+	authorityPeerID := peerIDFromMultiaddr(t, discoveryPeers[0])
+	queryPeerID, err := discoveryQueryPeerIDForConfig(startedCfg.Clusters["home"].ClusterID, startedCfg.CurrentNamespace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorityPeerID == queryPeerID {
+		t.Fatalf("cluster authority peer id %s collides with discovery-query peer id", authorityPeerID)
 	}
 
 	out, err := capture(func() error {

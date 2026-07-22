@@ -11,6 +11,33 @@ import (
 	"github.com/origama/tubo/internal/p2p"
 )
 
+func TestGrantServiceSeedUsesRoleSpecificDefault(t *testing.T) {
+	clusterID := "cluster-123"
+	got := grantServiceSeed("", clusterID)
+	want := "grants-" + clusterID
+	if got != want {
+		t.Fatalf("grantServiceSeed() = %q, want %q", got, want)
+	}
+
+	queryPeerID, err := p2p.PeerIDFromSeed(discoveryQuerySeed(clusterID, "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPeerID, err := p2p.PeerIDFromSeed(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if authorityPeerID == queryPeerID {
+		t.Fatalf("authority peer id %s collides with discovery-query peer id", authorityPeerID)
+	}
+}
+
+func TestGrantServiceSeedPreservesExplicitSeed(t *testing.T) {
+	if got := grantServiceSeed(" explicit-authority-seed ", "cluster-123"); got != "explicit-authority-seed" {
+		t.Fatalf("grantServiceSeed() = %q, want explicit seed", got)
+	}
+}
+
 func TestGrantServicePeersForTokensPrefersRelayCircuitAddresses(t *testing.T) {
 	addrs := []string{
 		"/ip4/127.0.0.1/tcp/39385/p2p/12D3KooWGrant",

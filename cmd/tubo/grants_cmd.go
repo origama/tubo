@@ -605,12 +605,7 @@ func grantsServeCmd(args []string) error {
 	if *listen == "" {
 		*listen = "/ip4/0.0.0.0/tcp/0"
 	}
-	if *seed == "" {
-		*seed = cfg.Node.Seed
-	}
-	if *seed == "" {
-		*seed = "grants-" + cluster.ClusterID
-	}
+	*seed = grantServiceSeed(*seed, cluster.ClusterID)
 	overlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: *listen, Seed: *seed, PrivateKeyFile: cfg.Network.PrivateKeyFile, PrivateKeyB64: cfg.Network.PrivateKeyB64, BootstrapPeers: cfg.Network.BootstrapPeers, RelayPeers: cfg.Network.RelayPeers, Autorelay: cfg.Network.Autorelay, HolePunching: cfg.Network.HolePunching, ForceReachability: cfg.Network.ForceReachability, Component: "grants"})
 	if err != nil {
 		return err
@@ -663,6 +658,13 @@ func grantsServeCmd(args []string) error {
 	log.Printf("grants serve stopped")
 	time.Sleep(50 * time.Millisecond)
 	return nil
+}
+
+func grantServiceSeed(explicitSeed, clusterID string) string {
+	if seed := strings.TrimSpace(explicitSeed); seed != "" {
+		return seed
+	}
+	return "grants-" + strings.TrimSpace(clusterID)
 }
 
 const grantServiceDiscoveryPeerWaitTimeout = 30 * time.Second
