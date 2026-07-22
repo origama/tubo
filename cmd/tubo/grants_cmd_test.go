@@ -158,6 +158,44 @@ func TestMergeAuthorityBootstrapPeersKeepsBetterExistingPeersWhenIncomingIsWorse
 	}
 }
 
+func TestMergeCurrentAuthorityPeersDropsStaleAuthorityIdentity(t *testing.T) {
+	oldPeer, err := p2p.PeerIDFromSeed("old-authority")
+	if err != nil {
+		t.Fatal(err)
+	}
+	newPeer, err := p2p.PeerIDFromSeed("new-authority")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayPeer, err := p2p.PeerIDFromSeed("authority-relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRelay := "/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeer.String() + "/p2p-circuit/p2p/" + oldPeer.String()
+	newDirect := "/ip4/203.0.113.10/tcp/39385/p2p/" + newPeer.String()
+	got := mergeCurrentAuthorityPeers([]string{oldRelay}, []string{newDirect})
+	if !reflect.DeepEqual(got, []string{newDirect}) {
+		t.Fatalf("mergeCurrentAuthorityPeers() = %#v, want only current authority", got)
+	}
+}
+
+func TestMergeCurrentAuthorityPeersPreservesBetterPathsForSameIdentity(t *testing.T) {
+	authorityPeer, err := p2p.PeerIDFromSeed("current-authority")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayPeer, err := p2p.PeerIDFromSeed("current-authority-relay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay := "/dns4/relay.tubo.click/tcp/4001/p2p/" + relayPeer.String() + "/p2p-circuit/p2p/" + authorityPeer.String()
+	direct := "/ip4/203.0.113.10/tcp/39385/p2p/" + authorityPeer.String()
+	got := mergeCurrentAuthorityPeers([]string{relay}, []string{direct})
+	if !reflect.DeepEqual(got, []string{relay, direct}) {
+		t.Fatalf("mergeCurrentAuthorityPeers() = %#v, want same-identity relay and direct paths", got)
+	}
+}
+
 func TestServiceEndpointAddrsForTokensPrefersRelayCircuitAddrs(t *testing.T) {
 	servicePeerID, err := p2p.PeerIDFromSeed("service-endpoint-seed")
 	if err != nil {

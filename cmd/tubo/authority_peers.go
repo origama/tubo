@@ -6,6 +6,7 @@ import (
 
 	cfgpkg "github.com/origama/tubo/internal/config"
 	grantspkg "github.com/origama/tubo/internal/grants"
+	"github.com/origama/tubo/internal/p2p"
 )
 
 const (
@@ -75,6 +76,30 @@ func mergeAuthorityBootstrapPeers(existing, incoming []string) []string {
 		return append(append([]string(nil), existing...), dropPeers(incoming, existing)...)
 	}
 	return append(append([]string(nil), incoming...), dropPeers(existing, incoming)...)
+}
+
+func mergeCurrentAuthorityPeers(existing, incoming []string) []string {
+	incoming = sanitizeAuthorityBootstrapPeers(incoming)
+	if len(incoming) == 0 {
+		return canonicalAuthorityBootstrapPeers(existing)
+	}
+	targets := make(map[string]struct{}, len(incoming))
+	for _, raw := range incoming {
+		if info, err := p2p.AddrInfoFromString(raw); err == nil {
+			targets[info.ID.String()] = struct{}{}
+		}
+	}
+	matching := make([]string, 0, len(existing))
+	for _, raw := range existing {
+		info, err := p2p.AddrInfoFromString(raw)
+		if err != nil {
+			continue
+		}
+		if _, ok := targets[info.ID.String()]; ok {
+			matching = append(matching, raw)
+		}
+	}
+	return mergeAuthorityBootstrapPeers(matching, incoming)
 }
 
 func authorityPeerPathSummary(peers []string) string {

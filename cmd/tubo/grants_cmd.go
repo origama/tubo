@@ -887,7 +887,7 @@ func persistClusterDiscoveryPeers(configPath string, cfg cfgpkg.Config, clusterN
 	if strings.TrimSpace(cluster.ClusterID) != "" && strings.TrimSpace(cluster.ClusterID) != strings.TrimSpace(clusterID) {
 		return fmt.Errorf("cluster %q id mismatch while persisting discovery peers", clusterName)
 	}
-	cluster.DiscoveryQueryPeers = mergeAuthorityBootstrapPeers(cluster.DiscoveryQueryPeers, peers)
+	cluster.DiscoveryQueryPeers = mergeCurrentAuthorityPeers(cluster.DiscoveryQueryPeers, peers)
 	cfg.Clusters[clusterName] = cluster
 	return saveLocalConfig(configPath, cfg)
 }
