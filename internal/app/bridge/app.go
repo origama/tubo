@@ -1810,7 +1810,7 @@ func (a *App) ensureConnectAccessLease(ctx context.Context) (grantspkg.ConnectAc
 			a.connectMu.Unlock()
 			return grantspkg.ConnectAccessLease{}, wrapped
 		}
-		if !connectRefreshResultUseful(prevExpiry, access.ExpiresAt.UTC(), time.Now().UTC()) {
+		if !accessLeaseResultUseful(prevExpiry, access.ExpiresAt.UTC(), time.Now().UTC()) {
 			if a.connectCanRolloverLocked() {
 				return a.rolloverConnectLeaseLocked(ctx, current, *refresh, now, true)
 			}
@@ -1883,7 +1883,31 @@ func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg
 		a.connectMu.Unlock()
 		return grantspkg.ConnectAccessLease{}, wrapped
 	}
-	if !connectRefreshResultUseful(refresh.ExpiresAt.UTC(), artifacts.RefreshLease.ExpiresAt.UTC(), time.Now().UTC()) {
+	// Validate the rollover's new access lease against the current access lease
+	// before applying either artifact. A normal rollover must produce an access
+	// lease that extends the current one by at least minExtension; there is no
+	// "previous broken" carve-out for access leases. This prevents replacing a
+	// lease with substantial remaining validity with a noticeably shorter one.
+	currentAccessExpiry := time.Time{}
+	if current != nil {
+		currentAccessExpiry = current.ExpiresAt.UTC()
+	}
+	if !accessLeaseResultUseful(currentAccessExpiry, artifacts.AccessLease.ExpiresAt.UTC(), now) {
+		wrapped := errors.New("connect lease rollover returned a shorter access lease; waiting before retrying")
+		retryAt := now.Add(connectRefreshRolloverRetryCooldown)
+		if current != nil && now.Before(current.ExpiresAt.UTC()) {
+			a.recordRefreshFailureLocked(wrapped, retryAt)
+			log.Printf("bridge member connect lease rollover deferred: %v", wrapped)
+			a.connectMu.Unlock()
+			a.reportStatus()
+			return *current, nil
+		}
+		a.recordRefreshFailureLocked(wrapped, retryAt)
+		log.Printf("bridge member connect lease rollover deferred: %v", wrapped)
+		a.connectMu.Unlock()
+		return grantspkg.ConnectAccessLease{}, wrapped
+	}
+	if !refreshLeaseResultUseful(refresh.ExpiresAt.UTC(), artifacts.RefreshLease.ExpiresAt.UTC(), now, true) {
 		wrapped := errors.New("remote service publish lease is near expiry; waiting before retrying connect lease rollover")
 		retryAt := now.Add(connectRefreshRolloverRetryCooldown)
 		if current != nil && now.Before(current.ExpiresAt.UTC()) {
@@ -1906,7 +1930,29 @@ func (a *App) rolloverConnectLeaseLocked(ctx context.Context, current *grantspkg
 	return artifacts.AccessLease, nil
 }
 
-func connectRefreshResultUseful(previousExpiry, newExpiry, now time.Time) bool {
+// accessLeaseResultUseful reports whether a freshly obtained access lease
+// should replace the current one. A normal refresh must extend the access
+// lease by at least minExtension beyond the current expiry; there is no
+// "previous broken" carve-out, so a refresh that returns a shorter access
+// lease cannot silently replace one with substantial remaining validity.
+func accessLeaseResultUseful(previousExpiry, newExpiry, now time.Time) bool {
+	if newExpiry.IsZero() || !now.Before(newExpiry) {
+		return false
+	}
+	if previousExpiry.IsZero() {
+		return true
+	}
+	return newExpiry.After(previousExpiry.Add(connectRefreshMinExtension))
+}
+
+// refreshLeaseResultUseful reports whether a freshly obtained refresh lease
+// should replace the previous one. When previousUnusable is true (e.g. a
+// rollover triggered by delegated_signature_mismatch or a near-expired refresh
+// lease), the previous expiry is ignored and the new lease is accepted if it
+// merely provides minExtension beyond now. This carve-out is scoped to the
+// rollover path only; a normal delegated refresh uses accessLeaseResultUseful
+// for its access lease and never treats the previous lease as broken.
+func refreshLeaseResultUseful(previousExpiry, newExpiry, now time.Time, previousUnusable bool) bool {
 	if newExpiry.IsZero() || !now.Before(newExpiry) {
 		return false
 	}
@@ -1916,13 +1962,10 @@ func connectRefreshResultUseful(previousExpiry, newExpiry, now time.Time) bool {
 	if newExpiry.After(previousExpiry.Add(connectRefreshMinExtension)) {
 		return true
 	}
-	// The new lease is shorter than the previous one, which happens when the
-	// member_rollover path is used after delegated_refresh failed (e.g., the
-	// publish lease was renewed and the delegation signature no longer matches).
-	// In this case the old refresh lease is effectively broken even though its
-	// absolute expiry is further out. Accept the new lease if it provides at
-	// least the minimum extension beyond now.
-	return newExpiry.After(now.Add(connectRefreshMinExtension))
+	if previousUnusable {
+		return newExpiry.After(now.Add(connectRefreshMinExtension))
+	}
+	return false
 }
 
 // connectRefreshLeaseIsDelegated returns true if the refresh lease was issued

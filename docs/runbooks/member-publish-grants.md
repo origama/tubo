@@ -459,9 +459,10 @@ Connect leases issued by the relay grant server are bounded by multiple factors:
 2. **Membership expiry**: the requester's membership capability expiry
 3. **Publish lease expiry**: the target service's publish authorization expiry
 
-The lease TTLs are capped to `min(config, membershipExpiry, publishLeaseExpiry)`. This
-ensures connect sessions cannot outlive either the client's membership or the
-service's publish authorization.
+The lease TTLs are applied as follows:
+
+- **Access lease**: capped to `min(config ConnectAccessTTL, membershipExpiry, publishLeaseExpiry)`, so a tunnel session cannot outlive either the client's membership or the service's publish authorization.
+- **Refresh lease**: capped to `min(config ConnectRefreshTTL, membershipExpiry)` only. It is **not** capped by publish lease expiry because the refresh lease is an authorization artifact for requesting new access leases, not a tunnel lifetime extension. If the service stops publishing, the next refresh fails because the publish lease is no longer active, and the (already-capped) access lease expires within its remaining TTL.
 
 ### Refresh lease behavior
 
@@ -473,16 +474,14 @@ server checks:
 3. **Access revocation**: service access epoch hasn't advanced past the lease
 4. **Publish revocation**: service publish hasn't been revoked
 
-Since the refresh lease expiry is already bounded by publish lease expiry at mint
-time, it will naturally expire when the publish lease would have expired. Additionally,
-explicit publish revocation (via `tubo revoke publish`) immediately invalidates
-refresh attempts even if the refresh lease hasn't technically expired.
+The refresh lease expiry is not bounded by publish lease expiry (see above). Instead, publish authorization is enforced on refresh through two mechanisms:
+
+- the access lease minted from a refresh is capped by the publish lease expiry, so a tunnel session cannot outlive publish authorization;
+- explicit publish revocation (via `tubo revoke publish`) immediately invalidates refresh attempts even if the refresh lease hasn't technically expired.
 
 The relay grant server does **not** re-check publish lease expiry during refresh
 because:
-- The refresh lease expiry already encodes that boundary
-- Re-checking would create a mismatch with service-endpoint-issued refresh leases
-- Explicit revocation provides immediate invalidation when needed
+- the refresh lease is an authorization artifact, not a tunnel lifetime; re-checking publish expiry on refresh would create a mismatch with service-endpoint-issued refresh leases and with the access-lease cap that already encodes the publish boundary;
 
 ### Troubleshooting connect lease rollover
 
