@@ -271,6 +271,17 @@ func StartDetached(spec DetachedSpec, executable string, env []string, system Sy
 	if err := cmd.Start(); err != nil {
 		return State{}, err
 	}
+	exitCh := make(chan error, 1)
+	go func() { exitCh <- cmd.Wait() }()
+	rollbackArmed := true
+	defer func() {
+		if !rollbackArmed {
+			return
+		}
+		_ = os.Remove(spec.State.PIDFile)
+		_ = os.Remove(spec.State.StateFile)
+		stopDetachedChild(cmd, exitCh)
+	}()
 	state := spec.State
 	state.Source = firstNonEmpty(state.Source, "tubo-detached")
 	state.CommandLine = append([]string{executable}, spec.ChildArgs...)
@@ -287,11 +298,10 @@ func StartDetached(spec DetachedSpec, executable string, env []string, system Sy
 	if err := os.WriteFile(state.StateFile, stateBytes, 0o600); err != nil {
 		return State{}, err
 	}
-	if err := waitForStart(cmd, spec.HealthURL, state.LogFile, timeout); err != nil {
-		_ = os.Remove(state.PIDFile)
-		_ = os.Remove(state.StateFile)
+	if err := waitForStart(exitCh, spec.HealthURL, state.LogFile, timeout); err != nil {
 		return State{}, err
 	}
+	rollbackArmed = false
 	return state, nil
 }
 
@@ -799,14 +809,12 @@ func SummaryLogTail(path string, max int) string {
 	return string(b)
 }
 
-func waitForStart(cmd *exec.Cmd, healthURL, logPath string, timeout time.Duration) error {
-	errCh := make(chan error, 1)
-	go func() { errCh <- cmd.Wait() }()
+func waitForStart(exitCh <-chan error, healthURL, logPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	client := &http.Client{Timeout: 500 * time.Millisecond}
 	for {
 		select {
-		case err := <-errCh:
+		case err := <-exitCh:
 			if err == nil {
 				return fmt.Errorf("detached process exited before becoming ready")
 			}
@@ -824,9 +832,29 @@ func waitForStart(cmd *exec.Cmd, healthURL, logPath string, timeout time.Duratio
 			return nil
 		}
 		if time.Now().After(deadline) {
-			return nil
+			if healthURL == "" {
+				return nil
+			}
+			logTail := SummaryLogTail(logPath, 4096)
+			if logTail != "" {
+				return fmt.Errorf("detached process did not become ready within %s\n%s", timeout, logTail)
+			}
+			return fmt.Errorf("detached process did not become ready within %s", timeout)
 		}
 		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+func stopDetachedChild(cmd *exec.Cmd, exitCh <-chan error) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	if err := cmd.Process.Kill(); errors.Is(err, os.ErrProcessDone) {
+		return
+	}
+	select {
+	case <-exitCh:
+	case <-time.After(2 * time.Second):
 	}
 }
 

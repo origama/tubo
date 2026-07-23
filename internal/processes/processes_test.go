@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -413,6 +415,136 @@ func TestStartDetachedReusesCompatibleStaleConnectState(t *testing.T) {
 	if p, err := os.FindProcess(state.PID); err == nil {
 		_ = p.Kill()
 	}
+}
+
+func TestStartDetachedCommitsStateAfterHealthReady(t *testing.T) {
+	root := t.TempDir()
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer health.Close()
+	spec := detachedRollbackSpec(root)
+	spec.HealthURL = health.URL
+
+	state, err := StartDetached(spec, "/bin/sh", []string{"PATH=/usr/bin:/bin"}, nil, nil, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if process, findErr := os.FindProcess(state.PID); findErr == nil {
+		defer process.Kill()
+	}
+	for _, path := range []string{state.PIDFile, state.StateFile} {
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("committed artifact %s: %v", path, statErr)
+		}
+	}
+}
+
+func TestStartDetachedRollsBackChildWhenHealthNeverBecomesReady(t *testing.T) {
+	root := t.TempDir()
+	health := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer health.Close()
+	spec := detachedRollbackSpec(root)
+	spec.HealthURL = health.URL
+
+	_, err := StartDetached(spec, "/bin/sh", []string{"PATH=/usr/bin:/bin"}, nil, nil, 100*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "did not become ready") || !strings.Contains(err.Error(), "startup-marker") {
+		t.Fatalf("StartDetached error = %v, want readiness timeout with log tail", err)
+	}
+	assertDetachedArtifactsRemoved(t, spec)
+	assertLoggedChildPIDStopped(t, spec.State.LogFile, true)
+}
+
+func TestStartDetachedRollsBackChildWhenPIDWriteFails(t *testing.T) {
+	root := t.TempDir()
+	spec := detachedRollbackSpec(root)
+	pidDir := filepath.Dir(spec.State.PIDFile)
+	configure := func(*exec.Cmd) {
+		_ = os.RemoveAll(pidDir)
+		_ = os.WriteFile(pidDir, []byte("not a directory"), 0o600)
+	}
+
+	_, err := StartDetached(spec, "/bin/sh", []string{"PATH=/usr/bin:/bin"}, nil, configure, time.Second)
+	if err == nil {
+		t.Fatal("expected PID write failure")
+	}
+	if _, statErr := os.Stat(spec.State.StateFile); !os.IsNotExist(statErr) {
+		t.Fatalf("state artifact exists after rollback: %v", statErr)
+	}
+	assertLoggedChildPIDStopped(t, spec.State.LogFile, false)
+}
+
+func TestStartDetachedRollsBackChildWhenStateWriteFails(t *testing.T) {
+	root := t.TempDir()
+	spec := detachedRollbackSpec(root)
+	stateDir := filepath.Dir(spec.State.StateFile)
+	configure := func(*exec.Cmd) {
+		_ = os.RemoveAll(stateDir)
+		_ = os.WriteFile(stateDir, []byte("not a directory"), 0o600)
+	}
+
+	_, err := StartDetached(spec, "/bin/sh", []string{"PATH=/usr/bin:/bin"}, nil, configure, time.Second)
+	if err == nil {
+		t.Fatal("expected state write failure")
+	}
+	if _, statErr := os.Stat(spec.State.PIDFile); !os.IsNotExist(statErr) {
+		t.Fatalf("PID artifact exists after rollback: %v", statErr)
+	}
+	assertLoggedChildPIDStopped(t, spec.State.LogFile, false)
+}
+
+func detachedRollbackSpec(root string) DetachedSpec {
+	return DetachedSpec{
+		State: State{
+			ID:        "process/rollback-test",
+			Kind:      "process",
+			Command:   "attach",
+			Name:      "rollback-test",
+			LogFile:   filepath.Join(root, "logs", "child.log"),
+			StateFile: filepath.Join(root, "state", "child.json"),
+			PIDFile:   filepath.Join(root, "run", "child.pid"),
+		},
+		ChildArgs: []string{"-c", "echo $$; echo startup-marker; exec sleep 30"},
+	}
+}
+
+func assertDetachedArtifactsRemoved(t *testing.T, spec DetachedSpec) {
+	t.Helper()
+	for _, path := range []string{spec.State.PIDFile, spec.State.StateFile} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("artifact %s exists after rollback: %v", path, err)
+		}
+	}
+}
+
+func assertLoggedChildPIDStopped(t *testing.T, logPath string, requirePID bool) {
+	t.Helper()
+	raw, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read child log: %v", err)
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) == 0 {
+		if requirePID {
+			t.Fatal("child did not write PID before readiness rollback")
+		}
+		return
+	}
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil {
+		t.Fatalf("parse child PID: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if err := exec.Command("kill", "-0", strconv.Itoa(pid)).Run(); err != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = exec.Command("kill", "-9", strconv.Itoa(pid)).Run()
+	t.Fatalf("child process %d still running after rollback", pid)
 }
 
 func TestStartDetachedRejectsLiveCompatibleState(t *testing.T) {
