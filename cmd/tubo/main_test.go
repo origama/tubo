@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/libp2p/go-libp2p/core/peer"
 	serviceapp "github.com/origama/tubo/internal/app/service"
 	capability "github.com/origama/tubo/internal/capability"
 	catalogpkg "github.com/origama/tubo/internal/catalog"
@@ -7853,6 +7855,188 @@ func TestPublishGrantServiceDiscoveryRegistersQueryableGrantService(t *testing.T
 	}
 	if _, err := catalogpkg.RequireService(services, "grant-service"); err != nil {
 		t.Fatalf("expected grant-service in discovery cache, got services=%#v err=%v", services, err)
+	}
+}
+
+func newOpaqueRelayTestHost(t *testing.T, ctx context.Context, keyPath, seed string) (host.Host, []string, peer.AddrInfo) {
+	t.Helper()
+	oh, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: seed, PrivateKeyFile: keyPath, Component: "relay"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := discovery.NewCache(30*time.Second, time.Second)
+	store := discovery.NewOpaqueAnnouncementCache(discoveryquery.OpaqueAnnouncementV3MaxRecords, discoveryquery.OpaqueAnnouncementV3MaxBytes, discoveryquery.OpaqueAnnouncementV3MaxTTL)
+	oh.Host.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(oh.Host, "relay", cache, discoveryquery.WithOpaqueAnnouncementV3Forwarding(store)))
+	addrs := p2p.PeerAddrs(oh.Host)
+	if len(addrs) == 0 {
+		oh.Close()
+		t.Fatal("opaque relay host has no addresses")
+	}
+	info, err := p2p.AddrInfoFromString(addrs[0])
+	if err != nil {
+		oh.Close()
+		t.Fatal(err)
+	}
+	return oh.Host, addrs, info
+}
+
+func TestGrantServiceOpaqueRelayBoundary(t *testing.T) {
+	// Boundary test for #357: exercises the full grant-service publication path
+	// through an OPAQUE relay (no cluster validation context). The relay must
+	// accept the signed AnnouncementV3 as an opaque transport payload and
+	// return it to a querying consumer, which validates it locally against its
+	// own cluster authority. This is the path that regressed in #350/#352
+	// (unsigned/incomplete artifact reached the relay) and must be caught by a
+	// builder -> direct sync -> opaque relay -> consumer validation test.
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	relayHost, relayAddrs, relayInfo := newOpaqueRelayTestHost(t, ctx, keyPath, "opaque-relay-boundary")
+	defer relayHost.Close()
+
+	// Authority / grant-service publisher host. It owns the discovery context
+	// and builds the signed grant-service AnnouncementV3 via the real builder.
+	authorityOverlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "opaque-relay-boundary-authority", PrivateKeyFile: keyPath, Component: "grants"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authorityOverlay.Close()
+	if err := authorityOverlay.Host.Connect(ctx, relayInfo); err != nil {
+		t.Fatalf("connect authority to relay: %v", err)
+	}
+	discoverySecretRef := mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")
+	authorityMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: authorityOverlay.Host.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	authorityCfg := cfgpkg.Config{CurrentOverlay: "public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: authorityMembershipPath, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: discoverySecretRef}}}}}
+	runtime, err := authorityCfg.RequireDiscoveryRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, authorityOverlay.Host, authorityPriv, time.Minute, authorityOverlay.ReachableAddrs())
+	if err != nil {
+		t.Fatalf("build grant-service artifacts: %v", err)
+	}
+	// Sanity: the builder must produce a signed envelope. This is the #353
+	// regression guard at the builder boundary.
+	if len(ann.Nonce) == 0 || len(ann.Ciphertext) == 0 || len(ann.Signature) == 0 {
+		t.Fatalf("grant-service announcement missing signed envelope fields: %#v", ann)
+	}
+	if valid, err := ann.Verify(authorityOverlay.Host.Peerstore().PubKey(authorityOverlay.Host.ID())); err != nil || !valid {
+		t.Fatalf("grant-service announcement signature invalid: valid=%v err=%v", valid, err)
+	}
+
+	// Direct sync to the opaque relay. The relay must accept the record as
+	// opaque (it has no validation context) and store it for forwarding.
+	resp, err := discoveryquery.AnnounceAnnouncementV3(ctx, authorityOverlay.Host, relayInfo, ann)
+	if err != nil {
+		t.Fatalf("announce v3 to opaque relay: %v", err)
+	}
+	if strings.TrimSpace(resp.Error) != "" {
+		t.Fatalf("opaque relay rejected announcement: %s", resp.Error)
+	}
+
+	// Consumer: queries the opaque relay, receives the opaque record, and
+	// validates it locally against its own cluster authority + discovery context.
+	queryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumerMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	consumerCfg := cfgpkg.Config{CurrentOverlay: "public", Node: cfgpkg.Node{Seed: "opaque-relay-boundary-consumer"}, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: consumerMembershipPath, DiscoveryQueryPeers: relayAddrs, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: discoverySecretRef}}}}}
+	services, _, _, err := catalogpkg.FetchRemoteServiceCache(consumerCfg, 10*time.Second)
+	if err != nil {
+		t.Fatalf("consumer fetch from opaque relay: %v", err)
+	}
+	if _, err := catalogpkg.RequireService(services, service.Name); err != nil {
+		t.Fatalf("expected grant-service %q surfaced from opaque relay after local validation, got services=%#v err=%v", service.Name, services, err)
+	}
+}
+
+func TestGrantServiceOpaqueRelayRejectsTamperedSignature(t *testing.T) {
+	// Boundary test for #357 (negative): a tampered grant-service announcement
+	// accepted by an opaque relay MUST be dropped by the consumer's local
+	// validation and never surface as a trusted service.
+	authorityPub, authorityPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authoritySSH, err := ssh.NewPublicKey(authorityPub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "swarm.key")
+	keyData, err := newSwarmKeyData()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	relayHost, relayAddrs, relayInfo := newOpaqueRelayTestHost(t, ctx, keyPath, "opaque-relay-tamper")
+	defer relayHost.Close()
+
+	authorityOverlay, err := p2p.NewOverlayHost(p2p.OverlayHostConfig{Listen: "/ip4/127.0.0.1/tcp/0", Seed: "opaque-relay-tamper-authority", PrivateKeyFile: keyPath, Component: "grants"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer authorityOverlay.Close()
+	if err := authorityOverlay.Host.Connect(ctx, relayInfo); err != nil {
+		t.Fatalf("connect authority to relay: %v", err)
+	}
+	discoverySecretRef := mustWriteNamespaceDiscoverySecretRef(t, "cluster-123", "default")
+	authorityMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: authorityOverlay.Host.ID().String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	authorityCfg := cfgpkg.Config{CurrentOverlay: "public", CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: authorityMembershipPath, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: discoverySecretRef}}}}}
+	runtime, err := authorityCfg.RequireDiscoveryRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, ann, err := buildGrantServiceDiscoveryArtifacts(runtime, authorityOverlay.Host, authorityPriv, time.Minute, authorityOverlay.ReachableAddrs())
+	if err != nil {
+		t.Fatalf("build grant-service artifacts: %v", err)
+	}
+	// Tamper the signature so local consumer validation fails.
+	ann.Signature = append([]byte(nil), ann.Signature...)
+	if len(ann.Signature) > 0 {
+		ann.Signature[0] ^= 0xff
+	}
+	resp, err := discoveryquery.AnnounceAnnouncementV3(ctx, authorityOverlay.Host, relayInfo, ann)
+	if err != nil {
+		t.Fatalf("announce v3 to opaque relay: %v", err)
+	}
+	if strings.TrimSpace(resp.Error) != "" {
+		t.Fatalf("opaque relay rejected tampered announcement (it should accept opaquely): %s", resp.Error)
+	}
+
+	queryPeerID, err := p2p.PeerIDFromSeed(testDiscoveryQuerySeed("cluster-123", "default"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumerMembershipPath := mustWriteMembershipCapability(t, authorityPriv, capability.MembershipCapability{ClusterID: "cluster-123", NamespaceID: "default", SubjectPeerID: queryPeerID.String(), Permissions: []string{capability.PermissionSubscribe, capability.PermissionList, capability.PermissionPublish}, ExpiresAt: time.Now().UTC().Add(time.Hour)})
+	consumerCfg := cfgpkg.Config{CurrentOverlay: "public", Node: cfgpkg.Node{Seed: "opaque-relay-tamper-consumer"}, CurrentCluster: "home", CurrentNamespace: "default", Overlays: map[string]cfgpkg.Overlay{"public": {}}, Network: cfgpkg.Network{PrivateKeyFile: keyPath}, Clusters: map[string]cfgpkg.Cluster{"home": {ClusterID: "cluster-123", AuthorityPublicKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(authoritySSH))), MembershipCapabilityFile: consumerMembershipPath, DiscoveryQueryPeers: relayAddrs, Namespaces: map[string]cfgpkg.Namespace{"default": {Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: discoverySecretRef}}}}}
+	services, _, _, err := catalogpkg.FetchRemoteServiceCache(consumerCfg, 10*time.Second)
+	if err != nil {
+		t.Fatalf("consumer fetch: %v", err)
+	}
+	if _, err := catalogpkg.RequireService(services, "grant-service"); err == nil {
+		t.Fatalf("tampered grant-service must NOT surface as a trusted service, got services=%#v", services)
 	}
 }
 
