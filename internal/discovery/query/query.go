@@ -552,7 +552,6 @@ func boundedListResponse(resp Response, entries []*discovery.ServiceEntry, store
 			resp.Services = resp.Services[:len(resp.Services)-1]
 		default:
 			resp.Error = "list response metadata exceeds response budget"
-			break
 		}
 		if len(resp.OpaqueAnnouncementsV3) == 0 && len(resp.Services) == 0 && resp.Error != "" {
 			break
