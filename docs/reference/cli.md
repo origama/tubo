@@ -425,6 +425,11 @@ network:
 service:
   name: lmstudio
   target: http://192.168.1.28:1234
+  handshake_timeout: 10s
+  upstream_dial_timeout: 5s
+  upstream_tls_handshake_timeout: 10s
+  upstream_response_header_timeout: 30s
+  upstream_idle_conn_timeout: 90s
 health_listen: 127.0.0.1:8091
 heartbeat_interval: 5s
 ```
@@ -465,6 +470,8 @@ relay:
   # 0 means no relay byte cap; positive values cap cumulative bytes per relayed circuit connection.
   limit_data_bytes: 0
 ```
+
+Service stream timeout fields bound only setup phases: `handshake_timeout` covers Hello, connect proof, and request/tunnel headers; dial/TLS/response-header timeouts bound local upstream setup. Tubo clears the stream handshake deadline after authorization and tunnel selection, so valid long-running HTTP bodies, WebSockets, and raw TCP sessions do not receive an absolute lifetime. Equivalent environment overrides are `SERVICE_HANDSHAKE_TIMEOUT`, `SERVICE_UPSTREAM_DIAL_TIMEOUT`, `SERVICE_UPSTREAM_TLS_HANDSHAKE_TIMEOUT`, `SERVICE_UPSTREAM_RESPONSE_HEADER_TIMEOUT`, and `SERVICE_UPSTREAM_IDLE_CONN_TIMEOUT`.
 
 `relay.limit_data_bytes` is a circuit relay v2 connection cap, not an application-request cap. Small values can reset long-running raw TCP tunnels because multiple TCP tunnel streams may share the same relayed libp2p connection.
 

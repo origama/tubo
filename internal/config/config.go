@@ -55,9 +55,14 @@ const (
 )
 
 type Service struct {
-	Name   string      `yaml:"name" json:"name"`
-	Kind   ServiceKind `yaml:"kind,omitempty" json:"kind,omitempty"`
-	Target string      `yaml:"target" json:"target"`
+	Name                          string      `yaml:"name" json:"name"`
+	Kind                          ServiceKind `yaml:"kind,omitempty" json:"kind,omitempty"`
+	Target                        string      `yaml:"target" json:"target"`
+	HandshakeTimeout              Duration    `yaml:"handshake_timeout,omitempty" json:"handshake_timeout,omitempty"`
+	UpstreamDialTimeout           Duration    `yaml:"upstream_dial_timeout,omitempty" json:"upstream_dial_timeout,omitempty"`
+	UpstreamTLSHandshakeTimeout   Duration    `yaml:"upstream_tls_handshake_timeout,omitempty" json:"upstream_tls_handshake_timeout,omitempty"`
+	UpstreamResponseHeaderTimeout Duration    `yaml:"upstream_response_header_timeout,omitempty" json:"upstream_response_header_timeout,omitempty"`
+	UpstreamIdleConnTimeout       Duration    `yaml:"upstream_idle_conn_timeout,omitempty" json:"upstream_idle_conn_timeout,omitempty"`
 }
 type Edge struct {
 	Listen              string   `yaml:"listen" json:"listen"`
@@ -755,6 +760,21 @@ func Merge(base, over Config) Config {
 			b.Service.Kind = ""
 		}
 	}
+	if over.Service.HandshakeTimeout != 0 {
+		b.Service.HandshakeTimeout = over.Service.HandshakeTimeout
+	}
+	if over.Service.UpstreamDialTimeout != 0 {
+		b.Service.UpstreamDialTimeout = over.Service.UpstreamDialTimeout
+	}
+	if over.Service.UpstreamTLSHandshakeTimeout != 0 {
+		b.Service.UpstreamTLSHandshakeTimeout = over.Service.UpstreamTLSHandshakeTimeout
+	}
+	if over.Service.UpstreamResponseHeaderTimeout != 0 {
+		b.Service.UpstreamResponseHeaderTimeout = over.Service.UpstreamResponseHeaderTimeout
+	}
+	if over.Service.UpstreamIdleConnTimeout != 0 {
+		b.Service.UpstreamIdleConnTimeout = over.Service.UpstreamIdleConnTimeout
+	}
 	if over.HealthListen != "" {
 		b.HealthListen = over.HealthListen
 	}
@@ -859,6 +879,11 @@ func Env(getenv func(string) string, role string) Config {
 	c.Service.Name = getenv("SERVICE_NAME")
 	c.Service.Kind = ServiceKind(getenv("SERVICE_KIND"))
 	c.Service.Target = getenv("SERVICE_TARGET")
+	c.Service.HandshakeTimeout = dur(getenv("SERVICE_HANDSHAKE_TIMEOUT"))
+	c.Service.UpstreamDialTimeout = dur(getenv("SERVICE_UPSTREAM_DIAL_TIMEOUT"))
+	c.Service.UpstreamTLSHandshakeTimeout = dur(getenv("SERVICE_UPSTREAM_TLS_HANDSHAKE_TIMEOUT"))
+	c.Service.UpstreamResponseHeaderTimeout = dur(getenv("SERVICE_UPSTREAM_RESPONSE_HEADER_TIMEOUT"))
+	c.Service.UpstreamIdleConnTimeout = dur(getenv("SERVICE_UPSTREAM_IDLE_CONN_TIMEOUT"))
 	c.HealthListen = getenv("SERVICE_HEALTH_LISTEN")
 	if d := dur(getenv("HEARTBEAT_INTERVAL")); d != 0 {
 		c.HeartbeatInterval = d
@@ -1038,6 +1063,7 @@ func Mask(c Config) Config {
 }
 
 const maskedSeedPlaceholder = "<redacted: seed is a secret; see config file>"
+
 func CSV(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {

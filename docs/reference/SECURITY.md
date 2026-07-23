@@ -26,6 +26,7 @@ This file is the short operational summary.
 ## Limits
 
 - `/p2p-tunnel/1.1` enforces outer frame, nested field, header/value count, capability count, and body-chunk limits before allocation; malformed or oversized input is rejected on the affected stream before connect authorization or upstream forwarding;
+- service streams enforce a bounded Hello/connect-proof/request-header handshake before authorization and a bounded local-upstream dial/TLS/response-header phase; established HTTP bodies, WebSockets, and raw TCP tunnels have no absolute lifetime timeout;
 - metadata privacy is limited in the public model;
 - Discovery V3 improves namespace metadata protection, but observable PubSub timing/size metadata still remains;
 - Discovery V2 fallback is intentionally broken for discovery-enabled namespace runtime in `v0.9.1`;
