@@ -360,7 +360,7 @@ Useful flags in this MVP:
 --json
 ```
 
-`config print` masks secrets (`private_key_b64`) and does not print the contents of `swarm.key`.
+`config print` masks secrets (`private_key_b64`) and libp2p identity seeds (`node.seed`, `bridge.service_seed`, `service_seed`); it does not print the contents of `swarm.key`. Seeds are equivalent to private keys because they deterministically derive the libp2p host Ed25519 key, so they must never be shared. `tubo doctor` warns when a configured seed is a known demo default or derivable from public cluster identifiers.
 
 ## LM Studio / Ollama examples
 

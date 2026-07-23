@@ -3,12 +3,21 @@ bin/
 *.exe
 *.test
 tubo
+tubo-darwin
+tubo-linux
+tubo-*
 !cmd/tubo/
 !cmd/tubo/*.go
 dummy-api-server
 !docs/.well-known/
 !docs/.well-known/tubo/
 !docs/.well-known/tubo/**
+
+# Local network signing material (secrets — NEVER commit)
+tubo-public-network-key
+tubo-public-network-key.pub
+*-network-key
+*-network-key.pub
 
 # Go build artifacts
 *.out
