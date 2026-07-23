@@ -82,8 +82,6 @@ func parseConnectCLIArgs(args []string) (connectCLIRequest, error) {
 	}, nil
 }
 
-const detachedConnectStartTimeout = 30 * time.Second
-
 var startDetachedProcessWithTimeoutFn = startDetachedProcessWithTimeout
 
 func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
@@ -100,7 +98,7 @@ func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
 	if err != nil {
 		return err
 	}
-	state, err := startDetachedProcessWithTimeoutFn(spec, detachedConnectStartTimeout)
+	state, err := startDetachedProcessWithTimeoutFn(spec, detachedProcessStartTimeout)
 	if err != nil {
 		_ = restorePipeDefinition(req.ConfigPath, persisted.Cluster, persisted.Namespace, persisted.Name, previousPipe, pipeExisted)
 		return err

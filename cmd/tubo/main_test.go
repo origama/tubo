@@ -695,8 +695,8 @@ func TestDetachedConnectRollbackUsesPersistedScope(t *testing.T) {
 	if err := detachConnectCommand(args, globalCLIOptions{}); err == nil {
 		t.Fatal("expected detached connect failure")
 	}
-	if gotStartTimeout != detachedConnectStartTimeout {
-		t.Fatalf("detached connect start timeout = %s, want %s", gotStartTimeout, detachedConnectStartTimeout)
+	if gotStartTimeout != detachedProcessStartTimeout {
+		t.Fatalf("detached connect start timeout = %s, want %s", gotStartTimeout, detachedProcessStartTimeout)
 	}
 	if _, err := loadPipeDefinition(configPath, "home", "team", "connect-myapi-1234"); err == nil {
 		t.Fatal("expected token pipe definition to be rolled back")
