@@ -40,6 +40,7 @@ func createLocalService(configPath, name string) error {
 		fmt.Printf("created service %q in cluster %q namespace %q\n", ctx.Name, ctx.ClusterName, ctx.Namespace)
 	}
 	fmt.Printf("service id: %s\n", ctx.Service.ServiceID)
+	fmt.Printf("service seed: %s\n", ctx.Service.ServiceSeed)
 	if ctx.Service.ServiceOwnerKeyFile != "" {
 		fmt.Printf("service owner key file: %s\n", ctx.Service.ServiceOwnerKeyFile)
 	}
