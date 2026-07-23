@@ -42,3 +42,35 @@ func TestDoctorWarnsWhenPeerBoundMembershipExistsButNodeSeedMissing(t *testing.T
 		t.Fatalf("expected peer-bound node.seed warning, got: %v", warnings)
 	}
 }
+
+func TestDoctorWarnsOnDerivableOrDemoSeeds(t *testing.T) {
+	cases := []struct {
+		name string
+		seed string
+		want string
+	}{
+		{name: "demo default", seed: "public-relay-seed", want: "known demo default seed"},
+		{name: "service demo default", seed: "service-demo-seed", want: "known demo default seed"},
+		{name: "discovery-query derivable", seed: "discovery-query-cluster-123-default", want: "derivable from public cluster identifiers"},
+		{name: "grants derivable", seed: "grants-cluster-123", want: "derivable from public cluster identifiers"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: tc.seed}}
+			warnings := doctorWarnings(cfg)
+			joined := strings.Join(warnings, "\n")
+			if !strings.Contains(joined, tc.want) {
+				t.Fatalf("expected warning containing %q for seed %q, got: %v", tc.want, tc.seed, warnings)
+			}
+		})
+	}
+}
+
+func TestDoctorDoesNotWarnOnRandomSeed(t *testing.T) {
+	cfg := cfgpkg.Config{Node: cfgpkg.Node{Seed: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}}
+	for _, w := range doctorWarnings(cfg) {
+		if strings.Contains(w, "seed") {
+			t.Fatalf("unexpected seed warning for random seed: %q", w)
+		}
+	}
+}

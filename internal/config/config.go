@@ -1011,14 +1011,33 @@ func Doctor(c Config) error {
 }
 func Mask(c Config) Config {
 	c.Network.PrivateKeyB64 = ""
+	// node.seed and service_seed are equivalent to private keys: they
+	// deterministically derive the libp2p host Ed25519 key. Never print them.
+	if strings.TrimSpace(c.Node.Seed) != "" {
+		c.Node.Seed = maskedSeedPlaceholder
+	}
+	if strings.TrimSpace(c.Bridge.ServiceSeed) != "" {
+		c.Bridge.ServiceSeed = maskedSeedPlaceholder
+	}
 	for clusterName, cluster := range c.Clusters {
 		if cluster.MembershipGrant != nil {
 			cluster.MembershipGrant.InviteToken = ""
-			c.Clusters[clusterName] = cluster
 		}
+		for namespaceName, namespace := range cluster.Namespaces {
+			for serviceName, svc := range namespace.Services {
+				if strings.TrimSpace(svc.ServiceSeed) != "" {
+					svc.ServiceSeed = maskedSeedPlaceholder
+					namespace.Services[serviceName] = svc
+				}
+			}
+			cluster.Namespaces[namespaceName] = namespace
+		}
+		c.Clusters[clusterName] = cluster
 	}
 	return c
 }
+
+const maskedSeedPlaceholder = "<redacted: seed is a secret; see config file>"
 func CSV(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {

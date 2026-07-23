@@ -475,6 +475,24 @@ func TestMaskSecrets(t *testing.T) {
 	}
 }
 
+func TestMaskRedactsSeeds(t *testing.T) {
+	c := Defaults("service")
+	c.Node.Seed = "service-demo-seed"
+	c.Bridge.ServiceSeed = "bridge-demo-seed"
+	c.Clusters = map[string]Cluster{"home": {Namespaces: map[string]Namespace{"default": {Services: map[string]NamespaceService{"myapi": {ServiceSeed: "service-abcdef"}}}}}}
+	masked := Mask(c)
+	if masked.Node.Seed == "service-demo-seed" || strings.Contains(masked.Node.Seed, "service-demo-seed") {
+		t.Fatalf("node.seed not redacted: %q", masked.Node.Seed)
+	}
+	if masked.Bridge.ServiceSeed == "bridge-demo-seed" || strings.Contains(masked.Bridge.ServiceSeed, "bridge-demo-seed") {
+		t.Fatalf("bridge.service_seed not redacted: %q", masked.Bridge.ServiceSeed)
+	}
+	svc := masked.Clusters["home"].Namespaces["default"].Services["myapi"]
+	if svc.ServiceSeed == "service-abcdef" || strings.Contains(svc.ServiceSeed, "service-abcdef") {
+		t.Fatalf("service_seed not redacted: %q", svc.ServiceSeed)
+	}
+}
+
 func TestValidateServiceTCPKind(t *testing.T) {
 	c := Defaults("service")
 	c.Service.Target = "tcp://127.0.0.1:9443"
