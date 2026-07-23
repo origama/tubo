@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"context"
 	"os"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
@@ -9,6 +10,7 @@ import (
 type Store interface {
 	Load(configPath string) (cfgpkg.Config, error)
 	Save(configPath string, cfg cfgpkg.Config) error
+	Update(configPath string, mutate cfgpkg.ConfigMutation) (cfgpkg.Config, error)
 	ReadFile(path string) ([]byte, error)
 	WriteFile(path string, data []byte, mode os.FileMode) error
 	MkdirAll(path string, mode os.FileMode) error
@@ -24,6 +26,10 @@ func (FSStore) Load(configPath string) (cfgpkg.Config, error) {
 
 func (FSStore) Save(configPath string, cfg cfgpkg.Config) error {
 	return cfgpkg.WriteFile(configPath, cfg, true)
+}
+
+func (FSStore) Update(configPath string, mutate cfgpkg.ConfigMutation) (cfgpkg.Config, error) {
+	return cfgpkg.NewConfigRepository(configPath).Update(context.Background(), mutate)
 }
 
 func (FSStore) ReadFile(path string) ([]byte, error) {

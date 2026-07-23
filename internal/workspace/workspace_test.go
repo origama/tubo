@@ -239,6 +239,9 @@ type saveFailStore struct {
 }
 
 func (s *saveFailStore) Save(string, cfgpkg.Config) error { return s.saveErr }
+func (s *saveFailStore) Update(string, cfgpkg.ConfigMutation) (cfgpkg.Config, error) {
+	return cfgpkg.Config{}, s.saveErr
+}
 
 func (s *saveFailStore) Remove(path string) error {
 	s.removed = append(s.removed, path)

@@ -56,6 +56,13 @@ func (w *Workspace) SaveConfig(path string, cfg cfgpkg.Config) error {
 	return w.store.Save(path, cfg)
 }
 
+func (w *Workspace) UpdateConfig(path string, mutate cfgpkg.ConfigMutation) (cfgpkg.Config, error) {
+	if path == "" {
+		return cfgpkg.Config{}, errors.New("config path is required")
+	}
+	return w.store.Update(path, mutate)
+}
+
 func ResolveScope(cfg cfgpkg.Config, clusterFlag, namespaceFlag string, allNamespaces bool) (Scope, error) {
 	scope, err := cfgpkg.ResolveEffectiveScope(cfg, clusterFlag, namespaceFlag, allNamespaces)
 	if err != nil {
@@ -116,7 +123,7 @@ func (w *Workspace) ListClusters(configPath string) ([]ClusterView, error) {
 			Name:                name,
 			Current:             name == cfg.CurrentCluster,
 			ClusterID:           cluster.ClusterID,
-			AuthorityPublicKey:   cluster.AuthorityPublicKey,
+			AuthorityPublicKey:  cluster.AuthorityPublicKey,
 			DiscoveryQueryPeers: append([]string(nil), cluster.DiscoveryQueryPeers...),
 			Capabilities:        append([]string(nil), cluster.Capabilities...),
 			Namespaces:          namespaceNames,

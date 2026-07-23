@@ -878,7 +878,7 @@ func syncGrantServiceAnnouncementToPeers(ctx context.Context, h host.Host, cfg c
 	}
 }
 
-func persistClusterDiscoveryPeers(configPath string, cfg cfgpkg.Config, clusterName, clusterID string, addrs []string) error {
+func persistClusterDiscoveryPeers(configPath string, _ cfgpkg.Config, clusterName, clusterID string, addrs []string) error {
 	peers := grantServiceDiscoveryQueryPeers(addrs)
 	if len(peers) == 0 {
 		return fmt.Errorf("cluster %q discovery peers unavailable", clusterName)
@@ -887,16 +887,19 @@ func persistClusterDiscoveryPeers(configPath string, cfg cfgpkg.Config, clusterN
 	if clusterName == "" {
 		return fmt.Errorf("cluster discovery peer persistence requires a cluster name")
 	}
-	cluster, ok := cfg.Clusters[clusterName]
-	if !ok {
-		return fmt.Errorf("cluster %q not found", clusterName)
-	}
-	if strings.TrimSpace(cluster.ClusterID) != "" && strings.TrimSpace(cluster.ClusterID) != strings.TrimSpace(clusterID) {
-		return fmt.Errorf("cluster %q id mismatch while persisting discovery peers", clusterName)
-	}
-	cluster.DiscoveryQueryPeers = mergeCurrentAuthorityPeers(cluster.DiscoveryQueryPeers, peers)
-	cfg.Clusters[clusterName] = cluster
-	return saveLocalConfig(configPath, cfg)
+	_, err := updateLocalConfig(configPath, func(cfg *cfgpkg.Config) error {
+		cluster, ok := cfg.Clusters[clusterName]
+		if !ok {
+			return fmt.Errorf("cluster %q not found", clusterName)
+		}
+		if strings.TrimSpace(cluster.ClusterID) != "" && strings.TrimSpace(cluster.ClusterID) != strings.TrimSpace(clusterID) {
+			return fmt.Errorf("cluster %q id mismatch while persisting discovery peers", clusterName)
+		}
+		cluster.DiscoveryQueryPeers = mergeCurrentAuthorityPeers(cluster.DiscoveryQueryPeers, peers)
+		cfg.Clusters[clusterName] = cluster
+		return nil
+	})
+	return err
 }
 
 func mustMarshalJSON(v any) []byte {
