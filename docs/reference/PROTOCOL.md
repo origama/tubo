@@ -175,6 +175,25 @@ The legacy JSON protocol (`RequestMessage`/`ResponseMessage`) had critical issue
 
 Migrate to the new binary protocol for all new tunnels.
 
+## Discovery query response budget
+
+Discovery query protocol `/tubo/discovery/query/1.0` uses JSON messages rather
+than tunnel frames. Clients read at most 1 MiB per response. Relays therefore
+build `list_services` within that same wire budget, including JSON/base64
+expansion and the trailing encoder newline.
+
+Opaque `AnnouncementV3` records are ordered deterministically by publisher
+PeerID and `key_id`, interleaved one record per peer per round. Validated
+services are emitted first. If all eligible records do not fit, response sets:
+
+```json
+{"truncated":true}
+```
+
+`truncated` is additive and always present as boolean. There is no cursor in
+query protocol 1.0; clients consume returned subset and may query again.
+Truncation never bypasses local validation of `opaque_announcements_v3`.
+
 ## Go Implementation
 
 Package: `github.com/origama/tubo/internal/protocol`

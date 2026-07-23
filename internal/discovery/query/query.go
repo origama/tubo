@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -37,9 +38,12 @@ const (
 	//
 	// The relay never treats opaque records as trusted; they are transport-level
 	// only. Limits below cap DoS/spam surface.
-	OpaqueAnnouncementV3MaxRecords = 1024
-	OpaqueAnnouncementV3MaxBytes   = 32 << 10
-	OpaqueAnnouncementV3MaxTTL     = 15 * time.Minute
+	OpaqueAnnouncementV3MaxRecords     = discovery.DefaultOpaqueAnnouncementMaxRecords
+	OpaqueAnnouncementV3MaxBytes       = discovery.DefaultOpaqueAnnouncementMaxRecordBytes
+	OpaqueAnnouncementV3MaxTotalBytes  = discovery.DefaultOpaqueAnnouncementMaxTotalBytes
+	OpaqueAnnouncementV3MaxPeerRecords = discovery.DefaultOpaqueAnnouncementMaxPeerRecords
+	OpaqueAnnouncementV3MaxPeerBytes   = discovery.DefaultOpaqueAnnouncementMaxPeerBytes
+	OpaqueAnnouncementV3MaxTTL         = discovery.DefaultOpaqueAnnouncementMaxTTL
 )
 
 type Cache interface {
@@ -102,10 +106,11 @@ type Service struct {
 }
 
 type Response struct {
-	Metadata Metadata  `json:"metadata"`
-	Services []Service `json:"services,omitempty"`
-	Service  *Service  `json:"service,omitempty"`
-	Error    string    `json:"error,omitempty"`
+	Metadata  Metadata  `json:"metadata"`
+	Services  []Service `json:"services,omitempty"`
+	Service   *Service  `json:"service,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	Truncated bool      `json:"truncated"`
 
 	// OpaqueAnnouncementsV3 carries raw AnnouncementV3 records forwarded by a
 	// relay that lacks the cluster validation context. Consumers MUST verify
@@ -188,15 +193,7 @@ func responseForRequestWithConfig(h host.Host, role string, cache Cache, cfg ser
 			resp.Error = err.Error()
 			return resp
 		}
-		entries := cache.List()
-		if len(entries) > maxServices {
-			entries = entries[:maxServices]
-		}
-		resp.Services = servicesFromEntries(entries)
-		if cfg.opaqueStore != nil {
-			resp.OpaqueAnnouncementsV3 = opaqueAnnouncementsForList(cfg.opaqueStore)
-		}
-		return resp
+		return boundedListResponse(resp, cache.List(), cfg.opaqueStore)
 	case RequestTypeGet:
 		if req.Name == "" {
 			resp.Error = "missing service name"
@@ -482,19 +479,151 @@ func acceptOpaqueAnnouncementV3(store OpaqueAnnouncementV3Store, observedPeerID 
 	return store.Put(ann.PeerID, ann, ttl, len(raw))
 }
 
-// opaqueAnnouncementsForList returns non-expired opaque announcement records
-// for inclusion in a list_services response, capped to a maximum count.
-func opaqueAnnouncementsForList(store OpaqueAnnouncementV3Store) []discovery.AnnouncementV3 {
-	records := store.List()
-	if len(records) > OpaqueAnnouncementV3MaxRecords {
-		records = records[:OpaqueAnnouncementV3MaxRecords]
+type opaqueTruncationRecorder interface {
+	RecordTruncation()
+}
+
+// boundedListResponse orders records deterministically and adds only items that
+// keep encoded JSON, including the encoder newline, within the client limit.
+// Validated services have priority over opaque transport records.
+func boundedListResponse(resp Response, entries []*discovery.ServiceEntry, store OpaqueAnnouncementV3Store) Response {
+	services := servicesFromEntries(entries)
+	sort.Slice(services, func(i, j int) bool { return serviceOrderKey(services[i]) < serviceOrderKey(services[j]) })
+	opaque := opaqueAnnouncementsForList(store)
+
+	base, err := json.Marshal(resp)
+	if err != nil {
+		resp.Error = fmt.Sprintf("encode list response metadata: %v", err)
+		return resp
 	}
-	out := make([]discovery.AnnouncementV3, 0, len(records))
-	for _, r := range records {
-		if r.Expired() {
+	baseSize := len(base)
+	serviceBytes := 0
+	opaqueBytes := 0
+
+	for i, service := range services {
+		if i >= maxServices {
+			resp.Truncated = true
+			break
+		}
+		encoded, err := json.Marshal(service)
+		if err != nil {
+			resp.Truncated = true
 			continue
 		}
-		out = append(out, r.Announcement)
+		candidateBytes := serviceBytes + len(encoded)
+		if listResponseEncodedSize(baseSize, candidateBytes, len(resp.Services)+1, opaqueBytes, len(resp.OpaqueAnnouncementsV3))+1 > maxResponseBytes {
+			resp.Truncated = true
+			continue
+		}
+		resp.Services = append(resp.Services, service)
+		serviceBytes = candidateBytes
+	}
+	if len(services) > maxServices {
+		resp.Truncated = true
+	}
+
+	for _, ann := range opaque {
+		encoded, err := json.Marshal(ann)
+		if err != nil {
+			resp.Truncated = true
+			continue
+		}
+		candidateBytes := opaqueBytes + len(encoded)
+		if listResponseEncodedSize(baseSize, serviceBytes, len(resp.Services), candidateBytes, len(resp.OpaqueAnnouncementsV3)+1)+1 > maxResponseBytes {
+			resp.Truncated = true
+			continue
+		}
+		resp.OpaqueAnnouncementsV3 = append(resp.OpaqueAnnouncementsV3, ann)
+		opaqueBytes = candidateBytes
+	}
+
+	// Defensive exact check. Formula above is exact for current struct fields,
+	// but keep response bounded if future fields alter JSON layout.
+	for {
+		encoded, err := json.Marshal(resp)
+		if err == nil && len(encoded)+1 <= maxResponseBytes {
+			break
+		}
+		resp.Truncated = true
+		switch {
+		case len(resp.OpaqueAnnouncementsV3) > 0:
+			resp.OpaqueAnnouncementsV3 = resp.OpaqueAnnouncementsV3[:len(resp.OpaqueAnnouncementsV3)-1]
+		case len(resp.Services) > 0:
+			resp.Services = resp.Services[:len(resp.Services)-1]
+		default:
+			resp.Error = "list response metadata exceeds response budget"
+			break
+		}
+		if len(resp.OpaqueAnnouncementsV3) == 0 && len(resp.Services) == 0 && resp.Error != "" {
+			break
+		}
+	}
+	if resp.Truncated {
+		if recorder, ok := store.(opaqueTruncationRecorder); ok {
+			recorder.RecordTruncation()
+		}
+	}
+	return resp
+}
+
+func listResponseEncodedSize(baseSize, serviceBytes, serviceCount, opaqueBytes, opaqueCount int) int {
+	size := baseSize
+	if serviceCount > 0 {
+		size += len("services") + 6 + serviceBytes + serviceCount - 1
+	}
+	if opaqueCount > 0 {
+		size += len("opaque_announcements_v3") + 6 + opaqueBytes + opaqueCount - 1
+	}
+	return size
+}
+
+func serviceOrderKey(service Service) string {
+	encoded, _ := json.Marshal(service)
+	return string(encoded)
+}
+
+// opaqueAnnouncementsForList returns non-expired records in deterministic
+// peer-round-robin order so one publisher cannot monopolize the response head.
+func opaqueAnnouncementsForList(store OpaqueAnnouncementV3Store) []discovery.AnnouncementV3 {
+	if store == nil {
+		return nil
+	}
+	records := store.List()
+	groups := make(map[string][]discovery.OpaqueAnnouncementV3Record)
+	peerIDs := make([]string, 0)
+	for _, record := range records {
+		if record.Expired() {
+			continue
+		}
+		peerID := record.PeerID.String()
+		if _, exists := groups[peerID]; !exists {
+			peerIDs = append(peerIDs, peerID)
+		}
+		groups[peerID] = append(groups[peerID], record)
+	}
+	sort.Strings(peerIDs)
+	for _, peerID := range peerIDs {
+		sort.Slice(groups[peerID], func(i, j int) bool {
+			return groups[peerID][i].Announcement.KeyID < groups[peerID][j].Announcement.KeyID
+		})
+	}
+	out := make([]discovery.AnnouncementV3, 0, len(records))
+	for round := 0; len(out) < OpaqueAnnouncementV3MaxRecords; round++ {
+		added := false
+		for _, peerID := range peerIDs {
+			group := groups[peerID]
+			if round >= len(group) {
+				continue
+			}
+			out = append(out, group[round].Announcement)
+			added = true
+			if len(out) >= OpaqueAnnouncementV3MaxRecords {
+				break
+			}
+		}
+		if !added {
+			break
+		}
 	}
 	return out
 }

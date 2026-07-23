@@ -6,6 +6,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
+	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -632,6 +635,48 @@ func TestResponseForRequestAnnounceV3OpaqueRejectsPeerIDMismatch(t *testing.T) {
 	}
 }
 
+func TestAcceptOpaqueAnnouncementV3RejectsMalformedRecordsAndRefreshAbuse(t *testing.T) {
+	ann, _, _, _, signerPeerID := buildQueryV3Fixture(t)
+	mutations := []struct {
+		name string
+		mut  func(*discovery.AnnouncementV3)
+	}{
+		{name: "version", mut: func(a *discovery.AnnouncementV3) { a.Version = "v999" }},
+		{name: "key id", mut: func(a *discovery.AnnouncementV3) { a.KeyID = "" }},
+		{name: "ttl", mut: func(a *discovery.AnnouncementV3) { a.TTL = 0 }},
+		{name: "nonce", mut: func(a *discovery.AnnouncementV3) { a.Nonce = nil }},
+		{name: "ciphertext", mut: func(a *discovery.AnnouncementV3) { a.Ciphertext = nil }},
+		{name: "oversized", mut: func(a *discovery.AnnouncementV3) {
+			a.Ciphertext = bytes.Repeat([]byte{1}, OpaqueAnnouncementV3MaxBytes)
+		}},
+		{name: "signature", mut: func(a *discovery.AnnouncementV3) { a.Signature = nil }},
+	}
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			store := discovery.NewOpaqueAnnouncementCache(4, 32<<10, time.Minute)
+			mutated := ann
+			tc.mut(&mutated)
+			if err := acceptOpaqueAnnouncementV3(store, signerPeerID, mutated); err == nil {
+				t.Fatal("expected malformed record rejection")
+			}
+			if store.Count() != 0 {
+				t.Fatal("malformed record reached opaque store")
+			}
+		})
+	}
+
+	store := discovery.NewOpaqueAnnouncementCache(4, 32<<10, time.Minute)
+	if err := acceptOpaqueAnnouncementV3(store, signerPeerID, ann); err != nil {
+		t.Fatal(err)
+	}
+	if err := acceptOpaqueAnnouncementV3(store, signerPeerID, ann); err == nil || !strings.Contains(err.Error(), "minimum interval") {
+		t.Fatalf("immediate refresh error = %v, want rate rejection", err)
+	}
+	if store.Count() != 1 {
+		t.Fatalf("refresh abuse changed record count to %d", store.Count())
+	}
+}
+
 // TestResponseForRequestAnnounceV3OpaqueEnforcesTTLCap caps stored TTL to the
 // relay's configured maximum to bound record lifetime.
 func TestResponseForRequestAnnounceV3OpaqueCapsTTL(t *testing.T) {
@@ -661,6 +706,185 @@ func TestResponseForRequestAnnounceV3OpaqueCapsTTL(t *testing.T) {
 	if records[0].TTL > 2*time.Minute {
 		t.Fatalf("stored ttl = %s, expected relay ttl cap 2m", records[0].TTL)
 	}
+}
+
+func TestOpaqueListResponseIsBoundedFairAndDeterministic(t *testing.T) {
+	peers := []peer.ID{newQueryOpaquePeer(t), newQueryOpaquePeer(t), newQueryOpaquePeer(t)}
+	store := discovery.NewOpaqueAnnouncementCacheWithLimits(discovery.OpaqueAnnouncementCacheLimits{
+		MaxRecords:       64,
+		MaxRecordBytes:   40 << 10,
+		MaxTotalBytes:    2 << 20,
+		MaxPeerRecords:   20,
+		MaxPeerBytes:     1 << 20,
+		MinRefreshPeriod: 0,
+		MaxTTL:           time.Minute,
+	})
+	for peerIndex, pid := range peers {
+		for recordIndex := 0; recordIndex < 16; recordIndex++ {
+			ann := discovery.AnnouncementV3{
+				Version:    discovery.AnnouncementVersionV3,
+				PeerID:     pid,
+				KeyID:      fmt.Sprintf("peer-%d-key-%02d", peerIndex, recordIndex),
+				Nonce:      []byte{1},
+				Ciphertext: bytes.Repeat([]byte{byte(peerIndex + 1)}, 20<<10),
+				Signature:  []byte{2},
+				TTL:        time.Minute,
+			}
+			raw, err := ann.Marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Put(pid, ann, time.Minute, len(raw)); err != nil {
+				t.Fatalf("put peer %d record %d: %v", peerIndex, recordIndex, err)
+			}
+		}
+	}
+
+	metadata := Metadata{ServedBy: "relay", ServedByRole: "relay", CacheTime: "2026-07-24T00:00:00Z"}
+	first := boundedListResponse(Response{Metadata: metadata}, nil, store)
+	second := boundedListResponse(Response{Metadata: metadata}, nil, store)
+	if !first.Truncated || !second.Truncated {
+		t.Fatalf("responses must report truncation: first=%v second=%v", first.Truncated, second.Truncated)
+	}
+	firstKeys := announcementKeys(first.OpaqueAnnouncementsV3)
+	secondKeys := announcementKeys(second.OpaqueAnnouncementsV3)
+	if !reflect.DeepEqual(firstKeys, secondKeys) {
+		t.Fatalf("truncation order changed: first=%v second=%v", firstKeys, secondKeys)
+	}
+	seenPeers := map[peer.ID]bool{}
+	for _, ann := range first.OpaqueAnnouncementsV3 {
+		seenPeers[ann.PeerID] = true
+	}
+	for _, pid := range peers {
+		if !seenPeers[pid] {
+			t.Fatalf("peer %s starved from truncated response", pid)
+		}
+	}
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := append(encoded, '\n')
+	if len(wire) > maxResponseBytes {
+		t.Fatalf("encoded response = %d bytes, client limit = %d", len(wire), maxResponseBytes)
+	}
+	var decoded Response
+	if err := json.NewDecoder(io.LimitReader(bytes.NewReader(wire), maxResponseBytes)).Decode(&decoded); err != nil {
+		t.Fatalf("bounded client decode failed: %v", err)
+	}
+	if stats := store.Stats(); stats.TruncatedResponses != 2 {
+		t.Fatalf("truncation metric = %d, want 2", stats.TruncatedResponses)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	server, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "bounded-list-server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	client, err := p2p.NewHostWithSeed("/ip4/127.0.0.1/tcp/0", "bounded-list-client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	cache := discovery.NewCache(time.Minute, time.Second)
+	defer cache.Stop()
+	server.SetStreamHandler(ProtocolID, HandleStream(server, "relay", cache, WithOpaqueAnnouncementV3Forwarding(store)))
+	wireResponse, err := ListServices(ctx, client, peer.AddrInfo{ID: server.ID(), Addrs: server.Addrs()})
+	if err != nil {
+		t.Fatalf("wire list decode: %v", err)
+	}
+	if !wireResponse.Truncated || len(wireResponse.OpaqueAnnouncementsV3) != len(first.OpaqueAnnouncementsV3) {
+		t.Fatalf("unexpected wire response: truncated=%v records=%d want=%d", wireResponse.Truncated, len(wireResponse.OpaqueAnnouncementsV3), len(first.OpaqueAnnouncementsV3))
+	}
+	if stats := store.Stats(); stats.TruncatedResponses != 3 {
+		t.Fatalf("wire truncation metric = %d, want 3", stats.TruncatedResponses)
+	}
+}
+
+func TestListResponseEncodedSizeMatchesJSONEncoding(t *testing.T) {
+	resp := Response{
+		Metadata:              Metadata{ServedBy: "relay", ServedByRole: "relay", CacheTime: "2026-07-24T00:00:00Z"},
+		Services:              []Service{{Name: "svc-a", PeerID: "peer-a"}, {Name: "svc-b", PeerID: "peer-b"}},
+		OpaqueAnnouncementsV3: []discovery.AnnouncementV3{{Version: discovery.AnnouncementVersionV3, KeyID: "key-a", Ciphertext: []byte{1, 2, 3}}},
+	}
+	base, err := json.Marshal(Response{Metadata: resp.Metadata})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serviceBytes := 0
+	for _, service := range resp.Services {
+		encoded, err := json.Marshal(service)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serviceBytes += len(encoded)
+	}
+	opaqueBytes := 0
+	for _, ann := range resp.OpaqueAnnouncementsV3 {
+		encoded, err := json.Marshal(ann)
+		if err != nil {
+			t.Fatal(err)
+		}
+		opaqueBytes += len(encoded)
+	}
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := listResponseEncodedSize(len(base), serviceBytes, len(resp.Services), opaqueBytes, len(resp.OpaqueAnnouncementsV3))
+	if got != len(encoded) {
+		t.Fatalf("computed encoded size = %d, actual = %d", got, len(encoded))
+	}
+}
+
+func TestListResponseBudgetIncludesValidatedServices(t *testing.T) {
+	pid := newQueryOpaquePeer(t)
+	entries := make([]*discovery.ServiceEntry, 0, maxServices)
+	for i := 0; i < maxServices; i++ {
+		entries = append(entries, &discovery.ServiceEntry{
+			Kind:        discovery.ResourceKindService,
+			ServiceName: fmt.Sprintf("service-%03d", i),
+			ServiceID:   fmt.Sprintf("service-id-%03d", i),
+			PeerID:      pid,
+			Addresses:   []string{"/dns4/" + strings.Repeat("a", 8<<10)},
+			TTL:         time.Minute,
+			Registered:  time.Now(),
+		})
+	}
+	resp := boundedListResponse(Response{Metadata: Metadata{ServedBy: "relay", ServedByRole: "relay", CacheTime: "2026-07-24T00:00:00Z"}}, entries, nil)
+	if !resp.Truncated || len(resp.Services) >= len(entries) {
+		t.Fatalf("validated response was not truncated: truncated=%v services=%d", resp.Truncated, len(resp.Services))
+	}
+	encoded, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded)+1 > maxResponseBytes {
+		t.Fatalf("encoded response = %d bytes, client limit = %d", len(encoded)+1, maxResponseBytes)
+	}
+}
+
+func newQueryOpaquePeer(t *testing.T) peer.ID {
+	t.Helper()
+	priv, _, err := crypto.GenerateEd25519Key(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := peer.IDFromPrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pid
+}
+
+func announcementKeys(announcements []discovery.AnnouncementV3) []string {
+	keys := make([]string, 0, len(announcements))
+	for _, ann := range announcements {
+		keys = append(keys, ann.PeerID.String()+"|"+ann.KeyID)
+	}
+	return keys
 }
 
 // TestResponseForRequestAnnounceV3ValidationTakesPrecedence guarantees we do

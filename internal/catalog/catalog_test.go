@@ -125,7 +125,7 @@ func TestFetchRemoteServiceCacheFallsBackAcrossPeersWithinPerPeerTimeout(t *test
 		if info.ID == peerA {
 			return discoveryquery.Response{}, context.DeadlineExceeded
 		}
-		return discoveryquery.Response{Metadata: discoveryquery.Metadata{ServedBy: peerB.String(), ServedByRole: "authority"}, Services: []discoveryquery.Service{{Name: "myapi", PeerID: peerB.String(), Status: "online", Path: "direct", TTLSeconds: 30, ExpiresInSeconds: 30}}}, nil
+		return discoveryquery.Response{Metadata: discoveryquery.Metadata{ServedBy: peerB.String(), ServedByRole: "authority"}, Services: []discoveryquery.Service{{Name: "myapi", PeerID: peerB.String(), Status: "online", Path: "direct", TTLSeconds: 30, ExpiresInSeconds: 30}}, Truncated: true}, nil
 	}
 	services, metadata, messages, err := FetchRemoteServiceCache(cfg, 12*time.Second)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestFetchRemoteServiceCacheFallsBackAcrossPeersWithinPerPeerTimeout(t *test
 		t.Fatalf("second attempt timeout = %s, want more remaining budget than first after fast failure %s", attempts[1].timeout, attempts[0].timeout)
 	}
 	joined := strings.Join(messages, "\n")
-	for _, want := range []string{"querying cluster discovery peer 1/2", "discovery peer 1/2 (direct) timed out", "querying cluster discovery peer 2/2", "received 1 records from cluster discovery authority"} {
+	for _, want := range []string{"querying cluster discovery peer 1/2", "discovery peer 1/2 (direct) timed out", "querying cluster discovery peer 2/2", "response was truncated by its encoded byte budget", "received 1 records from cluster discovery authority"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("messages missing %q: %s", want, joined)
 		}

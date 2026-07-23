@@ -126,11 +126,15 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	// opaque bytes and forwards them to querying consumers, which verify
 	// signatures against their own local cluster authority. Trust boundary is
 	// on the consumer side; the relay must never be treated as authoritative.
-	opaqueStore := discovery.NewOpaqueAnnouncementCache(
-		discoveryquery.OpaqueAnnouncementV3MaxRecords,
-		discoveryquery.OpaqueAnnouncementV3MaxBytes,
-		discoveryquery.OpaqueAnnouncementV3MaxTTL,
-	)
+	opaqueStore := discovery.NewOpaqueAnnouncementCacheWithLimits(discovery.OpaqueAnnouncementCacheLimits{
+		MaxRecords:       discoveryquery.OpaqueAnnouncementV3MaxRecords,
+		MaxRecordBytes:   discoveryquery.OpaqueAnnouncementV3MaxBytes,
+		MaxTotalBytes:    discoveryquery.OpaqueAnnouncementV3MaxTotalBytes,
+		MaxPeerRecords:   discoveryquery.OpaqueAnnouncementV3MaxPeerRecords,
+		MaxPeerBytes:     discoveryquery.OpaqueAnnouncementV3MaxPeerBytes,
+		MinRefreshPeriod: discovery.DefaultOpaqueAnnouncementMinRefreshPeriod,
+		MaxTTL:           discoveryquery.OpaqueAnnouncementV3MaxTTL,
+	})
 	handleOpts = append(handleOpts, discoveryquery.WithOpaqueAnnouncementV3Forwarding(opaqueStore))
 	h.SetStreamHandler(discoveryquery.ProtocolID, discoveryquery.HandleStream(h, "relay", cache, handleOpts...))
 	return &App{cfg: cfg, host: h, cache: cache, stopSubscriber: stopSubscriber, opaqueStore: opaqueStore}, nil
@@ -172,6 +176,9 @@ func (a *App) mux() *http.ServeMux {
 	m.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 	m.HandleFunc("/debug/peer", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"peer_id": a.host.ID().String(), "addrs": p2p.PeerAddrs(a.host), "relay_public_addr": RelayAdvertiseAddr(a.host, a.cfg.PublicAddr)})
+	})
+	m.HandleFunc("/statsz", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"opaque_announcements": a.opaqueStore.Stats()})
 	})
 	return m
 }

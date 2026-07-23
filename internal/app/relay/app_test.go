@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -20,6 +21,26 @@ import (
 	"github.com/origama/tubo/internal/p2p"
 	"github.com/origama/tubo/internal/serviceidentity"
 )
+
+func TestRelayStatsExposeOpaqueCapacityMetrics(t *testing.T) {
+	store := discovery.NewOpaqueAnnouncementCache(4, 1024, time.Minute)
+	store.RecordTruncation()
+	app := &App{opaqueStore: store}
+	recorder := httptest.NewRecorder()
+	app.mux().ServeHTTP(recorder, httptest.NewRequest("GET", "/statsz", nil))
+	if recorder.Code != 200 {
+		t.Fatalf("stats status = %d", recorder.Code)
+	}
+	var payload struct {
+		Opaque discovery.OpaqueAnnouncementCacheStats `json:"opaque_announcements"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Opaque.TruncatedResponses != 1 {
+		t.Fatalf("opaque stats = %#v", payload.Opaque)
+	}
+}
 
 func TestRelayDiscoveryQueryServesCachedServices(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

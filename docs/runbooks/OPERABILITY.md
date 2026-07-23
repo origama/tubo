@@ -130,6 +130,25 @@ If `RELAY_PUBLIC_ADDR` does not include `/p2p/<PEER_ID>`, the relay automaticall
 
 `RELAY_LIMIT_DATA_BYTES=0` means no byte cap on the relayed circuit connection. Positive values cap cumulative bytes for the whole circuit, so small values can reset long raw TCP/TLS tunnels before an application request finishes.
 
+Opaque Discovery V3 forwarding uses fixed availability budgets:
+
+| Budget | Limit |
+|---|---:|
+| records per publisher PeerID | 16 |
+| encoded bytes per publisher PeerID | 128 KiB |
+| records globally | 256 |
+| encoded bytes globally | 768 KiB |
+| encoded bytes per record | 32 KiB |
+| minimum same-key refresh interval | 1 second |
+| stored TTL | 15 minutes |
+| encoded `list_services` response | 1 MiB |
+
+Admission rejects quota overflow instead of evicting another live publisher;
+expired entries are reclaimed. Response truncation is deterministic and exposed
+as `truncated: true`. Aggregate use, rejection reasons, expiry eviction, and
+truncated-response counters are available under
+`http://<RELAY_HEALTH_LISTEN>/statsz` in `opaque_announcements`.
+
 Minimum firewall ports on the relay:
 
 1. `tcp/4001` (required, bootstrap + relay circuit v2)
