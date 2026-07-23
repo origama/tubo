@@ -431,7 +431,7 @@ func TestStartDetachedCommitsStateAfterHealthReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	if process, findErr := os.FindProcess(state.PID); findErr == nil {
-		defer process.Kill()
+		defer func() { _ = process.Kill() }()
 	}
 	for _, path := range []string{state.PIDFile, state.StateFile} {
 		if _, statErr := os.Stat(path); statErr != nil {
