@@ -530,6 +530,17 @@ network:
 
 `current_overlay` materializes overlay fields into `network:` when the file uses the new layout; the writers for `join` and signed bundles write both formats for compatibility. `tubo join overlay/public` is the explicit public join form; `tubo join overlay/manual --relay ... --swarm-key ...` is the explicit manual/legacy join form. When the current config carries a collaborative cluster with identity metadata plus a usable namespace discovery secret, runtime discovery uses an opaque Discovery V3 topic derived from the namespace discovery entry and validates scope, membership capability, service identity, publish authorization, and replay state. Configs without these metadata do not support collaborative ambient discovery.
 
+Config writes use a same-directory temporary file, mode `0600`, file sync,
+atomic rename, and directory sync where supported. Writers using
+`ConfigRepository.Update` acquire `<config>.lock`, reload under an OS advisory
+lock, and preserve disjoint concurrent mutations. Lock-file existence alone is
+not ownership; process exit releases the advisory lock and a later writer may
+reuse the file. Unknown YAML mapping keys are preserved during repository
+mutations, but comments, anchors, formatting, and original key order are not a
+stable persistence contract. Migration of legacy load/mutate/save call sites is
+tracked separately; direct `WriteFile` is crash-safe but cannot merge a snapshot
+loaded before its lock was acquired.
+
 ## Local resource CLI (Phase 2a)
 
 With the new local model you can inspect, create, invite, and select overlay, cluster, and namespace entries already present in the config:

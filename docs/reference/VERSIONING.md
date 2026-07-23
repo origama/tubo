@@ -83,6 +83,15 @@ Mixed deployments like these should keep working:
 
 ...as long as the nodes still share the same compatible `protocol major` and do not require unsupported optional capabilities.
 
+### Config persistence hardening
+
+Atomic config replacement and advisory lock sidecars are product `PATCH`
+behavior. They do not change YAML schema or protocol version. `<config>.lock`
+and same-directory temporary files are implementation details, not persisted
+state for backup or migration. Unknown YAML mapping keys remain readable and
+are preserved by repository mutations; comments, anchors, formatting, and key
+order are not compatibility guarantees.
+
 ## 4. Release artifacts
 
 Option A is the project default:
