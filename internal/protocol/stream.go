@@ -7,12 +7,18 @@ import (
 
 // StreamReader reads frames from an io.Reader.
 type StreamReader struct {
-	r io.Reader
+	r      io.Reader
+	limits DecoderLimits
 }
 
-// NewStreamReader creates a new StreamReader.
+// NewStreamReader creates a StreamReader with the default defensive limits.
 func NewStreamReader(r io.Reader) *StreamReader {
-	return &StreamReader{r: r}
+	return NewStreamReaderWithLimits(r, DefaultDecoderLimits())
+}
+
+// NewStreamReaderWithLimits creates a StreamReader with explicit limits.
+func NewStreamReaderWithLimits(r io.Reader, limits DecoderLimits) *StreamReader {
+	return &StreamReader{r: r, limits: limits.normalized()}
 }
 
 // readFrameHeader reads the varint length prefix and frame type byte.
@@ -26,6 +32,10 @@ func (s *StreamReader) readFrameHeader() (uint64, byte, error) {
 		return 0, 0, fmt.Errorf("read length prefix: %w", err)
 	}
 
+	if length > s.limits.MaxFrameBytes {
+		return 0, 0, decodeLimitError("frame payload", length, s.limits.MaxFrameBytes)
+	}
+
 	// Read frame type byte
 	typeBuf := make([]byte, 1)
 	_, err = io.ReadFull(s.r, typeBuf)
@@ -34,6 +44,24 @@ func (s *StreamReader) readFrameHeader() (uint64, byte, error) {
 	}
 
 	return length, typeBuf[0], nil
+}
+
+func (s *StreamReader) frameReader(length uint64, frameType byte) (*io.LimitedReader, error) {
+	max := s.limits.frameLimit(frameType)
+	if length > max {
+		return nil, decodeLimitError("frame payload", length, max)
+	}
+	return &io.LimitedReader{R: s.r, N: int64(length)}, nil
+}
+
+func finishFrameDecode(r *io.LimitedReader, err error) error {
+	if err != nil {
+		return err
+	}
+	if r.N != 0 {
+		return fmt.Errorf("frame payload has %d trailing bytes", r.N)
+	}
+	return nil
 }
 
 func (s *StreamReader) ReadHello() (*Hello, error) {
@@ -45,8 +73,12 @@ func (s *StreamReader) ReadHello() (*Hello, error) {
 		return nil, fmt.Errorf("expected Hello (0x%02x), got frame type 0x%02x", FrameTypeHello, ft)
 	}
 
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
-	return decodeHello(r)
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := decodeHello(r, s.limits)
+	return msg, finishFrameDecode(r, err)
 }
 
 // ReadRequestHeader reads a RequestHeader frame. Returns io.EOF if no more data.
@@ -59,8 +91,12 @@ func (s *StreamReader) ReadRequestHeader() (*RequestHeader, error) {
 		return nil, fmt.Errorf("expected RequestHeader (0x%02x), got frame type 0x%02x", FrameTypeRequestHeader, ft)
 	}
 
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
-	return decodeRequestHeader(r)
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := decodeRequestHeader(r, s.limits)
+	return msg, finishFrameDecode(r, err)
 }
 
 // ReadResponseHeader reads a ResponseHeader frame. Returns io.EOF if no more data.
@@ -73,8 +109,12 @@ func (s *StreamReader) ReadResponseHeader() (*ResponseHeader, error) {
 		return nil, fmt.Errorf("expected ResponseHeader (0x%02x), got frame type 0x%02x", FrameTypeResponseHeader, ft)
 	}
 
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
-	return decodeResponseHeader(r)
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := decodeResponseHeader(r, s.limits)
+	return msg, finishFrameDecode(r, err)
 }
 
 // ReadConnectProof reads a ConnectProof frame.
@@ -87,8 +127,12 @@ func (s *StreamReader) ReadConnectProof() (*ConnectProof, error) {
 		return nil, fmt.Errorf("expected ConnectProof (0x%02x), got frame type 0x%02x", FrameTypeConnectProof, ft)
 	}
 
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
-	return DecodeConnectProof(r)
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := decodeConnectProof(r, s.limits)
+	return msg, finishFrameDecode(r, err)
 }
 
 func (s *StreamReader) ReadTunnelRequest() (*TunnelRequest, error) {
@@ -99,8 +143,12 @@ func (s *StreamReader) ReadTunnelRequest() (*TunnelRequest, error) {
 	if ft != FrameTypeTunnelRequest {
 		return nil, fmt.Errorf("expected TunnelRequest (0x%02x), got frame type 0x%02x", FrameTypeTunnelRequest, ft)
 	}
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
-	return decodeTunnelRequest(r)
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := decodeTunnelRequest(r, s.limits)
+	return msg, finishFrameDecode(r, err)
 }
 
 func (s *StreamReader) ReadTunnelReadyOrError() (*TunnelReady, *Error, error) {
@@ -108,14 +156,17 @@ func (s *StreamReader) ReadTunnelReadyOrError() (*TunnelReady, *Error, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, nil, err
+	}
 	switch ft {
 	case FrameTypeTunnelReady:
-		ready, err := decodeTunnelReady(r)
-		return ready, nil, err
+		ready, err := decodeTunnelReady(r, s.limits)
+		return ready, nil, finishFrameDecode(r, err)
 	case FrameTypeError:
-		errFrame, err := decodeError(r)
-		return nil, errFrame, err
+		errFrame, err := decodeError(r, s.limits)
+		return nil, errFrame, finishFrameDecode(r, err)
 	default:
 		return nil, nil, fmt.Errorf("expected TunnelReady (0x%02x) or Error (0x%02x), got frame type 0x%02x", FrameTypeTunnelReady, FrameTypeError, ft)
 	}
@@ -130,14 +181,17 @@ func (s *StreamReader) ReadResponseHeaderOrError() (*ResponseHeader, *Error, err
 		return nil, nil, err
 	}
 
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, nil, err
+	}
 	switch ft {
 	case FrameTypeResponseHeader:
-		resp, err := decodeResponseHeader(r)
-		return resp, nil, err
+		resp, err := decodeResponseHeader(r, s.limits)
+		return resp, nil, finishFrameDecode(r, err)
 	case FrameTypeError:
-		errFrame, err := decodeError(r)
-		return nil, errFrame, err
+		errFrame, err := decodeError(r, s.limits)
+		return nil, errFrame, finishFrameDecode(r, err)
 	default:
 		return nil, nil, fmt.Errorf("expected ResponseHeader (0x%02x) or Error (0x%02x), got frame type 0x%02x", FrameTypeResponseHeader, FrameTypeError, ft)
 	}
@@ -153,8 +207,12 @@ func (s *StreamReader) ReadBodyChunk() (*BodyChunk, error) {
 		return nil, fmt.Errorf("expected BodyChunk (0x%02x), got frame type 0x%02x", FrameTypeBodyChunk, ft)
 	}
 
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
-	return decodeBodyChunk(r)
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := decodeBodyChunk(r, s.limits)
+	return msg, finishFrameDecode(r, err)
 }
 
 // ReadError reads an Error frame. Returns io.EOF if no more data.
@@ -167,8 +225,12 @@ func (s *StreamReader) ReadError() (*Error, error) {
 		return nil, fmt.Errorf("expected Error (0x%02x), got frame type 0x%02x", FrameTypeError, ft)
 	}
 
-	r := &io.LimitedReader{R: s.r, N: int64(length)}
-	return decodeError(r)
+	r, err := s.frameReader(length, ft)
+	if err != nil {
+		return nil, err
+	}
+	msg, err := decodeError(r, s.limits)
+	return msg, finishFrameDecode(r, err)
 }
 
 // BodyReader returns an io.ReadCloser that reads body data from consecutive BodyChunk frames.
