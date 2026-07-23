@@ -8,6 +8,15 @@ COMPOSE="${COMPOSE_CMD:-docker compose} -f tests/e2e/compose/tubo-workflow/compo
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 export COMPOSE_DOCKER_CLI_BUILD="${COMPOSE_DOCKER_CLI_BUILD:-0}"
 export TUBO_REPO_ROOT="$ROOT_DIR"
+free_tcp_port() {
+  python3 - <<'PY'
+import socket
+sock = socket.socket()
+sock.bind(('127.0.0.1', 0))
+print(sock.getsockname()[1])
+sock.close()
+PY
+}
 SMOKE_PORTS="$(python3 - <<'PY'
 import socket
 sockets = []
