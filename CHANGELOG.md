@@ -15,6 +15,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 
 ### Changed
 - Detached startup now requires configured health readiness before success and rolls back owned child processes plus partial PID/state metadata after any post-start failure. Detached workflows allow 30 seconds for remote discovery, relay setup, and lifecycle restart before rollback.
+- macOS process lifecycle now uses native sysctls for zombie detection and command-line identity, with Darwin lifecycle CI and Bash 3.2-compatible smoke workflow setup.
 - Human process listings now show a `CAPS` column in both compact and wide views.
 - Human process listings and `describe process/...` now separate runtime liveness from authorization state with explicit `AUTH`, `Advertisement status/reason`, and `Authorization status/reason` fields.
 - Legacy process state files without `capabilities` are still readable and are backfilled in memory from the stored command.

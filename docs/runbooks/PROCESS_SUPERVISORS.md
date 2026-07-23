@@ -134,6 +134,12 @@ For processes installed via unit files or other external supervisors:
 
 `process/...` remains the canonical ID for naming, generation, and documentation.
 
+### Platform process identity
+
+Tubo validates stored process ownership before lifecycle operations. Linux reads `/proc` for zombie state and full command-line identity. macOS uses native `kern.proc.pid` and `kern.procargs2` sysctls, so zombie children are treated as exited and PID reuse still triggers command-line mismatch protection. If process command-line access is denied, listings use their documented degraded confidence instead of inventing an identity; destructive operations retain existing liveness and ownership safeguards.
+
+Other Unix targets without a native command-line backend report command-line identity as unavailable. Windows support remains limited to its existing process termination behavior.
+
 ### Possible future evolution
 
 If a unified view of external supervisors is needed later, we can still add an explicit mode, for example:

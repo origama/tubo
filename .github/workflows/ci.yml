@@ -30,6 +30,32 @@ jobs:
           files: coverage.out
           fail_ci_if_error: false
 
+  test-darwin:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test process lifecycle
+        run: go test -race ./cmd/tubo ./internal/processes
+
+      - name: Validate scripts with system Bash
+        run: |
+          /bin/bash -n tests/smoke-compose-tubo-workflow.sh
+          /bin/bash -n tests/smoke-cli-ux.sh
+
+      - name: Run CLI UX smoke test
+        run: /bin/bash ./tests/smoke-cli-ux.sh
+
   lint:
     runs-on: ubuntu-latest
     steps:
