@@ -43,6 +43,32 @@ func (w *Workspace) EnsureService(configPath, name string) (EnsureServiceResult,
 }
 
 func (w *Workspace) EnsureAttachServiceIdentity(configPath string, runtimeCfg cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
+	// Fast path: load config read-only and check whether the service is already
+	// fully materialized. This avoids a repository transaction (and lock) when
+	// nothing needs to change, which is essential for read-only config volumes
+	// (e.g. containerized smoke mounts with a pre-populated service.yaml). The
+	// transactional path below still handles create/update on writable volumes.
+	if loaded, err := w.LoadConfigOrError(configPath); err == nil {
+		candidate := loaded
+		candidate.Service = runtimeCfg.Service
+		if runtimeCfg.CurrentCluster != "" {
+			candidate.CurrentCluster = runtimeCfg.CurrentCluster
+		}
+		if runtimeCfg.CurrentNamespace != "" {
+			candidate.CurrentNamespace = runtimeCfg.CurrentNamespace
+		}
+		overlayMissingRuntimeService(&candidate, runtimeCfg, runtimeCfg.Service.Name)
+		if computed, ctx, _, changed, ensureErr := w.ensureServiceState(configPath, candidate, runtimeCfg.Service.Name); ensureErr == nil && !changed {
+			result := runtimeCfg
+			result.CurrentOverlay = computed.CurrentOverlay
+			result.CurrentCluster = computed.CurrentCluster
+			result.CurrentNamespace = computed.CurrentNamespace
+			result.Overlays = computed.Overlays
+			result.Clusters = computed.Clusters
+			return result, ctx.Service, nil
+		}
+	}
+
 	var computed cfgpkg.Config
 	var service cfgpkg.NamespaceService
 	_, err := w.UpdateConfig(configPath, func(cfg *cfgpkg.Config) error {
