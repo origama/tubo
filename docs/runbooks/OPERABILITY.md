@@ -298,6 +298,10 @@ Verify:
 - service: heartbeat sent and upstream forwarding successful
 - bridge/connect: network degraded/recovered notices and retry wakeups when reachability returns
 
+### Slow handshake or stalled local upstream
+
+Service runtimes default to a 10-second inbound Hello/connect-proof/header deadline. Local upstream setup defaults are 5 seconds for dial, 10 seconds for TLS handshake, and 30 seconds for response headers. Configure them under `service.handshake_timeout` and the `service.upstream_*_timeout` fields, or with the matching `SERVICE_*_TIMEOUT` environment variables documented in the CLI reference. These are setup bounds, not total tunnel lifetimes; established WebSocket and raw TCP sessions remain long-lived.
+
 ### Hung GET or no-body request
 
 If a `GET` or a request without a body hangs, make sure the client is using a version with a final empty body chunk: the service should see `service stream completed`, not only `service upstream request`.

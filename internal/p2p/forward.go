@@ -2,6 +2,7 @@ package p2p
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -21,7 +22,81 @@ import (
 	"github.com/origama/tubo/internal/protocol"
 )
 
-const streamChunkSize = 32 * 1024
+const (
+	streamChunkSize                      = 32 * 1024
+	defaultServiceHandshakeTimeout       = 10 * time.Second
+	defaultUpstreamDialTimeout           = 5 * time.Second
+	defaultUpstreamTLSHandshakeTimeout   = 10 * time.Second
+	defaultUpstreamResponseHeaderTimeout = 30 * time.Second
+	defaultUpstreamIdleConnTimeout       = 90 * time.Second
+)
+
+// ServiceStreamOptions bounds handshake and upstream setup work without placing
+// an absolute lifetime on established HTTP, WebSocket, or raw TCP streams.
+type ServiceStreamOptions struct {
+	HandshakeTimeout      time.Duration
+	UpstreamDialTimeout   time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	IdleConnTimeout       time.Duration
+}
+
+// DefaultServiceStreamOptions returns production service stream timeouts.
+func DefaultServiceStreamOptions() ServiceStreamOptions {
+	return ServiceStreamOptions{
+		HandshakeTimeout:      defaultServiceHandshakeTimeout,
+		UpstreamDialTimeout:   defaultUpstreamDialTimeout,
+		TLSHandshakeTimeout:   defaultUpstreamTLSHandshakeTimeout,
+		ResponseHeaderTimeout: defaultUpstreamResponseHeaderTimeout,
+		IdleConnTimeout:       defaultUpstreamIdleConnTimeout,
+	}
+}
+
+func (o ServiceStreamOptions) normalized() ServiceStreamOptions {
+	d := DefaultServiceStreamOptions()
+	if o.HandshakeTimeout <= 0 {
+		o.HandshakeTimeout = d.HandshakeTimeout
+	}
+	if o.UpstreamDialTimeout <= 0 {
+		o.UpstreamDialTimeout = d.UpstreamDialTimeout
+	}
+	if o.TLSHandshakeTimeout <= 0 {
+		o.TLSHandshakeTimeout = d.TLSHandshakeTimeout
+	}
+	if o.ResponseHeaderTimeout <= 0 {
+		o.ResponseHeaderTimeout = d.ResponseHeaderTimeout
+	}
+	if o.IdleConnTimeout <= 0 {
+		o.IdleConnTimeout = d.IdleConnTimeout
+	}
+	return o
+}
+
+func (o ServiceStreamOptions) httpClient() (*http.Client, func()) {
+	o = o.normalized()
+	var transport *http.Transport
+	if defaultTransport, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = defaultTransport.Clone()
+	} else {
+		transport = &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true}
+	}
+	transport.DialContext = (&net.Dialer{Timeout: o.UpstreamDialTimeout, KeepAlive: 30 * time.Second}).DialContext
+	transport.TLSHandshakeTimeout = o.TLSHandshakeTimeout
+	transport.ResponseHeaderTimeout = o.ResponseHeaderTimeout
+	transport.IdleConnTimeout = o.IdleConnTimeout
+	return &http.Client{Transport: transport}, transport.CloseIdleConnections
+}
+
+func setServiceHandshakeDeadline(s network.Stream, timeout time.Duration) error {
+	if timeout <= 0 {
+		timeout = defaultServiceHandshakeTimeout
+	}
+	return s.SetReadDeadline(time.Now().Add(timeout))
+}
+
+func clearServiceHandshakeDeadline(s network.Stream) error {
+	return s.SetReadDeadline(time.Time{})
+}
 
 func streamUsesHello(s network.Stream) bool {
 	return string(s.Protocol()) == protocol.ProtocolID
@@ -162,6 +237,13 @@ func ProxyTCPStream(left net.Conn, right network.Stream, recorder StreamStatsRec
 // It reads the HTTP request from the peer, forwards it to the local upstream target,
 // and streams the response back. Supports streaming bodies for large responses.
 func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation, recorders ...StreamStatsRecorder) func(network.Stream) {
+	return HandleServiceStreamWithOptions(localTarget, connectAuth, DefaultServiceStreamOptions(), recorders...)
+}
+
+// HandleServiceStreamWithOptions handles HTTP streams with explicit handshake
+// and upstream setup timeouts.
+func HandleServiceStreamWithOptions(localTarget string, connectAuth *ConnectProofValidation, options ServiceStreamOptions, recorders ...StreamStatsRecorder) func(network.Stream) {
+	options = options.normalized()
 	recorder := firstStatsRecorder(recorders...)
 	return func(s network.Stream) {
 		var opErr error
@@ -181,6 +263,10 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 
 		reader := protocol.NewStreamReader(s)
 		writer := protocol.NewStreamWriter(s)
+		if err := setServiceHandshakeDeadline(s, options.HandshakeTimeout); err != nil {
+			opErr = fmt.Errorf("set service handshake deadline: %w", err)
+			return
+		}
 
 		var peerHello *protocol.Hello
 		var err error
@@ -245,6 +331,10 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 			_ = writer.WriteError(&protocol.Error{Code: 400, Message: "decode request header: " + err.Error()})
 			return
 		}
+		if err := clearServiceHandshakeDeadline(s); err != nil {
+			opErr = fmt.Errorf("clear service handshake deadline: %w", err)
+			return
+		}
 
 		// Build upstream URL
 		upURL := strings.TrimRight(localTarget, "/") + reqHeader.Path
@@ -254,7 +344,7 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 		log.Printf("service upstream request peer=%s method=%s path=%s query=%q url=%s content_length_hint=%d", remotePeer, reqHeader.Method, reqHeader.Path, reqHeader.Query, upURL, reqHeader.ContentLengthHint)
 
 		if isWebSocketUpgrade(reqHeader.Headers) {
-			if err := handleServiceWebSocketUpgrade(s, reader, writer, reqHeader, upURL, recorder, start); err != nil {
+			if err := handleServiceWebSocketUpgrade(s, reader, writer, reqHeader, upURL, options, recorder, start); err != nil {
 				opErr = err
 				log.Printf("service websocket upgrade failed peer=%s url=%s err=%v duration=%s", remotePeer, upURL, err, time.Since(start))
 				_ = writer.WriteError(&protocol.Error{Code: 502, Message: "websocket upgrade failed: " + err.Error()})
@@ -262,8 +352,11 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 			return
 		}
 
-		// Create upstream request — body will be streamed via BodyReader
-		upReq, err := http.NewRequest(reqHeader.Method, upURL, nil) // body set below
+		// Create upstream request — body will be streamed via BodyReader. The
+		// context is canceled on every handler exit, including stream failure.
+		upstreamCtx, cancelUpstream := context.WithCancel(context.Background())
+		defer cancelUpstream()
+		upReq, err := http.NewRequestWithContext(upstreamCtx, reqHeader.Method, upURL, nil) // body set below
 		if err != nil {
 			opErr = err
 			log.Printf("service upstream build request failed peer=%s url=%s err=%v duration=%s", remotePeer, upURL, err, time.Since(start))
@@ -291,8 +384,10 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 			upReq.Body = bodyReader
 		}
 
-		// Forward to upstream
-		resp, err := http.DefaultClient.Do(upReq)
+		// Forward to upstream with bounded dial, TLS, and response-header phases.
+		upstreamClient, closeIdleConnections := options.httpClient()
+		defer closeIdleConnections()
+		resp, err := upstreamClient.Do(upReq)
 		if err != nil {
 			opErr = err
 			bodyReader.Close() // drain remaining request body
@@ -379,6 +474,13 @@ func HandleServiceStream(localTarget string, connectAuth *ConnectProofValidation
 // HandleClientRequest sends an HTTP request over a libp2p stream and reads the response.
 // Supports streaming bodies for both request and response.
 func HandleServiceTCPStream(localTarget string, connectAuth *ConnectProofValidation, recorders ...StreamStatsRecorder) func(network.Stream) {
+	return HandleServiceTCPStreamWithOptions(localTarget, connectAuth, DefaultServiceStreamOptions(), recorders...)
+}
+
+// HandleServiceTCPStreamWithOptions handles raw TCP streams with an explicit
+// pre-tunnel handshake timeout. Established tunnels have no absolute deadline.
+func HandleServiceTCPStreamWithOptions(localTarget string, connectAuth *ConnectProofValidation, options ServiceStreamOptions, recorders ...StreamStatsRecorder) func(network.Stream) {
+	options = options.normalized()
 	recorder := firstStatsRecorder(recorders...)
 	return func(s network.Stream) {
 		var opErr error
@@ -394,6 +496,10 @@ func HandleServiceTCPStream(localTarget string, connectAuth *ConnectProofValidat
 		}
 		reader := protocol.NewStreamReader(s)
 		writer := protocol.NewStreamWriter(s)
+		if err := setServiceHandshakeDeadline(s, options.HandshakeTimeout); err != nil {
+			opErr = fmt.Errorf("set service handshake deadline: %w", err)
+			return
+		}
 
 		var peerHello *protocol.Hello
 		var err error
@@ -451,6 +557,10 @@ func HandleServiceTCPStream(localTarget string, connectAuth *ConnectProofValidat
 			_ = writer.WriteError(&protocol.Error{Code: 400, Message: "decode tunnel request: " + err.Error()})
 			return
 		}
+		if err := clearServiceHandshakeDeadline(s); err != nil {
+			opErr = fmt.Errorf("clear service handshake deadline: %w", err)
+			return
+		}
 		if req.Kind != "tcp" {
 			opErr = fmt.Errorf("unsupported tunnel kind: %s", req.Kind)
 			_ = writer.WriteError(&protocol.Error{Code: 400, Message: "unsupported tunnel kind: " + req.Kind})
@@ -462,7 +572,7 @@ func HandleServiceTCPStream(localTarget string, connectAuth *ConnectProofValidat
 			_ = writer.WriteError(&protocol.Error{Code: 500, Message: err.Error()})
 			return
 		}
-		upstream, err := (&net.Dialer{Timeout: 5 * time.Second}).Dial("tcp", targetAddr)
+		upstream, err := (&net.Dialer{Timeout: options.UpstreamDialTimeout}).Dial("tcp", targetAddr)
 		if err != nil {
 			opErr = err
 			_ = writer.WriteError(&protocol.Error{Code: 502, Message: "tcp target dial failed: " + err.Error()})
@@ -697,8 +807,8 @@ func isWebSocketUpgrade(headers map[string][]string) bool {
 	return upgrade && connectionUpgrade
 }
 
-func handleServiceWebSocketUpgrade(s network.Stream, _ *protocol.StreamReader, writer *protocol.StreamWriter, reqHeader *protocol.RequestHeader, upURL string, recorder StreamStatsRecorder, start time.Time) error {
-	upReq, conn, br, err := dialUpgradeUpstream(reqHeader, upURL)
+func handleServiceWebSocketUpgrade(s network.Stream, _ *protocol.StreamReader, writer *protocol.StreamWriter, reqHeader *protocol.RequestHeader, upURL string, options ServiceStreamOptions, recorder StreamStatsRecorder, start time.Time) error {
+	upReq, conn, br, err := dialUpgradeUpstream(reqHeader, upURL, options)
 	if err != nil {
 		return err
 	}
@@ -706,6 +816,9 @@ func handleServiceWebSocketUpgrade(s network.Stream, _ *protocol.StreamReader, w
 	resp, err := http.ReadResponse(br, upReq)
 	if err != nil {
 		return fmt.Errorf("read upstream upgrade response: %w", err)
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		return fmt.Errorf("clear upstream upgrade deadline: %w", err)
 	}
 	defer resp.Body.Close()
 	respHeader := &protocol.ResponseHeader{StatusCode: resp.StatusCode, StatusText: http.StatusText(resp.StatusCode), Headers: make(map[string][]string, len(resp.Header))}
@@ -723,7 +836,7 @@ func handleServiceWebSocketUpgrade(s network.Stream, _ *protocol.StreamReader, w
 	return nil
 }
 
-func dialUpgradeUpstream(reqHeader *protocol.RequestHeader, upURL string) (*http.Request, net.Conn, *bufio.Reader, error) {
+func dialUpgradeUpstream(reqHeader *protocol.RequestHeader, upURL string, options ServiceStreamOptions) (*http.Request, net.Conn, *bufio.Reader, error) {
 	u, err := url.Parse(upURL)
 	if err != nil {
 		return nil, nil, nil, err
@@ -736,7 +849,8 @@ func dialUpgradeUpstream(reqHeader *protocol.RequestHeader, upURL string) (*http
 			host = net.JoinHostPort(host, "80")
 		}
 	}
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	options = options.normalized()
+	dialer := &net.Dialer{Timeout: options.UpstreamDialTimeout}
 	var conn net.Conn
 	if u.Scheme == "https" || u.Scheme == "wss" {
 		conn, err = tls.DialWithDialer(dialer, "tcp", host, &tls.Config{ServerName: u.Hostname(), MinVersion: tls.VersionTLS12})
@@ -744,6 +858,10 @@ func dialUpgradeUpstream(reqHeader *protocol.RequestHeader, upURL string) (*http
 		conn, err = dialer.Dial("tcp", host)
 	}
 	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := conn.SetDeadline(time.Now().Add(options.ResponseHeaderTimeout)); err != nil {
+		_ = conn.Close()
 		return nil, nil, nil, err
 	}
 	upReq, err := http.NewRequest(reqHeader.Method, upURL, nil)

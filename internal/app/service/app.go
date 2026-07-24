@@ -40,6 +40,8 @@ type Config struct {
 	BootstrapPeers, RelayPeers                                                                                     []string
 	Autorelay, HolePunching                                                                                        bool
 	HeartbeatInterval, BootstrapRetryInterval                                                                      time.Duration
+	StreamHandshakeTimeout, UpstreamDialTimeout, UpstreamTLSHandshakeTimeout, UpstreamResponseHeaderTimeout        time.Duration
+	UpstreamIdleConnTimeout                                                                                        time.Duration
 	DiscoveryTopic                                                                                                 string
 	DiscoveryPreviousTopic                                                                                         string
 	DiscoveryMode                                                                                                  string
@@ -141,6 +143,26 @@ func LoadConfigFromEnv(getenv func(string) string) (Config, error) {
 		return cfg, err
 	}
 	cfg.HeartbeatInterval = d
+	for _, item := range []struct {
+		name string
+		dst  *time.Duration
+	}{
+		{name: "SERVICE_HANDSHAKE_TIMEOUT", dst: &cfg.StreamHandshakeTimeout},
+		{name: "SERVICE_UPSTREAM_DIAL_TIMEOUT", dst: &cfg.UpstreamDialTimeout},
+		{name: "SERVICE_UPSTREAM_TLS_HANDSHAKE_TIMEOUT", dst: &cfg.UpstreamTLSHandshakeTimeout},
+		{name: "SERVICE_UPSTREAM_RESPONSE_HEADER_TIMEOUT", dst: &cfg.UpstreamResponseHeaderTimeout},
+		{name: "SERVICE_UPSTREAM_IDLE_CONN_TIMEOUT", dst: &cfg.UpstreamIdleConnTimeout},
+	} {
+		value := strings.TrimSpace(getenv(item.name))
+		if value == "" {
+			continue
+		}
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return cfg, fmt.Errorf("parse %s: %w", item.name, err)
+		}
+		*item.dst = parsed
+	}
 	return cfg, nil
 }
 func New(ctx context.Context, cfg Config) (*App, error) {
@@ -199,10 +221,17 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 	}
 	p2pping.NewPingService(h)
 	stats := statspkg.New(statspkg.Snapshot{Role: "service", Kind: cfg.ServiceKind, Service: cfg.ServiceName, ServiceID: h.ID().String(), Status: "running"})
+	streamOptions := p2p.ServiceStreamOptions{
+		HandshakeTimeout:      cfg.StreamHandshakeTimeout,
+		UpstreamDialTimeout:   cfg.UpstreamDialTimeout,
+		TLSHandshakeTimeout:   cfg.UpstreamTLSHandshakeTimeout,
+		ResponseHeaderTimeout: cfg.UpstreamResponseHeaderTimeout,
+		IdleConnTimeout:       cfg.UpstreamIdleConnTimeout,
+	}
 	if cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
-		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceTCPStream(cfg.Target, connectAuth, stats))
+		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceTCPStreamWithOptions(cfg.Target, connectAuth, streamOptions, stats))
 	} else {
-		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(cfg.Target, connectAuth, stats))
+		h.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStreamWithOptions(cfg.Target, connectAuth, streamOptions, stats))
 	}
 	grantEndpointEnabled := false
 	if len(authorityPub) > 0 && strings.TrimSpace(cfg.DiscoveryClusterID) != "" && strings.TrimSpace(cfg.DiscoveryNamespaceID) != "" {

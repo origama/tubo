@@ -232,6 +232,33 @@ func TestEnvCSVAndMerge(t *testing.T) {
 	}
 }
 
+func TestEnvAndMergeServiceStreamTimeouts(t *testing.T) {
+	values := map[string]string{
+		"SERVICE_HANDSHAKE_TIMEOUT":                "3s",
+		"SERVICE_UPSTREAM_DIAL_TIMEOUT":            "4s",
+		"SERVICE_UPSTREAM_TLS_HANDSHAKE_TIMEOUT":   "5s",
+		"SERVICE_UPSTREAM_RESPONSE_HEADER_TIMEOUT": "6s",
+		"SERVICE_UPSTREAM_IDLE_CONN_TIMEOUT":       "7s",
+	}
+	got := Merge(Defaults("service"), Env(func(key string) string { return values[key] }, "service"))
+	checks := []struct {
+		name string
+		got  time.Duration
+		want time.Duration
+	}{
+		{name: "handshake", got: got.Service.HandshakeTimeout.Duration(), want: 3 * time.Second},
+		{name: "dial", got: got.Service.UpstreamDialTimeout.Duration(), want: 4 * time.Second},
+		{name: "tls", got: got.Service.UpstreamTLSHandshakeTimeout.Duration(), want: 5 * time.Second},
+		{name: "response header", got: got.Service.UpstreamResponseHeaderTimeout.Duration(), want: 6 * time.Second},
+		{name: "idle connection", got: got.Service.UpstreamIdleConnTimeout.Duration(), want: 7 * time.Second},
+	}
+	for _, check := range checks {
+		if check.got != check.want {
+			t.Errorf("%s timeout = %s, want %s", check.name, check.got, check.want)
+		}
+	}
+}
+
 func TestDiscoveryRuntimeSelectsOpaqueNamespaceTopicForClusterMode(t *testing.T) {
 	secretPath := filepath.Join(t.TempDir(), "discovery-current.secret")
 	secret, err := GenerateSecretBytes(NamespaceDiscoverySecretLength)
