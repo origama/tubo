@@ -317,6 +317,47 @@ func tcpConnectAdminListenAddr(listenAddr string) (string, bool) {
 	return net.JoinHostPort(host, strconv.Itoa(p+1)), true
 }
 
+const tcpBridgeListenPairAttempts = 32
+
+func listenTCPBridgePair(listenAddr string) (net.Listener, net.Listener, error) {
+	_, configuredPort, err := net.SplitHostPort(listenAddr)
+	dynamic := err == nil && configuredPort == "0"
+	attempts := 1
+	if dynamic {
+		attempts = tcpBridgeListenPairAttempts
+	}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		ln, err := net.Listen("tcp", listenAddr)
+		if err != nil {
+			lastErr = fmt.Errorf("listen bridge: %w", err)
+			if dynamic {
+				continue
+			}
+			return nil, nil, lastErr
+		}
+		adminAddr, ok := tcpConnectAdminListenAddr(ln.Addr().String())
+		if !ok {
+			_ = ln.Close()
+			lastErr = fmt.Errorf("derive bridge admin address from %q", ln.Addr().String())
+			if dynamic {
+				continue
+			}
+			return nil, nil, lastErr
+		}
+		adminLn, err := net.Listen("tcp", adminAddr)
+		if err == nil {
+			return ln, adminLn, nil
+		}
+		_ = ln.Close()
+		lastErr = fmt.Errorf("listen bridge admin on %s: %w", adminAddr, err)
+		if !dynamic {
+			return nil, nil, lastErr
+		}
+	}
+	return nil, nil, fmt.Errorf("allocate bridge TCP/admin listener pair after %d attempts: %w", attempts, lastErr)
+}
+
 func serviceStreamContext(serviceAddr, reason string) context.Context {
 	ctx := context.Background()
 	if serviceAddrUsesRelay(serviceAddr) {
@@ -327,9 +368,16 @@ func serviceStreamContext(serviceAddr, reason string) context.Context {
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
 	log.Printf("bridge peer_id=%s service_kind=%s", a.host.ID(), a.cfg.ServiceKind)
-	ln, err := net.Listen("tcp", a.cfg.Listen)
+	var ln net.Listener
+	var adminLn net.Listener
+	var err error
+	if a.cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
+		ln, adminLn, err = listenTCPBridgePair(a.cfg.Listen)
+	} else {
+		ln, err = net.Listen("tcp", a.cfg.Listen)
+	}
 	if err != nil {
-		return fmt.Errorf("listen bridge: %w", err)
+		return err
 	}
 	listenAddr := ln.Addr().String()
 	a.stateMu.Lock()
@@ -346,14 +394,6 @@ func (a *App) Start(ctx context.Context) error {
 		go a.watchConnectPathTransitions(ctx)
 	}
 	if a.cfg.ServiceKind == string(cfgpkg.ServiceKindTCP) {
-		adminAddr, ok := tcpConnectAdminListenAddr(listenAddr)
-		if !ok {
-			adminAddr = "127.0.0.1:0"
-		}
-		adminLn, err := net.Listen("tcp", adminAddr)
-		if err != nil {
-			return fmt.Errorf("listen bridge admin: %w", err)
-		}
 		adminServer := &http.Server{Handler: a.mux()}
 		go func() {
 			log.Printf("client bridge admin listening on %s", adminLn.Addr().String())

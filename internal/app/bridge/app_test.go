@@ -37,6 +37,72 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+func TestListenTCPBridgePairClosesMainListenerWhenAdminPortIsOccupied(t *testing.T) {
+	var baseAddr string
+	var adminLn net.Listener
+	for attempt := 0; attempt < 100; attempt++ {
+		probe, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var port int
+		if _, err := fmt.Sscanf(probe.Addr().String(), "127.0.0.1:%d", &port); err != nil {
+			_ = probe.Close()
+			continue
+		}
+		_ = probe.Close()
+		if port >= 65535 {
+			continue
+		}
+		adminLn, err = net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port+1))
+		if err == nil {
+			baseAddr = fmt.Sprintf("127.0.0.1:%d", port)
+			break
+		}
+	}
+	if adminLn == nil {
+		t.Fatal("could not reserve adjacent admin port")
+	}
+	defer adminLn.Close()
+
+	mainLn, gotAdminLn, err := listenTCPBridgePair(baseAddr)
+	if err == nil {
+		if mainLn != nil {
+			_ = mainLn.Close()
+		}
+		if gotAdminLn != nil {
+			_ = gotAdminLn.Close()
+		}
+		t.Fatal("expected occupied admin port error")
+	}
+	if mainLn != nil || gotAdminLn != nil {
+		t.Fatalf("listeners returned on error: main=%v admin=%v", mainLn, gotAdminLn)
+	}
+
+	// The failed pair allocation must roll back the already-bound main port.
+	rebound, err := net.Listen("tcp", baseAddr)
+	if err != nil {
+		t.Fatalf("main listener was leaked after admin bind failure: %v", err)
+	}
+	_ = rebound.Close()
+}
+
+func TestListenTCPBridgePairAllocatesAdjacentDynamicPorts(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		mainLn, adminLn, err := listenTCPBridgePair("127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		mainAddr := mainLn.Addr().String()
+		wantAdminAddr, ok := tcpConnectAdminListenAddr(mainAddr)
+		if !ok || adminLn.Addr().String() != wantAdminAddr {
+			t.Fatalf("listener pair main=%s admin=%s want=%s", mainAddr, adminLn.Addr(), wantAdminAddr)
+		}
+		_ = adminLn.Close()
+		_ = mainLn.Close()
+	}
+}
+
 type fakePeerPinger struct {
 	mu       sync.Mutex
 	results  []p2pping.Result

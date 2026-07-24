@@ -269,8 +269,9 @@ func TestTCPServiceControlHalfCloseSurvivesConcurrentData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() { _ = app.Start(ctx) }()
-	bridgeAddr := waitForTCPBridgeAddr(t, app)
+	startErr := make(chan error, 1)
+	go func() { startErr <- app.Start(ctx) }()
+	bridgeAddr := waitForTCPBridgeAddrOrError(t, app, startErr)
 
 	controlConn, err := net.DialTimeout("tcp", bridgeAddr, 5*time.Second)
 	if err != nil {
@@ -490,8 +491,20 @@ func serveTCPPrefix(ln net.Listener, prefix []byte) {
 
 func waitForTCPBridgeAddr(t *testing.T, app interface{ ListenAddr() string }) string {
 	t.Helper()
+	return waitForTCPBridgeAddrOrError(t, app, nil)
+}
+
+func waitForTCPBridgeAddrOrError(t *testing.T, app interface{ ListenAddr() string }, startErr <-chan error) string {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
+		if startErr != nil {
+			select {
+			case err := <-startErr:
+				t.Fatalf("bridge tcp app failed to start: %v", err)
+			default:
+			}
+		}
 		if addr := app.ListenAddr(); addr != "" && addr != "127.0.0.1:0" && !strings.HasSuffix(addr, ":0") {
 			return addr
 		}
