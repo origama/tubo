@@ -20,10 +20,19 @@ import (
 )
 
 func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) {
-	cfg, err := w.LoadConfigOrError(configPath)
-	if err != nil {
-		return ClusterView{}, err
-	}
+	var view ClusterView
+	_, err := w.UpdateConfig(configPath, func(cfg *cfgpkg.Config) error {
+		created, err := w.createClusterLocked(configPath, name, cfg)
+		if err != nil {
+			return err
+		}
+		view = created
+		return nil
+	})
+	return view, err
+}
+
+func (w *Workspace) createClusterLocked(configPath, name string, cfg *cfgpkg.Config) (ClusterView, error) {
 	if cfg.Clusters == nil {
 		cfg.Clusters = make(map[string]cfgpkg.Cluster)
 	}
@@ -31,10 +40,10 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 		return ClusterView{}, fmt.Errorf("cluster %q already exists", name)
 	}
 	paths := DerivePaths(configPath)
-	if err := w.store.MkdirAll(paths.ClusterDir(name), 0700); err != nil {
+	if err := w.store.MkdirAll(paths.ClusterDir(name), 0o700); err != nil {
 		return ClusterView{}, err
 	}
-	if err := w.store.MkdirAll(paths.NamespaceDir(name, "default"), 0700); err != nil {
+	if err := w.store.MkdirAll(paths.NamespaceDir(name, "default"), 0o700); err != nil {
 		return ClusterView{}, err
 	}
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -93,45 +102,43 @@ func (w *Workspace) CreateCluster(configPath, name string) (ClusterView, error) 
 	cfg.CurrentCluster = name
 	cfg.CurrentNamespace = "default"
 	// Ensure a stable node.seed so connect processes use the same peer id
-	// that the cluster's membership capability is bound to. The query seed
-	// deterministically matches SubjectPeerID in the membership capability.
+	// that the cluster's membership capability is bound to.
 	if strings.TrimSpace(cfg.Node.Seed) == "" {
 		cfg.Node.Seed = querySeed
-	}
-	if err := w.SaveConfig(configPath, cfg); err != nil {
-		return ClusterView{}, err
-	}
-	// Defensive check: verify cluster was actually persisted to disk
-	reloaded, err := w.LoadConfigOrError(configPath)
-	if err != nil {
-		return ClusterView{}, fmt.Errorf("cluster created but config reload failed: %w", err)
-	}
-	if _, exists := reloaded.Clusters[name]; !exists {
-		return ClusterView{}, fmt.Errorf("cluster %q created but not found in reloaded config (possible save failure)", name)
 	}
 	return ClusterView{Name: name, Current: true, ClusterID: clusterID, AuthorityPublicKey: pubAuthorized, Namespaces: []string{"default"}}, nil
 }
 
 func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, error) {
-	cfg, err := w.LoadConfigOrError(configPath)
-	if err != nil {
-		return NamespaceView{}, err
-	}
+	var view NamespaceView
+	_, err := w.UpdateConfig(configPath, func(cfg *cfgpkg.Config) error {
+		created, err := w.createNamespaceLocked(configPath, name, cfg)
+		if err != nil {
+			return err
+		}
+		view = created
+		return nil
+	})
+	return view, err
+}
+
+func (w *Workspace) createNamespaceLocked(configPath, name string, cfg *cfgpkg.Config) (NamespaceView, error) {
 	if cfg.CurrentCluster == "" {
 		return NamespaceView{}, fmt.Errorf("no current cluster selected; run `tubo use cluster/<name>` first")
 	}
-	cluster, ok := cfg.Clusters[cfg.CurrentCluster]
+	clusterName := cfg.CurrentCluster
+	cluster, ok := cfg.Clusters[clusterName]
 	if !ok {
-		return NamespaceView{}, fmt.Errorf("current cluster %q not found in config", cfg.CurrentCluster)
+		return NamespaceView{}, fmt.Errorf("current cluster %q not found in config", clusterName)
 	}
 	if cluster.ClusterID == "" || cluster.AuthorityPublicKey == "" || cluster.AuthorityPrivateKeyFile == "" {
-		return NamespaceView{}, fmt.Errorf("current cluster %q is missing authority material", cfg.CurrentCluster)
+		return NamespaceView{}, fmt.Errorf("current cluster %q is missing authority material", clusterName)
 	}
 	if cluster.Namespaces == nil {
 		cluster.Namespaces = make(map[string]cfgpkg.Namespace)
 	}
 	if _, exists := cluster.Namespaces[name]; exists {
-		return NamespaceView{}, fmt.Errorf("namespace %q already exists in cluster %q", name, cfg.CurrentCluster)
+		return NamespaceView{}, fmt.Errorf("namespace %q already exists in cluster %q", name, clusterName)
 	}
 	priv, err := loadPrivateKey(w.store, cluster.AuthorityPrivateKeyFile)
 	if err != nil {
@@ -143,10 +150,10 @@ func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, err
 		return NamespaceView{}, err
 	}
 	paths := DerivePaths(configPath)
-	if err := w.store.MkdirAll(paths.NamespaceDir(cfg.CurrentCluster, name), 0700); err != nil {
+	if err := w.store.MkdirAll(paths.NamespaceDir(clusterName, name), 0o700); err != nil {
 		return NamespaceView{}, err
 	}
-	capPath := paths.NamespaceMembershipCapability(cfg.CurrentCluster, name)
+	capPath := paths.NamespaceMembershipCapability(clusterName, name)
 	membership, err := capability.SignMembershipCapability(capability.MembershipCapability{
 		ClusterID:     cluster.ClusterID,
 		NamespaceID:   name,
@@ -165,29 +172,19 @@ func (w *Workspace) CreateNamespace(configPath, name string) (NamespaceView, err
 	if err := writeJSONFile(w.store, capPath, membership); err != nil {
 		return NamespaceView{}, err
 	}
-	discoverySecret, err := writeNamespaceDiscoverySecret(w.store, paths.NamespaceDiscoveryCurrentSecret(cfg.CurrentCluster, name))
+	discoverySecret, err := writeNamespaceDiscoverySecret(w.store, paths.NamespaceDiscoveryCurrentSecret(clusterName, name))
 	if err != nil {
 		return NamespaceView{}, err
 	}
-	cluster.Namespaces[name] = cfgpkg.Namespace{MembershipCapabilityFile: capPath, Discovery: cfgpkg.NamespaceDiscoveryEnabled, DiscoverySecretCurrent: discoverySecret, ConnectPolicy: cfgpkg.ConnectPolicyNamespaceMember}
-	cfg.Clusters[cfg.CurrentCluster] = cluster
+	cluster.Namespaces[name] = cfgpkg.Namespace{
+		MembershipCapabilityFile: capPath,
+		Discovery:                cfgpkg.NamespaceDiscoveryEnabled,
+		DiscoverySecretCurrent:   discoverySecret,
+		ConnectPolicy:            cfgpkg.ConnectPolicyNamespaceMember,
+	}
+	cfg.Clusters[clusterName] = cluster
 	cfg.CurrentNamespace = name
-	if err := w.SaveConfig(configPath, cfg); err != nil {
-		return NamespaceView{}, err
-	}
-	// Defensive check: verify namespace was actually persisted to disk
-	reloaded, err := w.LoadConfigOrError(configPath)
-	if err != nil {
-		return NamespaceView{}, fmt.Errorf("namespace created but config reload failed: %w", err)
-	}
-	reloadedCluster, exists := reloaded.Clusters[cfg.CurrentCluster]
-	if !exists {
-		return NamespaceView{}, fmt.Errorf("cluster %q disappeared after namespace creation", cfg.CurrentCluster)
-	}
-	if _, exists := reloadedCluster.Namespaces[name]; !exists {
-		return NamespaceView{}, fmt.Errorf("namespace %q created but not found in reloaded config (possible save failure)", name)
-	}
-	return NamespaceView{Name: name, Current: true, Cluster: cfg.CurrentCluster}, nil
+	return NamespaceView{Name: name, Current: true, Cluster: clusterName}, nil
 }
 
 func writePrivateKey(store Store, path string, priv ed25519.PrivateKey) error {
@@ -195,11 +192,11 @@ func writePrivateKey(store Store, path string, priv ed25519.PrivateKey) error {
 	if err != nil {
 		return err
 	}
-	if err := store.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := store.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	block := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})
-	return store.WriteFile(path, block, 0600)
+	return store.WriteFile(path, block, 0o600)
 }
 
 func loadPrivateKey(store Store, path string) (ed25519.PrivateKey, error) {
@@ -223,7 +220,7 @@ func loadPrivateKey(store Store, path string) (ed25519.PrivateKey, error) {
 }
 
 func writeJSONFile(store Store, path string, value any) error {
-	if err := store.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := store.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	b, err := json.MarshalIndent(value, "", "  ")
@@ -231,7 +228,7 @@ func writeJSONFile(store Store, path string, value any) error {
 		return err
 	}
 	b = append(b, '\n')
-	return store.WriteFile(path, b, 0600)
+	return store.WriteFile(path, b, 0o600)
 }
 
 func writeNamespaceDiscoverySecret(store Store, path string) (*cfgpkg.ManagedSecretRef, error) {
@@ -239,10 +236,10 @@ func writeNamespaceDiscoverySecret(store Store, path string) (*cfgpkg.ManagedSec
 	if err != nil {
 		return nil, err
 	}
-	if err := store.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := store.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	if err := store.WriteFile(path, secret, 0600); err != nil {
+	if err := store.WriteFile(path, secret, 0o600); err != nil {
 		return nil, err
 	}
 	return ref, nil
