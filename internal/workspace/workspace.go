@@ -346,42 +346,37 @@ func describeManagedSecret(clusterName, namespaceName, status string, ref *cfgpk
 }
 
 func (w *Workspace) Use(configPath string, ref Ref) (cfgpkg.Config, error) {
-	cfg, err := w.LoadConfigOrError(configPath)
-	if err != nil {
-		return cfgpkg.Config{}, err
-	}
-	switch ref.Kind {
-	case "overlay":
-		overlay, ok := cfg.Overlays[ref.Name]
-		if !ok {
-			return cfgpkg.Config{}, fmt.Errorf("overlay %q not found", ref.Name)
+	return w.UpdateConfig(configPath, func(cfg *cfgpkg.Config) error {
+		switch ref.Kind {
+		case "overlay":
+			overlay, ok := cfg.Overlays[ref.Name]
+			if !ok {
+				return fmt.Errorf("overlay %q not found", ref.Name)
+			}
+			cfg.CurrentOverlay = ref.Name
+			applyOverlayToNetwork(cfg, overlay)
+		case "cluster":
+			if _, ok := cfg.Clusters[ref.Name]; !ok {
+				return fmt.Errorf("cluster %q not found", ref.Name)
+			}
+			cfg.CurrentCluster = ref.Name
+		case "namespace":
+			if cfg.CurrentCluster == "" {
+				return errors.New("no current cluster selected; run `tubo use cluster/<name>` first")
+			}
+			cluster, ok := cfg.Clusters[cfg.CurrentCluster]
+			if !ok {
+				return fmt.Errorf("current cluster %q not found in config", cfg.CurrentCluster)
+			}
+			if _, ok := cluster.Namespaces[ref.Name]; !ok {
+				return fmt.Errorf("namespace %q not found in cluster %q", ref.Name, cfg.CurrentCluster)
+			}
+			cfg.CurrentNamespace = ref.Name
+		default:
+			return fmt.Errorf("unsupported use resource %q/%s", ref.Kind, ref.Name)
 		}
-		cfg.CurrentOverlay = ref.Name
-		applyOverlayToNetwork(&cfg, overlay)
-	case "cluster":
-		if _, ok := cfg.Clusters[ref.Name]; !ok {
-			return cfgpkg.Config{}, fmt.Errorf("cluster %q not found", ref.Name)
-		}
-		cfg.CurrentCluster = ref.Name
-	case "namespace":
-		if cfg.CurrentCluster == "" {
-			return cfgpkg.Config{}, errors.New("no current cluster selected; run `tubo use cluster/<name>` first")
-		}
-		cluster, ok := cfg.Clusters[cfg.CurrentCluster]
-		if !ok {
-			return cfgpkg.Config{}, fmt.Errorf("current cluster %q not found in config", cfg.CurrentCluster)
-		}
-		if _, ok := cluster.Namespaces[ref.Name]; !ok {
-			return cfgpkg.Config{}, fmt.Errorf("namespace %q not found in cluster %q", ref.Name, cfg.CurrentCluster)
-		}
-		cfg.CurrentNamespace = ref.Name
-	default:
-		return cfgpkg.Config{}, fmt.Errorf("unsupported use resource %q/%s", ref.Kind, ref.Name)
-	}
-	if err := w.SaveConfig(configPath, cfg); err != nil {
-		return cfgpkg.Config{}, err
-	}
-	return cfg, nil
+		return nil
+	})
 }
 
 func applyOverlayToNetwork(cfg *cfgpkg.Config, overlay cfgpkg.Overlay) {

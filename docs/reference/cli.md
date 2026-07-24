@@ -538,9 +538,10 @@ not ownership; process exit releases the advisory lock and a later writer may
 reuse the file. Unknown YAML mapping keys are preserved during repository
 mutations, but comments, anchors, formatting, and original key order are not a
 stable persistence contract. Migration of legacy load/mutate/save call sites is
-tracked separately; attach identity, resolved-definition, and discovered
-grant-service mutations plus cluster-authority discovery-peer refresh already
-use repository transactions, while direct `WriteFile` is crash-safe but cannot
+tracked separately. Workspace cluster/namespace create, `use`, service removal,
+discovery-secret rotation/cleanup, attach identity/resolved-definition,
+discovered grant-service mutations, and cluster-authority discovery-peer refresh
+already use repository transactions. Direct `WriteFile` is crash-safe but cannot
 merge a snapshot loaded before its lock was acquired.
 
 ## Local resource CLI (Phase 2a)
