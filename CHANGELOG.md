@@ -14,6 +14,7 @@ This project follows the versioning policy in `docs/reference/VERSIONING.md`.
 - Branch protection on `main` now requires the `test`, `lint`, `smoke-cli-ux`, and `smoke-compose` status checks, enforces up-to-date branches, and enables `enforce_admins` so administrators cannot bypass a red required check. A `CONTRIBUTING.md` documents the no-merge-on-red policy (fix, quarantine with a tracked issue, or demote with a tracked issue — never silently merge on red) and a `.github/PULL_REQUEST_TEMPLATE.md` reminds authors. Closes #358.
 
 ### Changed
+- Detached startup now requires configured health readiness before success and rolls back owned child processes plus partial PID/state metadata after any post-start failure. Detached workflows allow 30 seconds for remote discovery, relay setup, and lifecycle restart before rollback.
 - Human process listings now show a `CAPS` column in both compact and wide views.
 - Human process listings and `describe process/...` now separate runtime liveness from authorization state with explicit `AUTH`, `Advertisement status/reason`, and `Authorization status/reason` fields.
 - Legacy process state files without `capabilities` are still readable and are backfilled in memory from the stored command.

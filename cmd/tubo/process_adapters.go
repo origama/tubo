@@ -31,8 +31,10 @@ func buildDetachedSpec(commandName string, cfg cfgpkg.Config, args []string) (de
 	return processes.BuildSpec(commandName, cfg, args, defaultTuboDataDir())
 }
 
+const detachedProcessStartTimeout = 30 * time.Second
+
 func startDetachedProcess(spec detachedSpec) (detachedProcessState, error) {
-	return startDetachedProcessWithTimeout(spec, 5*time.Second)
+	return startDetachedProcessWithTimeout(spec, detachedProcessStartTimeout)
 }
 
 func startDetachedProcessWithTimeout(spec detachedSpec, timeout time.Duration) (detachedProcessState, error) {

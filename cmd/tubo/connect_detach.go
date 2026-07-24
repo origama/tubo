@@ -98,7 +98,7 @@ func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
 	if err != nil {
 		return err
 	}
-	state, err := startDetachedProcessWithTimeoutFn(spec, 5*time.Second)
+	state, err := startDetachedProcessWithTimeoutFn(spec, detachedProcessStartTimeout)
 	if err != nil {
 		_ = restorePipeDefinition(req.ConfigPath, persisted.Cluster, persisted.Namespace, persisted.Name, previousPipe, pipeExisted)
 		return err

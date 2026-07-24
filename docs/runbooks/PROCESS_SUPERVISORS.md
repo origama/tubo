@@ -17,6 +17,12 @@ Provide an optional path to make `tubo` long-running processes (`attach`, `conne
 - System-supervisor persistence is **optional**.
 - `-d` is not replaced: it remains the lightest path for development, demos, and unmanaged environments.
 
+### Detached startup contract
+
+Detached startup commits process PID/state metadata only after the child satisfies its readiness contract. Runtimes with a health URL must return HTTP `200` before the configured startup timeout; runtimes without one must survive the short startup grace period.
+
+Any error after child creation—including PID/state write failures, early child exit, or readiness timeout—triggers rollback: Tubo kills and waits for the owned child and removes partial PID/state metadata. The child log is retained for diagnosis, and readiness errors include its tail when available. A failed detached command therefore must not leave a live unmanaged child or advertise successful startup.
+
 ### First recommended implementation
 
 **Implement `tubo generate systemd` first, not `--install`.**
