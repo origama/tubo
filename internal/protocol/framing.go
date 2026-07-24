@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -60,6 +61,10 @@ func EncodeFrame(w io.Writer, msg any) error {
 	if err != nil {
 		return fmt.Errorf("encode payload: %w", err)
 	}
+	limits := DefaultDecoderLimits()
+	if size, max := uint64(len(payload)), limits.frameLimit(ft); size > max {
+		return decodeLimitError("frame payload", size, max)
+	}
 
 	// Write varint length prefix + type byte + payload
 	lenBytes := varint.ToUvarint(uint64(len(payload)))
@@ -108,12 +113,12 @@ func encodeString(s string) []byte {
 	return append(hdr, b...)
 }
 
-func decodeString(r io.Reader) (string, error) {
+func decodeString(r io.Reader, limits DecoderLimits) (string, error) {
 	lenVal, err := readVarint(r)
 	if err != nil {
 		return "", fmt.Errorf("decode string length: %w", err)
 	}
-	b, err := decodeBytesWithLen(r, lenVal)
+	b, err := decodeBytesWithLen(r, lenVal, limits.normalized().MaxStringBytes, "string bytes")
 	if err != nil {
 		return "", err
 	}
@@ -125,16 +130,22 @@ func encodeBytes(b []byte) []byte {
 	return append(hdr, b...)
 }
 
-func decodeBytes(r io.Reader) ([]byte, error) {
+func decodeBytes(r io.Reader, limits DecoderLimits) ([]byte, error) {
 	lenVal, err := readVarint(r)
 	if err != nil {
 		return nil, fmt.Errorf("decode bytes length: %w", err)
 	}
-	return decodeBytesWithLen(r, lenVal)
+	return decodeBytesWithLen(r, lenVal, limits.normalized().MaxByteFieldBytes, "byte field")
 }
 
-func decodeBytesWithLen(r io.Reader, lenVal uint64) ([]byte, error) {
-	b := make([]byte, lenVal)
+func decodeBytesWithLen(r io.Reader, lenVal, max uint64, field string) ([]byte, error) {
+	if lenVal > max {
+		return nil, decodeLimitError(field, lenVal, max)
+	}
+	if remaining, ok := limitedReaderRemainingBytes(r); ok && lenVal > remaining {
+		return nil, fmt.Errorf("%s length %d exceeds remaining frame payload %d", field, lenVal, remaining)
+	}
+	b := make([]byte, int(lenVal))
 	_, err := io.ReadFull(r, b)
 	if err != nil {
 		return nil, fmt.Errorf("read bytes data: %w", err)
@@ -169,15 +180,19 @@ func encodeHeaders(headers map[string][]string) []byte {
 	return result
 }
 
-func decodeHeaders(r io.Reader) (map[string][]string, error) {
+func decodeHeaders(r io.Reader, limits DecoderLimits) (map[string][]string, error) {
+	limits = limits.normalized()
 	count, err := readVarint(r)
 	if err != nil {
 		return nil, fmt.Errorf("decode headers count: %w", err)
 	}
+	if count > limits.MaxHeaders {
+		return nil, decodeLimitError("header count", count, limits.MaxHeaders)
+	}
 
-	headers := make(map[string][]string, count)
+	headers := make(map[string][]string, int(count))
 	for i := uint64(0); i < count; i++ {
-		name, err := decodeString(r)
+		name, err := decodeString(r, limits)
 		if err != nil {
 			return nil, fmt.Errorf("decode header name: %w", err)
 		}
@@ -185,13 +200,16 @@ func decodeHeaders(r io.Reader) (map[string][]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode values count for %q: %w", name, err)
 		}
-		values := make([]string, valCount)
+		if valCount > limits.MaxHeaderValues {
+			return nil, decodeLimitError("header value count", valCount, limits.MaxHeaderValues)
+		}
+		values := make([]string, int(valCount))
 		for j := uint64(0); j < valCount; j++ {
-			v, err := decodeString(r)
+			v, err := decodeString(r, limits)
 			if err != nil {
 				return nil, fmt.Errorf("decode value for %q: %w", name, err)
 			}
-			values[j] = v
+			values[int(j)] = v
 		}
 		headers[name] = values
 	}
@@ -204,8 +222,8 @@ func encodeTunnelRequest(m *TunnelRequest) ([]byte, error) {
 	return encodeString(m.Kind), nil
 }
 
-func decodeTunnelRequest(r io.Reader) (*TunnelRequest, error) {
-	kind, err := decodeString(r)
+func decodeTunnelRequest(r io.Reader, limits DecoderLimits) (*TunnelRequest, error) {
+	kind, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode tunnel kind: %w", err)
 	}
@@ -216,8 +234,8 @@ func encodeTunnelReady(m *TunnelReady) ([]byte, error) {
 	return encodeString(m.Kind), nil
 }
 
-func decodeTunnelReady(r io.Reader) (*TunnelReady, error) {
-	kind, err := decodeString(r)
+func decodeTunnelReady(r io.Reader, limits DecoderLimits) (*TunnelReady, error) {
+	kind, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode tunnel ready kind: %w", err)
 	}
@@ -241,7 +259,8 @@ func encodeHello(m *Hello) ([]byte, error) {
 	return result, nil
 }
 
-func decodeHello(r io.Reader) (*Hello, error) {
+func decodeHello(r io.Reader, limits DecoderLimits) (*Hello, error) {
+	limits = limits.normalized()
 	majorBytes := make([]byte, 2)
 	minorBytes := make([]byte, 2)
 	if _, err := io.ReadFull(r, majorBytes); err != nil {
@@ -250,7 +269,7 @@ func decodeHello(r io.Reader) (*Hello, error) {
 	if _, err := io.ReadFull(r, minorBytes); err != nil {
 		return nil, fmt.Errorf("decode protocol_minor: %w", err)
 	}
-	role, err := decodeString(r)
+	role, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode role: %w", err)
 	}
@@ -258,13 +277,16 @@ func decodeHello(r io.Reader) (*Hello, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode capabilities count: %w", err)
 	}
-	caps := make([]string, 0, capCount)
+	if capCount > limits.MaxCapabilities {
+		return nil, decodeLimitError("capability count", capCount, limits.MaxCapabilities)
+	}
+	caps := make([]string, 0, int(capCount))
 	for i := uint64(0); i < capCount; i++ {
-		cap, err := decodeString(r)
+		capability, err := decodeString(r, limits)
 		if err != nil {
 			return nil, fmt.Errorf("decode capability: %w", err)
 		}
-		caps = append(caps, cap)
+		caps = append(caps, capability)
 	}
 	return &Hello{ProtocolMajor: binary.BigEndian.Uint16(majorBytes), ProtocolMinor: binary.BigEndian.Uint16(minorBytes), Role: role, Capabilities: caps}, nil
 }
@@ -287,20 +309,20 @@ func encodeRequestHeader(m *RequestHeader) ([]byte, error) {
 	return result, nil
 }
 
-func decodeRequestHeader(r io.Reader) (*RequestHeader, error) {
-	method, err := decodeString(r)
+func decodeRequestHeader(r io.Reader, limits DecoderLimits) (*RequestHeader, error) {
+	method, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode method: %w", err)
 	}
-	path, err := decodeString(r)
+	path, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode path: %w", err)
 	}
-	query, err := decodeString(r)
+	query, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode query: %w", err)
 	}
-	headers, err := decodeHeaders(r)
+	headers, err := decodeHeaders(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode headers: %w", err)
 	}
@@ -333,7 +355,7 @@ func encodeResponseHeader(m *ResponseHeader) ([]byte, error) {
 	return result, nil
 }
 
-func decodeResponseHeader(r io.Reader) (*ResponseHeader, error) {
+func decodeResponseHeader(r io.Reader, limits DecoderLimits) (*ResponseHeader, error) {
 	statusBytes := make([]byte, 2)
 	_, err := io.ReadFull(r, statusBytes)
 	if err != nil {
@@ -341,11 +363,11 @@ func decodeResponseHeader(r io.Reader) (*ResponseHeader, error) {
 	}
 	statusCode := int(binary.BigEndian.Uint16(statusBytes))
 
-	statusText, err := decodeString(r)
+	statusText, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode status_text: %w", err)
 	}
-	headers, err := decodeHeaders(r)
+	headers, err := decodeHeaders(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode headers: %w", err)
 	}
@@ -368,44 +390,34 @@ func encodeBodyChunk(m *BodyChunk) ([]byte, error) {
 	return result, nil
 }
 
-func decodeBodyChunk(r io.Reader) (*BodyChunk, error) {
-	// We need to know the payload size. The caller passes a LimitedReader.
-	data := make([]byte, 16384) // read in chunks if needed
-	totalRead := 0
-
-	for {
-		n, err := r.Read(data[totalRead:])
-		totalRead += n
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read body data: %w", err)
-		}
-		if totalRead >= len(data) {
-			// Shouldn't happen with LimitedReader, but handle gracefully
-			newBuf := make([]byte, len(data)*2)
-			copy(newBuf, data)
-			data = newBuf
-		}
+func decodeBodyChunk(r io.Reader, limits DecoderLimits) (*BodyChunk, error) {
+	remaining, ok := limitedReaderRemainingBytes(r)
+	if !ok {
+		return nil, errors.New("decode body chunk requires a bounded frame reader")
+	}
+	limits = limits.normalized()
+	maxPayload := limits.MaxBodyChunkBytes + 1
+	if remaining > maxPayload {
+		return nil, decodeLimitError("body chunk payload", remaining, maxPayload)
+	}
+	data := make([]byte, int(remaining))
+	if _, err := io.ReadFull(r, data); err != nil {
+		return nil, fmt.Errorf("read body data: %w", err)
+	}
+	if len(data) == 0 {
+		return &BodyChunk{}, nil
 	}
 
-	data = data[:totalRead]
+	lastByte := data[len(data)-1]
 	isFinal := false
-	if len(data) > 0 {
-		lastByte := data[len(data)-1]
-		switch lastByte {
-		case 0x01:
-			isFinal = true
-			data = data[:len(data)-1]
-		case 0x00:
-			data = data[:len(data)-1]
-		default:
-			return nil, fmt.Errorf("invalid is_final byte: 0x%02x", lastByte)
-		}
+	switch lastByte {
+	case 0x01:
+		isFinal = true
+	case 0x00:
+	default:
+		return nil, fmt.Errorf("invalid is_final byte: 0x%02x", lastByte)
 	}
-
-	return &BodyChunk{Data: data, IsFinal: isFinal}, nil
+	return &BodyChunk{Data: data[:len(data)-1], IsFinal: isFinal}, nil
 }
 
 func encodeError(m *Error) ([]byte, error) {
@@ -417,7 +429,7 @@ func encodeError(m *Error) ([]byte, error) {
 	return result, nil
 }
 
-func decodeError(r io.Reader) (*Error, error) {
+func decodeError(r io.Reader, limits DecoderLimits) (*Error, error) {
 	statusBytes := make([]byte, 2)
 	_, err := io.ReadFull(r, statusBytes)
 	if err != nil {
@@ -425,7 +437,7 @@ func decodeError(r io.Reader) (*Error, error) {
 	}
 	code := int(binary.BigEndian.Uint16(statusBytes))
 
-	message, err := decodeString(r)
+	message, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode message: %w", err)
 	}
@@ -455,25 +467,29 @@ func encodeConnectProof(m *ConnectProof) ([]byte, error) {
 	return result, nil
 }
 
-// DecodeConnectProof decodes a connect proof payload from a reader.
+// DecodeConnectProof decodes a connect proof payload with default nested-field limits.
 func DecodeConnectProof(r io.Reader) (*ConnectProof, error) {
-	clusterID, err := decodeString(r)
+	return decodeConnectProof(r, DefaultDecoderLimits())
+}
+
+func decodeConnectProof(r io.Reader, limits DecoderLimits) (*ConnectProof, error) {
+	clusterID, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof cluster_id: %w", err)
 	}
-	namespaceID, err := decodeString(r)
+	namespaceID, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof namespace_id: %w", err)
 	}
-	serviceID, err := decodeString(r)
+	serviceID, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof service_id: %w", err)
 	}
-	subjectPeerID, err := decodeString(r)
+	subjectPeerID, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof subject_peer_id: %w", err)
 	}
-	expiresAtRaw, err := decodeString(r)
+	expiresAtRaw, err := decodeString(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof expires_at: %w", err)
 	}
@@ -481,15 +497,15 @@ func DecodeConnectProof(r io.Reader) (*ConnectProof, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse connect proof expires_at: %w", err)
 	}
-	nonce, err := decodeBytes(r)
+	nonce, err := decodeBytes(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof nonce: %w", err)
 	}
-	capabilityBytes, err := decodeBytes(r)
+	capabilityBytes, err := decodeBytes(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof capability: %w", err)
 	}
-	signature, err := decodeBytes(r)
+	signature, err := decodeBytes(r, limits)
 	if err != nil {
 		return nil, fmt.Errorf("decode connect proof signature: %w", err)
 	}
@@ -497,7 +513,7 @@ func DecodeConnectProof(r io.Reader) (*ConnectProof, error) {
 	var jti string
 	var accessLeaseHash []byte
 	if limitedReaderRemaining(r) > 0 {
-		issuedAtRaw, err := decodeString(r)
+		issuedAtRaw, err := decodeString(r, limits)
 		if err != nil {
 			return nil, fmt.Errorf("decode connect proof issued_at: %w", err)
 		}
@@ -509,13 +525,13 @@ func DecodeConnectProof(r io.Reader) (*ConnectProof, error) {
 		}
 	}
 	if limitedReaderRemaining(r) > 0 {
-		jti, err = decodeString(r)
+		jti, err = decodeString(r, limits)
 		if err != nil {
 			return nil, fmt.Errorf("decode connect proof jti: %w", err)
 		}
 	}
 	if limitedReaderRemaining(r) > 0 {
-		accessLeaseHash, err = decodeBytes(r)
+		accessLeaseHash, err = decodeBytes(r, limits)
 		if err != nil {
 			return nil, fmt.Errorf("decode connect proof access_lease_hash: %w", err)
 		}
@@ -528,6 +544,16 @@ func limitedReaderRemaining(r io.Reader) int64 {
 		return lr.N
 	}
 	return 0
+}
+
+func limitedReaderRemainingBytes(r io.Reader) (uint64, bool) {
+	if lr, ok := r.(*io.LimitedReader); ok {
+		if lr.N < 0 {
+			return 0, true
+		}
+		return uint64(lr.N), true
+	}
+	return 0, false
 }
 
 // sortStrings sorts a string slice in place for deterministic encoding.

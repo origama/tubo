@@ -23,6 +23,26 @@ This document covers the data-plane stream protocol. Collaborative ambient servi
 - **Type**: Single byte identifying the frame type
 - **Payload**: Type-specific binary data
 
+## Decoder limits
+
+Protocol 1.1 implementations must reject oversized frames and nested fields before allocation. Tubo uses these default receive and send limits:
+
+| Element | Maximum |
+|---|---:|
+| any frame payload | 1 MiB |
+| Hello payload | 64 KiB |
+| RequestHeader / ResponseHeader payload | 512 KiB |
+| ConnectProof payload | 512 KiB |
+| BodyChunk data | 256 KiB, plus the final-flag byte |
+| Error / TunnelRequest / TunnelReady payload | 64 KiB |
+| one length-prefixed string | 256 KiB |
+| one length-prefixed byte field | 512 KiB |
+| headers per header frame | 256 |
+| values per header | 256 |
+| Hello capabilities | 128 |
+
+A declared outer length, nested length, or collection count above its limit is a protocol error. A nested length larger than the remaining frame payload is also invalid. Receivers close or reset only the affected stream; body data remains streamable through multiple bounded `BodyChunk` frames.
+
 ## Frame Types
 
 | Byte | Name | Description |
