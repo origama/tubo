@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 
 	cfgpkg "github.com/origama/tubo/internal/config"
@@ -16,6 +17,13 @@ func loadLocalConfigOrError(path string) (cfgpkg.Config, error) {
 		path = defaultTuboConfigPath()
 	}
 	return localWorkspace().LoadConfigOrError(path)
+}
+
+func updateLocalConfig(path string, mutate cfgpkg.ConfigMutation) (cfgpkg.Config, error) {
+	if path == "" {
+		path = defaultTuboConfigPath()
+	}
+	return cfgpkg.NewConfigRepository(path).Update(context.Background(), mutate)
 }
 
 func saveLocalConfig(path string, cfg cfgpkg.Config) error {

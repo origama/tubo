@@ -468,57 +468,50 @@ func persistResolvedAttachServiceDefinition(configPath string, cfg cfgpkg.Config
 	if clusterName == "" || namespaceName == "" || serviceName == "" || strings.TrimSpace(svc.ServiceID) == "" || strings.TrimSpace(svc.ServiceSeed) == "" {
 		return cfg, nil
 	}
-	loaded, err := loadLocalConfigOrError(configPath)
+	persisted, err := updateLocalConfig(configPath, func(loaded *cfgpkg.Config) error {
+		cluster, ok := loaded.Clusters[clusterName]
+		if !ok {
+			cluster = cfg.Clusters[clusterName]
+		}
+		if cluster.Namespaces == nil {
+			cluster.Namespaces = make(map[string]cfgpkg.Namespace)
+		}
+		ns := cluster.Namespaces[namespaceName]
+		if ns.Services == nil {
+			ns.Services = make(map[string]cfgpkg.NamespaceService)
+		}
+		ns.Services[serviceName] = svc
+		cluster.Namespaces[namespaceName] = ns
+		if loaded.Clusters == nil {
+			loaded.Clusters = make(map[string]cfgpkg.Cluster)
+		}
+		loaded.Clusters[clusterName] = cluster
+		loaded.CurrentCluster = clusterName
+		loaded.CurrentNamespace = namespaceName
+		loaded.Service.Name = serviceName
+		loaded.Service.Kind = cfg.Service.Kind
+		loaded.Service.Target = cfg.Service.Target
+		return nil
+	})
 	if err != nil {
-		loaded = cfg
-	}
-	cluster, ok := loaded.Clusters[clusterName]
-	if !ok {
-		cluster = cfg.Clusters[clusterName]
-	}
-	if cluster.Namespaces == nil {
-		cluster.Namespaces = make(map[string]cfgpkg.Namespace)
-	}
-	ns := cluster.Namespaces[namespaceName]
-	if ns.Services == nil {
-		ns.Services = make(map[string]cfgpkg.NamespaceService)
-	}
-	// If the loaded service definition already matches the resolved one and the
-	// top-level service selector already points at it, there is nothing to
-	// persist. Skipping the write avoids touching the config file when it lives
-	// on a read-only volume (containerized smoke/e2e mounts) or when the caller
-	// only wants to confirm the running definition.
-	existingSvc, existingOK := ns.Services[serviceName]
-	if existingOK &&
-		existingSvc == svc &&
-		loaded.CurrentCluster == clusterName &&
-		loaded.CurrentNamespace == namespaceName &&
-		loaded.Service.Name == serviceName &&
-		loaded.Service.Kind == cfg.Service.Kind &&
-		loaded.Service.Target == cfg.Service.Target {
-		return loaded, nil
-	}
-	ns.Services[serviceName] = svc
-	cluster.Namespaces[namespaceName] = ns
-	if loaded.Clusters == nil {
-		loaded.Clusters = make(map[string]cfgpkg.Cluster)
-	}
-	loaded.Clusters[clusterName] = cluster
-	loaded.CurrentCluster = clusterName
-	loaded.CurrentNamespace = namespaceName
-	loaded.Service.Name = serviceName
-	loaded.Service.Kind = cfg.Service.Kind
-	loaded.Service.Target = cfg.Service.Target
-	if err := saveLocalConfig(configPath, loaded); err != nil {
 		if isReadOnlyFilesystemError(err) {
-			// Config volume is read-only (e.g. compose smoke). The in-memory
-			// resolved config still has the correct service definition, so the
-			// running process can proceed; we just cannot persist the merge.
-			return loaded, nil
+			// Config volume is read-only (e.g. compose smoke). In-memory runtime
+			// config still has resolved service definition.
+			return cfg, nil
 		}
 		return cfg, err
 	}
-	return loaded, nil
+	return mergeAttachRuntimeConfig(cfg, persisted), nil
+}
+
+func mergeAttachRuntimeConfig(runtimeCfg, persisted cfgpkg.Config) cfgpkg.Config {
+	result := runtimeCfg
+	result.CurrentOverlay = persisted.CurrentOverlay
+	result.CurrentCluster = persisted.CurrentCluster
+	result.CurrentNamespace = persisted.CurrentNamespace
+	result.Overlays = persisted.Overlays
+	result.Clusters = persisted.Clusters
+	return result
 }
 
 func isReadOnlyFilesystemError(err error) bool {
@@ -791,18 +784,37 @@ func seedDiscoveredGrantServicePeer(configPath string, cfg cfgpkg.Config) cfgpkg
 		return cfg
 	}
 	logging.Progressf("grant service discovery: found peer=%s source=discovery cluster=%q namespace=%q\n", peer, clusterName, namespaceName)
-	svc.GrantServicePeer = peer
-	namespace.Services[serviceName] = svc
-	cluster.Namespaces[namespaceName] = namespace
-	if cluster.MembershipGrant != nil && cluster.MembershipGrant.GrantServiceProtocol == "" {
-		cluster.MembershipGrant.GrantServiceProtocol = grantspkg.ProtocolID
+	persisted, err := updateLocalConfig(configPath, func(latest *cfgpkg.Config) error {
+		cluster, ok := latest.Clusters[clusterName]
+		if !ok {
+			return fmt.Errorf("cluster %q not found", clusterName)
+		}
+		namespace, ok := cluster.Namespaces[namespaceName]
+		if !ok {
+			return fmt.Errorf("namespace %q not found", namespaceName)
+		}
+		svc, ok := namespace.Services[serviceName]
+		if !ok {
+			return fmt.Errorf("service %q not found", serviceName)
+		}
+		if strings.TrimSpace(svc.GrantServicePeer) == "" {
+			svc.GrantServicePeer = peer
+			namespace.Services[serviceName] = svc
+			cluster.Namespaces[namespaceName] = namespace
+		}
+		if cluster.MembershipGrant != nil && cluster.MembershipGrant.GrantServiceProtocol == "" {
+			cluster.MembershipGrant.GrantServiceProtocol = grantspkg.ProtocolID
+		}
+		if cluster.MembershipGrant != nil && len(cluster.MembershipGrant.GrantServicePeers) == 0 {
+			cluster.MembershipGrant.GrantServicePeers = []string{peer}
+		}
+		latest.Clusters[clusterName] = cluster
+		return nil
+	})
+	if err != nil {
+		return cfg
 	}
-	if cluster.MembershipGrant != nil && len(cluster.MembershipGrant.GrantServicePeers) == 0 {
-		cluster.MembershipGrant.GrantServicePeers = []string{peer}
-	}
-	cfg.Clusters[clusterName] = cluster
-	_ = saveLocalConfig(configPath, cfg)
-	return cfg
+	return mergeAttachRuntimeConfig(cfg, persisted)
 }
 
 func discoverGrantServicePeer(configPath string, cfg cfgpkg.Config) string {

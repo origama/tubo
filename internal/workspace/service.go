@@ -21,34 +21,95 @@ import (
 )
 
 func (w *Workspace) EnsureService(configPath, name string) (EnsureServiceResult, error) {
-	cfg, err := w.LoadConfigOrError(configPath)
-	if err != nil {
-		return EnsureServiceResult{}, err
-	}
-	updated, ctx, created, changed, err := w.ensureServiceState(configPath, cfg, name)
-	if err != nil {
-		return EnsureServiceResult{}, err
-	}
-	if changed {
-		if err := w.SaveConfig(configPath, updated); err != nil {
-			return EnsureServiceResult{}, err
+	var computed cfgpkg.Config
+	var serviceContext ServiceContext
+	var created, changed bool
+	_, err := w.UpdateConfig(configPath, func(cfg *cfgpkg.Config) error {
+		updated, ctx, wasCreated, wasChanged, err := w.ensureServiceState(configPath, *cfg, name)
+		if err != nil {
+			return err
 		}
+		computed, serviceContext, created, changed = updated, ctx, wasCreated, wasChanged
+		if changed {
+			*cfg = updated
+		}
+		return nil
+	})
+	if err != nil {
+		return EnsureServiceResult{}, err
 	}
-	ctx.Config = updated
-	return EnsureServiceResult{Config: updated, Context: ctx, Created: created, Changed: changed}, nil
+	serviceContext.Config = computed
+	return EnsureServiceResult{Config: computed, Context: serviceContext, Created: created, Changed: changed}, nil
 }
 
-func (w *Workspace) EnsureAttachServiceIdentity(configPath string, cfg cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
-	updated, ctx, _, changed, err := w.ensureServiceState(configPath, cfg, cfg.Service.Name)
-	if err != nil {
-		return cfg, cfgpkg.NamespaceService{}, err
-	}
-	if changed {
-		if err := w.SaveConfig(configPath, updated); err != nil {
-			return cfg, cfgpkg.NamespaceService{}, err
+func (w *Workspace) EnsureAttachServiceIdentity(configPath string, runtimeCfg cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
+	var computed cfgpkg.Config
+	var service cfgpkg.NamespaceService
+	_, err := w.UpdateConfig(configPath, func(cfg *cfgpkg.Config) error {
+		// Runtime flags may override service/scope fields, but persisted resource
+		// maps must come from latest config loaded under lock.
+		latest := *cfg
+		latest.Service = runtimeCfg.Service
+		if runtimeCfg.CurrentCluster != "" {
+			latest.CurrentCluster = runtimeCfg.CurrentCluster
 		}
+		if runtimeCfg.CurrentNamespace != "" {
+			latest.CurrentNamespace = runtimeCfg.CurrentNamespace
+		}
+		overlayMissingRuntimeService(&latest, runtimeCfg, runtimeCfg.Service.Name)
+		updated, ctx, _, changed, err := w.ensureServiceState(configPath, latest, runtimeCfg.Service.Name)
+		if err != nil {
+			return err
+		}
+		computed, service = updated, ctx.Service
+		if changed {
+			*cfg = updated
+		}
+		return nil
+	})
+	if err != nil {
+		return runtimeCfg, cfgpkg.NamespaceService{}, err
 	}
-	return updated, ctx.Service, nil
+	// Keep command/env runtime overrides (health/listen/network), but return
+	// resource maps committed from latest locked config.
+	result := runtimeCfg
+	result.CurrentOverlay = computed.CurrentOverlay
+	result.CurrentCluster = computed.CurrentCluster
+	result.CurrentNamespace = computed.CurrentNamespace
+	result.Overlays = computed.Overlays
+	result.Clusters = computed.Clusters
+	return result, service, nil
+}
+
+func overlayMissingRuntimeService(latest *cfgpkg.Config, runtimeCfg cfgpkg.Config, serviceName string) {
+	clusterName := strings.TrimSpace(latest.CurrentCluster)
+	namespaceName := strings.TrimSpace(latest.CurrentNamespace)
+	if clusterName == "" || namespaceName == "" || strings.TrimSpace(serviceName) == "" {
+		return
+	}
+	latestCluster, latestOK := latest.Clusters[clusterName]
+	runtimeCluster, runtimeOK := runtimeCfg.Clusters[clusterName]
+	if !latestOK || !runtimeOK {
+		return
+	}
+	latestNamespace, latestOK := latestCluster.Namespaces[namespaceName]
+	runtimeNamespace, runtimeOK := runtimeCluster.Namespaces[namespaceName]
+	if !latestOK || !runtimeOK {
+		return
+	}
+	if _, exists := latestNamespace.Services[serviceName]; exists {
+		return
+	}
+	runtimeService, exists := runtimeNamespace.Services[serviceName]
+	if !exists {
+		return
+	}
+	if latestNamespace.Services == nil {
+		latestNamespace.Services = make(map[string]cfgpkg.NamespaceService)
+	}
+	latestNamespace.Services[serviceName] = runtimeService
+	latestCluster.Namespaces[namespaceName] = latestNamespace
+	latest.Clusters[clusterName] = latestCluster
 }
 
 func (w *Workspace) CreateService(configPath, name string) (CreateServiceResult, error) {
