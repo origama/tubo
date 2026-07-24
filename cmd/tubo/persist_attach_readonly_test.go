@@ -20,21 +20,30 @@ import (
 // in-memory resolved config while emitting an observable warning and leaving
 // the on-disk file untouched. EACCES/permission problems must NOT trigger the
 // fallback and must surface as errors.
+//
+// The test mounts a writable tmpfs, writes the seed config, then remounts it
+// read-only so the subsequent persist attempt produces a real syscall.EROFS
+// (from lock-file creation / atomic write) rather than a string match. It is
+// Linux-only and requires root (CAP_SYS_ADMIN) to mount tmpfs; it skips with an
+// explicit reason where mount/remount is unavailable.
 func TestPersistResolvedAttachServiceDefinitionReadOnlyFallback(t *testing.T) {
 	if runtime.GOOS != "linux" {
-		t.Skip("read-only tmpfs mount is Linux-specific")
+		t.Skipf("read-only tmpfs remount is Linux-specific; current GOOS=%q", runtime.GOOS)
 	}
 	if os.Getuid() != 0 {
-		t.Skip("mounting a read-only tmpfs requires root")
+		t.Skip("mounting/remounting tmpfs requires root (CAP_SYS_ADMIN)")
 	}
 
 	mnt := t.TempDir()
-	// A read-only tmpfs mount is the only portable way to produce a genuine
-	// EROFS errno for os.CreateTemp / os.Rename inside a test.
-	if out, err := exec.Command("mount", "-t", "tmpfs", "-o", "ro,mode=0700", "tmpfs", mnt).CombinedOutput(); err != nil {
-		t.Skipf("cannot mount read-only tmpfs (CAP_SYS_ADMIN unavailable): %v\n%s", err, out)
+	// 1. Mount a writable tmpfs so the seed config can be written.
+	if out, err := exec.Command("mount", "-t", "tmpfs", "-o", "rw,mode=0700", "tmpfs", mnt).CombinedOutput(); err != nil {
+		t.Skipf("cannot mount writable tmpfs (CAP_SYS_ADMIN unavailable): %v\n%s", err, out)
 	}
-	t.Cleanup(func() { _ = syscall.Unmount(mnt, 0) })
+	t.Cleanup(func() {
+		// Restore writability before unmounting so cleanup is reliable.
+		_ = exec.Command("mount", "-o", "remount,rw", mnt).Run()
+		_ = syscall.Unmount(mnt, 0)
+	})
 
 	configPath := filepath.Join(mnt, "config.yaml")
 	seed := cfgpkg.Config{
@@ -48,12 +57,18 @@ func TestPersistResolvedAttachServiceDefinitionReadOnlyFallback(t *testing.T) {
 			}},
 		}},
 	}
+	// 2. Write the seed config while the mount is writable.
 	if err := cfgpkg.WriteFile(configPath, seed, false); err != nil {
-		t.Fatalf("seed write on read-only mount unexpectedly failed: %v", err)
+		t.Fatalf("seed write on writable tmpfs failed: %v", err)
 	}
 	before, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// 3. Remount read-only to produce a genuine EROFS for the persist attempt.
+	if out, err := exec.Command("mount", "-o", "remount,ro", mnt).CombinedOutput(); err != nil {
+		t.Skipf("cannot remount tmpfs read-only (CAP_SYS_ADMIN unavailable): %v\n%s", err, out)
 	}
 
 	svc := cfgpkg.NamespaceService{ServiceID: "service-1", ServiceSeed: "service-seed-1"}
@@ -64,15 +79,18 @@ func TestPersistResolvedAttachServiceDefinitionReadOnlyFallback(t *testing.T) {
 	log.SetOutput(io.MultiWriter(prevOut, &buf))
 	t.Cleanup(func() { log.SetOutput(prevOut) })
 
+	// 4. Persist must hit EROFS and fall back.
 	runtimeCfg := seed
 	runtimeCfg.Service.Name = "testapi"
 	result, err := persistResolvedAttachServiceDefinition(configPath, runtimeCfg, svc)
 	if err != nil {
 		t.Fatalf("EROFS must be tolerated by the attach caller: %v", err)
 	}
+	// 5. Runtime config is intact.
 	if result.Service.Name != "testapi" {
 		t.Fatalf("runtime config lost service name: %#v", result.Service)
 	}
+	// 5. On-disk file is unchanged.
 	after, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatal(err)
@@ -80,6 +98,7 @@ func TestPersistResolvedAttachServiceDefinitionReadOnlyFallback(t *testing.T) {
 	if string(after) != string(before) {
 		t.Fatalf("EROFS fallback must not modify on-disk config\nbefore:\n%s\nafter:\n%s", before, after)
 	}
+	// 5. Observable warning naming the service.
 	warning := buf.String()
 	if !strings.Contains(warning, "warning: config volume is read-only") || !strings.Contains(warning, "testapi") {
 		t.Fatalf("expected observable read-only warning mentioning testapi, got: %q", warning)

@@ -20,6 +20,12 @@ func loadLocalConfigOrError(path string) (cfgpkg.Config, error) {
 }
 
 func updateLocalConfig(path string, mutate cfgpkg.ConfigMutation) (cfgpkg.Config, error) {
+	return updateLocalConfigFn(path, mutate)
+}
+
+// updateLocalConfigFn is the indirection used by attach callers so tests can
+// inject persistence failures (EROFS/EACCES) without touching the filesystem.
+var updateLocalConfigFn = func(path string, mutate cfgpkg.ConfigMutation) (cfgpkg.Config, error) {
 	if path == "" {
 		path = defaultTuboConfigPath()
 	}

@@ -44,10 +44,12 @@ func (w *Workspace) EnsureService(configPath, name string) (EnsureServiceResult,
 
 func (w *Workspace) EnsureAttachServiceIdentity(configPath string, runtimeCfg cfgpkg.Config) (cfgpkg.Config, cfgpkg.NamespaceService, error) {
 	// Fast path: load config read-only and check whether the service is already
-	// fully materialized. This avoids a repository transaction (and lock) when
-	// nothing needs to change, which is essential for read-only config volumes
-	// (e.g. containerized smoke mounts with a pre-populated service.yaml). The
-	// transactional path below still handles create/update on writable volumes.
+	// fully materialized and coherent. This avoids a repository transaction
+	// (and lock) when nothing needs to change, which is essential for read-only
+	// config volumes (e.g. containerized smoke mounts with a pre-populated
+	// service.yaml). The check is pure: it never creates files, generates seeds,
+	// removes artifacts or rewrites config. The transactional path below still
+	// handles create/update on writable volumes.
 	if loaded, err := w.LoadConfigOrError(configPath); err == nil {
 		candidate := loaded
 		candidate.Service = runtimeCfg.Service
@@ -58,14 +60,14 @@ func (w *Workspace) EnsureAttachServiceIdentity(configPath string, runtimeCfg cf
 			candidate.CurrentNamespace = runtimeCfg.CurrentNamespace
 		}
 		overlayMissingRuntimeService(&candidate, runtimeCfg, runtimeCfg.Service.Name)
-		if computed, ctx, _, changed, ensureErr := w.ensureServiceState(configPath, candidate, runtimeCfg.Service.Name); ensureErr == nil && !changed {
+		if svc, ok, ensureErr := w.existingAttachServiceIdentityComplete(candidate, runtimeCfg, runtimeCfg.Service.Name); ensureErr == nil && ok {
 			result := runtimeCfg
-			result.CurrentOverlay = computed.CurrentOverlay
-			result.CurrentCluster = computed.CurrentCluster
-			result.CurrentNamespace = computed.CurrentNamespace
-			result.Overlays = computed.Overlays
-			result.Clusters = computed.Clusters
-			return result, ctx.Service, nil
+			result.CurrentOverlay = candidate.CurrentOverlay
+			result.CurrentCluster = candidate.CurrentCluster
+			result.CurrentNamespace = candidate.CurrentNamespace
+			result.Overlays = candidate.Overlays
+			result.Clusters = candidate.Clusters
+			return result, svc, nil
 		}
 	}
 
@@ -105,6 +107,95 @@ func (w *Workspace) EnsureAttachServiceIdentity(configPath string, runtimeCfg cf
 	result.Overlays = computed.Overlays
 	result.Clusters = computed.Clusters
 	return result, service, nil
+}
+
+// existingAttachServiceIdentityComplete is a read-only fast-path check for
+// EnsureAttachServiceIdentity. It reports whether the service referenced by
+// runtimeCfg is already fully materialized and coherent in the loaded config so
+// that no repository transaction is required. It performs NO mutations: it does
+// not create the owner key, generate a seed, remove stale lease/claim files, or
+// rewrite config. When it returns (svc, true, nil), the service identity,
+// owner-key file, and required artifact paths are all present, valid and
+// mutually consistent, and the runtime target/kind match the persisted values.
+// In every other case (missing artifact, mismatched target/kind, stale lease,
+// unreadable key, etc.) it returns (zero, false, nil) so the caller falls
+// through to the transactional path under lock.
+func (w *Workspace) existingAttachServiceIdentityComplete(loaded cfgpkg.Config, runtimeCfg cfgpkg.Config, serviceName string) (cfgpkg.NamespaceService, bool, error) {
+	serviceName = strings.TrimSpace(serviceName)
+	clusterName := strings.TrimSpace(loaded.CurrentCluster)
+	namespaceName := strings.TrimSpace(loaded.CurrentNamespace)
+	if clusterName == "" || namespaceName == "" || serviceName == "" {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	cluster, ok := loaded.Clusters[clusterName]
+	if !ok {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	if strings.TrimSpace(cluster.ClusterID) == "" || strings.TrimSpace(cluster.AuthorityPublicKey) == "" {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	if cluster.Namespaces == nil {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	namespace, ok := cluster.Namespaces[namespaceName]
+	if !ok || namespace.Services == nil {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	svc, ok := namespace.Services[serviceName]
+	if !ok {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	// Required identity artifacts must already be present.
+	if strings.TrimSpace(svc.ServiceID) == "" ||
+		strings.TrimSpace(svc.ServiceSeed) == "" ||
+		strings.TrimSpace(svc.ServiceOwnerKeyFile) == "" ||
+		strings.TrimSpace(svc.ServiceClaimFile) == "" ||
+		strings.TrimSpace(svc.ServicePublishLeaseFile) == "" {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	if err := serviceidentity.ValidateServiceID(svc.ServiceID); err != nil {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	servicePeerID, err := p2p.PeerIDFromSeed(svc.ServiceSeed)
+	if err != nil {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	// Read and validate the existing owner key; verify it matches ServiceID.
+	owner, _, err := serviceidentity.Load(svc.ServiceOwnerKeyFile)
+	if err != nil {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	if owner.ServiceID != svc.ServiceID {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	// Stale lease cleanup is a mutation, so the fast path cannot perform it.
+	// If a lease file exists whose publisher peer id no longer matches the
+	// service seed, the transactional path must run to remove and regenerate it.
+	if leasePeerID, leaseErr := readLeasePublisherPeerID(w.store, svc.ServicePublishLeaseFile); leaseErr == nil && leasePeerID != "" && leasePeerID != servicePeerID.String() {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	// Kind must match the runtime intent (or already be normalized to it).
+	runtimeKind := strings.TrimSpace(string(runtimeCfg.Service.Kind))
+	if runtimeKind == "" {
+		runtimeKind = string(cfgpkg.NormalizeServiceKind("", runtimeCfg.Service.Target))
+	}
+	if runtimeKind != "" && svc.Kind != "" && cfgpkg.NormalizeServiceKind(svc.Kind, "") != cfgpkg.NormalizeServiceKind(cfgpkg.ServiceKind(runtimeKind), "") {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	// Target must be coherent: a non-placeholder runtime target must equal the
+	// persisted target. A missing persisted target means ensureServiceState would
+	// fill it (a write), so the fast path cannot apply.
+	runtimeTarget := strings.TrimSpace(runtimeCfg.Service.Target)
+	if isPlaceholderServiceTarget(runtimeTarget) {
+		runtimeTarget = ""
+	}
+	if runtimeTarget != "" && strings.TrimSpace(svc.Target) == "" {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	if runtimeTarget != "" && strings.TrimSpace(svc.Target) != "" && runtimeTarget != svc.Target {
+		return cfgpkg.NamespaceService{}, false, nil
+	}
+	return svc, true, nil
 }
 
 func overlayMissingRuntimeService(latest *cfgpkg.Config, runtimeCfg cfgpkg.Config, serviceName string) {

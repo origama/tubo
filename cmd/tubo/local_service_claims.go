@@ -311,7 +311,10 @@ func refreshAttachAuthorizationMaterial(configPath string, cfg cfgpkg.Config) (c
 	if err != nil {
 		return cfg, cfgpkg.NamespaceService{}, err
 	}
-	cfg = seedDiscoveredGrantServicePeer(configPath, cfg)
+	cfg, err = seedDiscoveredGrantServicePeer(configPath, cfg)
+	if err != nil {
+		return cfg, cfgpkg.NamespaceService{}, err
+	}
 	return cfg, svc, nil
 }
 
@@ -428,7 +431,9 @@ func resolveAttachAuthorization(configPath string, cfg cfgpkg.Config) (attachAut
 	if cfg, _, err = ensureAttachServiceIdentity(configPath, cfg); err != nil {
 		return attachAuthorization{}, err
 	}
-	cfg = seedDiscoveredGrantServicePeer(configPath, cfg)
+	if cfg, err = seedDiscoveredGrantServicePeer(configPath, cfg); err != nil {
+		return attachAuthorization{}, err
+	}
 	result, err := newAttachAuthResolver().Resolve(context.Background(), attachauth.ResolveRequest{ConfigPath: configPath, Config: cfg})
 	if err != nil {
 		return attachAuthorization{}, err
@@ -750,70 +755,105 @@ func printAttachShareHint(cfg cfgpkg.Config, authz attachAuthorization) {
 	fmt.Printf("hint: run `tubo share service/%s --cluster %s --namespace %s` from an authority node, or retry attach on the authority node if you need a copyable connect token\n\n", cfg.Service.Name, cfg.CurrentCluster, cfg.CurrentNamespace)
 }
 
-func seedDiscoveredGrantServicePeer(configPath string, cfg cfgpkg.Config) cfgpkg.Config {
+// applyDiscoveredGrantServicePeer applies the discovered grant-service peer to
+// cfg in place. It is a pure mutation: no I/O, no logging, deterministic. It
+// verifies cluster, namespace and service exist; sets GrantServicePeer only if
+// empty; and fills missing GrantServiceProtocol / GrantServicePeers on an
+// existing membership grant. It does not create a membership grant.
+func applyDiscoveredGrantServicePeer(cfg *cfgpkg.Config, clusterName, namespaceName, serviceName, peer string) error {
+	if cfg == nil {
+		return fmt.Errorf("config is required")
+	}
+	clusterName = strings.TrimSpace(clusterName)
+	namespaceName = strings.TrimSpace(namespaceName)
+	serviceName = strings.TrimSpace(serviceName)
+	peer = strings.TrimSpace(peer)
+	if clusterName == "" || namespaceName == "" || serviceName == "" || peer == "" {
+		return fmt.Errorf("cluster, namespace, service and peer are required")
+	}
+	cluster, ok := cfg.Clusters[clusterName]
+	if !ok {
+		return fmt.Errorf("cluster %q not found", clusterName)
+	}
+	namespace, ok := cluster.Namespaces[namespaceName]
+	if !ok {
+		return fmt.Errorf("namespace %q not found", namespaceName)
+	}
+	svc, ok := namespace.Services[serviceName]
+	if !ok {
+		return fmt.Errorf("service %q not found", serviceName)
+	}
+	if strings.TrimSpace(svc.GrantServicePeer) == "" {
+		svc.GrantServicePeer = peer
+		namespace.Services[serviceName] = svc
+		cluster.Namespaces[namespaceName] = namespace
+	}
+	if cluster.MembershipGrant != nil {
+		grant := *cluster.MembershipGrant
+		if strings.TrimSpace(grant.GrantServiceProtocol) == "" {
+			grant.GrantServiceProtocol = grantspkg.ProtocolID
+			cluster.MembershipGrant = &grant
+		}
+		if len(grant.GrantServicePeers) == 0 {
+			grant.GrantServicePeers = []string{peer}
+			cluster.MembershipGrant = &grant
+		}
+	}
+	cfg.Clusters[clusterName] = cluster
+	return nil
+}
+
+// seedDiscoveredGrantServicePeer persists the discovered grant-service peer for
+// the current service. On a genuine EROFS, the peer is applied to a deep copy of
+// the runtime config so the attach can proceed in memory (with an observable
+// warning). All other persistence errors (EACCES, EPERM, malformed config, lock
+// timeout, write failure) are returned to the caller and must NOT be hidden
+// behind a fake success.
+func seedDiscoveredGrantServicePeer(configPath string, cfg cfgpkg.Config) (cfgpkg.Config, error) {
 	clusterName := strings.TrimSpace(cfg.CurrentCluster)
 	namespaceName := strings.TrimSpace(cfg.CurrentNamespace)
 	serviceName := strings.TrimSpace(cfg.Service.Name)
 	if clusterName == "" || namespaceName == "" || serviceName == "" {
-		return cfg
+		return cfg, nil
 	}
 	cluster, ok := cfg.Clusters[clusterName]
 	if !ok {
-		return cfg
+		return cfg, nil
 	}
 	if cluster.AuthorityPrivateKeyFile != "" || clusterGrantServicePeer(cluster) != "" {
-		return cfg
+		return cfg, nil
 	}
 	namespace, ok := cluster.Namespaces[namespaceName]
 	if !ok {
-		return cfg
+		return cfg, nil
 	}
 	svc, ok := namespace.Services[serviceName]
 	if !ok || strings.TrimSpace(svc.GrantServicePeer) != "" {
-		return cfg
+		return cfg, nil
 	}
-	peer := discoverGrantServicePeer(configPath, cfg)
+	peer := discoverGrantServicePeerFn(configPath, cfg)
 	if peer == "" {
 		logging.Progressf("grant service discovery: no grant-service record found for cluster %q namespace %q\n", clusterName, namespaceName)
-		return cfg
+		return cfg, nil
 	}
 	logging.Progressf("grant service discovery: found peer=%s source=discovery cluster=%q namespace=%q\n", peer, clusterName, namespaceName)
 	persisted, err := updateLocalConfig(configPath, func(latest *cfgpkg.Config) error {
-		cluster, ok := latest.Clusters[clusterName]
-		if !ok {
-			return fmt.Errorf("cluster %q not found", clusterName)
-		}
-		namespace, ok := cluster.Namespaces[namespaceName]
-		if !ok {
-			return fmt.Errorf("namespace %q not found", namespaceName)
-		}
-		svc, ok := namespace.Services[serviceName]
-		if !ok {
-			return fmt.Errorf("service %q not found", serviceName)
-		}
-		if strings.TrimSpace(svc.GrantServicePeer) == "" {
-			svc.GrantServicePeer = peer
-			namespace.Services[serviceName] = svc
-			cluster.Namespaces[namespaceName] = namespace
-		}
-		if cluster.MembershipGrant != nil && cluster.MembershipGrant.GrantServiceProtocol == "" {
-			cluster.MembershipGrant.GrantServiceProtocol = grantspkg.ProtocolID
-		}
-		if cluster.MembershipGrant != nil && len(cluster.MembershipGrant.GrantServicePeers) == 0 {
-			cluster.MembershipGrant.GrantServicePeers = []string{peer}
-		}
-		latest.Clusters[clusterName] = cluster
-		return nil
+		return applyDiscoveredGrantServicePeer(latest, clusterName, namespaceName, serviceName, peer)
 	})
 	if err != nil {
 		if cfgpkg.IsReadOnlyFilesystem(err) {
+			// Genuine read-only filesystem: apply to a deep copy of the runtime
+			// config so the attach can proceed. The on-disk file is left untouched.
+			runtimeCopy := cfgpkg.CloneConfig(cfg)
+			if applyErr := applyDiscoveredGrantServicePeer(&runtimeCopy, clusterName, namespaceName, serviceName, peer); applyErr != nil {
+				return cfg, applyErr
+			}
 			log.Printf("warning: config volume is read-only; discovered grant-service peer for service %q updated in memory only and will not persist across restart", serviceName)
-			return cfg
+			return runtimeCopy, nil
 		}
-		log.Printf("warning: failed to persist discovered grant-service peer for service %q: %v", serviceName, err)
-		return cfg
+		return cfg, fmt.Errorf("persist discovered grant-service peer for service %q: %w", serviceName, err)
 	}
-	return mergeAttachRuntimeConfig(cfg, persisted)
+	return mergeAttachRuntimeConfig(cfg, persisted), nil
 }
 
 func discoverGrantServicePeer(configPath string, cfg cfgpkg.Config) string {
@@ -823,6 +863,10 @@ func discoverGrantServicePeer(configPath string, cfg cfgpkg.Config) string {
 	}
 	return peers[0]
 }
+
+// discoverGrantServicePeerFn is the indirection used by seedDiscoveredGrantServicePeer
+// so tests can inject a deterministic peer without performing network discovery.
+var discoverGrantServicePeerFn = discoverGrantServicePeer
 
 func noServicePublishGrantError(clusterName, namespaceName, serviceName string) error {
 	return fmt.Errorf("missing grant service peer for cluster %q namespace %q service %q; request a grant from a cluster authority or run attach from an authority node", clusterName, namespaceName, serviceName)
