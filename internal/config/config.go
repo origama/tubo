@@ -632,6 +632,12 @@ func cloneNetwork(in Network) Network {
 	}
 }
 
+// CloneConfig returns a deep copy of in so callers can mutate the result
+// without aliasing shared maps or pointers.
+func CloneConfig(in Config) Config {
+	return cloneConfig(in)
+}
+
 func cloneConfig(in Config) Config {
 	out := in
 	out.Network = cloneNetwork(in.Network)

@@ -96,7 +96,7 @@ func TestStoreConcurrentPerRequesterAndServiceLimits(t *testing.T) {
 
 func TestGrantServerConcurrentSubmitsRespectAtomicLimit(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.json")
-	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Hour)
 	server, err := NewServer(ServerConfig{
 		ClusterName:            "home",
 		ClusterID:              "cluster-123",
@@ -231,7 +231,7 @@ func TestGrantStoreProcessHelper(t *testing.T) {
 
 func TestStoreApproveDenyConcurrentHasSingleWinner(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "requests.json")
-	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	base := time.Now().UTC().Truncate(time.Hour)
 	created, err := NewStore(path).CreatePending(distinctStoreRequest(1))
 	if err != nil {
 		t.Fatal(err)
@@ -452,7 +452,7 @@ func TestGrantStoreLockReleasedAfterProcessCrash(t *testing.T) {
 }
 
 func distinctStoreRequest(index int) Request {
-	base := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	base := time.Now().UTC().Truncate(time.Hour)
 	req := sampleRequest(base.Add(time.Duration(index) * time.Second))
 	req.ServiceName = fmt.Sprintf("service-%d", index)
 	req.ServiceID = fmt.Sprintf("service-id-%d", index)

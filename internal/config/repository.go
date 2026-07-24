@@ -2,7 +2,6 @@ package config
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -37,21 +36,6 @@ type atomicWriteHooks struct {
 
 func NewConfigRepository(path string) *ConfigRepository {
 	return &ConfigRepository{Path: path, LockTimeout: defaultConfigLockTimeout}
-}
-
-// isReadOnlyConfigErr reports whether err indicates a read-only filesystem,
-// such as a containerized smoke mount that exposes ~/.config/tubo as :ro.
-// Writers tolerate this by computing resolved config in-memory and skipping
-// persistence, mirroring the pre-repository saveLocalConfig fallback.
-func isReadOnlyConfigErr(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, os.ErrPermission) {
-		return true
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "read-only file system") || strings.Contains(msg, "permission denied")
 }
 
 // Load reads active config. Atomic replacement guarantees reader sees old or
@@ -94,16 +78,7 @@ func (r *ConfigRepository) Update(ctx context.Context, mutate ConfigMutation) (C
 		if err != nil {
 			return err
 		}
-		if err := atomicWriteFile(r.Path, encoded, 0o600, r.hooks); err != nil {
-			if isReadOnlyConfigErr(err) {
-				// Read-only config volume (e.g. containerized smoke mounts). The
-				// in-memory resolved config is still correct; callers proceed
-				// without persisting.
-				return nil
-			}
-			return err
-		}
-		return nil
+		return atomicWriteFile(r.Path, encoded, 0o600, r.hooks)
 	})
 	if err != nil {
 		return Config{}, err
@@ -150,12 +125,6 @@ func (r *ConfigRepository) withLock(ctx context.Context, fn func() error) error 
 	defer cancel()
 	lock, err := acquireConfigFileLock(lockCtx, r.Path+".lock")
 	if err != nil {
-		if isReadOnlyConfigErr(err) {
-			// Read-only config volume cannot host a lock file; run the mutation
-			// best-effort without an interprocess lock. There are no concurrent
-			// writers on a read-only mount.
-			return fn()
-		}
 		return fmt.Errorf("lock config %s: %w", r.Path, err)
 	}
 	defer lock.release()
