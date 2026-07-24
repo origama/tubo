@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -282,7 +283,7 @@ func TestSeedDiscoveredGrantServicePeerAlreadySetIsNoop(t *testing.T) {
 	prevUpdate := updateLocalConfigFn
 	updateLocalConfigFn = func(path string, mutate cfgpkg.ConfigMutation) (cfgpkg.Config, error) {
 		called = true
-		return cfgpkg.NewConfigRepository(path).Update(nil, mutate)
+		return cfgpkg.NewConfigRepository(path).Update(context.Background(), mutate)
 	}
 	defer func() { updateLocalConfigFn = prevUpdate }()
 
