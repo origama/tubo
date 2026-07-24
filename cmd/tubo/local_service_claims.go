@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -298,10 +299,11 @@ func refreshAttachAuthorizationMaterial(configPath string, cfg cfgpkg.Config) (c
 	loaded, mergedService := preserveRunningAttachServiceDefinition(loaded, cfg)
 	if mergedService {
 		if err := saveLocalConfig(configPath, loaded); err != nil {
-			if !isReadOnlyFilesystemError(err) {
+			if cfgpkg.IsReadOnlyFilesystem(err) {
+				log.Printf("warning: config volume is read-only; running attach service definition for %q merged in memory only and will not persist across restart", strings.TrimSpace(cfg.Service.Name))
+			} else {
 				return cfg, cfgpkg.NamespaceService{}, err
 			}
-			// Read-only volume (compose smoke): keep merged in-memory config.
 		}
 	}
 	cfg = loaded
@@ -494,9 +496,12 @@ func persistResolvedAttachServiceDefinition(configPath string, cfg cfgpkg.Config
 		return nil
 	})
 	if err != nil {
-		if isReadOnlyFilesystemError(err) {
-			// Config volume is read-only (e.g. compose smoke). In-memory runtime
-			// config still has resolved service definition.
+		if cfgpkg.IsReadOnlyFilesystem(err) {
+			// Genuine read-only filesystem (e.g. containerized smoke mounts).
+			// The resolved service definition is already in the in-memory runtime
+			// config, so the attach can proceed; persistence is an optimization and
+			// is skipped with an explicit warning. EACCES/EPERM are NOT tolerated.
+			log.Printf("warning: config volume is read-only; resolved attach service definition for %q updated in memory only and will not persist across restart", serviceName)
 			return cfg, nil
 		}
 		return cfg, err
@@ -512,17 +517,6 @@ func mergeAttachRuntimeConfig(runtimeCfg, persisted cfgpkg.Config) cfgpkg.Config
 	result.Overlays = persisted.Overlays
 	result.Clusters = persisted.Clusters
 	return result
-}
-
-func isReadOnlyFilesystemError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, os.ErrPermission) {
-		return true
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "read-only file system") || strings.Contains(msg, "permission denied")
 }
 
 func requestPublishGrantForAttach(configPath string, cfg cfgpkg.Config, svc cfgpkg.NamespaceService, servicePeerID string) (cfgpkg.Config, cfgpkg.NamespaceService, string, error) {
@@ -812,6 +806,11 @@ func seedDiscoveredGrantServicePeer(configPath string, cfg cfgpkg.Config) cfgpkg
 		return nil
 	})
 	if err != nil {
+		if cfgpkg.IsReadOnlyFilesystem(err) {
+			log.Printf("warning: config volume is read-only; discovered grant-service peer for service %q updated in memory only and will not persist across restart", serviceName)
+			return cfg
+		}
+		log.Printf("warning: failed to persist discovered grant-service peer for service %q: %v", serviceName, err)
 		return cfg
 	}
 	return mergeAttachRuntimeConfig(cfg, persisted)

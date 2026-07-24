@@ -251,7 +251,7 @@ func TestConfigRepositoryFailureInjectionPreservesPreviousConfig(t *testing.T) {
 	}
 }
 
-func TestConfigRepositoryReadOnlyDirectoryReturnsInMemoryMutation(t *testing.T) {
+func TestConfigRepositoryUpdateFailsOnReadOnlyDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX directory permissions required")
 	}
@@ -276,18 +276,55 @@ func TestConfigRepositoryReadOnlyDirectoryReturnsInMemoryMutation(t *testing.T) 
 		cfg.CurrentCluster = "after"
 		return nil
 	})
-	if updateErr != nil {
-		t.Fatalf("read-only volume should be tolerated in-memory, got %v", updateErr)
+	if updateErr == nil {
+		t.Fatalf("read-only volume must not produce a fake success; got updated=%#v", updated)
 	}
-	if updated.CurrentCluster != "after" {
-		t.Fatalf("in-memory mutation lost: %#v", updated.CurrentCluster)
+	if updated.CurrentCluster != "" {
+		t.Fatalf("failed update must not return mutated in-memory config: %#v", updated)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(after) != string(before) {
-		t.Fatalf("read-only volume should not change on-disk config\nbefore:\n%s\nafter:\n%s", before, after)
+		t.Fatalf("read-only volume must not change on-disk config\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+func TestConfigRepositoryLockFailureDoesNotExecuteMutation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions required")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("read-only mode enforcement requires non-root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	// Write only the config file directly so no .lock sidecar exists; the lock
+	// acquisition must then fail on a read-only directory (cannot create the
+	// lock file), and the mutation must not run.
+	if err := os.WriteFile(path, []byte("current_cluster: before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+	mutated := false
+	_, err := NewConfigRepository(path).Update(context.Background(), func(cfg *Config) error {
+		mutated = true
+		cfg.CurrentCluster = "after"
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected lock acquisition failure")
+	}
+	if mutated {
+		t.Fatal("mutation executed without lock; lock failure must short-circuit")
+	}
+	cfg, loadErr := LoadFile(path)
+	if loadErr != nil || cfg.CurrentCluster != "before" {
+		t.Fatalf("on-disk config changed after failed update: %#v err=%v", cfg, loadErr)
 	}
 }
 

@@ -537,7 +537,15 @@ lock, and preserve disjoint concurrent mutations. Lock-file existence alone is
 not ownership; process exit releases the advisory lock and a later writer may
 reuse the file. Unknown YAML mapping keys are preserved during repository
 mutations, but comments, anchors, formatting, and original key order are not a
-stable persistence contract. Migration of legacy load/mutate/save call sites is
+stable persistence contract. `ConfigRepository.Update` is strictly fail-closed:
+lock acquisition or persistence failures are returned to the caller, and
+permission errors (`EACCES`/`EPERM`/`permission denied`) are never treated as a
+read-only filesystem. A genuine read-only filesystem (`EROFS`) is recognized by
+`config.IsReadOnlyFilesystem`, and only the explicit attach callers that must
+keep running on a read-only config volume (for example a containerized smoke
+mount) opt into an in-memory fallback with an observable `warning:` log line;
+the fallback is an optimization for those callers only and does not persist
+state. Migration of legacy load/mutate/save call sites is
 tracked separately. Workspace cluster/namespace create, `use`, service removal,
 discovery-secret rotation/cleanup, attach identity/resolved-definition,
 discovered grant-service mutations, and cluster-authority discovery-peer refresh
