@@ -15,7 +15,8 @@ This file is the short operational summary.
 - opaque Discovery V3 relay forwarding is capacity-bounded by observed publisher PeerID and globally; `list_services` responses are capped to the consumer's 1 MiB decoder budget and report deterministic omission with `truncated: true`, while every forwarded record still requires consumer-side signature, scope, expiry, lease, and service-claim validation;
 - membership grant tokens used for discovery visibility accept bearer proof as long as they contain at least `subscribe` + `list` permissions;
 - optional private swarm PSK and PeerID allowlist gating are supported;
-- authority-side publish grants use `/tubo/grants/1.0`.
+- authority-side publish grants use `/tubo/grants/1.0`;
+- grant request, revocation, and one-time share-redemption JSON stores serialize complete read/check/mutate/write transactions with path-scoped process locks and OS advisory locks. Pending quotas are checked inside the insert transaction, and revocation epoch increments cannot be lost.
 
 ## Trust boundaries
 
@@ -32,7 +33,8 @@ This file is the short operational summary.
 - Discovery V3 improves namespace metadata protection, but observable PubSub timing/size metadata still remains;
 - Discovery V2 fallback is intentionally broken for discovery-enabled namespace runtime in `v0.9.1`;
 - revocation is TTL/cache/fresh-state bounded unless issuer state is consulted;
-- short-lived invite/redemption state should be treated as sensitive.
+- short-lived invite/redemption state should be treated as sensitive;
+- grant-store lock acquisition has a 10-second default budget and fails closed on timeout or malformed JSON. Lock ownership is advisory metadata, not lock-file existence: process exit releases ownership, so stale `*.lock` sidecars are safe to retain.
 
 ## Canonical model
 

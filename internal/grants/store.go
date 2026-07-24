@@ -52,8 +52,16 @@ type fileState struct {
 }
 
 type Store struct {
-	path string
-	now  func() time.Time
+	path        string
+	now         func() time.Time
+	LockTimeout time.Duration
+}
+
+// PendingPolicy bounds active grant requests. Non-positive limits are disabled.
+type PendingPolicy struct {
+	MaxPendingRequests     int
+	MaxPendingPerRequester int
+	MaxPendingPerService   int
 }
 
 func NewStore(path string) *Store {
@@ -74,172 +82,187 @@ func DefaultStorePath() string {
 func (s *Store) Path() string { return s.path }
 
 func (s *Store) CreatePending(req Request) (Request, error) {
+	return s.CreatePendingWithPolicy(req, PendingPolicy{})
+}
+
+// CreatePendingWithPolicy expires stale entries, checks dedupe/collision/limits,
+// and inserts one request in the same locked transaction.
+func (s *Store) CreatePendingWithPolicy(req Request, policy PendingPolicy) (Request, error) {
 	if err := validateStoreRequest(req); err != nil {
 		return Request{}, err
 	}
-	state, err := s.load()
-	if err != nil {
-		return Request{}, err
-	}
-	now := s.now().UTC()
-	state.expire(now)
-	for _, existing := range state.Requests {
-		if existing.Status == StatusPending && equivalentActive(existing, req) {
-			return existing, nil
+	var result Request
+	err := s.update(func(state *fileState) (bool, error) {
+		changed := state.expire(s.now().UTC()) > 0
+		for _, existing := range state.Requests {
+			if existing.Status == StatusPending && equivalentActive(existing, req) {
+				result = existing
+				return changed, nil
+			}
 		}
-	}
-	if req.ID == "" {
-		id, err := randomID("gr_")
-		if err != nil {
-			return Request{}, err
+		if err := enforcePendingPolicy(*state, req, policy); err != nil {
+			return changed, err
 		}
-		req.ID = id
-	}
-	if req.RequestedAt.IsZero() {
-		req.RequestedAt = now
-	}
-	if req.ExpiresAt.IsZero() {
-		req.ExpiresAt = req.RequestedAt.Add(24 * time.Hour)
-	}
-	req.Status = StatusPending
-	state.Requests = append(state.Requests, req)
-	state.sort()
-	return req, s.save(state)
+		if req.ID == "" {
+			id, err := randomID("gr_")
+			if err != nil {
+				return changed, err
+			}
+			req.ID = id
+		}
+		now := s.now().UTC()
+		if req.RequestedAt.IsZero() {
+			req.RequestedAt = now
+		}
+		if req.ExpiresAt.IsZero() {
+			req.ExpiresAt = req.RequestedAt.Add(24 * time.Hour)
+		}
+		req.Status = StatusPending
+		state.Requests = append(state.Requests, req)
+		state.sort()
+		result = req
+		return true, nil
+	})
+	return result, err
 }
 
 func (s *Store) ListPending() ([]Request, error) {
-	state, changed, err := s.loadAndExpire()
-	if err != nil {
-		return nil, err
-	}
-	if changed {
-		if err := s.save(state); err != nil {
-			return nil, err
-		}
-	}
 	var out []Request
-	for _, req := range state.Requests {
-		if req.Status == StatusPending {
-			out = append(out, req)
+	err := s.update(func(state *fileState) (bool, error) {
+		changed := state.expire(s.now().UTC()) > 0
+		for _, req := range state.Requests {
+			if req.Status == StatusPending {
+				out = append(out, req)
+			}
 		}
-	}
-	return out, nil
+		return changed, nil
+	})
+	return out, err
 }
 
 func (s *Store) ListAll() ([]Request, error) {
-	state, changed, err := s.loadAndExpire()
-	if err != nil {
-		return nil, err
-	}
-	if changed {
-		if err := s.save(state); err != nil {
-			return nil, err
-		}
-	}
-	return append([]Request(nil), state.Requests...), nil
+	var out []Request
+	err := s.update(func(state *fileState) (bool, error) {
+		changed := state.expire(s.now().UTC()) > 0
+		out = append([]Request(nil), state.Requests...)
+		return changed, nil
+	})
+	return out, err
 }
 
 func (s *Store) Get(id string) (Request, bool, error) {
-	state, changed, err := s.loadAndExpire()
-	if err != nil {
-		return Request{}, false, err
-	}
-	if changed {
-		if err := s.save(state); err != nil {
-			return Request{}, false, err
+	var result Request
+	var found bool
+	err := s.update(func(state *fileState) (bool, error) {
+		changed := state.expire(s.now().UTC()) > 0
+		for _, req := range state.Requests {
+			if req.ID == id {
+				result, found = req, true
+				break
+			}
 		}
-	}
-	for _, req := range state.Requests {
-		if req.ID == id {
-			return req, true, nil
-		}
-	}
-	return Request{}, false, nil
+		return changed, nil
+	})
+	return result, found, err
 }
 
 func (s *Store) Approve(id string, claim capability.ServiceClaim, lease *PublishLease, membership *capability.MembershipCapability, serviceShareToken string) (Request, error) {
-	state, err := s.load()
-	if err != nil {
-		return Request{}, err
-	}
-	now := s.now().UTC()
-	state.expire(now)
-	for i := range state.Requests {
-		if state.Requests[i].ID != id {
-			continue
+	var result Request
+	err := s.update(func(state *fileState) (bool, error) {
+		now := s.now().UTC()
+		changed := state.expire(now) > 0
+		for i := range state.Requests {
+			if state.Requests[i].ID != id {
+				continue
+			}
+			if state.Requests[i].Status == StatusExpired {
+				return changed, fmt.Errorf("grant request %q is expired", id)
+			}
+			if state.Requests[i].Status != StatusPending {
+				return changed, fmt.Errorf("grant request %q is %s", id, state.Requests[i].Status)
+			}
+			state.Requests[i].Status = StatusApproved
+			state.Requests[i].DecidedAt = now
+			state.Requests[i].ServiceClaim = &claim
+			state.Requests[i].PublishLease = lease
+			state.Requests[i].MembershipCapability = membership
+			state.Requests[i].ServiceShareToken = serviceShareToken
+			if expiry, ok := approvedRequestExpiry(state.Requests[i]); ok {
+				state.Requests[i].ExpiresAt = expiry
+			}
+			result = state.Requests[i]
+			return true, nil
 		}
-		if state.Requests[i].Status == StatusExpired || now.After(state.Requests[i].ExpiresAt.UTC()) {
-			state.Requests[i].Status = StatusExpired
-			_ = s.save(state)
-			return Request{}, fmt.Errorf("grant request %q is expired", id)
-		}
-		if state.Requests[i].Status != StatusPending {
-			return Request{}, fmt.Errorf("grant request %q is %s", id, state.Requests[i].Status)
-		}
-		state.Requests[i].Status = StatusApproved
-		state.Requests[i].DecidedAt = now
-		state.Requests[i].ServiceClaim = &claim
-		state.Requests[i].PublishLease = lease
-		state.Requests[i].MembershipCapability = membership
-		state.Requests[i].ServiceShareToken = serviceShareToken
-		if expiry, ok := approvedRequestExpiry(state.Requests[i]); ok {
-			state.Requests[i].ExpiresAt = expiry
-		}
-		if err := s.save(state); err != nil {
-			return Request{}, err
-		}
-		return state.Requests[i], nil
-	}
-	return Request{}, fmt.Errorf("grant request %q not found", id)
+		return changed, fmt.Errorf("grant request %q not found", id)
+	})
+	return result, err
 }
 
 func (s *Store) Deny(id, reason string) (Request, error) {
-	state, err := s.load()
-	if err != nil {
-		return Request{}, err
-	}
-	now := s.now().UTC()
-	state.expire(now)
-	for i := range state.Requests {
-		if state.Requests[i].ID != id {
-			continue
+	var result Request
+	err := s.update(func(state *fileState) (bool, error) {
+		now := s.now().UTC()
+		changed := state.expire(now) > 0
+		for i := range state.Requests {
+			if state.Requests[i].ID != id {
+				continue
+			}
+			if state.Requests[i].Status != StatusPending {
+				return changed, fmt.Errorf("grant request %q is %s", id, state.Requests[i].Status)
+			}
+			state.Requests[i].Status = StatusDenied
+			state.Requests[i].DenialReason = reason
+			state.Requests[i].DecidedAt = now
+			result = state.Requests[i]
+			return true, nil
 		}
-		if state.Requests[i].Status != StatusPending {
-			return Request{}, fmt.Errorf("grant request %q is %s", id, state.Requests[i].Status)
-		}
-		state.Requests[i].Status = StatusDenied
-		state.Requests[i].DenialReason = reason
-		state.Requests[i].DecidedAt = now
-		if err := s.save(state); err != nil {
-			return Request{}, err
-		}
-		return state.Requests[i], nil
-	}
-	return Request{}, fmt.Errorf("grant request %q not found", id)
+		return changed, fmt.Errorf("grant request %q not found", id)
+	})
+	return result, err
 }
 
 func (s *Store) ExpirePending() (int, error) {
-	state, err := s.load()
-	if err != nil {
-		return 0, err
-	}
-	changed := state.expire(s.now().UTC())
-	if changed == 0 {
-		return 0, nil
-	}
-	return changed, s.save(state)
+	changed := 0
+	err := s.update(func(state *fileState) (bool, error) {
+		changed = state.expire(s.now().UTC())
+		return changed > 0, nil
+	})
+	return changed, err
 }
 
-func (s *Store) loadAndExpire() (fileState, bool, error) {
-	state, err := s.load()
-	if err != nil {
-		return fileState{}, false, err
-	}
-	changed := state.expire(s.now().UTC()) > 0
-	return state, changed, nil
+func (s *Store) update(mutate func(*fileState) (bool, error)) error {
+	return withGrantStoreLock(s.path, s.LockTimeout, func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		changed, mutationErr := mutate(&state)
+		if changed {
+			if err := s.saveUnlocked(state); err != nil {
+				return err
+			}
+		}
+		return mutationErr
+	})
 }
 
+// load and save remain package-local compatibility helpers for focused tests.
+// Production mutations use update so read-modify-write stays one transaction.
 func (s *Store) load() (fileState, error) {
+	var state fileState
+	err := withGrantStoreLock(s.path, s.LockTimeout, func() error {
+		var err error
+		state, err = s.loadUnlocked()
+		return err
+	})
+	return state, err
+}
+
+func (s *Store) save(state fileState) error {
+	return withGrantStoreLock(s.path, s.LockTimeout, func() error { return s.saveUnlocked(state) })
+}
+
+func (s *Store) loadUnlocked() (fileState, error) {
 	b, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return fileState{}, nil
@@ -255,34 +278,13 @@ func (s *Store) load() (fileState, error) {
 	return state, nil
 }
 
-func (s *Store) save(state fileState) error {
+func (s *Store) saveUnlocked(state fileState) error {
 	state.sort()
-	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	b = append(b, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".requests-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, s.path)
+	return atomicWriteGrantStore(s.path, append(b, '\n'))
 }
 
 func (s *fileState) expire(now time.Time) int {
@@ -301,6 +303,40 @@ func (s *fileState) expire(now time.Time) int {
 
 func (s *fileState) sort() {
 	sort.SliceStable(s.Requests, func(i, j int) bool { return s.Requests[i].RequestedAt.Before(s.Requests[j].RequestedAt) })
+}
+
+func enforcePendingPolicy(state fileState, req Request, policy PendingPolicy) error {
+	if policy.MaxPendingRequests <= 0 && policy.MaxPendingPerRequester <= 0 && policy.MaxPendingPerService <= 0 {
+		return nil
+	}
+	pendingTotal := 0
+	pendingRequester := 0
+	pendingService := 0
+	for _, existing := range state.Requests {
+		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceID == req.ServiceID && existing.Status != StatusDenied && existing.Status != StatusExpired && existing.ServicePeerID != req.ServicePeerID {
+			return fmt.Errorf("service %q already has an active grant request or claim for a different peer", req.ServiceID)
+		}
+		if existing.Status != StatusPending {
+			continue
+		}
+		pendingTotal++
+		if existing.RequesterPeerID == req.RequesterPeerID {
+			pendingRequester++
+		}
+		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceID == req.ServiceID {
+			pendingService++
+		}
+	}
+	if policy.MaxPendingRequests > 0 && pendingTotal >= policy.MaxPendingRequests {
+		return fmt.Errorf("too many pending grant requests: limit %d", policy.MaxPendingRequests)
+	}
+	if policy.MaxPendingPerRequester > 0 && pendingRequester >= policy.MaxPendingPerRequester {
+		return fmt.Errorf("too many pending grant requests for requester: limit %d", policy.MaxPendingPerRequester)
+	}
+	if policy.MaxPendingPerService > 0 && pendingService >= policy.MaxPendingPerService {
+		return fmt.Errorf("too many pending grant requests for service %q: limit %d", req.ServiceID, policy.MaxPendingPerService)
+	}
+	return nil
 }
 
 func equivalentActive(a, b Request) bool {
@@ -370,36 +406,23 @@ func isRequestExpired(req Request, now time.Time) bool {
 // A lease is active if it is approved, has a non-zero expiry, and hasn't expired yet.
 // Zero-expiry leases are not considered active.
 func (s *Store) ActivePublishLeaseExpiry(clusterID, namespaceID, serviceID string, now time.Time) (expiry time.Time, active bool, err error) {
-	state, err := s.load()
-	if err != nil {
-		return time.Time{}, false, err
-	}
-	var latestExpiry time.Time
-	for _, req := range state.Requests {
-		if req.Status != StatusApproved {
-			continue
+	err = withGrantStoreLock(s.path, s.LockTimeout, func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
 		}
-		if req.ClusterID != clusterID || req.NamespaceID != namespaceID || req.ServiceID != serviceID {
-			continue
-		}
-		if req.PublishLease == nil {
-			continue
-		}
-		// Zero-expiry leases are not considered active
-		if req.PublishLease.ExpiresAt.IsZero() {
-			continue
-		}
-		if now.Before(req.PublishLease.ExpiresAt.UTC()) {
-			// Track the latest expiry among active leases
-			if latestExpiry.IsZero() || req.PublishLease.ExpiresAt.UTC().After(latestExpiry) {
-				latestExpiry = req.PublishLease.ExpiresAt.UTC()
+		for _, req := range state.Requests {
+			if req.Status != StatusApproved || req.ClusterID != clusterID || req.NamespaceID != namespaceID || req.ServiceID != serviceID || req.PublishLease == nil || req.PublishLease.ExpiresAt.IsZero() {
+				continue
+			}
+			candidate := req.PublishLease.ExpiresAt.UTC()
+			if now.Before(candidate) && (expiry.IsZero() || candidate.After(expiry)) {
+				expiry = candidate
 			}
 		}
-	}
-	if !latestExpiry.IsZero() {
-		return latestExpiry, true, nil
-	}
-	return time.Time{}, false, nil
+		return nil
+	})
+	return expiry, !expiry.IsZero(), err
 }
 
 // HasActivePublishLease returns true if the service has an active publish lease.
