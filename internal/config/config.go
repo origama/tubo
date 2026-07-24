@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -524,24 +525,10 @@ func LoadFile(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	var c Config
-	if err := yaml.Unmarshal(b, &c); err != nil {
-		return Config{}, err
-	}
-	normalizeConfig(&c)
-	return c, nil
+	return decodeConfig(b)
 }
 func WriteFile(path string, c Config, force bool) error {
-	if !force {
-		if _, err := os.Stat(path); err == nil {
-			return fmt.Errorf("%s exists (use --force)", path)
-		}
-	}
-	b, err := yaml.Marshal(c)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0600)
+	return NewConfigRepository(path).Write(context.Background(), c, force)
 }
 func cloneStrings(in []string) []string {
 	if len(in) == 0 {
