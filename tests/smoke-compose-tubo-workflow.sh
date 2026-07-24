@@ -11,34 +11,41 @@ export TUBO_REPO_ROOT="$ROOT_DIR"
 free_tcp_port() {
   python3 - <<'PY'
 import socket
-s = socket.socket()
-s.bind(('127.0.0.1', 0))
-print(s.getsockname()[1])
-s.close()
+sock = socket.socket()
+sock.bind(('127.0.0.1', 0))
+print(sock.getsockname()[1])
+sock.close()
 PY
 }
-declare -A RESERVED_TCP_PORTS=()
-reserve_tcp_port() {
-  local port
-  while :; do
-    port="$(free_tcp_port)"
-    if [[ -z "${RESERVED_TCP_PORTS[$port]:-}" ]]; then
-      RESERVED_TCP_PORTS[$port]=1
-      echo "$port"
-      return 0
-    fi
-  done
-}
-export TUBO_SMOKE_RELAY_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_RELAY_HEALTH_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_DUMMY_API_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_EDGE_HTTP_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_EDGE_ADMIN_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_EDGE_P2P_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_SERVICE_A_HEALTH_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_SERVICE_A_P2P_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_SERVICE_B_HEALTH_PORT="$(reserve_tcp_port)"
-export TUBO_SMOKE_SERVICE_B_P2P_PORT="$(reserve_tcp_port)"
+SMOKE_PORTS="$(python3 - <<'PY'
+import socket
+sockets = []
+try:
+    for _ in range(10):
+        sock = socket.socket()
+        sock.bind(('127.0.0.1', 0))
+        sockets.append(sock)
+    print(' '.join(str(sock.getsockname()[1]) for sock in sockets))
+finally:
+    for sock in sockets:
+        sock.close()
+PY
+)"
+IFS=' ' read -r \
+  TUBO_SMOKE_RELAY_PORT \
+  TUBO_SMOKE_RELAY_HEALTH_PORT \
+  TUBO_SMOKE_DUMMY_API_PORT \
+  TUBO_SMOKE_EDGE_HTTP_PORT \
+  TUBO_SMOKE_EDGE_ADMIN_PORT \
+  TUBO_SMOKE_EDGE_P2P_PORT \
+  TUBO_SMOKE_SERVICE_A_HEALTH_PORT \
+  TUBO_SMOKE_SERVICE_A_P2P_PORT \
+  TUBO_SMOKE_SERVICE_B_HEALTH_PORT \
+  TUBO_SMOKE_SERVICE_B_P2P_PORT <<< "$SMOKE_PORTS"
+export TUBO_SMOKE_RELAY_PORT TUBO_SMOKE_RELAY_HEALTH_PORT
+export TUBO_SMOKE_DUMMY_API_PORT TUBO_SMOKE_EDGE_HTTP_PORT TUBO_SMOKE_EDGE_ADMIN_PORT TUBO_SMOKE_EDGE_P2P_PORT
+export TUBO_SMOKE_SERVICE_A_HEALTH_PORT TUBO_SMOKE_SERVICE_A_P2P_PORT
+export TUBO_SMOKE_SERVICE_B_HEALTH_PORT TUBO_SMOKE_SERVICE_B_P2P_PORT
 if [[ "$(id -u)" -eq 0 ]]; then
   export TUBO_SMOKE_UID="${TUBO_SMOKE_UID:-65532}"
   export TUBO_SMOKE_GID="${TUBO_SMOKE_GID:-65532}"
