@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -33,9 +32,9 @@ type shareRedemptionState struct {
 }
 
 type ShareRedemptionStore struct {
-	path string
-	now  func() time.Time
-	mu   sync.Mutex
+	path        string
+	now         func() time.Time
+	LockTimeout time.Duration
 }
 
 func NewShareRedemptionStore(path string) *ShareRedemptionStore {
@@ -62,44 +61,47 @@ func (s *ShareRedemptionStore) TryConsume(record ShareRedemptionRecord) error {
 	if record.TokenExpiresAt.IsZero() {
 		return errors.New("share redemption record is missing token expiry")
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	state, err := s.load()
-	if err != nil {
-		return err
-	}
-	now := s.now().UTC()
-	state.pruneExpired(now)
-	for _, item := range state.Items {
-		if item.JTI == record.JTI {
-			return ErrShareInviteAlreadyRedeemed
+	return withGrantStoreLock(s.path, s.LockTimeout, func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
 		}
-	}
-	if record.RedeemedAt.IsZero() {
-		record.RedeemedAt = now
-	}
-	state.Version = shareRedemptionStateVersion
-	state.Items = append(state.Items, record)
-	state.sort()
-	return s.save(state)
+		now := s.now().UTC()
+		state.pruneExpired(now)
+		for _, item := range state.Items {
+			if item.JTI == record.JTI {
+				return ErrShareInviteAlreadyRedeemed
+			}
+		}
+		if record.RedeemedAt.IsZero() {
+			record.RedeemedAt = now
+		}
+		state.Version = shareRedemptionStateVersion
+		state.Items = append(state.Items, record)
+		state.sort()
+		return s.saveUnlocked(state)
+	})
 }
 
 func (s *ShareRedemptionStore) List() ([]ShareRedemptionRecord, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	state, err := s.load()
-	if err != nil {
-		return nil, err
-	}
-	if state.pruneExpired(s.now().UTC()) {
-		if err := s.save(state); err != nil {
-			return nil, err
+	var out []ShareRedemptionRecord
+	err := withGrantStoreLock(s.path, s.LockTimeout, func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
 		}
-	}
-	return append([]ShareRedemptionRecord(nil), state.Items...), nil
+		if state.pruneExpired(s.now().UTC()) {
+			if err := s.saveUnlocked(state); err != nil {
+				return err
+			}
+		}
+		out = append([]ShareRedemptionRecord(nil), state.Items...)
+		return nil
+	})
+	return out, err
 }
 
-func (s *ShareRedemptionStore) load() (shareRedemptionState, error) {
+func (s *ShareRedemptionStore) loadUnlocked() (shareRedemptionState, error) {
 	b, err := os.ReadFile(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return shareRedemptionState{Version: shareRedemptionStateVersion}, nil
@@ -118,34 +120,13 @@ func (s *ShareRedemptionStore) load() (shareRedemptionState, error) {
 	return state, nil
 }
 
-func (s *ShareRedemptionStore) save(state shareRedemptionState) error {
+func (s *ShareRedemptionStore) saveUnlocked(state shareRedemptionState) error {
 	state.sort()
-	if err := os.MkdirAll(filepath.Dir(s.path), 0700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	b = append(b, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".share-redemptions-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, s.path)
+	return atomicWriteGrantStore(s.path, append(b, '\n'))
 }
 
 func (s *shareRedemptionState) pruneExpired(now time.Time) bool {

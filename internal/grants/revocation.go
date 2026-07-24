@@ -3,6 +3,7 @@ package grants
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -40,8 +41,9 @@ type RevocationState struct {
 }
 
 type RevocationStore struct {
-	path string
-	now  func() time.Time
+	path        string
+	now         func() time.Time
+	LockTimeout time.Duration
 }
 
 func NewRevocationStore(path string) *RevocationStore {
@@ -65,105 +67,122 @@ func (s *RevocationStore) RevokeInvite(jti, reason string) (RevocationRecord, er
 	if jti == "" {
 		return RevocationRecord{}, errors.New("invite id is required")
 	}
-	state, err := s.load()
-	if err != nil {
-		return RevocationRecord{}, err
-	}
 	rec := RevocationRecord{Kind: RevocationKindInvite, ID: jti, Reason: reason, RevokedAt: s.now().UTC()}
-	state.RevokedInvites[jti] = rec
-	return rec, s.save(state)
+	err := s.update(func(state *RevocationState) {
+		state.RevokedInvites[jti] = rec
+	})
+	return rec, err
 }
 
 func (s *RevocationStore) IsInviteRevoked(jti string) (bool, RevocationRecord, error) {
-	state, err := s.load()
-	if err != nil {
-		return false, RevocationRecord{}, err
-	}
-	rec, ok := state.RevokedInvites[jti]
-	return ok, rec, nil
+	var rec RevocationRecord
+	var ok bool
+	err := s.read(func(state RevocationState) { rec, ok = state.RevokedInvites[jti] })
+	return ok, rec, err
 }
 
 func (s *RevocationStore) RevokeSession(sessionID, reason string) (RevocationRecord, error) {
 	if sessionID == "" {
 		return RevocationRecord{}, errors.New("session id is required")
 	}
-	state, err := s.load()
-	if err != nil {
-		return RevocationRecord{}, err
-	}
 	rec := RevocationRecord{Kind: RevocationKindSession, ID: sessionID, Reason: reason, RevokedAt: s.now().UTC()}
-	state.RevokedSessions[sessionID] = rec
-	return rec, s.save(state)
+	err := s.update(func(state *RevocationState) {
+		state.RevokedSessions[sessionID] = rec
+	})
+	return rec, err
 }
 
 func (s *RevocationStore) IsSessionRevoked(sessionID string) (bool, RevocationRecord, error) {
-	state, err := s.load()
-	if err != nil {
-		return false, RevocationRecord{}, err
-	}
-	rec, ok := state.RevokedSessions[sessionID]
-	return ok, rec, nil
+	var rec RevocationRecord
+	var ok bool
+	err := s.read(func(state RevocationState) { rec, ok = state.RevokedSessions[sessionID] })
+	return ok, rec, err
 }
 
-func (s *RevocationStore) RevokeServiceAccess(serviceID, reason string) (int64, error) {
+func (s *RevocationStore) RevokeServiceAccess(serviceID, _ string) (int64, error) {
 	if serviceID == "" {
 		return 0, errors.New("service id is required")
 	}
-	state, err := s.load()
-	if err != nil {
-		return 0, err
-	}
-	state.ServiceAccessEpochs[serviceID]++
-	return state.ServiceAccessEpochs[serviceID], s.save(state)
+	var epoch int64
+	err := s.update(func(state *RevocationState) {
+		state.ServiceAccessEpochs[serviceID]++
+		epoch = state.ServiceAccessEpochs[serviceID]
+	})
+	return epoch, err
 }
 
 func (s *RevocationStore) ServiceAccessEpoch(serviceID string) (int64, error) {
-	state, err := s.load()
-	if err != nil {
-		return 0, err
-	}
-	return state.ServiceAccessEpochs[serviceID], nil
+	var epoch int64
+	err := s.read(func(state RevocationState) { epoch = state.ServiceAccessEpochs[serviceID] })
+	return epoch, err
 }
 
 func (s *RevocationStore) RevokePublish(serviceID, reason string) (int64, error) {
 	if serviceID == "" {
 		return 0, errors.New("service id is required")
 	}
-	state, err := s.load()
-	if err != nil {
-		return 0, err
-	}
-	state.PublishEpochs[serviceID]++
-	state.RevokedPublish[serviceID] = RevocationRecord{Kind: RevocationKindPublish, ServiceID: serviceID, Reason: reason, RevokedAt: s.now().UTC()}
-	return state.PublishEpochs[serviceID], s.save(state)
+	var epoch int64
+	err := s.update(func(state *RevocationState) {
+		state.PublishEpochs[serviceID]++
+		epoch = state.PublishEpochs[serviceID]
+		state.RevokedPublish[serviceID] = RevocationRecord{Kind: RevocationKindPublish, ServiceID: serviceID, Reason: reason, RevokedAt: s.now().UTC()}
+	})
+	return epoch, err
 }
 
 func (s *RevocationStore) IsPublishRevoked(serviceID string) (bool, RevocationRecord, error) {
-	state, err := s.load()
-	if err != nil {
-		return false, RevocationRecord{}, err
-	}
-	rec, ok := state.RevokedPublish[serviceID]
-	return ok, rec, nil
+	var rec RevocationRecord
+	var ok bool
+	err := s.read(func(state RevocationState) { rec, ok = state.RevokedPublish[serviceID] })
+	return ok, rec, err
 }
 
 func (s *RevocationStore) PublishEpoch(serviceID string) (int64, error) {
-	state, err := s.load()
-	if err != nil {
-		return 0, err
-	}
-	return state.PublishEpochs[serviceID], nil
+	var epoch int64
+	err := s.read(func(state RevocationState) { epoch = state.PublishEpochs[serviceID] })
+	return epoch, err
 }
 
 func (s *RevocationStore) EpochsForService(serviceID string) (RevocationEpochs, error) {
-	state, err := s.load()
-	if err != nil {
-		return RevocationEpochs{}, err
-	}
-	return RevocationEpochs{AccessEpoch: state.ServiceAccessEpochs[serviceID], PublishEpoch: state.PublishEpochs[serviceID]}, nil
+	var epochs RevocationEpochs
+	err := s.read(func(state RevocationState) {
+		epochs = RevocationEpochs{AccessEpoch: state.ServiceAccessEpochs[serviceID], PublishEpoch: state.PublishEpochs[serviceID]}
+	})
+	return epochs, err
 }
 
-func (s *RevocationStore) load() (RevocationState, error) {
+func (s *RevocationStore) update(mutate func(*RevocationState)) error {
+	if s == nil {
+		return nil
+	}
+	return withGrantStoreLock(s.path, s.LockTimeout, func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		mutate(&state)
+		return s.saveUnlocked(state)
+	})
+}
+
+func (s *RevocationStore) read(inspect func(RevocationState)) error {
+	if s == nil {
+		state := RevocationState{Version: RevocationStateVersion}
+		state.ensureMaps()
+		inspect(state)
+		return nil
+	}
+	return withGrantStoreLock(s.path, s.LockTimeout, func() error {
+		state, err := s.loadUnlocked()
+		if err != nil {
+			return err
+		}
+		inspect(state)
+		return nil
+	})
+}
+
+func (s *RevocationStore) loadUnlocked() (RevocationState, error) {
 	state := RevocationState{Version: RevocationStateVersion}
 	state.ensureMaps()
 	if s == nil || s.path == "" {
@@ -180,7 +199,7 @@ func (s *RevocationStore) load() (RevocationState, error) {
 		return state, nil
 	}
 	if err := json.Unmarshal(b, &state); err != nil {
-		return RevocationState{}, err
+		return RevocationState{}, fmt.Errorf("decode revocation store %s: %w", s.path, err)
 	}
 	if state.Version == "" {
 		state.Version = RevocationStateVersion
@@ -189,37 +208,17 @@ func (s *RevocationStore) load() (RevocationState, error) {
 	return state, nil
 }
 
-func (s *RevocationStore) save(state RevocationState) error {
+func (s *RevocationStore) saveUnlocked(state RevocationState) error {
 	if s == nil || s.path == "" {
 		return nil
 	}
 	state.Version = RevocationStateVersion
 	state.ensureMaps()
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return err
-	}
 	b, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".revocations-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(b); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, s.path)
+	return atomicWriteGrantStore(s.path, append(b, '\n'))
 }
 
 func (s *RevocationState) ensureMaps() {

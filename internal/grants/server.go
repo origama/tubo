@@ -28,31 +28,32 @@ const (
 //     minted connect leases are capped by that membership expiry.
 //   - connect refresh only extends an already bounded session; it never widens the
 //     membership/session window.
+//
 // MembershipGrantTokenVerifier validates a membership grant token and returns
 // its expiry time. The caller is responsible for providing an implementation
 // that uses clusterinvite.ParseAndVerifyToken and clusterinvite.MatchesAuthority.
 type MembershipGrantTokenVerifier func(token string, authorityPub ed25519.PublicKey, clusterID, namespaceID string) (time.Time, error)
 
 type ServerConfig struct {
-	ClusterName                    string
-	ClusterID                      string
-	NamespaceID                    string
-	Store                          *Store
-	Now                            func() time.Time
-	MaxPendingRequests             int
-	MaxPendingPerRequester         int
-	MaxPendingPerService           int
-	AutoApprove                    bool
-	AuthorityPrivateKey            ed25519.PrivateKey
-	ClaimTTL                       time.Duration
-	ServiceShareTTL                time.Duration
-	GrantServicePeers              []string
-	GrantServicePeersProvider      func() []string
-	ConnectAccessTTL               time.Duration
-	ConnectRefreshTTL              time.Duration
-	Revocations                    *RevocationStore
-	ShareRedemptions               *ShareRedemptionStore
-	MembershipGrantTokenVerifier   MembershipGrantTokenVerifier
+	ClusterName                  string
+	ClusterID                    string
+	NamespaceID                  string
+	Store                        *Store
+	Now                          func() time.Time
+	MaxPendingRequests           int
+	MaxPendingPerRequester       int
+	MaxPendingPerService         int
+	AutoApprove                  bool
+	AuthorityPrivateKey          ed25519.PrivateKey
+	ClaimTTL                     time.Duration
+	ServiceShareTTL              time.Duration
+	GrantServicePeers            []string
+	GrantServicePeersProvider    func() []string
+	ConnectAccessTTL             time.Duration
+	ConnectRefreshTTL            time.Duration
+	Revocations                  *RevocationStore
+	ShareRedemptions             *ShareRedemptionStore
+	MembershipGrantTokenVerifier MembershipGrantTokenVerifier
 }
 
 type Server struct {
@@ -162,10 +163,11 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 		RequestedAt:           now,
 		ExpiresAt:             now.Add(24 * time.Hour),
 	}
-	if err := s.enforcePendingPolicy(req); err != nil {
-		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
-	}
-	req, err := s.cfg.Store.CreatePending(req)
+	req, err := s.cfg.Store.CreatePendingWithPolicy(req, PendingPolicy{
+		MaxPendingRequests:     s.cfg.MaxPendingRequests,
+		MaxPendingPerRequester: s.cfg.MaxPendingPerRequester,
+		MaxPendingPerService:   s.cfg.MaxPendingPerService,
+	})
 	if err != nil {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: "invalid", Reason: err.Error()}
 	}
@@ -202,44 +204,6 @@ func (s *Server) handleSubmit(msg Message, requester peer.ID) Message {
 		return Message{Type: TypeDenied, Version: VersionV1, RequestID: req.ID, Reason: err.Error()}
 	}
 	return ResponseForRequest(approved)
-}
-
-func (s *Server) enforcePendingPolicy(req Request) error {
-	requests, err := s.cfg.Store.ListAll()
-	if err != nil {
-		return err
-	}
-	pendingTotal := 0
-	pendingRequester := 0
-	pendingService := 0
-	for _, existing := range requests {
-		if existing.Status == StatusPending && equivalentActive(existing, req) {
-			return nil
-		}
-		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceID == req.ServiceID && existing.Status != StatusDenied && existing.Status != StatusExpired && existing.ServicePeerID != req.ServicePeerID {
-			return fmt.Errorf("service %q already has an active grant request or claim for a different peer", req.ServiceID)
-		}
-		if existing.Status != StatusPending {
-			continue
-		}
-		pendingTotal++
-		if existing.RequesterPeerID == req.RequesterPeerID {
-			pendingRequester++
-		}
-		if existing.ClusterID == req.ClusterID && existing.NamespaceID == req.NamespaceID && existing.ServiceID == req.ServiceID {
-			pendingService++
-		}
-	}
-	if pendingTotal >= s.cfg.MaxPendingRequests {
-		return fmt.Errorf("too many pending grant requests: limit %d", s.cfg.MaxPendingRequests)
-	}
-	if pendingRequester >= s.cfg.MaxPendingPerRequester {
-		return fmt.Errorf("too many pending grant requests for requester: limit %d", s.cfg.MaxPendingPerRequester)
-	}
-	if pendingService >= s.cfg.MaxPendingPerService {
-		return fmt.Errorf("too many pending grant requests for service %q: limit %d", req.ServiceID, s.cfg.MaxPendingPerService)
-	}
-	return nil
 }
 
 func (s *Server) handlePoll(msg Message) Message {

@@ -501,6 +501,24 @@ If connect rollover fails with `membership capability` errors:
 
 ---
 
+## Grant-store locking and recovery
+
+Grant requests, revocations, and one-time share redemptions remain JSON-compatible
+with existing state. Each mutation now holds both a path-scoped process lock and
+an OS advisory lock through load, policy check, mutation, fsync, and atomic
+replacement. State files and lock sidecars use mode `0600`.
+
+Lock acquisition times out after 10 seconds and fails closed. A `*.lock` file may
+remain after normal exit or a crash; file existence does not mean lock ownership,
+and operators should not delete it to recover. OS ownership is released when the
+process exits. Malformed JSON is reported and left untouched instead of being
+replaced. Same-directory `.<store>.tmp-*` files left by interruption are removed
+under lock on next successful write.
+
+This prevents multiple processes sharing the **same store path** from losing
+updates. It does not provide consensus between authorities using separate state
+paths; continue to run one authoritative Grant Service per authority scope.
+
 ## Security notes
 
 - The authority never signs a `PublishLease` without explicit `tubo grants approve`.
