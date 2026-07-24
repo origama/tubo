@@ -50,6 +50,7 @@ type remoteQueryAttempt struct {
 	PathClass     string
 	Timeout       time.Duration
 	Records       int
+	Truncated     bool
 	Metadata      *discoveryquery.Metadata
 	ResponseError string
 	Err           error
@@ -239,12 +240,16 @@ func queryRemoteDiscovery(cfg cfgpkg.Config, timeout time.Duration, recorder *pr
 			lastErr = errors.New(resp.Error)
 			continue
 		}
-		attempt.Records = len(resp.Services)
+		attempt.Records = len(resp.Services) + len(resp.OpaqueAnnouncementsV3)
+		attempt.Truncated = resp.Truncated
 		if resp.Service != nil {
 			attempt.Records = 1
 		}
 		attempts = append(attempts, attempt)
 		recorder.message("discovery peer %d/%d (%s) returned %d records", i+1, len(peers), attempt.PathClass, attempt.Records)
+		if resp.Truncated {
+			recorder.message("discovery peer %d/%d response was truncated by its encoded byte budget", i+1, len(peers))
+		}
 		recorder.verbose(1, "discovery peer %d/%d addr=%s served_by=%s role=%s records=%d", i+1, len(peers), raw, resp.Metadata.ServedBy, resp.Metadata.ServedByRole, attempt.Records)
 		return resp, attempts, nil
 	}

@@ -93,11 +93,17 @@ for that cluster:
 - the relay does **not** verify the announcement signature;
 - the relay does **not** decrypt or interpret the payload beyond routing hints
   (peer id, envelope size, TTL);
-- the relay caps stored records by count, per-record size, and TTL to bound
-  DoS/spam surface;
+- the relay caps stored records globally at 256 records / 768 KiB and per
+  observed publisher PeerID at 16 records / 128 KiB; each encoded announcement
+  is limited to 32 KiB, refreshes of the same `(peer_id, key_id)` are accepted
+  at most once per second, and stored TTL is capped at 15 minutes;
 - the relay returns opaque records to consumers via `list_services` responses
   in a separate `opaque_announcements_v3` field, never mixed with validated
-  services.
+  services;
+- complete encoded `list_services` responses, including JSON/base64 overhead
+  and the encoder newline, stay within the 1 MiB client read limit. Validated
+  services have priority; opaque records use deterministic peer-round-robin
+  ordering. A bounded response that omits records sets `truncated: true`.
 
 The **consumer** is the trust boundary. Before surfacing any opaque record as a
 trusted service, the consumer re-verifies the announcement locally against:
@@ -107,7 +113,8 @@ trusted service, the consumer re-verifies the announcement locally against:
 - the announcement's own signature envelope and payload constraints.
 
 Records that fail local verification are silently dropped by the consumer and
-never appear in `tubo get services`.
+never appear in `tubo get services`. Truncation does not change this trust
+boundary and does not make an included opaque record trusted.
 
 When the relay does have a validation context for the announcement's cluster,
 the classic strict path is used and opaque forwarding never runs for that

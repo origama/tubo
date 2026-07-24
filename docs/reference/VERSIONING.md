@@ -70,6 +70,12 @@ Compatibility is defined by the **protocol version**, not only by the product ve
 - operators should upgrade relay/service/client binaries together when enabling secret-backed collaborative discovery.
 
 
+Opaque relay quota hardening is a product `PATCH` with no protocol-version
+bump. The `list_services.truncated` boolean is an additive JSON field under
+`/tubo/discovery/query/1.0`; older clients ignore it, while bounded responses
+remain decodable by old and new clients. No persisted-state migration or
+operator action is required.
+
 Mixed deployments like these should keep working:
 
 - edge `tubo v2.1.4` + relay `tubo v2.0.0`
