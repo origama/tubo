@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,10 +35,22 @@ type pipeDefinitionLocation struct {
 	Name      string
 }
 
-func persistPipeDefinitionFromConnect(configPath string, req connectCLIRequest, state detachedProcessState) (cfgpkg.NamespacePipe, bool, pipeDefinitionLocation, error) {
-	cfg, err := loadLocalConfigOrError(configPath)
-	if err != nil {
-		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, err
+type pipeDefinitionMutation struct {
+	pipeDefinitionLocation
+	Previous   cfgpkg.NamespacePipe
+	Existed    bool
+	Definition cfgpkg.NamespacePipe
+}
+
+var newPipeConfigRepository = cfgpkg.NewConfigRepository
+
+var updatePipeConfig = func(configPath string, mutate cfgpkg.ConfigMutation) (cfgpkg.Config, error) {
+	return newPipeConfigRepository(configPath).Update(context.Background(), mutate)
+}
+
+func persistPipeDefinitionFromConnect(configPath string, req connectCLIRequest, state detachedProcessState) (cfgpkg.NamespacePipe, bool, pipeDefinitionMutation, error) {
+	if strings.TrimSpace(configPath) == "" {
+		configPath = defaultTuboConfigPath()
 	}
 	clusterName := strings.TrimSpace(state.Cluster)
 	if clusterName == "" {
@@ -46,27 +61,49 @@ func persistPipeDefinitionFromConnect(configPath string, req connectCLIRequest, 
 		namespaceName = strings.TrimSpace(req.Namespace)
 	}
 	if clusterName == "" || namespaceName == "" {
-		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, errors.New("pipe definition requires a cluster and namespace scope")
-	}
-	cluster, ok := cfg.Clusters[clusterName]
-	if !ok {
-		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, fmt.Errorf("cluster %q not found in config", clusterName)
-	}
-	if cluster.Namespaces == nil {
-		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, fmt.Errorf("cluster %q has no namespaces configured", clusterName)
-	}
-	namespace, ok := cluster.Namespaces[namespaceName]
-	if !ok {
-		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, fmt.Errorf("namespace %q not found in cluster %q", namespaceName, clusterName)
-	}
-	if namespace.Pipes == nil {
-		namespace.Pipes = map[string]cfgpkg.NamespacePipe{}
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionMutation{}, errors.New("pipe definition requires a cluster and namespace scope")
 	}
 	name := strings.TrimSpace(state.Name)
 	if name == "" {
-		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, errors.New("pipe name is required")
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionMutation{}, errors.New("pipe name is required")
 	}
-	previous, existed := namespace.Pipes[name]
+	location := pipeDefinitionLocation{Cluster: clusterName, Namespace: namespaceName, Name: name}
+	var mutation pipeDefinitionMutation
+	_, err := updatePipeConfig(configPath, func(cfg *cfgpkg.Config) error {
+		cluster, ok := cfg.Clusters[clusterName]
+		if !ok {
+			return fmt.Errorf("cluster %q not found in config", clusterName)
+		}
+		if cluster.Namespaces == nil {
+			return fmt.Errorf("cluster %q has no namespaces configured", clusterName)
+		}
+		namespace, ok := cluster.Namespaces[namespaceName]
+		if !ok {
+			return fmt.Errorf("namespace %q not found in cluster %q", namespaceName, clusterName)
+		}
+		if namespace.Pipes == nil {
+			namespace.Pipes = map[string]cfgpkg.NamespacePipe{}
+		}
+		previous, existed := namespace.Pipes[name]
+		definition := pipeDefinitionFromConnect(cluster, namespaceName, name, req, state, previous, existed)
+		if existed {
+			if err := ensureCompatiblePipeDefinition(location, previous, definition); err != nil {
+				return err
+			}
+		}
+		namespace.Pipes[name] = definition
+		cluster.Namespaces[namespaceName] = namespace
+		cfg.Clusters[clusterName] = cluster
+		mutation = pipeDefinitionMutation{pipeDefinitionLocation: location, Previous: previous, Existed: existed, Definition: definition}
+		return nil
+	})
+	if err != nil {
+		return cfgpkg.NamespacePipe{}, false, pipeDefinitionMutation{}, err
+	}
+	return mutation.Previous, mutation.Existed, mutation, nil
+}
+
+func pipeDefinitionFromConnect(cluster cfgpkg.Cluster, namespaceName, name string, req connectCLIRequest, state detachedProcessState, previous cfgpkg.NamespacePipe, existed bool) cfgpkg.NamespacePipe {
 	now := time.Now().UTC()
 	definition := cfgpkg.NamespacePipe{
 		Name:         name,
@@ -82,63 +119,92 @@ func persistPipeDefinitionFromConnect(configPath string, req connectCLIRequest, 
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if existed && !previous.CreatedAt.IsZero() {
-		definition.CreatedAt = previous.CreatedAt
+	if !existed {
+		return definition
 	}
-	if existed && definition.ServiceRef == "" {
-		definition.ServiceRef = previous.ServiceRef
+	definition.CreatedAt = previous.CreatedAt
+	if definition.CreatedAt.IsZero() {
+		definition.CreatedAt = now
 	}
-	if existed && definition.ServiceID == "" {
-		definition.ServiceID = previous.ServiceID
-	}
-	if existed && definition.ServiceKind == "" {
+	definition.ClusterID = firstNonEmpty(strings.TrimSpace(previous.ClusterID), definition.ClusterID)
+	definition.NamespaceID = firstNonEmpty(strings.TrimSpace(previous.NamespaceID), definition.NamespaceID)
+	definition.ServiceRef = firstNonEmpty(definition.ServiceRef, previous.ServiceRef)
+	definition.ServiceID = firstNonEmpty(definition.ServiceID, previous.ServiceID)
+	if definition.ServiceKind == "" {
 		definition.ServiceKind = previous.ServiceKind
 	}
-	if existed && definition.Local == "" {
-		definition.Local = previous.Local
-	}
-	if existed && definition.Path == "" {
-		definition.Path = previous.Path
-	}
-	if existed && definition.SelectedAddr == "" {
-		definition.SelectedAddr = previous.SelectedAddr
-	}
-	if existed && definition.SelectedPath == "" {
-		definition.SelectedPath = previous.SelectedPath
-	}
-	namespace.Pipes[name] = definition
-	cluster.Namespaces[namespaceName] = namespace
-	cfg.Clusters[clusterName] = cluster
-	if err := saveLocalConfig(configPath, cfg); err != nil {
-		return cfgpkg.NamespacePipe{}, false, pipeDefinitionLocation{}, err
-	}
-	return previous, existed, pipeDefinitionLocation{Cluster: clusterName, Namespace: namespaceName, Name: name}, nil
+	definition.Local = firstNonEmpty(definition.Local, previous.Local)
+	definition.Path = firstNonEmpty(definition.Path, previous.Path)
+	definition.SelectedAddr = firstNonEmpty(definition.SelectedAddr, previous.SelectedAddr)
+	definition.SelectedPath = firstNonEmpty(definition.SelectedPath, previous.SelectedPath)
+	return definition
 }
 
-func restorePipeDefinition(configPath, clusterName, namespaceName, name string, previous cfgpkg.NamespacePipe, existed bool) error {
-	cfg, err := loadLocalConfigOrError(configPath)
-	if err != nil {
+func ensureCompatiblePipeDefinition(location pipeDefinitionLocation, previous, next cfgpkg.NamespacePipe) error {
+	conflict := func(field, old, new string) error {
+		if strings.TrimSpace(old) != "" && strings.TrimSpace(new) != "" && strings.TrimSpace(old) != strings.TrimSpace(new) {
+			return fmt.Errorf("pipe %q in cluster %q namespace %q conflicts on %s (%q != %q)", location.Name, location.Cluster, location.Namespace, field, old, new)
+		}
+		return nil
+	}
+	if err := conflict("name", previous.Name, next.Name); err != nil {
 		return err
 	}
-	cluster, ok := cfg.Clusters[clusterName]
-	if !ok {
-		return nil
+	if err := conflict("local listener", normalizeConnectProcessLocal(previous.Local), normalizeConnectProcessLocal(next.Local)); err != nil {
+		return err
 	}
-	namespace, ok := cluster.Namespaces[namespaceName]
-	if !ok {
-		return nil
+	if err := conflict("service kind", string(previous.ServiceKind), string(next.ServiceKind)); err != nil {
+		return err
 	}
-	if existed {
-		if namespace.Pipes == nil {
-			namespace.Pipes = map[string]cfgpkg.NamespacePipe{}
+	if previous.ServiceID != "" || next.ServiceID != "" {
+		return conflict("service id", previous.ServiceID, next.ServiceID)
+	}
+	return conflict("service reference", previous.ServiceRef, next.ServiceRef)
+}
+
+func rollbackPipeDefinition(configPath string, mutation pipeDefinitionMutation) (bool, error) {
+	changed := false
+	_, err := updatePipeConfig(configPath, func(cfg *cfgpkg.Config) error {
+		cluster, ok := cfg.Clusters[mutation.Cluster]
+		if !ok {
+			return nil
 		}
-		namespace.Pipes[name] = previous
-	} else if len(namespace.Pipes) > 0 {
-		delete(namespace.Pipes, name)
+		namespace, ok := cluster.Namespaces[mutation.Namespace]
+		if !ok || namespace.Pipes == nil {
+			return nil
+		}
+		current, ok := namespace.Pipes[mutation.Name]
+		if !ok || !pipeDefinitionsEqual(current, mutation.Definition) {
+			return nil
+		}
+		if mutation.Existed {
+			namespace.Pipes[mutation.Name] = mutation.Previous
+		} else {
+			delete(namespace.Pipes, mutation.Name)
+		}
+		cluster.Namespaces[mutation.Namespace] = namespace
+		cfg.Clusters[mutation.Cluster] = cluster
+		changed = true
+		return nil
+	})
+	return changed, err
+}
+
+func pipeDefinitionsEqual(a, b cfgpkg.NamespacePipe) bool {
+	return reflect.DeepEqual(a, b)
+}
+
+func pipeDefinitionMatchesLoaded(stored, loaded cfgpkg.NamespacePipe) bool {
+	if stored.Name == "" {
+		stored.Name = loaded.Name
 	}
-	cluster.Namespaces[namespaceName] = namespace
-	cfg.Clusters[clusterName] = cluster
-	return saveLocalConfig(configPath, cfg)
+	if stored.ClusterID == "" {
+		stored.ClusterID = loaded.ClusterID
+	}
+	if stored.NamespaceID == "" {
+		stored.NamespaceID = loaded.NamespaceID
+	}
+	return pipeDefinitionsEqual(stored, loaded)
 }
 
 func loadPipeDefinition(configPath, clusterName, namespaceName, name string) (cfgpkg.NamespacePipe, error) {
@@ -146,6 +212,10 @@ func loadPipeDefinition(configPath, clusterName, namespaceName, name string) (cf
 	if err != nil {
 		return cfgpkg.NamespacePipe{}, err
 	}
+	return pipeDefinitionInConfig(cfg, clusterName, namespaceName, name)
+}
+
+func pipeDefinitionInConfig(cfg cfgpkg.Config, clusterName, namespaceName, name string) (cfgpkg.NamespacePipe, error) {
 	cluster, ok := cfg.Clusters[clusterName]
 	if !ok {
 		return cfgpkg.NamespacePipe{}, fmt.Errorf("cluster %q not found in config", clusterName)
@@ -171,6 +241,44 @@ func loadPipeDefinition(configPath, clusterName, namespaceName, name string) (cf
 		pipe.NamespaceID = namespaceName
 	}
 	return pipe, nil
+}
+
+func locatePipeDefinition(cfg cfgpkg.Config, pipeName string) (pipeDefinitionLocation, cfgpkg.NamespacePipe, error) {
+	type match struct {
+		location pipeDefinitionLocation
+		pipe     cfgpkg.NamespacePipe
+	}
+	var matches []match
+	clusterNames := make([]string, 0, len(cfg.Clusters))
+	for clusterName := range cfg.Clusters {
+		clusterNames = append(clusterNames, clusterName)
+	}
+	sort.Strings(clusterNames)
+	for _, clusterName := range clusterNames {
+		cluster := cfg.Clusters[clusterName]
+		namespaceNames := make([]string, 0, len(cluster.Namespaces))
+		for namespaceName := range cluster.Namespaces {
+			namespaceNames = append(namespaceNames, namespaceName)
+		}
+		sort.Strings(namespaceNames)
+		for _, namespaceName := range namespaceNames {
+			if _, ok := cluster.Namespaces[namespaceName].Pipes[pipeName]; !ok {
+				continue
+			}
+			pipe, err := pipeDefinitionInConfig(cfg, clusterName, namespaceName, pipeName)
+			if err != nil {
+				return pipeDefinitionLocation{}, cfgpkg.NamespacePipe{}, err
+			}
+			matches = append(matches, match{location: pipeDefinitionLocation{Cluster: clusterName, Namespace: namespaceName, Name: pipeName}, pipe: pipe})
+		}
+	}
+	if len(matches) == 0 {
+		return pipeDefinitionLocation{}, cfgpkg.NamespacePipe{}, fmt.Errorf("pipe %q not found in config", pipeName)
+	}
+	if len(matches) > 1 {
+		return pipeDefinitionLocation{}, cfgpkg.NamespacePipe{}, fmt.Errorf("pipe %q exists in multiple scopes; select or remove duplicate definitions", pipeName)
+	}
+	return matches[0].location, matches[0].pipe, nil
 }
 
 func pipeDefinitionMissingFields(def cfgpkg.NamespacePipe) []string {
@@ -261,10 +369,6 @@ func inspectPipeDefinition(configPath, resource string, jsonOut bool, clusterFla
 	if err != nil {
 		return err
 	}
-	scope, err := resolveServiceScope(cfg, clusterFlag, namespaceFlag, false)
-	if err != nil {
-		return err
-	}
 	kind, name, err := parseLocalResourceRef(resource)
 	if err != nil {
 		return err
@@ -272,7 +376,11 @@ func inspectPipeDefinition(configPath, resource string, jsonOut bool, clusterFla
 	if kind != "pipe" {
 		return fmt.Errorf("unsupported pipe resource %q", resource)
 	}
-	pipe, err := loadPipeDefinition(configPath, scope.Cluster, scope.Namespace, name)
+	scope, err := resolveServiceScope(cfg, clusterFlag, namespaceFlag, false)
+	if err != nil {
+		return err
+	}
+	pipe, err := pipeDefinitionInConfig(cfg, scope.Cluster, scope.Namespace, name)
 	if err != nil {
 		return err
 	}

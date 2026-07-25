@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -94,13 +95,15 @@ func detachConnectCommand(args []string, loggingOpts globalCLIOptions) error {
 	if err != nil {
 		return err
 	}
-	previousPipe, pipeExisted, persisted, err := persistPipeDefinitionFromConnect(req.ConfigPath, req, spec.State)
+	_, _, persisted, err := persistPipeDefinitionFromConnect(req.ConfigPath, req, spec.State)
 	if err != nil {
 		return err
 	}
 	state, err := startDetachedProcessWithTimeoutFn(spec, detachedProcessStartTimeout)
 	if err != nil {
-		_ = restorePipeDefinition(req.ConfigPath, persisted.Cluster, persisted.Namespace, persisted.Name, previousPipe, pipeExisted)
+		if _, rollbackErr := rollbackPipeDefinition(req.ConfigPath, persisted); rollbackErr != nil {
+			return errors.Join(err, fmt.Errorf("rollback pipe definition: %w", rollbackErr))
+		}
 		return err
 	}
 	if req.JSONOut {
