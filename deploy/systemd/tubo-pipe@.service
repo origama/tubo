@@ -1,0 +1,19 @@
+# Install explicitly as root. Do not enable this template from Tubo itself.
+# Instance name is operator-selected; environment binds exact primary ref.
+[Unit]
+Description=Tubo pipe %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/tubo-rebuilt/%i.env
+ExecStart=/usr/local/bin/tubo _run-pipe ${TUBO_PIPE_REF}
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

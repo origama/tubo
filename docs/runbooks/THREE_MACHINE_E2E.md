@@ -23,7 +23,7 @@ The rebuilt harness must coexist with the current Tubo installation.
 It therefore:
 
 - never writes `/usr/local/bin/tubo`;
-- never stops or edits `tubo-relay`, `tubo-grants`, or any systemd unit;
+- never stops or edits `tubo-relay`, `tubo-grants`, any systemd unit, or user `launchd` job;
 - never runs `pkill tubo`;
 - never reads or deletes `~/.config/tubo`, `~/.local/share/tubo`, or `/etc/tubo`;
 - uploads binaries under `/tmp/tubo-rebuilt-e2e-<run-id>/bin`;
@@ -47,7 +47,7 @@ cd ~/local_repos/origama/tuboRebuilt
 make e2e-three-machine-preflight
 ```
 
-This checks local build/SSH tools, both SSH aliases, remote OS/architecture, curl, writable `/tmp`, and that the selected relay test port is not already listening. It is read-only.
+This checks local build/SSH tools, both SSH aliases, remote OS/architecture, curl, writable `/tmp`, and that selected relay, publisher HTTP, and local client ports are not already listening. It is read-only.
 
 The selected relay port must also be permitted by both the host firewall and the Linode/cloud firewall. The isolated default is TCP `44001`; this is deliberately different from the currently installed relay on `4001`. If `44001` is not open, add a temporary narrowly scoped firewall rule or choose another isolated port. Do not stop the current relay merely to reuse `4001`.
 
@@ -87,9 +87,10 @@ The scenario performs these assertions:
 12. sends a POST request and checks origin, method, path, query, and body path;
 13. verifies `ps` contains pipe/relay/authority primary refs and no attach/connect/service runtime kinds;
 14. forces publisher/client reachability private and proves the initial session transport path is relayed;
+15. records each run's PID, process identity, and source; harness-managed processes must remain isolated `foreground`/`detached` runs and must never register a host supervisor;
 15. captures status, process, pipe, session, response, and logs as artifacts.
 
-The script intentionally fails while the bootstrap CLI is unimplemented. It is an executable target contract, not a skipped test.
+Implementation now covers commands and relay data path required by this scenario. Local loopback equivalent runs in `make verify-local`; real three-machine execution remains separate and requires explicit confirmation.
 
 ## Artifacts
 
@@ -160,7 +161,8 @@ The full release gate eventually includes:
 - runtime PeerID/address may change;
 - record updates retain exact `pipe_id`;
 - new client connection recovers without byte replay;
-- relay reservation renewal survives beyond its initial TTL in a long campaign.
+- relay reservation renewal survives beyond its initial TTL in a long campaign;
+- supervisor-specific reboot/login validation is a separate operator campaign using an explicit supervisor install, never this isolated harness.
 
 ### Pipe graph and trace
 

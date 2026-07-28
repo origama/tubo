@@ -19,6 +19,7 @@ Technical contracts for Tubo Rebuilt live here.
 - [`runbooks/THREE_MACHINE_E2E.md`](runbooks/THREE_MACHINE_E2E.md)
 - [`testing/ACCEPTANCE_MATRIX.md`](testing/ACCEPTANCE_MATRIX.md)
 - [`testing/LEGACY_BEHAVIOR_MAPPING.md`](testing/LEGACY_BEHAVIOR_MAPPING.md)
+- [`testing/LEGACY_FEATURE_GAP_ANALYSIS.md`](testing/LEGACY_FEATURE_GAP_ANALYSIS.md) — legacy capability gaps, v2 compatibility, and effort classification
 
 ## Decisions
 

@@ -1,5 +1,7 @@
 # CLI contract
 
+Implementation status: private-HTTP/WebSocket/raw-TCP vertical slice supports `keygen swarm`, `join overlay`, scope create/invite/join/use, remote publisher grants and announcements, foreground relay/authority/published pipes, service/pipe create, `attach`, detached `connect`, local inventory/inspection, peer aliases, masked config validation/printing, `doctor`, `logs`, detached pipe restart/removal/stale cleanup, `ps`, `top`, and identity-safe `stop`. Commands documented below but not in this list remain target contract.
+
 ## Output
 
 ```text
@@ -32,6 +34,7 @@ Both use `create-if-missing, reuse-if-compatible, fail-if-conflicting`.
 ```bash
 tubo service create lmstudio --target http://127.0.0.1:1234
 tubo get services                   # local services only
+tubo get scopes|processes|peers|overlays
 tubo describe service/lmstudio
 tubo rm service/lmstudio
 
@@ -90,13 +93,19 @@ Invites target exact `pipe_id`; display name is only a hint. One-time means one 
 
 ```bash
 tubo ps
-tubo top
-tubo logs pipe/lmstudio-team
+tubo top [--interval 1s]
+tubo top --once
+tubo top --json
+tubo logs pipe/lmstudio-team [--tail 200] [-f]
 tubo inspect pipe/lmstudio-team --json
+tubo supervise install pipe/lmstudio-team --json
+tubo supervise install authority/solar --scope solar/default --json
+tubo supervise status pipe/lmstudio-team --json
+tubo supervise uninstall pipe/lmstudio-team --json
 tubo inspect session/ses_... --json
 ```
 
-`ps` displays primary resources and capabilities, never `attach` or `connect` as kinds.
+`ps` displays primary resources and capabilities, never `attach` or `connect` as kinds. JSON includes `source`: `foreground`, `detached`, `launchd`, or `systemd`.
 
 Suggested compact columns:
 
@@ -104,7 +113,23 @@ Suggested compact columns:
 NAME  KIND  INGRESS  TARGET  CAPS  STATUS  AUTH  SESSIONS  PATH
 ```
 
-A pipe's path is an aggregate. Per-session direct/relay data belongs in session inspection.
+A pipe's `PATH` is an aggregate summary. `PATH SOURCE=advertised` describes verified record candidates; `last_session` describes most recent concrete traversal. Per-session direct/relay data belongs in session inspection. Application counters are completed-session totals. `NET RX/TX`, `RX/s`, `TX/s`, `PEERS`, and `CONNS` come from each runtime's libp2p bandwidth/network telemetry, including relay traffic; active/error application-session counters remain pending.
+
+## Local operations
+
+```bash
+tubo peers alias <peer-id> --name <label> [--note <text>]
+tubo config validate
+tubo config print
+tubo doctor
+tubo rm --stale
+tubo --quiet|-v|-vv|-vvv|--log-level <level> <command>
+tubo supervise install|status|uninstall <pipe/name|authority/cluster> [--scope cluster/namespace]
+```
+
+On macOS, `supervise install` writes one user-owned `launchd` plist under `~/Library/LaunchAgents`, bootstraps its exact label, waits for a `source=launchd` ready run, and registers it transactionally. It supports only pipe and authority primary resources. `uninstall` bootouts the exact registered label, waits for the recorded process identity to exit, then removes registry and plist. `stop`, `restart`, and `rm` reject a supervised resource; uninstall/disable supervision first so `KeepAlive` cannot create duplicate runs. Linux templates are documented under `deploy/systemd/` and are never installed by Tubo.
+
+`get peers` returns the union of local aliases and peers currently observed by live local libp2p runtimes. `SOURCE=alias`, `observed`, or `alias+observed` distinguishes them; `OBSERVED BY` names local primary runs. This is a local network view, not a synchronized membership roster, so different machines normally report different peers. Peer aliases remain operator-only metadata, are not synchronized, and never become authorization input. `config print` masks secret paths. Verbose diagnostics use stderr and never contaminate JSON stdout.
 
 ## Discovery
 
@@ -115,7 +140,9 @@ tubo get pipe/<pipe-id>
 tubo watch pipes
 ```
 
-`get services` is local-only. Remote connectivity is represented by verified pipes.
+`get services` is local-only. Remote connectivity is represented by verified pipes. Human `get pipes` output includes stable ID, source, scope, ingress, target ref, access, status, session count, path, and path source. A local definition and its verified network record are merged as `local+network`; re-exports into distinct scopes remain separate rows. JSON exposes the same fields plus peer, capabilities, and record expiry.
+
+Current implementation advertises only relay circuit addresses, so network rows report `relayed`. `direct` and `mixed` are reserved for verified direct candidates once direct dialing/hole punching is implemented. When live discovery is unavailable, `get pipes` still returns verified cached/local rows; JSON adds `discovery_errors`, while human output writes warnings to stderr.
 
 ## Infrastructure
 

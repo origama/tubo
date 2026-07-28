@@ -1,6 +1,6 @@
 # Protocol 2.0
 
-Status: design contract; implementation pending.
+Status: protocol 2.0 implements authority-backed remote publication grants, record announcement/listing, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, access refresh, revocation, and negotiated minor extensions are pending.
 
 There is intentionally no negotiation or fallback to previous Tubo protocols.
 
@@ -28,7 +28,7 @@ client                              pipe runtime
   |=== raw full-duplex bytes ===========|
 ```
 
-After `OpenOK`, framing ends. HTTP uses ordinary HTTP bytes; WebSocket is an ordinary upgrade; TCP/TLS is opaque. Half-close propagates in both directions.
+After `OpenOK`, framing ends. HTTP uses ordinary HTTP bytes; WebSocket is an ordinary upgrade; TCP/TLS is opaque. For a local `https://` service target, the origin pipe establishes and verifies TLS 1.2+ using the target hostname before carrying those HTTP bytes. Half-close propagates in both directions.
 
 ### Handshake messages
 
@@ -42,7 +42,7 @@ OpenOK: session_id, selected protocol, optional redacted hop receipt
 OpenError: stable error code, safe message, retry class
 ```
 
-The exact encoding must be selected in a separate issue. JSON is acceptable for the first bounded prototype; production encoding must remain deterministic for signatures and fuzzable.
+Initial encoding uses a four-byte big-endian length followed by JSON. Outer length is rejected above 64 KiB before allocation. Security-sensitive decoders reject unknown fields and trailing JSON. Signed token and record payloads use fixed Go structs with deterministic field order. Any replacement encoding is a protocol change governed by `VERSIONING.md`.
 
 ### Initial limits
 
@@ -56,7 +56,7 @@ The exact encoding must be selected in a separate issue. JSON is acceptable for 
 | handshake duration | 10 s |
 | clock skew accepted for proof | 30 s |
 
-No absolute lifetime applies after `OpenOK`. Access lease expiry closes or prevents renewal according to documented session policy.
+No absolute lifetime applies after `OpenOK`. Relay circuit byte/duration truncation is disabled; relay reservation and concurrent-circuit bounds remain enforced. Current session policy closes tunnel and target connection when access lease expires; refresh/lease exchange before expiry is pending.
 
 ### Retry rule
 

@@ -17,10 +17,12 @@ REMOTE_GOARCH="${TUBO_E2E_REMOTE_GOARCH:-amd64}"
 RELAY_PORT="${TUBO_E2E_RELAY_PORT:-44001}"
 HTTP_PORT="${TUBO_E2E_HTTP_PORT:-18080}"
 CLIENT_PORT="${TUBO_E2E_CLIENT_PORT:-18999}"
+VIEWER_PORT="${TUBO_E2E_VIEWER_PORT:-$((CLIENT_PORT + 1))}"
 RUN_ID="${TUBO_E2E_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 LOCAL_ROOT="$REPO_ROOT/generated/e2e-three-machine/$RUN_ID"
 REMOTE_ROOT="/tmp/tubo-rebuilt-e2e-$RUN_ID"
 CLIENT_HOME="$LOCAL_ROOT/client-home"
+VIEWER_HOME="$LOCAL_ROOT/viewer-home"
 CLIENT_BIN="$LOCAL_ROOT/bin/tubo"
 ARTIFACTS="$LOCAL_ROOT/artifacts"
 
@@ -94,7 +96,7 @@ start_remote_bg() {
   local host="$1" name="$2"
   shift 2
   local command="$*"
-  remote "$host" "mkdir -p '$REMOTE_ROOT/logs' '$REMOTE_ROOT/pids'; nohup sh -lc \"env TUBO_HOME='$REMOTE_ROOT/home' $command\" >'$REMOTE_ROOT/logs/$name.log' 2>&1 </dev/null & echo \$! >'$REMOTE_ROOT/pids/$name.pid'"
+  remote "$host" "mkdir -p '$REMOTE_ROOT/logs' '$REMOTE_ROOT/pids'; nohup sh -lc \"exec env TUBO_HOME='$REMOTE_ROOT/home' $command\" >'$REMOTE_ROOT/logs/$name.log' 2>&1 </dev/null & echo \$! >'$REMOTE_ROOT/pids/$name.pid'"
 }
 
 preflight() {
@@ -107,8 +109,23 @@ preflight() {
   if remote "$RELAY_HOST" "ss -ltn 2>/dev/null | grep -Eq '[:.]$RELAY_PORT[[:space:]]'"; then
     fail "relay test port $RELAY_PORT is already in use on $RELAY_HOST"
   fi
-  log "relay port $RELAY_PORT is locally free; the operator must also allow inbound TCP/$RELAY_PORT in host/cloud firewalls"
+  if remote "$PUBLISHER_HOST" "ss -ltn 2>/dev/null | grep -Eq '[:.]$HTTP_PORT[[:space:]]'"; then
+    fail "HTTP test port $HTTP_PORT is already in use on $PUBLISHER_HOST"
+  fi
+  log "relay port $RELAY_PORT and publisher HTTP port $HTTP_PORT are free; the operator must also allow inbound TCP/$RELAY_PORT in host/cloud firewalls"
   [[ "$CLIENT_HOST" == "local" ]] || fail 'the bootstrap harness currently requires TUBO_E2E_CLIENT_HOST=local'
+  python3 - "$CLIENT_PORT" "$VIEWER_PORT" <<'PY' || fail "client test port is already in use locally"
+import socket, sys
+sockets = []
+try:
+    for value in sys.argv[1:]:
+        sock = socket.socket()
+        sock.bind(("127.0.0.1", int(value)))
+        sockets.append(sock)
+finally:
+    for sock in sockets:
+        sock.close()
+PY
   log 'preflight PASS'
 }
 
@@ -130,16 +147,42 @@ build_and_deploy() {
 
 clean_remote_host() {
   local host="$1"
-  remote "$host" "if [ -d '$REMOTE_ROOT/pids' ]; then for file in '$REMOTE_ROOT'/pids/*.pid; do [ -f \"\$file\" ] || continue; pid=\$(cat \"\$file\"); kill \"\$pid\" 2>/dev/null || true; done; sleep 1; fi; rm -rf '$REMOTE_ROOT'" || true
+  remote "$host" "if [ -d '$REMOTE_ROOT/pids' ]; then
+    for file in '$REMOTE_ROOT'/pids/*.pid; do
+      [ -f \"\$file\" ] || continue
+      pid=\$(cat \"\$file\")
+      cmd=''
+      [ ! -r \"/proc/\$pid/cmdline\" ] || cmd=\$(tr '\\000' ' ' <\"/proc/\$pid/cmdline\")
+      case \"\$cmd\" in *'$REMOTE_ROOT'*) kill \"\$pid\" 2>/dev/null || true;; esac
+    done
+    sleep 1
+    for file in '$REMOTE_ROOT'/pids/*.pid; do
+      [ -f \"\$file\" ] || continue
+      pid=\$(cat \"\$file\")
+      cmd=''
+      [ ! -r \"/proc/\$pid/cmdline\" ] || cmd=\$(tr '\\000' ' ' <\"/proc/\$pid/cmdline\")
+      case \"\$cmd\" in *'$REMOTE_ROOT'*) kill -9 \"\$pid\" 2>/dev/null || true;; esac
+    done
+  fi
+  rm -rf '$REMOTE_ROOT'" || true
 }
 
 cleanup_run() {
   log "cleaning isolated run $RUN_ID"
   clean_remote_host "$PUBLISHER_HOST"
   clean_remote_host "$RELAY_HOST"
-  if [[ -f "$LOCAL_ROOT/client.pid" ]]; then
-    kill "$(cat "$LOCAL_ROOT/client.pid")" 2>/dev/null || true
-  fi
+  local file pid command
+  for file in "$LOCAL_ROOT"/*.pid; do
+    [[ -f "$file" ]] || continue
+    pid="$(cat "$file")"
+    command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    case "$command" in *"$LOCAL_ROOT/bin/tubo _run-pipe"*)
+      kill "$pid" 2>/dev/null || true
+      for _ in $(seq 1 20); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+      command="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+      case "$command" in *"$LOCAL_ROOT/bin/tubo _run-pipe"*) kill -9 "$pid" 2>/dev/null || true;; esac
+    esac
+  done
 }
 
 collect_artifacts() {

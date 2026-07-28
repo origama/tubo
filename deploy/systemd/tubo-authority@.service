@@ -1,0 +1,19 @@
+# Install explicitly as root. Do not enable this template from Tubo itself.
+# Instance name is operator-selected; environment binds exact cluster and scope.
+[Unit]
+Description=Tubo authority %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/tubo-rebuilt/%i.env
+ExecStart=/usr/local/bin/tubo authority start ${TUBO_CLUSTER} --scope ${TUBO_SCOPE}
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
