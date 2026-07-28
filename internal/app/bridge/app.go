@@ -136,6 +136,7 @@ type App struct {
 	listenAddr               string
 	stateMu                  sync.RWMutex
 	connectMu                sync.Mutex
+	serviceRecoveryMu        sync.Mutex
 	connectLease             *grantspkg.ConnectAccessLease
 	refreshingLease          bool
 	refreshDone              chan struct{}
@@ -150,6 +151,7 @@ type App struct {
 	lastPeerPingError        string
 	lastPeerPingErrorAt      time.Time
 	lastPeerPingHealthyAt    time.Time
+	lastPeerRecoveryAttempt  time.Time
 	peerPingConsecutiveFails int
 	healthMu                 sync.RWMutex
 	lastTunnelError          string
@@ -358,12 +360,14 @@ func listenTCPBridgePair(listenAddr string) (net.Listener, net.Listener, error) 
 	return nil, nil, fmt.Errorf("allocate bridge TCP/admin listener pair after %d attempts: %w", attempts, lastErr)
 }
 
-func serviceStreamContext(serviceAddr, reason string) context.Context {
-	ctx := context.Background()
-	if serviceAddrUsesRelay(serviceAddr) {
-		return network.WithAllowLimitedConn(ctx, reason)
+func serviceStreamContext(parent context.Context, serviceAddr, reason string) context.Context {
+	if parent == nil {
+		parent = context.Background()
 	}
-	return network.WithForceDirectDial(ctx, reason)
+	if serviceAddrUsesRelay(serviceAddr) {
+		return network.WithAllowLimitedConn(parent, reason)
+	}
+	return network.WithForceDirectDial(parent, reason)
 }
 func (a *App) Start(ctx context.Context) error {
 	defer a.host.Close()
@@ -492,6 +496,8 @@ func (a *App) handleTCPConn(conn net.Conn) {
 }
 
 const bridgeSelfHealTimeout = 2 * time.Second
+const bridgeHTTPRecoveryTimeout = 10 * time.Second
+const peerRecoveryCooldown = 30 * time.Second
 const connectRefreshMinUsefulLifetime = 5 * time.Second
 const connectRefreshFailureCooldown = 5 * time.Second
 const connectRefreshMinExtension = time.Second
@@ -640,6 +646,7 @@ func (a *App) startPeerPingLoop(ctx context.Context) {
 			continue
 		}
 		a.runPeerPingOnce(ctx, peerID)
+		a.maybeRecoverPeerPath(ctx)
 	}
 }
 
@@ -667,7 +674,58 @@ func (a *App) lastPeerActivityAt() time.Time {
 	if lastPeerPingHealthyAt.After(latest) {
 		latest = lastPeerPingHealthyAt
 	}
+	// Failed pings are activity too. Without this bound, once last successful
+	// activity is older than peerPingInterval, every failure schedules the next
+	// ping with a zero delay and turns the liveness loop into a busy-loop.
+	if a.lastPeerPingAt.After(latest) {
+		latest = a.lastPeerPingAt
+	}
 	return latest
+}
+
+func (a *App) shouldAttemptPeerRecovery(now time.Time) bool {
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	threshold := a.peerPingFailureThreshold
+	if threshold <= 0 {
+		threshold = 3
+	}
+	if a.peerPingConsecutiveFails < threshold || a.lastPeerPingError == "" || a.rebindServiceFn == nil {
+		return false
+	}
+	if !servicePathRecoveryAllowed(errors.New(a.lastPeerPingError)) {
+		return false
+	}
+	cooldown := peerRecoveryCooldown
+	if a.peerPingInterval > cooldown {
+		cooldown = a.peerPingInterval
+	}
+	if !a.lastPeerRecoveryAttempt.IsZero() && now.Sub(a.lastPeerRecoveryAttempt) < cooldown {
+		return false
+	}
+	a.lastPeerRecoveryAttempt = now
+	return true
+}
+
+func (a *App) maybeRecoverPeerPath(ctx context.Context) {
+	if !a.shouldAttemptPeerRecovery(time.Now().UTC()) {
+		return
+	}
+	recoveryCtx, cancel := context.WithTimeout(ctx, bridgeHTTPRecoveryTimeout)
+	defer cancel()
+	a.serviceRecoveryMu.Lock()
+	err := a.reconnectServicePath(recoveryCtx)
+	a.serviceRecoveryMu.Unlock()
+	if err != nil {
+		log.Printf("bridge peer path recovery failed: %v", err)
+		return
+	}
+	peerID, ok := a.selectedPeerID()
+	if !ok || ctx.Err() != nil {
+		return
+	}
+	log.Printf("bridge peer path rebound peer=%s", peerID)
+	a.runPeerPingOnce(ctx, peerID)
 }
 
 func (a *App) runPeerPingOnce(ctx context.Context, peerID peer.ID) {
@@ -819,6 +877,76 @@ func (a *App) openServiceTunnelStream(ctx context.Context) (network.Stream, erro
 	return a.host.NewStream(ctx, peerID, p2p.ProtocolID)
 }
 
+func servicePathRecoveryAllowed(err error) bool {
+	if err == nil {
+		return false
+	}
+	classification := reachability.Classify(err)
+	if classification.Class == reachability.ErrorAuth || classification.Class == reachability.ErrorConfig {
+		return false
+	}
+	if classification.Class == reachability.ErrorTransient {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "stream reset") ||
+		strings.Contains(msg, "connection closed") ||
+		strings.Contains(msg, "no_reservation") ||
+		strings.Contains(msg, "dial backoff")
+}
+
+func (a *App) serviceDialSnapshot() (peer.ID, string, bool) {
+	a.connectMu.Lock()
+	defer a.connectMu.Unlock()
+	if a.service.ID == "" {
+		return "", "", false
+	}
+	return a.service.ID, a.cfg.ServiceAddr, true
+}
+
+func (a *App) openHTTPServiceTunnelStream(ctx context.Context) (network.Stream, error) {
+	peerID, serviceAddr, ok := a.serviceDialSnapshot()
+	if !ok {
+		return nil, fmt.Errorf("bridge service peer unavailable")
+	}
+	streamCtx := serviceStreamContext(ctx, serviceAddr, "bridge tunnel stream")
+	return a.host.NewStream(streamCtx, peerID, p2p.SupportedProtocolIDs()...)
+}
+
+// establishHTTPServiceTunnel opens a stream before any request bytes are sent.
+// A single rediscovery/rebind retry is therefore safe: application requests are
+// never replayed. Recovery is serialized so concurrent requests do not stampede
+// discovery or close each other's freshly recovered transport.
+func (a *App) establishHTTPServiceTunnel(ctx context.Context) (network.Stream, error) {
+	stream, firstErr := a.openHTTPServiceTunnelStream(ctx)
+	if firstErr == nil {
+		return stream, nil
+	}
+	if !servicePathRecoveryAllowed(firstErr) || a.rebindServiceFn == nil {
+		return nil, firstErr
+	}
+
+	a.serviceRecoveryMu.Lock()
+	defer a.serviceRecoveryMu.Unlock()
+
+	// Another request may have recovered path while this request waited.
+	if stream, err := a.openHTTPServiceTunnelStream(ctx); err == nil {
+		return stream, nil
+	}
+
+	recoveryCtx, cancel := context.WithTimeout(ctx, bridgeHTTPRecoveryTimeout)
+	defer cancel()
+	if err := a.reconnectServicePath(recoveryCtx); err != nil {
+		return nil, fmt.Errorf("%v; self-heal failed: %w", firstErr, err)
+	}
+	stream, err := a.openHTTPServiceTunnelStream(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%v; self-heal retry failed: %w", firstErr, err)
+	}
+	log.Printf("bridge http self-heal recovered service_id=%s", a.cfg.ConnectServiceID)
+	return stream, nil
+}
+
 func (a *App) startTCPTunnelStream(s network.Stream, proof *protocol.ConnectProof) error {
 	if a.startClientTCPTunnel != nil {
 		return a.startClientTCPTunnel(s, "bridge", proof)
@@ -830,6 +958,12 @@ func (a *App) selfHealServicePath(localAddr string, cause error) error {
 	ctx, cancel := context.WithTimeout(context.Background(), bridgeSelfHealTimeout)
 	defer cancel()
 	log.Printf("bridge tcp self-heal local=%s cause=%v", localAddr, cause)
+	a.serviceRecoveryMu.Lock()
+	defer a.serviceRecoveryMu.Unlock()
+	return a.reconnectServicePath(ctx)
+}
+
+func (a *App) reconnectServicePath(ctx context.Context) error {
 	if a.reconnectServiceFn != nil {
 		return a.reconnectServiceFn(ctx)
 	}
@@ -841,41 +975,49 @@ func (a *App) reconnectService(ctx context.Context) error {
 		return fmt.Errorf("bridge host unavailable")
 	}
 	a.connectMu.Lock()
-	oldPeer := a.service.ID.String()
+	oldService := a.service
+	oldPeer := oldService.ID.String()
 	oldAddr := a.cfg.ServiceAddr
-	service := a.service
+	a.connectMu.Unlock()
+
+	newService := oldService
+	newAddr := oldAddr
+	newPath := ""
 	if a.rebindServiceFn != nil {
-		newService, newAddr, newPath, err := a.rebindServiceFn(ctx)
+		resolvedService, resolvedAddr, resolvedPath, err := a.rebindServiceFn(ctx)
 		if err != nil {
-			a.connectMu.Unlock()
 			return fmt.Errorf("rebind service peer: %w", err)
 		}
-		if newService.ID != "" {
-			a.service = newService
-			service = newService
+		if resolvedService.ID != "" {
+			newService = resolvedService
 		}
-		if strings.TrimSpace(newAddr) != "" {
-			a.cfg.ServiceAddr = newAddr
-			a.selectedAddr = newAddr
+		if strings.TrimSpace(resolvedAddr) != "" {
+			newAddr = resolvedAddr
 		}
-		if strings.TrimSpace(newPath) != "" {
-			a.selectedPath = newPath
-		}
+		newPath = strings.TrimSpace(resolvedPath)
 	}
-	newPeer := a.service.ID.String()
-	newAddr := a.cfg.ServiceAddr
+
+	a.connectMu.Lock()
+	a.service = newService
+	a.cfg.ServiceAddr = newAddr
+	a.selectedAddr = newAddr
+	if newPath != "" {
+		a.selectedPath = newPath
+	}
+	service := a.service
+	newPeer := service.ID.String()
 	a.connectMu.Unlock()
 	if a.rebindServiceFn != nil {
-		log.Printf("bridge tcp rebind service_id=%s old_peer=%s new_peer=%s old_addr=%s new_addr=%s reason=stream_failed", a.cfg.ConnectServiceID, oldPeer, newPeer, oldAddr, newAddr)
+		log.Printf("bridge service rebind service_id=%s old_peer=%s new_peer=%s old_addr=%s new_addr=%s reason=stream_failed", a.cfg.ConnectServiceID, oldPeer, newPeer, oldAddr, newAddr)
 	}
-	_ = a.host.Network().ClosePeer(service.ID)
-	connectCtx := network.WithAllowLimitedConn(context.Background(), "bridge tcp self-heal reconnect")
-	if deadline, ok := ctx.Deadline(); ok {
-		var cancel context.CancelFunc
-		connectCtx, cancel = context.WithDeadline(connectCtx, deadline)
-		defer cancel()
+	// Close stale transport before reconnecting with freshly resolved AddrInfo.
+	// Close old identity, not mutable a.service, so peer rotation cannot target
+	// unrelated fresh connections.
+	if oldService.ID != "" {
+		_ = a.host.Network().ClosePeer(oldService.ID)
 	}
-	if err := a.host.Connect(connectCtx, a.service); err != nil {
+	connectCtx := network.WithAllowLimitedConn(ctx, "bridge service self-heal reconnect")
+	if err := a.host.Connect(connectCtx, service); err != nil {
 		return fmt.Errorf("reconnect service peer: %w", err)
 	}
 	a.reportStatus()
@@ -1527,13 +1669,7 @@ func (a *App) mux() *http.ServeMux {
 		_ = json.NewEncoder(w).Encode(snap)
 	})
 	m.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		streamCtx := serviceStreamContext(a.cfg.ServiceAddr, "bridge tunnel stream")
-		peerID, ok := a.selectedPeerID()
-		if !ok {
-			http.Error(w, "bridge service peer unavailable", 502)
-			return
-		}
-		s, err := a.host.NewStream(streamCtx, peerID, p2p.SupportedProtocolIDs()...)
+		s, err := a.establishHTTPServiceTunnel(r.Context())
 		if err != nil {
 			a.markTunnelDegraded(err)
 			http.Error(w, err.Error(), 502)
