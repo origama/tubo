@@ -51,6 +51,7 @@ run_private_http() {
   printf '%s\n' "$member_invite" >"$ARTIFACTS/member-invite.json"
   printf '%s\n' "$viewer_invite" >"$ARTIFACTS/viewer-invite.json"
   member_token="$(printf '%s' "$member_invite" | json_get "value['token']")"
+  viewer_token="$(printf '%s' "$viewer_invite" | json_get "value['token']")"
 
   log 'joining clean macb state as member'
   mkdir -p "$CLIENT_HOME"
@@ -64,9 +65,34 @@ run_private_http() {
     fail 'remote pipe listing leaked a local service target'
   fi
 
+  log 'verifying viewer discovery and connect denial from separate clean state'
+  mkdir -p "$VIEWER_HOME"
+  env TUBO_HOME="$VIEWER_HOME" "$CLIENT_BIN" join overlay --relay "$relay_addr" --swarm-key "$LOCAL_ROOT/swarm.key" --force-reachability private --json >"$ARTIFACTS/viewer-overlay.json"
+  env TUBO_HOME="$VIEWER_HOME" "$CLIENT_BIN" scope join --token "$viewer_token" --json >"$ARTIFACTS/viewer-scope.json"
+  viewer_pipes=''
+  viewer_found=0
+  for _ in $(seq 1 60); do
+    if viewer_pipes="$(env TUBO_HOME="$VIEWER_HOME" "$CLIENT_BIN" get pipes --scope solar/default --json 2>/dev/null)" && printf '%s' "$viewer_pipes" | python3 -c "import json,sys; value=json.load(sys.stdin); assert any(item.get('id') == '$origin_pipe_id' for item in value['items'])" 2>/dev/null; then
+      viewer_found=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "$viewer_found" == 1 ]] || fail 'viewer could not discover origin pipe'
+  printf '%s\n' "$viewer_pipes" >"$ARTIFACTS/viewer-pipes.json"
+  if printf '%s' "$viewer_pipes" | grep -F '127.0.0.1:' >/dev/null; then fail 'viewer listing leaked a local service target'; fi
+  if env TUBO_HOME="$VIEWER_HOME" "$CLIENT_BIN" connect "pipe/$origin_pipe_id" --local "127.0.0.1:$VIEWER_PORT" -d --json >"$ARTIFACTS/viewer-connect.json" 2>"$ARTIFACTS/viewer-connect.err"; then
+    viewer_pid="$(json_get "value['pid']" <"$ARTIFACTS/viewer-connect.json")"
+    printf '%s\n' "$viewer_pid" >"$LOCAL_ROOT/viewer.pid"
+    fail 'viewer connect unexpectedly succeeded'
+  fi
+  grep -F 'authorization_denied' "$ARTIFACTS/viewer-connect.err" >/dev/null || fail 'viewer connect failed without authorization_denied class'
+
   log 'creating local consumer pipe through connect preset'
   client_sh "$CLIENT_BIN" connect "pipe/$origin_pipe_id" --local "127.0.0.1:$CLIENT_PORT" -d --json >"$ARTIFACTS/client-connect.json"
-  client_pipe_ref="$(cat "$ARTIFACTS/client-connect.json" | json_get "value['ref']")"
+  client_pid="$(json_get "value['pid']" <"$ARTIFACTS/client-connect.json")"
+  printf '%s\n' "$client_pid" >"$LOCAL_ROOT/client.pid"
+  client_pipe_ref="$(json_get "value['ref']" <"$ARTIFACTS/client-connect.json")"
   response=''
   for _ in $(seq 1 90); do
     if response="$(curl -fsS -X POST -H 'Content-Type: text/plain' --data 'hello-from-macb' "http://127.0.0.1:$CLIENT_PORT/v1/dummy?from=macb")"; then

@@ -1,16 +1,19 @@
 # State and persistence
 
+Implementation status: schema version 4 uses pure-Go SQLite in WAL mode. Current tables cover services, pipes, scopes, memberships, verified records, runs, supervisor registrations, sessions, peer aliases, per-run network statistics, observed runtime peers, and migrations. Grant/revocation/redemption tables are added with corresponding features, not as inert placeholders.
+
 ## Separation
 
 Tubo uses three storage classes.
 
 ### Static configuration
 
-Human-editable YAML contains contexts and operational defaults only:
+Human-editable YAML contains contexts and operational defaults only. Current implementation writes overlay settings atomically to `config.yaml`; scope/default expansion follows this model:
 
 ```yaml
 version: 1
 current_context: team
+current_scope: solar/default
 contexts:
   team:
     overlay:
@@ -44,6 +47,10 @@ pipes
 pipe_bindings
 runs
 sessions
+peer_aliases
+runtime_stats
+runtime_peers
+supervisors
 membership_grants
 publish_grants
 forward_grants
@@ -94,7 +101,7 @@ $TUBO_HOME/logs/
 $TUBO_HOME/run/
 ```
 
-Without it, XDG config/data locations may be used. The three-machine harness always sets `TUBO_HOME` to run-specific directories.
+Without it, the OS user config directory is used. The three-machine harness always sets `TUBO_HOME` to run-specific directories. `config validate` checks the static overlay and secret-file permissions; `config print` masks secret paths.
 
 ## Runtime registry
 
@@ -112,7 +119,11 @@ authorization status
 started/updated timestamps
 ```
 
-Session rows contain dynamic route and counters. They are not pipe definitions.
+Session rows contain dynamic route and application counters. They are not pipe definitions. `runtime_stats` stores per-run libp2p byte/rate/connection snapshots. `runtime_peers` is a replace-on-sample view keyed by run and observed PeerID; rows cascade when a run is deleted and are cleared on orderly stop.
+
+## Supervisor registration
+
+`supervisors` maps a primary ref to an operator-selected manager, exact unit label, and unit path. It is separate from runs so an installed unit may exist while its resource is stopped. A supervisor record is scheduling metadata, never authority or resource identity. Deleting a stale run never deletes a supervisor registration. `launchd` install commits the registry only after exact-label bootstrap; bootout/uninstall waits for matching process identity before registry removal.
 
 ## Detached startup
 

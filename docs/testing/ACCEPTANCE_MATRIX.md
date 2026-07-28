@@ -35,6 +35,7 @@ Legend for evidence classes:
 | no replay after application bytes flow | I |
 | source pipe restart/rebind keeps stable `pipe_id` | I, D, 3M |
 | relay reservation renews before expiry | I with fake clock, long 3M campaign |
+| relay/network interruption marks degraded, serves verified cache, clears stale dial backoff, and self-heals without restart | U, I, 3M |
 
 ## Scope/discovery
 
@@ -74,6 +75,7 @@ Legend for evidence classes:
 | disk-full/read-only/lock failures return failure | I |
 | detached readiness failure kills owned child and rolls back registry | I, D |
 | stale PID/process identity cannot kill unrelated process | U, I |
+| supervisor install/uninstall uses exact label and process identity; crash restart preserves pipe/authority identity; manual lifecycle cannot create duplicate supervised run | U, I, operator reboot/login campaign |
 | `--json` remains parseable through discovery/authority progress | contract, D, 3M |
 | secrets are masked and file permissions restrictive | U, I, hygiene |
 

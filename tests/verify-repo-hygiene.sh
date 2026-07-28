@@ -7,7 +7,8 @@ for path in README.md AGENTS.md docs/README.md docs/reference/INVARIANTS.md docs
   [[ -s "$path" ]] || { echo "missing required file: $path" >&2; exit 1; }
 done
 
-if git grep -nE 'tubo-share-invite-v[0-9]+\.|BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY|/key/swarm/psk/1\.0\.0/' -- ':!tests/verify-repo-hygiene.sh' ':!docs/reference/SECURITY.md'; then
+# internal/cli/app.go emits this public header only before crypto/rand-generated test/operator material.
+if git grep -nE 'tubo-share-invite-v[0-9]+\.|BEGIN (OPENSSH |RSA |EC )?PRIVATE KEY|/key/swarm/psk/1\.0\.0/' -- ':!tests/verify-repo-hygiene.sh' ':!docs/reference/SECURITY.md' ':!internal/cli/app.go'; then
   echo 'possible committed secret or live token' >&2
   exit 1
 fi

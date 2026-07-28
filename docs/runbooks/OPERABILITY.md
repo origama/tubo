@@ -1,6 +1,6 @@
 # Operability
 
-Status: target contract. Commands beyond `help` and `version` are not implemented in the bootstrap repository.
+Status: remote-publisher HTTP/raw-TCP relay workflow is implemented and covered by isolated local integration and three-machine deployment. Direct-path upgrade, access refresh/revocation, forwarding, gateway, and supervisor generation remain target contract.
 
 ## Runtime topology
 
@@ -13,7 +13,9 @@ transport only        scope + service + pipe      local pipe
       \________________ private overlay ___________/
 ```
 
-The relay is never authority. The origin service stays loopback-local; its published pipe obtains a relay reservation and advertises a reachable pipe endpoint.
+The relay is never authority. The origin service stays loopback-local; its published pipe obtains and periodically renews a relay reservation, and refreshes its signed record before expiry.
+
+Legacy public bundles are not imported. Controlled protocol-2.0 deployments provision overlay relay/PSK explicitly, pin authority through explicit scope join, and keep membership invites separate from public bootstrap metadata.
 
 ## Expected workflow
 
@@ -73,16 +75,31 @@ A recovered session/pipe clears active degradation while retaining historical di
 
 ## Supervisors
 
-Foreground remains canonical. `-d` is lightweight local background execution. OS supervision is optional and generated explicitly; Tubo does not install privileged units by default.
+Foreground remains canonical. `-d` is lightweight local background execution. `restart pipe/...` performs identity-safe stop, waits for termination, and starts the persisted pipe detached. `rm` refuses live resources unless `--force`; `rm --stale` removes registry entries only after PID/process-identity mismatch and never removes an installed supervisor registration.
+
+macOS user supervision is explicit and non-privileged:
+
+```bash
+tubo supervise install authority/solar --scope solar/default --json
+tubo supervise install pipe/lmstudio --json
+tubo supervise status authority/solar --json
+tubo supervise uninstall pipe/lmstudio --json
+```
+
+Install writes a `0600` plist at `~/Library/LaunchAgents/io.github.origama.tubo.<kind>.<name>.plist`, sets `TUBO_HOME`, `TUBO_RUN_SOURCE=launchd`, log level, and one exact primary-resource command. It bootstraps that label and waits up to 15 seconds for a ready run with matching process identity. `KeepAlive` restarts crashes with a five-second throttle. `status` reports `ready`, `not_loaded`, or `crash_loop_suspected`; inspect resource log with `tubo logs <resource>`. Before `stop`, `restart`, `rm`, binary replacement, or rollback, run `tubo supervise uninstall <resource>`; these lifecycle commands refuse registered supervision to prevent supervisor-created duplicates.
+
+Linux systemd templates live in [`../../deploy/systemd/README.md`](../../deploy/systemd/README.md). They are operator-installed examples only; Tubo never installs privileged units. Existing relay units remain deployment-owned and must preserve the same `TUBO_HOME`, source marker, keys, and public listener configuration across restart/rollback.
 
 ## Failure handling
 
-- relay unavailable: existing direct sessions continue; new NAT/NAT sessions may fail with `relay_unavailable`;
-- authority unavailable: existing access remains TTL-bounded; issuance/refresh fails clearly;
-- discovery unavailable: exact self-contained invite may still connect; collaborative name lookup reports discovery failure;
+- relay unavailable: runs mark degraded, local listeners remain bound, verified cached pipe inventory remains available with an explicit discovery warning, and new relayed sessions fail closed; configured-relay recovery retries every five seconds with bounded 15-second dials and explicitly clears stale libp2p dial backoff; successful reconnect renews reservations/records and returns runs to ready without process restart;
+- authority unavailable: existing access remains TTL-bounded; issuance/refresh fails clearly; remote publishers retry failed grant/announcement renewal every five seconds after the normal renewal deadline until authority recovers;
+- discovery unavailable: exact cached records remain locally inspectable; `get pipes` returns verified cached/local rows plus `discovery_errors` instead of hiding inventory; new authorization still fails when authority is unavailable;
 - service target unavailable: pipe remains running but rejects sessions with `target_unreachable` and reports degraded target health;
 - state store unavailable: mutation and credential refresh fail closed.
 
 ## Logs and output
 
-Technical logs include IDs and reason classes but never raw tokens, keys, service target credentials, or request bodies. Ordinary successful CLI output remains concise.
+Runtime telemetry samples libp2p bandwidth totals/rates, connected peers, and open connections once per second into transactional state. Relay traffic therefore appears in `ps`/`top` even though relays do not create application `Session` rows. `get peers` is local observation plus local aliases, not cluster consensus.
+
+Technical logs include IDs and reason classes but never raw tokens, keys, service target credentials, or request bodies. Detached pipe logs live under the active Tubo home and are read with `tubo logs pipe/<name> [--tail N] [-f]`. Externally supervised resources require their supervisor log when no Tubo-owned file exists. `--quiet`, verbosity flags, and `--log-level` affect diagnostics only; ordinary successful CLI output remains concise and JSON remains isolated on stdout.

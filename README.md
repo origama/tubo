@@ -2,7 +2,7 @@
 
 Greenfield implementation of Tubo around a service/pipe graph.
 
-> Status: architecture contract and bootstrap domain model. Networking, authority, persistence, and production CLI workflows are intentionally not implemented yet.
+> Status: first usable private-HTTP slice implemented. SQLite state, private libp2p relay transport, scoped signed membership, remote publication, verified pipe discovery, authenticated HTTP/WebSocket/raw-TCP tunnels, HTTPS upstreams, detached lifecycle, logs, inventory, and local diagnostics are available. Forwarding, gossip sync, gateway, access refresh/revocation, and direct-path upgrade remain future work.
 
 ## Product model
 
@@ -50,14 +50,14 @@ tubo start pipe/lmstudio-team -d
 
 `attach` and `connect` compile to pipe definitions. They are never runtime kinds.
 
-## Bootstrap verification
+## Local verification
 
 ```bash
 make verify-local
 ./bin/tubo version --json   # after `mkdir -p bin && go build -o bin/tubo ./cmd/tubo`
 ```
 
-The first distributed implementation gate is the isolated three-machine scenario:
+`verify-local` includes an isolated loopback relay/publisher/member/viewer integration scenario. Distributed gate uses isolated three-machine scenario:
 
 ```bash
 make e2e-three-machine-preflight
