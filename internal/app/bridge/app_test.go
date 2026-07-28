@@ -1459,6 +1459,68 @@ func TestBridgePeerPingLoopRecordsResults(t *testing.T) {
 	}
 }
 
+func TestServicePathRecoveryAllowedRejectsNonNetworkFailures(t *testing.T) {
+	if servicePathRecoveryAllowed(errors.New("membership capability is missing connect permission")) {
+		t.Fatal("authorization failure must not trigger endpoint rebind")
+	}
+	if servicePathRecoveryAllowed(errors.New("service public key mismatch")) {
+		t.Fatal("configuration failure must not trigger endpoint rebind")
+	}
+	if servicePathRecoveryAllowed(errors.New("protocols not supported")) {
+		t.Fatal("protocol failure must not trigger endpoint rebind")
+	}
+	if !servicePathRecoveryAllowed(errors.New("failed to dial peer: no addresses")) {
+		t.Fatal("transient dial failure should trigger endpoint rebind")
+	}
+}
+
+func TestBridgePeerPingFailureCountsAsSchedulingActivity(t *testing.T) {
+	peerID := corepeer.ID("12D3KooWPingTarget")
+	app := &App{service: corepeer.AddrInfo{ID: peerID}}
+	before := time.Now().UTC()
+	app.recordPeerPingFailure(peerID, errors.New("failed to dial: no addresses"))
+	activity := app.lastPeerActivityAt()
+	if activity.Before(before) {
+		t.Fatalf("failed ping did not advance scheduling activity: before=%s activity=%s", before, activity)
+	}
+	if wait := time.Until(activity.Add(time.Second)); wait <= 0 {
+		t.Fatalf("failed ping would schedule immediate retry: wait=%s", wait)
+	}
+}
+
+func TestBridgePeerPingThresholdRebindsAndRecovers(t *testing.T) {
+	peerID := corepeer.ID("12D3KooWPingTarget")
+	pinger := &fakePeerPinger{results: []p2pping.Result{{Error: errors.New("failed to dial: no addresses")}}}
+	var recoveries int32
+	app := &App{
+		service:                  corepeer.AddrInfo{ID: peerID},
+		peerPing:                 pinger,
+		peerPingTimeout:          50 * time.Millisecond,
+		peerPingFailureThreshold: 3,
+		rebindServiceFn: func(context.Context) (corepeer.AddrInfo, string, string, error) {
+			return corepeer.AddrInfo{ID: peerID}, "/ip4/127.0.0.1/tcp/1/p2p/" + peerID.String(), "direct", nil
+		},
+		reconnectServiceFn: func(context.Context) error {
+			atomic.AddInt32(&recoveries, 1)
+			pinger.mu.Lock()
+			pinger.results = []p2pping.Result{{RTT: 8 * time.Millisecond}}
+			pinger.mu.Unlock()
+			return nil
+		},
+	}
+	for i := 0; i < 3; i++ {
+		app.recordPeerPingFailure(peerID, errors.New("failed to dial: no addresses"))
+	}
+	app.maybeRecoverPeerPath(context.Background())
+	if got := atomic.LoadInt32(&recoveries); got != 1 {
+		t.Fatalf("recovery attempts = %d, want 1", got)
+	}
+	snap := app.CurrentRuntimeStatus()
+	if snap.PeerLivenessState != "healthy" || snap.ConsecutivePingFailures != 0 || snap.LastPingRTT != "8ms" {
+		t.Fatalf("expected successful rebind ping to recover liveness, got %#v", snap)
+	}
+}
+
 func TestBridgeHTTPRequestMarksHealthyAfterRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -1489,6 +1551,82 @@ func TestBridgeHTTPRequestMarksHealthyAfterRecovery(t *testing.T) {
 	snap := app.CurrentRuntimeStatus()
 	if snap.Status != "running" || snap.Reason != "" {
 		t.Fatalf("expected running status after HTTP recovery, got %#v", snap)
+	}
+}
+
+func TestBridgeHTTPRequestRebindsAfterPeerstoreAddressLoss(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("recovered"))
+	}))
+	defer upstream.Close()
+
+	const serviceSeed = "bridge-http-rebind-service"
+	oldService, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", serviceSeed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldService.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(upstream.URL, nil))
+	oldAddr := p2p.PeerAddrs(oldService)[0]
+
+	var replacement corepeer.AddrInfo
+	var rebindCalls int32
+	app, err := New(ctx, Config{
+		Listen:           "127.0.0.1:0",
+		Seed:             "bridge-http-rebind-client",
+		P2PListen:        "/ip4/127.0.0.1/tcp/0",
+		ServiceAddr:      oldAddr,
+		SelectedAddr:     oldAddr,
+		SelectedPath:     "direct",
+		ServiceKind:      "http",
+		ConnectServiceID: "service-http-rebind",
+		ConnectRebindResolver: func(context.Context) (corepeer.AddrInfo, string, string, error) {
+			atomic.AddInt32(&rebindCalls, 1)
+			if replacement.ID == "" || len(replacement.Addrs) == 0 {
+				return corepeer.AddrInfo{}, "", "", errors.New("replacement unavailable")
+			}
+			addr := replacement.Addrs[0].String() + "/p2p/" + replacement.ID.String()
+			return replacement, addr, "direct", nil
+		},
+	})
+	if err != nil {
+		_ = oldService.Close()
+		t.Fatal(err)
+	}
+	defer app.host.Close()
+
+	serviceID := oldService.ID()
+	if err := oldService.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_ = app.host.Network().ClosePeer(serviceID)
+	app.host.Peerstore().ClearAddrs(serviceID)
+
+	newService, err := p2p.NewHostWithSeedAndPSKAndOptions("/ip4/127.0.0.1/tcp/0", serviceSeed, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer newService.Close()
+	newService.SetStreamHandler(p2p.ProtocolID, p2p.HandleServiceStream(upstream.URL, nil))
+	replacement = corepeer.AddrInfo{ID: newService.ID(), Addrs: newService.Addrs()}
+	if replacement.ID != serviceID {
+		t.Fatalf("replacement peer = %s, want stable peer %s", replacement.ID, serviceID)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://bridge.local/", nil)
+	app.mux().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "recovered" {
+		t.Fatalf("unexpected recovered response: code=%d body=%q", rec.Code, rec.Body.String())
+	}
+	if got := atomic.LoadInt32(&rebindCalls); got != 1 {
+		t.Fatalf("rebind calls = %d, want 1", got)
+	}
+	_, selectedAddr, ok := app.serviceDialSnapshot()
+	if !ok || !strings.Contains(selectedAddr, replacement.Addrs[0].String()) {
+		t.Fatalf("selected address not refreshed: %q", selectedAddr)
 	}
 }
 
