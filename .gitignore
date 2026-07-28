@@ -1,0 +1,28 @@
+# Binaries and build output
+/bin/
+/dist/
+/tubo
+*.test
+*.out
+
+# Generated test artifacts
+/generated/
+/coverage.out
+
+# Runtime state and secrets
+*.key
+*.pem
+*.secret
+*.token
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.local
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

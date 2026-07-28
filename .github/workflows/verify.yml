@@ -1,0 +1,22 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  local:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Verify local contracts
+        run: make verify-local
+      - name: Repository hygiene
+        run: ./tests/verify-repo-hygiene.sh
