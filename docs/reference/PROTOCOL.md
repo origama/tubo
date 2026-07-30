@@ -61,7 +61,7 @@ No absolute lifetime applies after `OpenOK`. Relay circuit byte/duration truncat
 
 ### Retry rule
 
-Setup may retry another direct/relay candidate before `OpenOK` and before application bytes are accepted. Once bytes flow, Tubo does not replay them. Recovery creates a new application connection/session.
+Setup may retry another direct/relay candidate before `OpenOK` and before application bytes are accepted. A local pipe re-resolves its exact `pipe_id` from its pinned authority scope every five minutes and after one classified transient pre-`OpenOK` dial/stream/handshake failure. Recovery is bounded by discovery retry cooldown and one setup retry; a newer verified record atomically replaces only later connection attempts. Terminal authorization/protocol responses never trigger re-resolution. Once bytes flow, Tubo does not replay them. Recovery creates a new application connection/session.
 
 ## Pipe chaining
 

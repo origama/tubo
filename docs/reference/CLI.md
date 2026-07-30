@@ -138,14 +138,20 @@ On macOS, `supervise install` writes one user-owned `launchd` plist under `~/Lib
 ```bash
 tubo get pipes [--scope cluster/namespace] [--refresh|--cached-only]
 tubo get pipe/<pipe-id>
-tubo watch pipes
+tubo watch pipes [--scope cluster/namespace] [--interval 2s] [--json]
 ```
 
-`get services` is local-only. Remote connectivity is represented by verified pipes. Human `get pipes` output includes stable ID, source, scope, ingress, target ref, access, status, session count, path, and path source. A local definition and its verified network record are merged as `local+network`; re-exports into distinct scopes remain separate rows. JSON exposes the same fields plus peer, capabilities, and record expiry.
+`get services` is local-only. Remote connectivity is represented by verified pipes.
 
-Current implementation advertises only relay circuit addresses, so network rows report `relayed`. `direct` and `mixed` are reserved for verified direct candidates once direct dialing/hole punching is implemented.
+`watch pipes` polls only the locally persisted, verified pipe projection; it never opens a discovery socket and never treats a remote event as trusted input. It emits the initial projection as `new` events, then `new`, `removed`, or `changed` events when the `status`, `source`, or `freshness` projection changes. The default interval is two seconds and the minimum is 500ms. Without `--scope`, every scope for which the local state has a membership is aggregated; scope remains part of each event identity (`scope` + `pipe_id`), so same-name and same-ID records in distinct authorized scopes remain distinct. A scoped watch includes only that authorized membership's network projection; records from a scope with no local membership are never exposed.
+
+Human stdout has exactly one stable key/value line per event. `--json` writes NDJSON (one JSON object per event, no enclosing array), with `type`, `scope`, `pipe_id`, `name`, `observed_at`, and either `item` (`new`), `previous` (`removed`), or both plus ordered `changed` fields (`changed`). A slow stdout consumer applies backpressure to polling; Tubo retains no event queue or writer goroutine. Human `get pipes` output includes stable ID, source, scope, ingress, target ref, access, status, session count, path, and path source. A local definition and its verified network record are merged as `local+network`; re-exports into distinct scopes remain separate rows. JSON exposes the same fields plus peer, capabilities, and record expiry.
+
+Current implementation advertises only relay circuit addresses, so network rows report `relayed`. `direct` and `mixed` are reserved for verified direct candidates once direct dialing/hole punching is implemented. Network rows include `record_age`, a non-negative Go-duration string measured from signed `issued_at`; the human table exposes it as `RECORD AGE`. `inspect pipe/... --json` includes `record_age` when a verified record exists and `record_fresh`, which is true only while its signed record is strictly younger than five minutes.
 
 `get pipes` is cache-first. A scope cache is `fresh` only after a complete pinned-authority 2.1 snapshot success strictly less than five minutes old. Default listing opens no discovery network socket for fresh scopes; stale or missing selected memberships receive one bounded synchronous refresh before verified cached/local projection. `--refresh` refreshes every selected membership and bypasses this freshness window plus persisted discovery retry cooldown, without bypassing request bounds or verification. `--cached-only` never refreshes or opens discovery network sockets. Flags are mutually exclusive. `--live` is obsolete and rejected with `invalid_input`; use `--refresh`. No selected membership is local-only and opens no discovery network socket.
+
+A running local pipe re-resolves its exact remote `pipe_id` from the pinned authority snapshot every five minutes. One classified transient dial/stream/handshake failure before `OpenOK` can trigger one cooldown-bounded resolution and retry using a newer verified endpoint; authorization/protocol failures and any post-`OpenOK` tunnel never trigger a retry or application-byte replay.
 
 `--scope` filters both network rows and scoped local pipe definitions to that exact scope. Unscoped local pipes have no discovery scope and remain visible under every `--scope` filter; they are local-only rows and never cause a network operation.
 

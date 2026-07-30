@@ -394,6 +394,8 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 		return err
 	}
 	defer stopSync()
+	resolver := newLocalPipeRecordResolver(record)
+	go resolver.periodicallyResolve(ctx, state)
 	go func() { <-ctx.Done(); listener.Close() }()
 	go func() {
 		signals := make(chan os.Signal, 1)
@@ -417,7 +419,120 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 			}
 			return err
 		}
-		go serveLocalConnection(ctx, state, h, spec, record, leases, connection)
+		go serveLocalConnection(ctx, state, h, spec, resolver, leases, connection)
+	}
+}
+
+const (
+	localPipeReresolveInterval = 5 * time.Minute
+	localPipeRecoveryCooldown  = 30 * time.Second
+)
+
+// localPipeRecordResolver owns the selected verified remote endpoint. It only
+// swaps records accepted through the pinned-authority snapshot path. Existing
+// raw tunnels retain their stream; only a setup that has not reached OpenOK may
+// use a newly resolved endpoint.
+type localPipeRecordResolver struct {
+	mu     sync.RWMutex
+	record discovery.PipeRecord
+	fetch  func(context.Context, *store.Store, string, FetchRecordsOptions) ([]discovery.PipeRecord, error)
+
+	refreshMu    sync.Mutex
+	lastRecovery time.Time
+}
+
+func newLocalPipeRecordResolver(record discovery.PipeRecord) *localPipeRecordResolver {
+	return &localPipeRecordResolver{record: clonePipeRecord(record), fetch: FetchRecordsWithOptions}
+}
+
+func clonePipeRecord(record discovery.PipeRecord) discovery.PipeRecord {
+	record.Addresses = append([]string(nil), record.Addresses...)
+	record.Capabilities = append([]string(nil), record.Capabilities...)
+	return record
+}
+
+func (r *localPipeRecordResolver) current() discovery.PipeRecord {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return clonePipeRecord(r.record)
+}
+
+func sameEndpoint(a, b discovery.PipeRecord) bool {
+	if a.RuntimePeerID != b.RuntimePeerID || len(a.Addresses) != len(b.Addresses) {
+		return false
+	}
+	for i := range a.Addresses {
+		if a.Addresses[i] != b.Addresses[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// resolve refreshes only the remote pipe's pinned-authority scope. A stale,
+// replayed, tampered, expired, or same-sequence-conflicting record never
+// replaces the in-memory endpoint. Concurrent failure recovery is coalesced
+// and bounded by the same cooldown as persisted discovery refresh failures.
+func (r *localPipeRecordResolver) resolve(ctx context.Context, state *store.Store, recovery bool) (bool, error) {
+	r.refreshMu.Lock()
+	defer r.refreshMu.Unlock()
+	now := time.Now().UTC()
+	if recovery && now.Sub(r.lastRecovery) < localPipeRecoveryCooldown {
+		return false, nil
+	}
+	if recovery {
+		r.lastRecovery = now
+	}
+	current := r.current()
+	records, err := r.fetch(ctx, state, current.Scope.String(), FetchRecordsOptions{})
+	if err != nil {
+		return false, err
+	}
+	var candidate *discovery.PipeRecord
+	for i := range records {
+		if records[i].PipeID == current.PipeID {
+			candidate = &records[i]
+			break
+		}
+	}
+	if candidate == nil {
+		return false, errors.New("pipe_unreachable: record absent from authoritative snapshot")
+	}
+	if candidate.Scope != current.Scope || candidate.Sequence < current.Sequence {
+		return false, errors.New("invalid discovered record: replayed remote pipe record")
+	}
+	if candidate.Sequence == current.Sequence {
+		if !sameEndpoint(*candidate, current) {
+			return false, errors.New("invalid discovered record: conflicting remote pipe record sequence")
+		}
+		return false, nil
+	}
+	r.mu.Lock()
+	// A concurrent reader cannot mutate records, but retain monotonicity if a
+	// future resolver path updates while this fetch was in progress.
+	if candidate.Sequence > r.record.Sequence {
+		r.record = clonePipeRecord(*candidate)
+		r.mu.Unlock()
+		return true, nil
+	}
+	r.mu.Unlock()
+	return false, nil
+}
+
+func (r *localPipeRecordResolver) periodicallyResolve(ctx context.Context, state *store.Store) {
+	ticker := time.NewTicker(localPipeReresolveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if changed, err := r.resolve(ctx, state, false); err != nil {
+				runtimeWarnf("remote pipe record refresh failed pipe=%s reason=%s", r.current().PipeID, safeLogError(err))
+			} else if changed {
+				runtimeInfof("remote pipe record updated pipe=%s", r.current().PipeID)
+			}
+		}
 	}
 }
 
@@ -479,7 +594,7 @@ func (c *localLeaseCache) startRefresh(ctx context.Context, state *store.Store, 
 	}()
 }
 
-func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, record discovery.PipeRecord, leases *localLeaseCache, local net.Conn) {
+func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, resolver *localPipeRecordResolver, leases *localLeaseCache, local net.Conn) {
 	defer local.Close()
 	opened := false
 	failureReason := "authority_unreachable"
@@ -488,6 +603,35 @@ func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, 
 			runtimeWarnf("degraded %s reason=%s", spec.Ref, failureReason)
 		}
 	}()
+	// One bounded retry is permitted only after a classified transient setup
+	// failure and only before OpenOK. No data is read from local until OpenOK.
+	for attempt := 0; attempt < 2; attempt++ {
+		result := openLocalConnection(ctx, state, h, spec, resolver.current(), leases, local)
+		failureReason = result.reason
+		if result.opened {
+			opened = true
+			return
+		}
+		if !result.transient || attempt == 1 {
+			return
+		}
+		recovery, cancel := context.WithTimeout(ctx, 10*time.Second)
+		changed, err := resolver.resolve(recovery, state, true)
+		cancel()
+		if err != nil || !changed {
+			return
+		}
+	}
+}
+
+type localConnectionResult struct {
+	opened    bool
+	transient bool
+	reason    string
+}
+
+func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, record discovery.PipeRecord, leases *localLeaseCache, local net.Conn) localConnectionResult {
+	result := localConnectionResult{reason: "authority_unreachable"}
 	setup, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	lease, refresh, cached := leases.current()
@@ -495,74 +639,87 @@ func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, 
 	if !cached {
 		lease, refresh, err = RequestLeasePair(setup, state, h, record.Scope.String(), record.PipeID)
 		if err != nil {
-			return
+			return result
 		}
 		if err := leases.set(lease, refresh); err != nil {
-			return
+			return result
 		}
 		leases.mu.Lock()
 		expires := leases.expires
 		leases.mu.Unlock()
 		if err := state.PutConnectLease(context.Background(), record.PipeID, record.Scope.String(), lease, refresh, expires); err != nil {
-			return
+			return result
 		}
 	}
 	// Refresh only supplies later OpenPipe handshakes. Live tunnel remains
 	// bounded by lease used below; no tunnel resume/switch exists in 2.0.
 	leases.startRefresh(ctx, state, h, record.Scope.String(), record.PipeID)
-	failureReason = "pipe_unreachable"
+	result.reason = "pipe_unreachable"
+	if len(record.Addresses) == 0 {
+		return result
+	}
 	peerID, err := node.DialPeer(setup, h, record.Addresses[0])
 	if err != nil {
-		return
+		result.transient = true
+		return result
 	}
 	stream, err := h.NewStream(core.WithAllowLimitedConn(setup, "tubo tunnel via relay"), peerID, protocol.ID(wire.TunnelID))
 	if err != nil {
-		return
+		result.transient = true
+		return result
 	}
 	defer stream.Close()
 	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
-	failureReason = "local_authorization_state"
+	result.reason = "local_authorization_state"
 	membership, err := state.Membership(setup, record.Scope.String())
 	if err != nil {
-		return
+		return result
 	}
 	private, err := authority.ReadPrivate(membership.ClientKeyFile)
 	if err != nil {
-		return
+		return result
 	}
-	failureReason = "tunnel_handshake_failed"
+	result.reason = "tunnel_handshake_failed"
 	public := authority.PublicString(private.Public().(ed25519.PublicKey))
 	if err := wire.WriteFrame(stream, wire.ClientHello{Version: "2.0", ClientPublic: public, Capabilities: []string{"raw-duplex", "half-close"}}); err != nil {
-		return
+		result.transient = true
+		return result
 	}
 	var server wire.ServerHello
 	if err := wire.ReadFrame(stream, &server); err != nil {
-		return
+		result.transient = true
+		return result
 	}
 	if server.PipeID != record.PipeID || server.Version != "2.0" {
-		return
+		return result
 	}
 	open := wire.OpenPipe{PipeID: record.PipeID, ChallengeProof: authority.SignProof(private, "tubo-open-v2", server.Challenge, record.PipeID), AccessLease: lease, VisitedPipeIDs: []string{spec.PipeID}, HopLimit: domain.DefaultMaxPipeHops}
 	if err := wire.WriteFrame(stream, open); err != nil {
-		return
+		result.transient = true
+		return result
 	}
-	var result wire.OpenResult
-	if err := wire.ReadFrame(stream, &result); err != nil || !result.OK {
-		return
+	var openResult wire.OpenResult
+	if err := wire.ReadFrame(stream, &openResult); err != nil {
+		result.transient = true
+		return result
 	}
-	opened = true
+	if !openResult.OK {
+		return result
+	}
+	result.opened = true
 	if setRunStatus(state, spec.Ref.String(), "ready") {
 		runtimeInfof("recovered %s through successful session", spec.Ref)
 	}
 	_ = stream.SetDeadline(time.Time{})
-	session := store.Session{ID: result.SessionID, PipeRef: spec.Ref.String(), InitialTransportPath: "relayed", StartedAt: time.Now().UTC()}
+	session := store.Session{ID: openResult.SessionID, PipeRef: spec.Ref.String(), InitialTransportPath: "relayed", StartedAt: time.Now().UTC()}
 	_ = state.PutSession(context.Background(), session)
-	runtimeInfof("session opened pipe=%s session=%s path=relayed", spec.Ref, result.SessionID)
+	runtimeInfof("session opened pipe=%s session=%s path=relayed", spec.Ref, openResult.SessionID)
 	in, out := copyDuplex(local, stream)
 	session.BytesIn = in
 	session.BytesOut = out
 	_ = state.PutSession(context.Background(), session)
-	runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", spec.Ref, result.SessionID, in, out)
+	runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", spec.Ref, openResult.SessionID, in, out)
+	return result
 }
 
 func dialService(service domain.ServiceSpec) (net.Conn, error) { return dialServiceTLS(service, nil) }

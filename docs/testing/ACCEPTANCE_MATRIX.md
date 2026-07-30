@@ -48,9 +48,11 @@ Legend for evidence classes:
 | invite-only pipe is absent from listing but exact invite connects | D, 3M |
 | relay forwards opaque records but consumer verifies | I, D, 3M |
 | tampered/wrong-scope/expired/replayed record rejected | U, I |
+| local remote-pipe runtime re-resolves a newer exact-pipe record every five minutes and once after a classified transient pre-`OpenOK` failure; concurrent recovery is cooldown-bounded, rejected snapshots retain the endpoint, and no post-`OpenOK` bytes replay | U, I, race |
 | complete pinned-authority 2.1 snapshot atomically reconciles verified records and trusted freshness; local publication/expiry advances metadata; delayed rollback, same-generation ambiguity, partial/cache/peer/2.0 response never deletes local/authority rows | U, I, race |
 | membership-backed published/local runtimes elect one fenced periodic authority-2.1 sync owner per local state/scope; expiry takeover, stale token/PID fencing, retry suppression, outage recovery, and redacted scope status preserve cache/authority boundaries | U, I, race, 3M (`periodic-sync` pass `20260730T092006Z-83493`; `generated/e2e-three-machine/20260730T092006Z-83493/artifacts/report.json`) |
 | cache-first `get pipes`: strictly-under-five-minute fresh/default and `--cached-only` reach zero overlay-host operations; exact TTL boundary stale default bounded-refreshes with verified-cache fallback; `--refresh` bypasses cooldown; scoped local/JSON rows preserve unaffected scopes | U, I, race |
+| `watch pipes` emits deterministic initial/new/removed/status-source-freshness changes from verified local state only; authorized scopes aggregate without name collapse, unauthorized cached scopes never appear, NDJSON remains one object per change, and slow stdout backpressures without an unbounded queue | U, race |
 | bounded relay cache and truncated response | U, I, D |
 | service local target absent from all remote record/output | U, D, 3M |
 

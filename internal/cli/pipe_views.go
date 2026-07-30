@@ -33,6 +33,20 @@ type pipeView struct {
 	PeerID       string              `json:"peer_id,omitempty"`
 	Capabilities []string            `json:"capabilities,omitempty"`
 	ExpiresAt    *time.Time          `json:"expires_at,omitempty"`
+	RecordAge    string              `json:"record_age,omitempty"`
+}
+
+func recordAge(record discovery.PipeRecord, now time.Time) string {
+	age := now.UTC().Sub(record.IssuedAt)
+	if age < 0 {
+		age = 0
+	}
+	return age.Round(time.Second).String()
+}
+
+func recordFresh(record discovery.PipeRecord, now time.Time) bool {
+	age := now.UTC().Sub(record.IssuedAt)
+	return age >= 0 && age < 5*time.Minute
 }
 
 func advertisedPath(addresses []string) (string, map[string]int) {
@@ -163,27 +177,31 @@ func buildPipeViews(ctx context.Context, state *store.Store, scopeFilter string,
 				items[index].PeerID = record.RuntimePeerID
 				items[index].Capabilities = append([]string(nil), record.Capabilities...)
 				items[index].ExpiresAt = &expires
+				items[index].RecordAge = recordAge(record, time.Now().UTC())
 				if items[index].Path == "unknown" {
 					items[index].Path = path
 					items[index].PathSource = "advertised"
 				}
 				continue
 			}
-			items = append(items, pipeView{Ref: "pipe/" + record.PipeID, ID: record.PipeID, Name: record.DisplayName, Source: "network", Freshness: freshnessByScope[record.Scope.String()], Scope: record.Scope.String(), Visibility: record.Visibility, Access: record.Access, Status: "available", Path: path, PathSource: "advertised", PeerID: record.RuntimePeerID, Capabilities: append([]string(nil), record.Capabilities...), ExpiresAt: &expires})
+			items = append(items, pipeView{Ref: "pipe/" + record.PipeID, ID: record.PipeID, Name: record.DisplayName, Source: "network", Freshness: freshnessByScope[record.Scope.String()], Scope: record.Scope.String(), Visibility: record.Visibility, Access: record.Access, Status: "available", Path: path, PathSource: "advertised", PeerID: record.RuntimePeerID, Capabilities: append([]string(nil), record.Capabilities...), ExpiresAt: &expires, RecordAge: recordAge(record, time.Now().UTC())})
 		}
 	}
 	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Name == items[j].Name {
-			return items[i].ID < items[j].ID
+		if items[i].Name != items[j].Name {
+			return items[i].Name < items[j].Name
 		}
-		return items[i].Name < items[j].Name
+		if items[i].Scope != items[j].Scope {
+			return items[i].Scope < items[j].Scope
+		}
+		return items[i].ID < items[j].ID
 	})
 	return items, nil
 }
 
 func renderPipeViews(out io.Writer, items []pipeView) error {
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NAME\tID\tSOURCE\tFRESHNESS\tSCOPE\tINGRESS\tTARGET\tACCESS\tSTATUS\tSESSIONS\tPATH\tPATH SOURCE"); err != nil {
+	if _, err := fmt.Fprintln(w, "NAME\tID\tSOURCE\tFRESHNESS\tRECORD AGE\tSCOPE\tINGRESS\tTARGET\tACCESS\tSTATUS\tSESSIONS\tPATH\tPATH SOURCE"); err != nil {
 		return err
 	}
 	for _, item := range items {
@@ -211,7 +229,11 @@ func renderPipeViews(out io.Writer, items []pipeView) error {
 		if freshness == "" {
 			freshness = "-"
 		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.ID, item.Source, freshness, scope, ingress, target, access, item.Status, item.Sessions, item.Path, pathSource); err != nil {
+		recordAge := item.RecordAge
+		if recordAge == "" {
+			recordAge = "-"
+		}
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.ID, item.Source, freshness, recordAge, scope, ingress, target, access, item.Status, item.Sessions, item.Path, pathSource); err != nil {
 			return err
 		}
 	}
