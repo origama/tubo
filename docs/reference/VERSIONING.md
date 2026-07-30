@@ -91,3 +91,13 @@ Before merging a wire/state change, state explicitly:
 - rollout: back up state, deploy authority first, then clients/origin pipes;
 - rollback: stop schema-8 binaries and restore pre-schema-8 backup; no downgrade migration;
 - evidence: local unit/in-process and race coverage; no three-machine campaign run.
+
+## Current migration decision: schema 10 session resume and path events
+
+- product bump: unchanged (`0.1.0-dev`);
+- protocol bump: tunnel adds `/tubo/tunnel-resume/2.1` for resume/control streams; existing `/tubo/tunnel/2.0` unchanged;
+- state bump: schema 8 to 10, adding `sessions.current_transport_path` and `path_events` table;
+- mixed-version behavior: schema 8/9 binaries reject schema 10 state; session resume requires both peers to advertise `session-resume-v1`;
+- rollout: stop affected local runtimes, back up state, deploy schema 10 binary, then restart. Resume sessions only work when both peers are upgraded;
+- rollback: stop schema 10 binaries and restore pre-schema 10 backup; no downgrade migration exists;
+- evidence: local unit/in-process and race coverage; no three-machine campaign run.

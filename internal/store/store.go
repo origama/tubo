@@ -21,7 +21,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
 
-const SchemaVersion = 8
+const SchemaVersion = 10
 
 const maxScopeSyncLeaseTTL = 5 * time.Minute
 
@@ -123,9 +123,22 @@ type Session struct {
 	ID                   string    `json:"id"`
 	PipeRef              string    `json:"pipe_ref"`
 	InitialTransportPath string    `json:"initial_transport_path"`
+	CurrentTransportPath string    `json:"current_transport_path,omitempty"`
 	StartedAt            time.Time `json:"started_at"`
 	BytesIn              int64     `json:"bytes_in"`
 	BytesOut             int64     `json:"bytes_out"`
+}
+
+// PathEvent records a session transport path transition.
+type PathEvent struct {
+	SessionID    string    `json:"session_id"`
+	Epoch        uint64    `json:"epoch"`
+	FromPath     string    `json:"from_path"`
+	ToPath       string    `json:"to_path"`
+	Reason       string    `json:"reason"`
+	C2SCommitted uint64    `json:"c2s_committed"`
+	S2CCommitted uint64    `json:"s2c_committed"`
+	CommittedAt  time.Time `json:"committed_at"`
 }
 
 type Revocation struct {
@@ -249,6 +262,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS peer_aliases(peer_id TEXT PRIMARY KEY, name TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runtime_stats(run_ref TEXT PRIMARY KEY REFERENCES runs(primary_ref) ON DELETE CASCADE, bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL, rate_in REAL NOT NULL, rate_out REAL NOT NULL, connected_peers INTEGER NOT NULL, open_connections INTEGER NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runtime_peers(run_ref TEXT NOT NULL REFERENCES runs(primary_ref) ON DELETE CASCADE, peer_id TEXT NOT NULL, addresses BLOB NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY(run_ref,peer_id))`,
+		`CREATE TABLE IF NOT EXISTS path_events(session_id TEXT NOT NULL, epoch INTEGER NOT NULL, from_path TEXT NOT NULL, to_path TEXT NOT NULL, reason TEXT NOT NULL, c2s_committed INTEGER NOT NULL, s2c_committed INTEGER NOT NULL, committed_at TEXT NOT NULL, PRIMARY KEY(session_id,epoch))`,
 	}
 	if _, err := tx.ExecContext(ctx, statements[0]); err != nil {
 		return fmt.Errorf("schema: %w", err)
@@ -269,6 +283,35 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("schema: %w", err)
 		}
 	}
+	// Schema 9/10: add current_transport_path to sessions
+	sessionColumns, err := tx.QueryContext(ctx, `PRAGMA table_info(sessions)`)
+	if err != nil {
+		return fmt.Errorf("schema sessions columns: %w", err)
+	}
+	hasCurrentPath := false
+	for sessionColumns.Next() {
+		var cid int
+		var name, valueType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := sessionColumns.Scan(&cid, &name, &valueType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = sessionColumns.Close()
+			return fmt.Errorf("schema sessions columns: %w", err)
+		}
+		if name == "current_transport_path" {
+			hasCurrentPath = true
+		}
+	}
+	if err := sessionColumns.Close(); err != nil {
+		return fmt.Errorf("schema sessions columns: %w", err)
+	}
+	if !hasCurrentPath {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE sessions ADD COLUMN current_transport_path TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("schema 10 sessions current_transport_path: %w", err)
+		}
+	}
+
 	columns, err := tx.QueryContext(ctx, `PRAGMA table_info(runs)`)
 	if err != nil {
 		return fmt.Errorf("schema runs columns: %w", err)
@@ -1712,11 +1755,11 @@ func (s *Store) ConnectLease(ctx context.Context, pipeID string) (scope, accessL
 }
 
 func (s *Store) PutSession(ctx context.Context, v Session) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,pipe_ref,initial_transport_path,started_at,bytes_in,bytes_out) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET bytes_in=excluded.bytes_in,bytes_out=excluded.bytes_out`, v.ID, v.PipeRef, v.InitialTransportPath, v.StartedAt.UTC().Format(time.RFC3339Nano), v.BytesIn, v.BytesOut)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO sessions(id,pipe_ref,initial_transport_path,current_transport_path,started_at,bytes_in,bytes_out) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET bytes_in=excluded.bytes_in,bytes_out=excluded.bytes_out,current_transport_path=COALESCE(excluded.current_transport_path,current_transport_path)`, v.ID, v.PipeRef, v.InitialTransportPath, v.CurrentTransportPath, v.StartedAt.UTC().Format(time.RFC3339Nano), v.BytesIn, v.BytesOut)
 	return err
 }
 func (s *Store) Sessions(ctx context.Context, ref string) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,pipe_ref,initial_transport_path,started_at,bytes_in,bytes_out FROM sessions WHERE pipe_ref=? ORDER BY started_at DESC LIMIT 100`, ref)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,pipe_ref,initial_transport_path,COALESCE(current_transport_path,''),started_at,bytes_in,bytes_out FROM sessions WHERE pipe_ref=? ORDER BY started_at DESC LIMIT 100`, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -1725,7 +1768,7 @@ func (s *Store) Sessions(ctx context.Context, ref string) ([]Session, error) {
 	for rows.Next() {
 		var v Session
 		var at string
-		if err := rows.Scan(&v.ID, &v.PipeRef, &v.InitialTransportPath, &at, &v.BytesIn, &v.BytesOut); err != nil {
+		if err := rows.Scan(&v.ID, &v.PipeRef, &v.InitialTransportPath, &v.CurrentTransportPath, &at, &v.BytesIn, &v.BytesOut); err != nil {
 			return nil, err
 		}
 		v.StartedAt, _ = time.Parse(time.RFC3339Nano, at)
@@ -1736,15 +1779,40 @@ func (s *Store) Sessions(ctx context.Context, ref string) ([]Session, error) {
 
 func (s *Store) Session(ctx context.Context, id string) (Session, error) {
 	var v Session
-	var at string
-	err := s.db.QueryRowContext(ctx, `SELECT id,pipe_ref,initial_transport_path,started_at,bytes_in,bytes_out FROM sessions WHERE id=?`, id).Scan(&v.ID, &v.PipeRef, &v.InitialTransportPath, &at, &v.BytesIn, &v.BytesOut)
+	var at, cur string
+	err := s.db.QueryRowContext(ctx, `SELECT id,pipe_ref,initial_transport_path,COALESCE(current_transport_path,''),started_at,bytes_in,bytes_out FROM sessions WHERE id=?`, id).Scan(&v.ID, &v.PipeRef, &v.InitialTransportPath, &cur, &at, &v.BytesIn, &v.BytesOut)
 	if errors.Is(err, sql.ErrNoRows) {
 		return v, fmt.Errorf("%w: session/%s", domain.ErrNotFound, id)
 	}
 	if err == nil {
+		v.CurrentTransportPath = cur
 		v.StartedAt, _ = time.Parse(time.RFC3339Nano, at)
 	}
 	return v, err
+}
+
+func (s *Store) PutPathEvent(ctx context.Context, v PathEvent) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO path_events(session_id,epoch,from_path,to_path,reason,c2s_committed,s2c_committed,committed_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(session_id,epoch) DO UPDATE SET from_path=excluded.from_path,to_path=excluded.to_path,reason=excluded.reason,c2s_committed=excluded.c2s_committed,s2c_committed=excluded.s2c_committed,committed_at=excluded.committed_at`, v.SessionID, v.Epoch, v.FromPath, v.ToPath, v.Reason, v.C2SCommitted, v.S2CCommitted, v.CommittedAt.UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) SessionPathEvents(ctx context.Context, sessionID string) ([]PathEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT session_id,epoch,from_path,to_path,reason,c2s_committed,s2c_committed,committed_at FROM path_events WHERE session_id=? ORDER BY epoch`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PathEvent
+	for rows.Next() {
+		var v PathEvent
+		var at string
+		if err := rows.Scan(&v.SessionID, &v.Epoch, &v.FromPath, &v.ToPath, &v.Reason, &v.C2SCommitted, &v.S2CCommitted, &at); err != nil {
+			return nil, err
+		}
+		v.CommittedAt, _ = time.Parse(time.RFC3339Nano, at)
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) PutPeerAlias(ctx context.Context, value PeerAlias) error {

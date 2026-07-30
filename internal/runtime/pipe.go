@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -183,6 +184,7 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	}
 	handler := &tunnelServer{state: state, spec: spec, service: service, authorityPublic: authorityPublic}
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
+	h.SetStreamHandler(protocol.ID(wire.TunnelResumeID), HandleResumeStreamID)
 	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: address, StartedAt: time.Now().UTC()}
 	if err := state.PutRun(ctx, run); err != nil {
 		return err
@@ -263,7 +265,16 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 		return err
 	}
 	challenge := randomNonce()
-	if err := wire.WriteFrame(stream, wire.ServerHello{Version: "2.0", PipeID: s.spec.PipeID, Challenge: challenge, Capabilities: []string{"raw-duplex", "half-close"}}); err != nil {
+	serverCapabilities := []string{"raw-duplex", "half-close"}
+	resumeNegotiated := false
+	for _, c := range hello.Capabilities {
+		if c == wire.CapSessionResumeV1 {
+			resumeNegotiated = true
+			serverCapabilities = append(serverCapabilities, wire.CapSessionResumeV1)
+			break
+		}
+	}
+	if err := wire.WriteFrame(stream, wire.ServerHello{Version: "2.0", PipeID: s.spec.PipeID, Challenge: challenge, Capabilities: serverCapabilities}); err != nil {
 		return err
 	}
 	var open wire.OpenPipe
@@ -328,18 +339,72 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	if revokeErr != nil || revoked {
 		return s.openError(stream, "authorization_denied", "session revoked")
 	}
-	if err := wire.WriteFrame(stream, wire.OpenResult{OK: true, SessionID: sessionID, Protocol: "2.0"}); err != nil {
+
+	var resumeOffer *wire.ResumeOffer
+	var resumeSecret []byte
+	if resumeNegotiated {
+		resumeSecret, err = generateResumeSecret()
+		if err != nil {
+			return err
+		}
+		secretStr := base64.RawURLEncoding.EncodeToString(resumeSecret)
+		resumeOffer = &wire.ResumeOffer{
+			ControlProtocol:   wire.TunnelResumeID,
+			ResumeProtocol:    wire.TunnelResumeID,
+			MaxInflightPerDir: DefaultMaxInflightPerDir,
+			AckBytes:          DefaultAckBytes,
+			AckIntervalMs:     25,
+			DetachedGraceMs:   10000,
+			ResumeSecret:      secretStr,
+		}
+	}
+
+	if err := wire.WriteFrame(stream, wire.OpenResult{OK: true, SessionID: sessionID, Protocol: "2.0", ResumeOffer: resumeOffer}); err != nil {
 		return err
 	}
 	_ = stream.SetDeadline(time.Time{})
-	session := store.Session{ID: sessionID, PipeRef: s.spec.Ref.String(), InitialTransportPath: "relayed", StartedAt: time.Now().UTC()}
+
+	session := store.Session{ID: sessionID, PipeRef: s.spec.Ref.String(), InitialTransportPath: "relayed", CurrentTransportPath: "relayed", StartedAt: time.Now().UTC()}
 	_ = s.state.PutSession(context.Background(), session)
-	runtimeInfof("session opened pipe=%s session=%s path=relayed", s.spec.Ref, sessionID)
-	in, out := copyDuplex(target, stream)
-	session.BytesIn = in
-	session.BytesOut = out
-	_ = s.state.PutSession(context.Background(), session)
-	runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", s.spec.Ref, sessionID, in, out)
+	runtimeInfof("session opened pipe=%s session=%s path=relayed resume=%v", s.spec.Ref, sessionID, resumeNegotiated)
+
+	if resumeNegotiated && resumeSecret != nil {
+		sp := newSessionPump(sessionConfig{
+			SessionID:         sessionID,
+			PipeID:            s.spec.PipeID,
+			Scope:             s.spec.Scope.String(),
+			ClientPeerID:      stream.Conn().RemotePeer(),
+			ServerPeerID:      stream.Conn().LocalPeer(),
+			Host:              nil,
+			State:             s.state,
+			TargetConn:        target,
+			MaxInflightPerDir: DefaultMaxInflightPerDir,
+			InitialEpoch:      1,
+			FromPath:          "relayed",
+			ToPath:            "relayed",
+			ResumeSecret:      resumeSecret,
+		})
+		sp.SetActiveCarrier(stream)
+
+		_ = s.state.PutPathEvent(context.Background(), store.PathEvent{
+			SessionID:    sessionID,
+			Epoch:        1,
+			FromPath:     "",
+			ToPath:       "relayed",
+			Reason:       "initial",
+			C2SCommitted: 0,
+			S2CCommitted: 0,
+			CommittedAt:  time.Now().UTC(),
+		})
+
+		sp.runServerSession()
+	} else {
+		in, out := copyDuplex(target, stream)
+		session.BytesIn = in
+		session.BytesOut = out
+		_ = s.state.PutSession(context.Background(), session)
+		runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", s.spec.Ref, sessionID, in, out)
+	}
 	return nil
 }
 func (s *tunnelServer) openError(stream core.Stream, code, message string) error {
@@ -662,19 +727,17 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, s
 			return result
 		}
 	}
-	// Refresh only supplies later OpenPipe handshakes. Live tunnel remains
-	// bounded by lease used below; no tunnel resume/switch exists in 2.0.
 	leases.startRefresh(ctx, state, h, record.Scope.String(), record.PipeID)
 	result.reason = "pipe_unreachable"
 	if len(record.Addresses) == 0 {
 		return result
 	}
-	peerID, err := node.DialPeer(setup, h, record.Addresses[0])
+	remotePeerID, err := node.DialPeer(setup, h, record.Addresses[0])
 	if err != nil {
 		result.transient = true
 		return result
 	}
-	stream, err := h.NewStream(core.WithAllowLimitedConn(setup, "tubo tunnel via relay"), peerID, protocol.ID(wire.TunnelID))
+	stream, err := h.NewStream(core.WithAllowLimitedConn(setup, "tubo tunnel via relay"), remotePeerID, protocol.ID(wire.TunnelID))
 	if err != nil {
 		result.transient = true
 		return result
@@ -692,7 +755,16 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, s
 	}
 	result.reason = "tunnel_handshake_failed"
 	public := authority.PublicString(private.Public().(ed25519.PublicKey))
-	if err := wire.WriteFrame(stream, wire.ClientHello{Version: "2.0", ClientPublic: public, Capabilities: []string{"raw-duplex", "half-close"}}); err != nil {
+	clientCapabilities := []string{"raw-duplex", "half-close"}
+	resumeNegotiated := false
+	for _, c := range record.Capabilities {
+		if c == wire.CapSessionResumeV1 {
+			resumeNegotiated = true
+			clientCapabilities = append(clientCapabilities, wire.CapSessionResumeV1)
+			break
+		}
+	}
+	if err := wire.WriteFrame(stream, wire.ClientHello{Version: "2.0", ClientPublic: public, Capabilities: clientCapabilities}); err != nil {
 		result.transient = true
 		return result
 	}
@@ -703,6 +775,13 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, s
 	}
 	if server.PipeID != record.PipeID || server.Version != "2.0" {
 		return result
+	}
+	resumeNegotiated = false
+	for _, c := range server.Capabilities {
+		if c == wire.CapSessionResumeV1 {
+			resumeNegotiated = true
+			break
+		}
 	}
 	open := wire.OpenPipe{PipeID: record.PipeID, ChallengeProof: authority.SignProof(private, "tubo-open-v2", server.Challenge, record.PipeID), AccessLease: lease, VisitedPipeIDs: []string{spec.PipeID}, HopLimit: domain.DefaultMaxPipeHops}
 	if err := wire.WriteFrame(stream, open); err != nil {
@@ -722,14 +801,63 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, s
 		runtimeInfof("recovered %s through successful session", spec.Ref)
 	}
 	_ = stream.SetDeadline(time.Time{})
-	session := store.Session{ID: openResult.SessionID, PipeRef: spec.Ref.String(), InitialTransportPath: "relayed", StartedAt: time.Now().UTC()}
+
+	sessionID := openResult.SessionID
+	session := store.Session{ID: sessionID, PipeRef: spec.Ref.String(), InitialTransportPath: "relayed", CurrentTransportPath: "relayed", StartedAt: time.Now().UTC()}
 	_ = state.PutSession(context.Background(), session)
-	runtimeInfof("session opened pipe=%s session=%s path=relayed", spec.Ref, openResult.SessionID)
-	in, out := copyDuplex(local, stream)
-	session.BytesIn = in
-	session.BytesOut = out
-	_ = state.PutSession(context.Background(), session)
-	runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", spec.Ref, openResult.SessionID, in, out)
+	runtimeInfof("session opened pipe=%s session=%s path=relayed resume=%v", spec.Ref, sessionID, resumeNegotiated)
+
+	if resumeNegotiated && openResult.ResumeOffer != nil {
+		secretBytes, err := base64.RawURLEncoding.DecodeString(openResult.ResumeOffer.ResumeSecret)
+		if err != nil {
+			runtimeWarnf("invalid resume secret: %v", err)
+			in, out := copyDuplex(local, stream)
+			session.BytesIn = in
+			session.BytesOut = out
+			_ = state.PutSession(context.Background(), session)
+			return result
+		}
+
+		sp := newSessionPump(sessionConfig{
+			SessionID:         sessionID,
+			PipeID:            record.PipeID,
+			Scope:             record.Scope.String(),
+			ClientPeerID:      h.ID(),
+			ServerPeerID:      remotePeerID,
+			Host:              h,
+			State:             state,
+			TargetConn:        local,
+			MaxInflightPerDir: DefaultMaxInflightPerDir,
+			InitialEpoch:      1,
+			FromPath:          "relayed",
+			ToPath:            "relayed",
+			ResumeSecret:      secretBytes,
+		})
+		sp.SetActiveCarrier(stream)
+
+		if err := sp.OpenControlStream(ctx, remotePeerID); err != nil {
+			runtimeWarnf("open control stream: %v", err)
+		}
+
+		_ = state.PutPathEvent(context.Background(), store.PathEvent{
+			SessionID:    sessionID,
+			Epoch:        1,
+			FromPath:     "",
+			ToPath:       "relayed",
+			Reason:       "initial",
+			C2SCommitted: 0,
+			S2CCommitted: 0,
+			CommittedAt:  time.Now().UTC(),
+		})
+
+		sp.runClientSession()
+	} else {
+		in, out := copyDuplex(local, stream)
+		session.BytesIn = in
+		session.BytesOut = out
+		_ = state.PutSession(context.Background(), session)
+		runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", spec.Ref, sessionID, in, out)
+	}
 	return result
 }
 

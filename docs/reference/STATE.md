@@ -136,7 +136,7 @@ authorization status
 started/updated timestamps
 ```
 
-Session rows contain dynamic route and application counters. They are not pipe definitions. `runtime_stats` stores per-run libp2p byte/rate/connection snapshots. `runtime_peers` is a replace-on-sample view keyed by run and observed PeerID; rows cascade when a run is deleted and are cleared on orderly stop.
+Session rows contain dynamic route, current transport path, and application counters. `path_events` tracks session transport path transitions with epoch, from/to path, reason, committed byte offsets, and timestamp. `runtime_stats` stores per-run libp2p byte/rate/connection snapshots. `runtime_peers` is a replace-on-sample view keyed by run and observed PeerID; rows cascade when a run is deleted and are cleared on orderly stop.
 
 ## Supervisor registration
 
@@ -159,5 +159,6 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 - Schema 6 adds `authority_snapshots` and `scope_freshness.snapshot_digest`; schema 5 freshness generation/high-water was locally derived, so migration transactionally clears only that untrusted ordering metadata and completion state while retaining valid cached records.
 - Schema 7 adds `scope_sync_leases` without changing cached records or authority snapshot metadata.
 - Schema 8 adds transactional `revocations`, one-time `invite_redemptions`, and encrypted-state lease cache rows. Older binaries reject schema 8. No downgrade migration exists; restore pre-upgrade backup before rollback.
+- Schema 9/10 adds `current_transport_path` to sessions and a `path_events` table tracking session transport path transitions with epoch, committed byte offsets, and reason. Older binaries reject schema 10. No downgrade migration exists.
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.

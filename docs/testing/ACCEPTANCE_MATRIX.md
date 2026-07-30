@@ -33,9 +33,22 @@ Legend for evidence classes:
 | TLS passthrough with native TLS client | I, D, 3M |
 | direct preferred, relay fallback, path transition observable | I, 3M |
 | no replay after application bytes flow | I |
+| session resume negotiated with `session-resume-v1` capability | U, I |
+| planned relay->direct switch with byte continuity | I, race |
+| abrupt carrier failure triggers relay recovery with epoch+1 | I, race |
+| no byte loss/duplication across path switch | I, race |
+| half-close sequenced across switch (FIN after final bytes) | I |
+| resume handshake proof validation rejects wrong proof/nonce/epoch/offset/peer | U, I |
+| buffer exhaustion backpressures source, does not drop | I, race |
+| late old-carrier bytes discarded after epoch advance | I, race |
+| path events recorded for each transport transition | U, I |
+| resume secret never persisted or logged | U, I |
 | source pipe restart/rebind keeps stable `pipe_id` | I, D, 3M |
 | relay reservation renews before expiry | I with fake clock, long 3M campaign |
 | relay/network interruption marks degraded, serves verified cache, clears stale dial backoff, and self-heals without restart | U, I, 3M |
+| DCUtR hole punching enabled with 5s direct dial timeout | I |
+| AutoNATv2 auto reachability detection | I |
+| QUIC-v1 listen enabled alongside TCP | I |
 
 ## Scope/discovery
 
