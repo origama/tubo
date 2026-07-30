@@ -421,7 +421,7 @@ func TestAuthorityExpiryAdvancesSnapshotBeforeConsumerDeletion(t *testing.T) {
 	if err := authorityState.EnsureAuthoritySnapshot(ctx, scope); err != nil {
 		t.Fatal(err)
 	}
-	record := Record{Scope: scope, PipeID: "pip_expiring", Name: "expiring", Payload: []byte(`1`), ExpiresAt: time.Now().Add(50 * time.Millisecond), Sequence: 1}
+	record := Record{Scope: scope, PipeID: "pip_expiring", Name: "expiring", Payload: []byte(`1`), ExpiresAt: time.Now().Add(5 * time.Second), Sequence: 1}
 	if err := authorityState.PutAuthoritativeRecord(ctx, record); err != nil {
 		t.Fatal(err)
 	}
@@ -443,11 +443,17 @@ func TestAuthorityExpiryAdvancesSnapshotBeforeConsumerDeletion(t *testing.T) {
 	if err := consumerState.Close(); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(75 * time.Millisecond)
 	t.Setenv("TUBO_HOME", authorityHome)
 	authorityState, err = Open(ctx)
 	if err != nil {
 		t.Fatal(err)
+	}
+	result, err := authorityState.db.ExecContext(ctx, `UPDATE records SET expires_at=? WHERE scope=? AND pipe_id=?`, time.Now().UTC().Add(-time.Millisecond).Format(time.RFC3339Nano), scope, record.PipeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+		t.Fatalf("expire authority record: changed=%d err=%v", changed, err)
 	}
 	if pruned, err := authorityState.PruneExpiredRecords(ctx, time.Now()); err != nil || pruned != 0 {
 		t.Fatalf("generic cache prune touched authority record: pruned=%d err=%v", pruned, err)
