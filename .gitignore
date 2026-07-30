@@ -26,3 +26,8 @@
 .vscode/
 *.swp
 *~
+
+# pi-subagent agent artifacts
+.pi-subagents/
+# e2e generated run artifacts
+generated/
