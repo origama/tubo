@@ -43,6 +43,24 @@ func WriteFrame(w io.Writer, value any) error {
 	return err
 }
 
+// WriteResumeFrame writes a frame bounded by MaxResumeFrame (4 KiB).
+func WriteResumeFrame(w io.Writer, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if len(data) > MaxResumeFrame {
+		return errors.New("resume/control frame exceeds 4 KiB")
+	}
+	var size [4]byte
+	binary.BigEndian.PutUint32(size[:], uint32(len(data)))
+	if _, err := w.Write(size[:]); err != nil {
+		return err
+	}
+	_, err = w.Write(data)
+	return err
+}
+
 func ReadFrame(r io.Reader, value any) error {
 	var size [4]byte
 	if _, err := io.ReadFull(r, size[:]); err != nil {
