@@ -72,4 +72,4 @@ These invariants are acceptance criteria, not aspirations.
 3. technical logs are hidden unless verbosity/log level enables them.
 4. `--json` stdout remains one parseable JSON value through every implicit subflow.
 5. Human output may evolve; documented JSON field meaning and error classes require versioned decisions.
-6. `watch pipes --json` is NDJSON: each change is one parseable JSON object, and its identity is `scope` plus `pipe_id`; it projects verified local state only.
+6. `watch pipes --json` is NDJSON: each change is one parseable JSON object, identified by `scope` plus `pipe_id`, with explicit `event_type` (`added`, `updated`, `expired`, `removed`, `degraded`, or `recovered`); it projects verified local state only.

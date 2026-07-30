@@ -1087,7 +1087,7 @@ func (a App) get(ctx context.Context, state *store.Store, args []string) error {
 // It contains only a projection of verified local state; watch never opens a
 // discovery socket or accepts an unverified remote event.
 type pipeWatchEvent struct {
-	Type       string    `json:"type"`
+	EventType  string    `json:"event_type"`
 	Scope      string    `json:"scope"`
 	PipeID     string    `json:"pipe_id"`
 	Name       string    `json:"name"`
@@ -1209,20 +1209,44 @@ func diffPipeViews(previous, current map[string]pipeView, observedAt time.Time) 
 		switch {
 		case !beforeOK && afterOK:
 			value := after
-			events = append(events, pipeWatchEvent{Type: "new", Scope: after.Scope, PipeID: after.ID, Name: after.Name, Item: &value, ObservedAt: observedAt})
+			events = append(events, pipeWatchEvent{EventType: "added", Scope: after.Scope, PipeID: after.ID, Name: after.Name, Item: &value, ObservedAt: observedAt})
 		case beforeOK && !afterOK:
 			value := before
-			events = append(events, pipeWatchEvent{Type: "removed", Scope: before.Scope, PipeID: before.ID, Name: before.Name, Previous: &value, ObservedAt: observedAt})
+			eventType := "removed"
+			if before.ExpiresAt != nil && !before.ExpiresAt.After(observedAt) {
+				eventType = "expired"
+			}
+			events = append(events, pipeWatchEvent{EventType: eventType, Scope: before.Scope, PipeID: before.ID, Name: before.Name, Previous: &value, ObservedAt: observedAt})
 		case beforeOK && afterOK:
 			changed := changedPipeViewFields(before, after)
 			if len(changed) == 0 {
 				continue
 			}
 			oldValue, newValue := before, after
-			events = append(events, pipeWatchEvent{Type: "changed", Scope: after.Scope, PipeID: after.ID, Name: after.Name, Changed: changed, Item: &newValue, Previous: &oldValue, ObservedAt: observedAt})
+			events = append(events, pipeWatchEvent{EventType: pipeWatchChangeType(before, after, observedAt), Scope: after.Scope, PipeID: after.ID, Name: after.Name, Changed: changed, Item: &newValue, Previous: &oldValue, ObservedAt: observedAt})
 		}
 	}
 	return events
+}
+
+// pipeWatchChangeType preserves distinct degraded/recovered observations while
+// keeping unrelated projection changes as updated. Status is local verified
+// runtime state; source and freshness remain available in Changed as evidence.
+func pipeWatchChangeType(before, after pipeView, observedAt time.Time) string {
+	switch {
+	case before.ExpiresAt != nil && !before.ExpiresAt.After(observedAt) && pipeViewHasNetworkSource(before) && !pipeViewHasNetworkSource(after):
+		return "expired"
+	case before.Status != "degraded" && after.Status == "degraded":
+		return "degraded"
+	case before.Status == "degraded" && after.Status != "degraded":
+		return "recovered"
+	default:
+		return "updated"
+	}
+}
+
+func pipeViewHasNetworkSource(item pipeView) bool {
+	return item.Source == "network" || item.Source == "local+network"
 }
 
 func changedPipeViewFields(before, after pipeView) []string {
@@ -1250,7 +1274,7 @@ func (a App) emitPipeWatchEvent(jsonOutput bool, event pipeWatchEvent) error {
 	if item == nil { // defensive: each event must contain its current or prior view.
 		return errors.New("internal error: pipe watch event without view")
 	}
-	line := fmt.Sprintf("%s scope=%s pipe_id=%s name=%s status=%s source=%s freshness=%s", event.Type, event.Scope, event.PipeID, event.Name, item.Status, item.Source, item.Freshness)
+	line := fmt.Sprintf("%s scope=%s pipe_id=%s name=%s status=%s source=%s freshness=%s", event.EventType, event.Scope, event.PipeID, event.Name, item.Status, item.Source, item.Freshness)
 	if len(event.Changed) > 0 {
 		line += " changed=" + strings.Join(event.Changed, ",")
 	}

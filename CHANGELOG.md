@@ -3,7 +3,7 @@
 ## [Unreleased]
 
 ### Added
-- `tubo watch pipes [--scope …] [--interval …] [--json]`: deterministic, membership-authorized multi-scope pipe changes from verified local state; JSON is NDJSON and slow stdout consumers backpressure polling without an event queue.
+- `tubo watch pipes [--scope …] [--interval …] [--json]`: deterministic, membership-authorized multi-scope pipe changes from verified local state with explicit `added`, `updated`, `expired`, `removed`, `degraded`, and `recovered` event types; JSON is NDJSON and slow stdout consumers backpressure polling without an event queue.
 - Schema 8 transactional revocations, atomic one-time share-invite redemptions, 10-minute access leases, 48-hour online-checked refresh leases, and pipe-only invite endpoints. Refresh updates later sessions only; established tunnels remain bounded by initial access lease until a future tunnel resume/switch protocol.
 - `tubo share pipe/<name> --json`, `tubo revoke invite|session|pipe-access|pipe-publish <id>`, and `connect --token <invite>` foundation.
 - Greenfield repository contract for Tubo's service/pipe architecture.
