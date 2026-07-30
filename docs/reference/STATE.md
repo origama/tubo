@@ -1,6 +1,6 @@
 # State and persistence
 
-Implementation status: schema version 7 uses pure-Go SQLite in WAL mode. Current tables cover services, pipes, scopes, memberships, verified records, per-scope discovery freshness, authority snapshots, per-scope sync leases, runs, supervisor registrations, sessions, peer aliases, per-run network statistics, observed runtime peers, and migrations. Grant/revocation/redemption tables are added with corresponding features, not as inert placeholders.
+Implementation status: schema version 8 uses pure-Go SQLite in WAL mode. Current tables cover services, pipes, scopes, memberships, verified records, per-scope discovery freshness, authority snapshots, per-scope sync leases, runs, supervisor registrations, sessions, peer aliases, per-run network statistics, observed runtime peers, and migrations. Grant/revocation/redemption tables are added with corresponding features, not as inert placeholders.
 
 ## Separation
 
@@ -157,6 +157,7 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 - State schema has its own monotonically increasing version.
 - Migrations run transactionally and retain a backup before destructive transformations.
 - Schema 6 adds `authority_snapshots` and `scope_freshness.snapshot_digest`; schema 5 freshness generation/high-water was locally derived, so migration transactionally clears only that untrusted ordering metadata and completion state while retaining valid cached records.
-- Schema 7 adds `scope_sync_leases` without changing cached records or authority snapshot metadata. Older binaries reject schema 7. No downgrade migration exists; restore pre-upgrade backup before rollback.
+- Schema 7 adds `scope_sync_leases` without changing cached records or authority snapshot metadata.
+- Schema 8 adds transactional `revocations`, one-time `invite_redemptions`, and encrypted-state lease cache rows. Older binaries reject schema 8. No downgrade migration exists; restore pre-upgrade backup before rollback.
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.

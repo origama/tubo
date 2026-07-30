@@ -81,13 +81,23 @@ type AuthorityRequest struct {
 	Nonce        string          `json:"nonce"`
 	Proof        string          `json:"proof"`
 	Record       json.RawMessage `json:"record,omitempty"`
+	Subjects     []string        `json:"subjects,omitempty"`
+	AccessLease  string          `json:"access_lease,omitempty"`
 }
 type AuthorityResponse struct {
-	OK      bool              `json:"ok"`
-	Error   string            `json:"error,omitempty"`
-	Lease   string            `json:"lease,omitempty"`
-	Grant   string            `json:"grant,omitempty"`
-	Records []json.RawMessage `json:"records,omitempty"`
+	OK           bool              `json:"ok"`
+	Error        string            `json:"error,omitempty"`
+	Lease        string            `json:"lease,omitempty"`
+	RefreshLease string            `json:"refresh_lease,omitempty"`
+	Grant        string            `json:"grant,omitempty"`
+	Invite       string            `json:"invite,omitempty"`
+	Records      []json.RawMessage `json:"records,omitempty"`
+	Revocations  []Revocation      `json:"revocations,omitempty"`
+}
+type Revocation struct {
+	SubjectType string `json:"subject_type"`
+	SubjectJTI  string `json:"subject_jti"`
+	Epoch       uint64 `json:"epoch"`
 }
 
 // AuthoritySnapshotRequest is exclusive to /tubo/authority/2.1 records.list.

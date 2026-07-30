@@ -1,6 +1,6 @@
 # Protocol 2.1
 
-Status: protocol 2.1 adds negotiated authority snapshot ordering for destructive `records.list` reconciliation. Protocol 2.0 implements authority-backed remote publication grants, record announcement/listing compatibility surface, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, access refresh, revocation, and further negotiated extensions are pending.
+Status: protocol 2.1 adds negotiated authority snapshot ordering for destructive `records.list` reconciliation. Protocol 2.0 implements authority-backed remote publication grants, record announcement/listing compatibility surface, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, and further negotiated extensions are pending. Authority 2.0 now supports bounded access/refresh lease exchange, revocation query, and one-time share invite issue/redemption.
 
 There is intentionally no negotiation or fallback to previous Tubo protocols.
 
@@ -57,7 +57,7 @@ Initial encoding uses a four-byte big-endian length followed by JSON. Outer leng
 | handshake duration | 10 s |
 | clock skew accepted for proof | 30 s |
 
-No absolute lifetime applies after `OpenOK`. Relay circuit byte/duration truncation is disabled; relay reservation and concurrent-circuit bounds remain enforced. Current session policy closes tunnel and target connection when access lease expires; refresh/lease exchange before expiry is pending.
+No absolute lifetime applies after `OpenOK`. Relay circuit byte/duration truncation is disabled; relay reservation and concurrent-circuit bounds remain enforced. Current session policy closes tunnel and target connection when initial access lease expires. Refresh exchange obtains access+refresh leases for subsequent/new session setup only; it never extends a live tunnel. Live in-session renewal needs future tunnel resume/switch protocol.
 
 ### Retry rule
 

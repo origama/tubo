@@ -17,23 +17,39 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
 
-const MaxTokenSize = 48 << 10
+const (
+	MaxTokenSize    = 48 << 10
+	AccessLeaseTTL  = 10 * time.Minute
+	RefreshLeaseTTL = 48 * time.Hour
+)
+
+// PipeEndpoint carries only published pipe routing material. It must never
+// carry a local service target.
+type PipeEndpoint struct {
+	PeerID    string   `json:"peer_id"`
+	Addresses []string `json:"addresses"`
+	Protocol  string   `json:"protocol"`
+}
 
 type Token struct {
-	Version          int          `json:"version"`
-	Type             string       `json:"type"`
-	Issuer           string       `json:"issuer"`
-	Subject          string       `json:"subject"`
-	Audience         string       `json:"audience,omitempty"`
-	Scope            domain.Scope `json:"scope"`
-	Role             string       `json:"role,omitempty"`
-	JTI              string       `json:"jti"`
-	IssuedAt         time.Time    `json:"issued_at"`
-	ExpiresAt        time.Time    `json:"expires_at"`
-	AuthorityAddress string       `json:"authority_address,omitempty"`
-	NamespaceKey     string       `json:"namespace_key,omitempty"`
-	OneTime          bool         `json:"one_time,omitempty"`
-	Signature        string       `json:"signature"`
+	Version          int           `json:"version"`
+	Type             string        `json:"type"`
+	Issuer           string        `json:"issuer"`
+	Subject          string        `json:"subject"`
+	Audience         string        `json:"audience,omitempty"`
+	Scope            domain.Scope  `json:"scope"`
+	Role             string        `json:"role,omitempty"`
+	JTI              string        `json:"jti"`
+	IssuedAt         time.Time     `json:"issued_at"`
+	ExpiresAt        time.Time     `json:"expires_at"`
+	AuthorityAddress string        `json:"authority_address,omitempty"`
+	NamespaceKey     string        `json:"namespace_key,omitempty"`
+	OneTime          bool          `json:"one_time,omitempty"`
+	PipeEndpoint     *PipeEndpoint `json:"pipe_endpoint,omitempty"`
+	DisplayNameHint  string        `json:"display_name_hint,omitempty"`
+	AccessEpoch      uint64        `json:"access_epoch,omitempty"`
+	PublishEpoch     uint64        `json:"publish_epoch,omitempty"`
+	Signature        string        `json:"signature"`
 }
 
 func randomID(prefix string) (string, error) {
@@ -73,8 +89,24 @@ func (t Token) Verify(public ed25519.PublicKey, now time.Time) error {
 	if t.Version != 2 {
 		return fmt.Errorf("unsupported token version %d", t.Version)
 	}
-	if len(t.Subject) == 0 || len(t.Subject) > 8192 || len(t.JTI) == 0 || len(t.JTI) > 8192 {
+	if len(t.Subject) == 0 || len(t.Subject) > 8192 || len(t.JTI) == 0 || len(t.JTI) > 8192 || len(t.Audience) > 8192 || len(t.DisplayNameHint) > 8192 {
 		return errors.New("invalid token metadata")
+	}
+	if t.PipeEndpoint != nil {
+		if t.PipeEndpoint.PeerID == "" || t.PipeEndpoint.Protocol == "" || len(t.PipeEndpoint.PeerID) > 8192 || len(t.PipeEndpoint.Protocol) > 8192 || len(t.PipeEndpoint.Addresses) == 0 || len(t.PipeEndpoint.Addresses) > 64 {
+			return errors.New("invalid pipe endpoint")
+		}
+		for _, address := range t.PipeEndpoint.Addresses {
+			if len(address) == 0 || len(address) > 8192 {
+				return errors.New("invalid pipe endpoint")
+			}
+		}
+	}
+	if t.Type == "share.invite" && (!t.OneTime || t.Audience == "" || t.PipeEndpoint == nil) {
+		return errors.New("invalid share invite")
+	}
+	if t.Type == "connect.refresh" && t.Audience == "" {
+		return errors.New("invalid refresh lease")
 	}
 	if err := t.Scope.Validate(); err != nil {
 		return err

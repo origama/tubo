@@ -81,3 +81,13 @@ Before merging a wire/state change, state explicitly:
 4. mixed-version behavior;
 5. rollout and rollback instructions;
 6. three-machine scenarios run.
+
+## Current migration decision: schema 8 revocation and invite redemption
+
+- product bump: unchanged (`0.1.0-dev`);
+- protocol bump: unchanged (`2.1` snapshot extension; authority 2.0 adds documented operations);
+- state bump: schema 7 to 8, adding transactional revocations, atomic invite redemption, and persisted client lease cache;
+- mixed-version behavior: schema-7 binaries reject schema-8 state; older authority handlers do not support refresh/invite/revocation operations;
+- rollout: back up state, deploy authority first, then clients/origin pipes;
+- rollback: stop schema-8 binaries and restore pre-schema-8 backup; no downgrade migration;
+- evidence: local unit/in-process and race coverage; no three-machine campaign run.

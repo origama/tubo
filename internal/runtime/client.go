@@ -337,11 +337,117 @@ func ParseVerifiedRecord(ctx context.Context, state *store.Store, stored store.R
 }
 
 func RequestLease(ctx context.Context, state *store.Store, h host.Host, scope, pipeID string) (string, error) {
+	lease, _, err := RequestLeasePair(ctx, state, h, scope, pipeID)
+	return lease, err
+}
+
+func RequestLeasePair(ctx context.Context, state *store.Store, h host.Host, scope, pipeID string) (string, string, error) {
 	response, err := authorityRequest(ctx, state, h, scope, "connect_access.issue", pipeID)
+	if err != nil {
+		return "", "", err
+	}
+	if response.Lease == "" || response.RefreshLease == "" {
+		return "", "", errors.New("authority returned empty lease")
+	}
+	return response.Lease, response.RefreshLease, nil
+}
+
+// RequestRefreshLease exchanges an unexpired access/refresh pair online. New
+// leases are for later session setup; it does not modify an open tunnel.
+func RequestRefreshLease(ctx context.Context, state *store.Store, h host.Host, scope, pipeID, accessLease, refreshLease string) (string, string, error) {
+	response, err := authorityRequestWithToken(ctx, state, h, scope, "connect_refresh.exchange", pipeID, refreshLease, accessLease)
+	if err != nil {
+		return "", "", err
+	}
+	if response.Lease == "" || response.RefreshLease == "" {
+		return "", "", errors.New("authority returned empty refreshed lease")
+	}
+	return response.Lease, response.RefreshLease, nil
+}
+
+func RequestRevoke(ctx context.Context, state *store.Store, h host.Host, scope, subjectType, subjectJTI string, epoch uint64) error {
+	payload, err := json.Marshal(map[string]any{"subject_type": subjectType, "subject_jti": subjectJTI, "epoch": epoch})
+	if err != nil {
+		return err
+	}
+	_, err = authorityRequestPayload(ctx, state, h, scope, "revocation.issue", "", payload)
+	return err
+}
+
+func RequestShareInvite(ctx context.Context, state *store.Store, h host.Host, scope, pipeID string) (string, error) {
+	membership, err := state.Membership(ctx, scope)
 	if err != nil {
 		return "", err
 	}
-	return response.Lease, nil
+	route, err := json.Marshal(map[string]string{"authority_address": membership.AuthorityAddress})
+	if err != nil {
+		return "", err
+	}
+	response, err := authorityRequestPayload(ctx, state, h, scope, "share_invite.issue", pipeID, route)
+	if err != nil {
+		return "", err
+	}
+	if response.Invite == "" {
+		return "", errors.New("authority returned empty share invite")
+	}
+	return response.Invite, nil
+}
+
+// RedeemShareInvite requires a locally trusted authority route for invite
+// foundation callers. Token itself carries only pipe endpoint, never service.
+func RedeemShareInvite(ctx context.Context, state *store.Store, h host.Host, scope, inviteToken string) (string, string, error) {
+	invite, err := authority.Decode(inviteToken)
+	if err != nil {
+		return "", "", err
+	}
+	response, err := authorityRequestWithToken(ctx, state, h, scope, "share_invite.redeem", invite.Audience, inviteToken, "")
+	if err != nil {
+		return "", "", err
+	}
+	if response.Lease == "" || response.RefreshLease == "" {
+		return "", "", errors.New("authority returned empty redeemed lease")
+	}
+	return response.Lease, response.RefreshLease, nil
+}
+
+func authorityRequestWithToken(ctx context.Context, state *store.Store, h host.Host, scope, operation, pipeID, token, accessLease string) (wire.AuthorityResponse, error) {
+	membership, err := state.Membership(ctx, scope)
+	if err != nil {
+		return wire.AuthorityResponse{}, err
+	}
+	private, err := authority.ReadPrivate(membership.ClientKeyFile)
+	if err != nil {
+		return wire.AuthorityResponse{}, err
+	}
+	peerID, err := node.DialPeer(ctx, h, membership.AuthorityAddress)
+	if err != nil {
+		return wire.AuthorityResponse{}, fmt.Errorf("authority_unreachable: %w", err)
+	}
+	stream, err := h.NewStream(network.WithAllowLimitedConn(ctx, "tubo authority via relay"), peerID, protocol.ID(wire.AuthorityID))
+	if err != nil {
+		return wire.AuthorityResponse{}, fmt.Errorf("authority_unreachable: %w", err)
+	}
+	defer stream.Close()
+	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
+	decoded, err := authority.Decode(token)
+	if err != nil {
+		return wire.AuthorityResponse{}, err
+	}
+	nonce := randomNonce()
+	public := authority.PublicString(private.Public().(ed25519.PublicKey))
+	request := wire.AuthorityRequest{Operation: operation, Token: token, PipeID: pipeID, ClientPublic: public, Nonce: nonce, AccessLease: accessLease}
+	request.Proof = authority.SignProof(private, "tubo-authority-v2", operation, pipeID, nonce, decoded.JTI)
+	if err := wire.WriteFrame(stream, request); err != nil {
+		return wire.AuthorityResponse{}, err
+	}
+	var response wire.AuthorityResponse
+	if err := wire.ReadFrame(stream, &response); err != nil {
+		return response, err
+	}
+	if !response.OK {
+		return response, errors.New(response.Error)
+	}
+	return response, nil
 }
 
 func RequestPublishGrant(ctx context.Context, state *store.Store, h host.Host, scope, pipeID string) (string, error) {

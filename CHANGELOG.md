@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- Schema 8 transactional revocations, atomic one-time share-invite redemptions, 10-minute access leases, 48-hour online-checked refresh leases, and pipe-only invite endpoints. Refresh updates later sessions only; established tunnels remain bounded by initial access lease until a future tunnel resume/switch protocol.
+- `tubo share pipe/<name> --json`, `tubo revoke invite|session|pipe-access|pipe-publish <id>`, and `connect --token <invite>` foundation.
 - Greenfield repository contract for Tubo's service/pipe architecture.
 - Initial domain invariants and deterministic local verification gate.
 - Isolated three-machine E2E harness contract for `tuborelay`, `oripi`, and `macb`.
@@ -32,10 +34,10 @@
 ### Compatibility
 - Product version: `0.1.0-dev`
 - Protocol version: `2.1` for negotiated authority snapshots; tunnel and existing authority operations remain `2.0`
-- State schema version: `7`
+- State schema version: `8`
 - Mixed-version behavior: schema-6 binaries reject schema-7 state; new consumers require authority 2.1 for deletion-capable `records.list`; 2.0 has no deletion fallback. Protocol 1.x is rejected
 - Compatibility with previous Tubo versions: intentionally unsupported
-- Rollout: back up state, deploy authority/origin with 2.1 before consumers, then deploy schema-7 consumers using isolated `TUBO_HOME`
-- Rollback: uninstall/bootout exact registered launchd labels or stop exact systemd units before binary/state rollback; restore pre-schema-7 state backup because no downgrade migration exists
+- Rollout: back up state, deploy authority/origin with 2.1 before consumers, then deploy schema-8 consumers using isolated `TUBO_HOME`
+- Rollback: uninstall/bootout exact registered launchd labels or stop exact systemd units before binary/state rollback; restore pre-schema-8 state backup because no downgrade migration exists
 - Validation: `make verify-local`; prior isolated three-machine member/viewer HTTP run `20260728T151219Z-60255`; periodic-sync three-machine authority-2.1 campaign passed: `20260730T092006Z-83493` (`generated/e2e-three-machine/20260730T092006Z-83493/artifacts/report.json`)
 - Operator action: use isolated state and do not point this binary at an existing Tubo home

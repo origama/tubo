@@ -94,6 +94,13 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	if err != nil || grant.Verify(authorityPublic, time.Now().UTC()) != nil || grant.Type != "pipe.publish" || grant.Audience != spec.PipeID || grant.Scope != *spec.Scope {
 		return errors.New("authorization_denied: invalid publish grant")
 	}
+	publishEpoch, err := state.RevocationEpoch(ctx, spec.Scope.String(), "pipe-publish", spec.PipeID)
+	if err != nil {
+		return fmt.Errorf("persistence_failed: publish epoch: %w", err)
+	}
+	if grant.PublishEpoch < publishEpoch {
+		return errors.New("authorization_denied: publish epoch revoked")
+	}
 	refreshGrant := func(now time.Time) error {
 		if grant.ExpiresAt.After(now.Add(24 * time.Hour)) {
 			return nil
@@ -108,6 +115,10 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 				return err
 			}
 			value, err := authority.NewToken("pipe.publish", *spec.Scope, authority.PublicString(owner.Public().(ed25519.PublicKey)), spec.PipeID, 30*24*time.Hour)
+			if err != nil {
+				return err
+			}
+			value.PublishEpoch, err = state.RevocationEpoch(context.Background(), spec.Scope.String(), "pipe-publish", spec.PipeID)
 			if err != nil {
 				return err
 			}
@@ -285,6 +296,20 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	if lease.Type != "connect.access" || lease.Audience != s.spec.PipeID || lease.Subject != hello.ClientPublic || lease.Scope != *s.spec.Scope {
 		return s.openError(stream, "authorization_denied", "access lease binding mismatch")
 	}
+	revoked, revokeErr := s.state.IsRevoked(context.Background(), s.spec.Scope.String(), "connect.access", lease.JTI)
+	if revokeErr != nil {
+		return s.openError(stream, "authorization_denied", "revocation state unavailable")
+	}
+	if revoked {
+		return s.openError(stream, "authorization_denied", "access revoked")
+	}
+	accessEpoch, revokeErr := s.state.RevocationEpoch(context.Background(), s.spec.Scope.String(), "pipe-access", s.spec.PipeID)
+	if revokeErr != nil {
+		return s.openError(stream, "authorization_denied", "revocation state unavailable")
+	}
+	if lease.AccessEpoch < accessEpoch {
+		return s.openError(stream, "authorization_denied", "access epoch revoked")
+	}
 	if !authority.VerifyProof(clientPublic, open.ChallengeProof, "tubo-open-v2", challenge, s.spec.PipeID) {
 		return s.openError(stream, "authorization_denied", "invalid challenge proof")
 	}
@@ -298,6 +323,10 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	sessionID, err := authority.SessionID()
 	if err != nil {
 		return err
+	}
+	revoked, revokeErr = s.state.IsRevoked(context.Background(), s.spec.Scope.String(), "session", sessionID)
+	if revokeErr != nil || revoked {
+		return s.openError(stream, "authorization_denied", "session revoked")
 	}
 	if err := wire.WriteFrame(stream, wire.OpenResult{OK: true, SessionID: sessionID, Protocol: "2.0"}); err != nil {
 		return err
@@ -376,6 +405,10 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 		case <-ctx.Done():
 		}
 	}()
+	leases := &localLeaseCache{}
+	if scope, access, refresh, expires, leaseErr := state.ConnectLease(ctx, record.PipeID); leaseErr == nil && scope == record.Scope.String() && expires.After(time.Now().UTC()) {
+		leases.access, leases.refresh, leases.expires = access, refresh, expires
+	}
 	for {
 		connection, err := listener.Accept()
 		if err != nil {
@@ -384,10 +417,69 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 			}
 			return err
 		}
-		go serveLocalConnection(context.Background(), state, h, spec, record, connection)
+		go serveLocalConnection(ctx, state, h, spec, record, leases, connection)
 	}
 }
-func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, record discovery.PipeRecord, local net.Conn) {
+
+type localLeaseCache struct {
+	mu             sync.Mutex
+	access         string
+	refresh        string
+	expires        time.Time
+	refreshStarted bool
+}
+
+func (c *localLeaseCache) current() (string, string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.access, c.refresh, c.access != "" && c.refresh != "" && time.Until(c.expires) > time.Minute
+}
+func (c *localLeaseCache) set(access, refresh string) error {
+	lease, err := authority.Decode(access)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.access, c.refresh, c.expires = access, refresh, lease.ExpiresAt
+	c.mu.Unlock()
+	return nil
+}
+func (c *localLeaseCache) startRefresh(ctx context.Context, state *store.Store, h host.Host, scope, pipeID string) {
+	c.mu.Lock()
+	if c.refreshStarted {
+		c.mu.Unlock()
+		return
+	}
+	c.refreshStarted = true
+	c.mu.Unlock()
+	go func() {
+		defer func() { c.mu.Lock(); c.refreshStarted = false; c.mu.Unlock() }()
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				access, refresh, ok := c.current()
+				if !ok {
+					continue
+				}
+				setup, cancel := context.WithTimeout(ctx, 10*time.Second)
+				newAccess, newRefresh, err := RequestRefreshLease(setup, state, h, scope, pipeID, access, refresh)
+				cancel()
+				if err == nil && c.set(newAccess, newRefresh) == nil {
+					c.mu.Lock()
+					expires := c.expires
+					c.mu.Unlock()
+					_ = state.PutConnectLease(context.Background(), pipeID, scope, newAccess, newRefresh, expires)
+				}
+			}
+		}
+	}()
+}
+
+func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, record discovery.PipeRecord, leases *localLeaseCache, local net.Conn) {
 	defer local.Close()
 	opened := false
 	failureReason := "authority_unreachable"
@@ -398,10 +490,26 @@ func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, 
 	}()
 	setup, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	lease, err := RequestLease(setup, state, h, record.Scope.String(), record.PipeID)
-	if err != nil {
-		return
+	lease, refresh, cached := leases.current()
+	var err error
+	if !cached {
+		lease, refresh, err = RequestLeasePair(setup, state, h, record.Scope.String(), record.PipeID)
+		if err != nil {
+			return
+		}
+		if err := leases.set(lease, refresh); err != nil {
+			return
+		}
+		leases.mu.Lock()
+		expires := leases.expires
+		leases.mu.Unlock()
+		if err := state.PutConnectLease(context.Background(), record.PipeID, record.Scope.String(), lease, refresh, expires); err != nil {
+			return
+		}
 	}
+	// Refresh only supplies later OpenPipe handshakes. Live tunnel remains
+	// bounded by lease used below; no tunnel resume/switch exists in 2.0.
+	leases.startRefresh(ctx, state, h, record.Scope.String(), record.PipeID)
 	failureReason = "pipe_unreachable"
 	peerID, err := node.DialPeer(setup, h, record.Addresses[0])
 	if err != nil {

@@ -63,8 +63,8 @@ Legend for evidence classes:
 | stolen access token without private key is rejected | I, D |
 | one-time invite permits one successful redemption | I, D, 3M |
 | denied redemption does not consume invite | I, D |
-| access auto-renews through one authority issuer | I, D, 3M |
-| invite/session/pipe-access/pipe-publish revocation | I, D |
+| access refresh exchanges online through one authority issuer; fresh leases apply only to subsequent sessions | U, I, race |
+| invite/session/pipe-access/pipe-publish revocation and bounded OpenOK check | U, I, race |
 | access and refresh lifetimes obey membership/publication bounds | U, I |
 | malformed/oversized authority and tunnel input rejected before allocation | fuzz, I |
 

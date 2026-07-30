@@ -55,7 +55,8 @@ Public sharing is unlisted and invite-only by default. A self-contained invite m
 - access leases are short-lived;
 - refresh leases are longer and checked by the authority;
 - invite JTI, session ID, pipe-access epoch, and pipe-publish state are revocable;
-- already-issued offline access remains valid until lease expiry unless the pipe performs an online/fresh-state check.
+- already-issued offline access remains valid until lease expiry unless pipe checks its local authoritative revocation state before OpenOK; gossip propagation is future work.
+- access leases expire after 10 minutes; refresh leases expire after 48 hours and require authority online check. Refresh affects later sessions only. Live tunnel renewal requires future tunnel resume/switch protocol.
 
 Do not claim immediate revocation without such a check.
 

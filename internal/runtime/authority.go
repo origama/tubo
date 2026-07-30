@@ -128,7 +128,7 @@ func (h *authorityHandler) handle(stream core.Stream) {
 }
 func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRequest) wire.AuthorityResponse {
 	fail := func(err error) wire.AuthorityResponse { return wire.AuthorityResponse{OK: false, Error: err.Error()} }
-	if !boundedStrings(8192, request.Operation, request.PipeID, request.ClientPublic, request.Nonce, request.Proof) || len(request.Token) > authority.MaxTokenSize || len(request.Record) > discovery.MaxRecordSize {
+	if !boundedStrings(8192, request.Operation, request.PipeID, request.ClientPublic, request.Nonce, request.Proof, request.AccessLease) || len(request.Token) > authority.MaxTokenSize || len(request.AccessLease) > authority.MaxTokenSize || len(request.Record) > discovery.MaxRecordSize || len(request.Subjects) > 256 {
 		return fail(errors.New("invalid_input: authority field exceeds limit"))
 	}
 	invite, err := authority.Decode(request.Token)
@@ -138,8 +138,8 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 	if err := invite.Verify(h.public, time.Now().UTC()); err != nil {
 		return fail(fmt.Errorf("authorization_denied: %w", err))
 	}
-	if invite.Type != "membership.invite" || invite.Scope != h.scope {
-		return fail(errors.New("authorization_denied: invalid membership invite"))
+	if invite.Scope != h.scope {
+		return fail(errors.New("authorization_denied: token scope mismatch"))
 	}
 	clientPublic, err := authority.PublicFromString(request.ClientPublic)
 	if err != nil {
@@ -148,8 +148,45 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 	if !authority.VerifyProof(clientPublic, request.Proof, "tubo-authority-v2", request.Operation, request.PipeID, request.Nonce, invite.JTI) {
 		return fail(errors.New("authorization_denied: invalid proof of possession"))
 	}
+	membership := invite.Type == "membership.invite"
+	requireMembership := func() error {
+		if !membership {
+			return errors.New("authorization_denied: invalid membership invite")
+		}
+		return nil
+	}
+	mintLeases := func(subject, pipeID string) (string, string, error) {
+		epoch, err := h.state.RevocationEpoch(ctx, h.scope.String(), "pipe-access", pipeID)
+		if err != nil {
+			return "", "", fmt.Errorf("persistence_failed: revocation epoch: %w", err)
+		}
+		access, err := authority.NewToken("connect.access", h.scope, subject, pipeID, authority.AccessLeaseTTL)
+		if err != nil {
+			return "", "", err
+		}
+		refresh, err := authority.NewToken("connect.refresh", h.scope, subject, pipeID, authority.RefreshLeaseTTL)
+		access.AccessEpoch, refresh.AccessEpoch = epoch, epoch
+		if err != nil {
+			return "", "", err
+		}
+		if err = access.Sign(h.private); err != nil {
+			return "", "", err
+		}
+		if err = refresh.Sign(h.private); err != nil {
+			return "", "", err
+		}
+		a, err := authority.Encode(access)
+		if err != nil {
+			return "", "", err
+		}
+		r, err := authority.Encode(refresh)
+		return a, r, err
+	}
 	switch request.Operation {
 	case "pipe_publish.request":
+		if err := requireMembership(); err != nil {
+			return fail(err)
+		}
 		if invite.Role != "publisher" {
 			return fail(errors.New("authorization_denied: role cannot publish"))
 		}
@@ -163,6 +200,10 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 		if invite.ExpiresAt.Before(grant.ExpiresAt) {
 			grant.ExpiresAt = invite.ExpiresAt
 		}
+		grant.PublishEpoch, err = h.state.RevocationEpoch(ctx, h.scope.String(), "pipe-publish", request.PipeID)
+		if err != nil {
+			return fail(fmt.Errorf("persistence_failed: publish epoch: %w", err))
+		}
 		if err := grant.Sign(h.private); err != nil {
 			return fail(err)
 		}
@@ -172,6 +213,9 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 		}
 		return wire.AuthorityResponse{OK: true, Grant: encoded}
 	case "records.announce":
+		if err := requireMembership(); err != nil {
+			return fail(err)
+		}
 		if invite.Role != "publisher" {
 			return fail(errors.New("authorization_denied: role cannot announce records"))
 		}
@@ -201,6 +245,9 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 		}
 		return wire.AuthorityResponse{OK: true}
 	case "records.list":
+		if err := requireMembership(); err != nil {
+			return fail(err)
+		}
 		if invite.Role != "member" && invite.Role != "viewer" && invite.Role != "publisher" && invite.Role != "forwarder" {
 			return fail(errors.New("authorization_denied: role cannot discover"))
 		}
@@ -230,6 +277,9 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 		}
 		return wire.AuthorityResponse{OK: true, Records: result}
 	case "connect_access.issue":
+		if err := requireMembership(); err != nil {
+			return fail(err)
+		}
 		if invite.Role != "member" && invite.Role != "publisher" && invite.Role != "forwarder" {
 			return fail(errors.New("authorization_denied: role cannot connect"))
 		}
@@ -247,31 +297,156 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 		if record.Access != domain.AccessMembers {
 			return fail(errors.New("authorization_denied: pipe requires an exact share invite"))
 		}
-		lease, err := authority.NewToken("connect.access", h.scope, request.ClientPublic, request.PipeID, time.Hour)
+		lease, refresh, err := mintLeases(request.ClientPublic, request.PipeID)
 		if err != nil {
 			return fail(err)
 		}
-		if invite.ExpiresAt.Before(lease.ExpiresAt) {
-			lease.ExpiresAt = invite.ExpiresAt
+		return wire.AuthorityResponse{OK: true, Lease: lease, RefreshLease: refresh}
+	case "connect_refresh.exchange":
+		if invite.Type != "connect.refresh" || invite.Audience != request.PipeID || invite.Subject != request.ClientPublic {
+			return fail(errors.New("authorization_denied: invalid refresh lease"))
 		}
-		if record.ExpiresAt.Before(lease.ExpiresAt) {
-			lease.ExpiresAt = record.ExpiresAt
+		access, err := authority.Decode(request.AccessLease)
+		if err != nil || access.Verify(h.public, time.Now().UTC()) != nil || access.Type != "connect.access" || access.Audience != invite.Audience || access.Subject != invite.Subject {
+			return fail(errors.New("authorization_denied: invalid current access lease"))
+		}
+		epoch, epochErr := h.state.RevocationEpoch(ctx, h.scope.String(), "pipe-access", invite.Audience)
+		if epochErr != nil {
+			return fail(fmt.Errorf("persistence_failed: revocation epoch: %w", epochErr))
+		}
+		if access.AccessEpoch < epoch || invite.AccessEpoch < epoch {
+			return fail(errors.New("authorization_denied: access epoch revoked"))
+		}
+		for _, subject := range [][2]string{{"connect.refresh", invite.JTI}, {"connect.access", access.JTI}} {
+			revoked, checkErr := h.state.IsRevoked(ctx, h.scope.String(), subject[0], subject[1])
+			if checkErr != nil {
+				return fail(fmt.Errorf("persistence_failed: revocation: %w", checkErr))
+			}
+			if revoked {
+				return fail(errors.New("authorization_denied: lease revoked"))
+			}
+		}
+		lease, refresh, err := mintLeases(request.ClientPublic, request.PipeID)
+		if err != nil {
+			return fail(err)
+		}
+		return wire.AuthorityResponse{OK: true, Lease: lease, RefreshLease: refresh}
+	case "share_invite.issue":
+		if err := requireMembership(); err != nil {
+			return fail(err)
+		}
+		if invite.Role != "publisher" {
+			return fail(errors.New("authorization_denied: role cannot share"))
+		}
+		stored, err := h.state.RecordInScope(ctx, h.scope.String(), request.PipeID)
+		if err != nil {
+			return fail(errors.New("not_found: pipe record"))
+		}
+		record, err := discovery.Parse(stored.Payload)
+		if err != nil || record.Verify(h.public, h.scope, time.Now().UTC()) != nil {
+			return fail(errors.New("authorization_denied: invalid pipe publication"))
 		}
 		publishGrant, err := authority.Decode(record.PublishGrant)
-		if err != nil {
-			return fail(errors.New("authorization_denied: invalid publish grant"))
+		if err != nil || publishGrant.Subject != request.ClientPublic {
+			return fail(errors.New("authorization_denied: publish permission required"))
 		}
-		if publishGrant.ExpiresAt.Before(lease.ExpiresAt) {
-			lease.ExpiresAt = publishGrant.ExpiresAt
-		}
-		if err := lease.Sign(h.private); err != nil {
-			return fail(err)
-		}
-		encoded, err := authority.Encode(lease)
+		share, err := authority.NewToken("share.invite", h.scope, request.ClientPublic, request.PipeID, 48*time.Hour)
 		if err != nil {
 			return fail(err)
 		}
-		return wire.AuthorityResponse{OK: true, Lease: encoded}
+		var route struct {
+			AuthorityAddress string `json:"authority_address"`
+		}
+		if err := json.Unmarshal(request.Record, &route); err != nil || route.AuthorityAddress == "" || len(route.AuthorityAddress) > 8192 {
+			return fail(errors.New("invalid_input: authority route required"))
+		}
+		share.OneTime = true
+		share.AccessEpoch, err = h.state.RevocationEpoch(ctx, h.scope.String(), "pipe-access", request.PipeID)
+		if err != nil {
+			return fail(fmt.Errorf("persistence_failed: access epoch: %w", err))
+		}
+		share.PublishEpoch, err = h.state.RevocationEpoch(ctx, h.scope.String(), "pipe-publish", request.PipeID)
+		if err != nil {
+			return fail(fmt.Errorf("persistence_failed: publish epoch: %w", err))
+		}
+		share.AuthorityAddress = route.AuthorityAddress
+		share.PipeEndpoint = &authority.PipeEndpoint{PeerID: record.RuntimePeerID, Addresses: append([]string(nil), record.Addresses...), Protocol: record.Protocol}
+		share.DisplayNameHint = record.DisplayName
+		if err := share.Sign(h.private); err != nil {
+			return fail(err)
+		}
+		encoded, err := authority.Encode(share)
+		if err != nil {
+			return fail(err)
+		}
+		return wire.AuthorityResponse{OK: true, Invite: encoded}
+	case "share_invite.redeem":
+		if invite.Type != "share.invite" || !invite.OneTime || invite.Audience != request.PipeID || invite.PipeEndpoint == nil {
+			return fail(errors.New("authorization_denied: invalid share invite"))
+		}
+		stored, err := h.state.RecordInScope(ctx, h.scope.String(), invite.Audience)
+		if err != nil {
+			return fail(errors.New("not_found: pipe record"))
+		}
+		record, err := discovery.Parse(stored.Payload)
+		if err != nil || record.Verify(h.public, h.scope, time.Now().UTC()) != nil {
+			return fail(errors.New("authorization_denied: invalid pipe publication"))
+		}
+		revoked, err := h.state.IsRevoked(ctx, h.scope.String(), "share.invite", invite.JTI)
+		if err != nil {
+			return fail(fmt.Errorf("persistence_failed: revocation: %w", err))
+		}
+		if revoked {
+			return fail(errors.New("authorization_denied: invite revoked"))
+		}
+		sessionID, err := authority.SessionID()
+		if err != nil {
+			return fail(err)
+		}
+		_, err = h.state.RedeemInvite(ctx, invite.JTI, invite.Audience, sessionID, request.ClientPublic)
+		if err != nil {
+			if errors.Is(err, store.ErrInviteRedeemed) {
+				return fail(errors.New("authorization_denied: invite already redeemed"))
+			}
+			return fail(fmt.Errorf("persistence_failed: redeem invite: %w", err))
+		}
+		lease, refresh, err := mintLeases(request.ClientPublic, request.PipeID)
+		if err != nil {
+			return fail(err)
+		}
+		return wire.AuthorityResponse{OK: true, Lease: lease, RefreshLease: refresh}
+	case "revocation.issue":
+		if err := requireMembership(); err != nil {
+			return fail(err)
+		}
+		if invite.Role != "publisher" {
+			return fail(errors.New("authorization_denied: role cannot revoke"))
+		}
+		var value struct {
+			SubjectType string `json:"subject_type"`
+			SubjectJTI  string `json:"subject_jti"`
+			Epoch       uint64 `json:"epoch"`
+		}
+		if err := json.Unmarshal(request.Record, &value); err != nil {
+			return fail(errors.New("invalid_input: invalid revocation"))
+		}
+		if err := h.state.Revoke(ctx, h.scope.String(), value.SubjectType, value.SubjectJTI, value.Epoch); err != nil {
+			return fail(fmt.Errorf("persistence_failed: revoke: %w", err))
+		}
+		return wire.AuthorityResponse{OK: true}
+	case "revocation.query":
+		if !membership && invite.Type != "connect.refresh" && invite.Type != "share.invite" {
+			return fail(errors.New("authorization_denied: invalid query token"))
+		}
+		values, err := h.state.Revocations(ctx, h.scope.String(), request.Subjects)
+		if err != nil {
+			return fail(fmt.Errorf("persistence_failed: revocation: %w", err))
+		}
+		out := make([]wire.Revocation, 0, len(values))
+		for _, value := range values {
+			out = append(out, wire.Revocation{SubjectType: value.SubjectType, SubjectJTI: value.SubjectJTI, Epoch: value.Epoch})
+		}
+		return wire.AuthorityResponse{OK: true, Revocations: out}
 	default:
 		return fail(errors.New("invalid_input: unknown authority operation"))
 	}

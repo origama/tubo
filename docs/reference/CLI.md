@@ -1,6 +1,6 @@
 # CLI contract
 
-Implementation status: private-HTTP/WebSocket/raw-TCP vertical slice supports `keygen swarm`, `join overlay`, scope create/invite/join/use, remote publisher grants and announcements, foreground relay/authority/published pipes, service/pipe create, `attach`, detached `connect`, local inventory/inspection, peer aliases, masked config validation/printing, `doctor`, `logs`, detached pipe restart/removal/stale cleanup, `ps`, `top`, and identity-safe `stop`. Commands documented below but not in this list remain target contract.
+Implementation status: private-HTTP/WebSocket/raw-TCP vertical slice supports `keygen swarm`, `join overlay`, scope create/invite/join/use, remote publisher grants and announcements, foreground relay/authority/published pipes, service/pipe create, `attach`, detached `connect`, one-time share invites, revocation, local inventory/inspection, peer aliases, masked config validation/printing, `doctor`, `logs`, detached pipe restart/removal/stale cleanup, `ps`, `top`, and identity-safe `stop`.
 
 ## Output
 
@@ -80,14 +80,14 @@ Roles:
 ## Sharing and revocation
 
 ```bash
-tubo share pipe/lmstudio-team --expires 1h --one-time --json
+tubo share pipe/lmstudio-team --json
 tubo revoke invite <jti>
 tubo revoke session <session-id>
 tubo revoke pipe-access <pipe-id>
 tubo revoke pipe-publish <pipe-id>
 ```
 
-Invites target exact `pipe_id`; display name is only a hint. One-time means one successful session/lease redemption, not one HTTP request.
+Invites target exact `pipe_id`; display name is only a hint. Invite carries published pipe peer/address/protocol endpoint, never local service endpoint. One-time means one successful lease redemption, idempotent only for same client key/JTI retry. Access leases last 10 minutes; refresh leases last 48 hours and refresh later sessions only.
 
 ## Runtime views
 

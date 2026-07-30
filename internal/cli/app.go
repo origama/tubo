@@ -135,6 +135,10 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return a.start(ctx, state, args[1:])
 	case "connect":
 		return a.connect(ctx, state, args[1:])
+	case "share":
+		return a.share(ctx, state, args[1:])
+	case "revoke":
+		return a.revoke(ctx, state, args[1:])
 	case "attach":
 		return a.attach(ctx, state, args[1:])
 	case "get":
@@ -559,6 +563,10 @@ func (a App) pipe(ctx context.Context, state *store.Store, args []string) error 
 			if err != nil {
 				return err
 			}
+			publish.PublishEpoch, err = state.RevocationEpoch(ctx, scopeRaw, "pipe-publish", spec.PipeID)
+			if err != nil {
+				return err
+			}
 			if err := publish.Sign(authorityPrivate); err != nil {
 				return err
 			}
@@ -681,30 +689,136 @@ func (a App) startDetached(ctx context.Context, state *store.Store, ref string) 
 	return store.Run{}, errors.New("readiness_failed: child did not become ready")
 }
 
+func (a App) share(ctx context.Context, state *store.Store, args []string) error {
+	f, err := parse(args)
+	if err != nil {
+		return err
+	}
+	if len(f.args) != 1 || !strings.HasPrefix(f.args[0], "pipe/") {
+		return errors.New("usage: tubo share pipe/<name> [--json]")
+	}
+	spec, _, _, err := state.Pipe(ctx, f.args[0])
+	if err != nil {
+		return err
+	}
+	h, _, err := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("share-%d", os.Getpid()))
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+	invite, err := appRuntime.RequestShareInvite(ctx, state, h, spec.Scope.String(), spec.PipeID)
+	if err != nil {
+		return err
+	}
+	return a.emit(f.bools["json"], map[string]any{"pipe_id": spec.PipeID, "invite": invite}, invite)
+}
+
+func (a App) revoke(ctx context.Context, state *store.Store, args []string) error {
+	f, err := parse(args)
+	if err != nil {
+		return err
+	}
+	if len(f.args) != 2 {
+		return errors.New("usage: tubo revoke invite|session|pipe-access|pipe-publish <id>")
+	}
+	typeName, id := f.args[0], f.args[1]
+	if typeName == "invite" {
+		typeName = "share.invite"
+	}
+	if typeName != "share.invite" && typeName != "session" && typeName != "pipe-access" && typeName != "pipe-publish" {
+		return errors.New("invalid revocation type")
+	}
+	scope, err := state.CurrentScope(ctx)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(id, "pipe/") {
+		spec, _, _, pipeErr := state.Pipe(ctx, id)
+		if pipeErr != nil {
+			return pipeErr
+		}
+		id = spec.PipeID
+		scope = spec.Scope.String()
+	}
+	if _, membershipErr := state.Membership(ctx, scope); membershipErr == nil {
+		h, _, hostErr := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("revoke-%d", os.Getpid()))
+		if hostErr != nil {
+			return hostErr
+		}
+		revokeErr := appRuntime.RequestRevoke(ctx, state, h, scope, typeName, id, 1)
+		_ = h.Close()
+		if revokeErr != nil {
+			return revokeErr
+		}
+	} else if err := state.Revoke(ctx, scope, typeName, id, 1); err != nil {
+		return fmt.Errorf("persistence_failed: %w", err)
+	}
+	return a.emit(f.bools["json"], map[string]any{"scope": scope, "subject_type": typeName, "subject_jti": id, "revoked": true}, "revoked "+typeName+"/"+id)
+}
+
 func (a App) connect(ctx context.Context, state *store.Store, args []string) error {
 	f, err := parse(args)
 	if err != nil {
 		return err
 	}
-	if len(f.args) != 1 {
-		return errors.New("usage: tubo connect <pipe-name|pipe/id> --local host:port [-d]")
+	if len(f.args) != 1 && f.values["token"] == "" {
+		return errors.New("usage: tubo connect <pipe-name|pipe/id> --local host:port [-d] | tubo connect --token <invite> --local host:port")
 	}
 	local, err := f.required("local")
 	if err != nil {
 		return err
 	}
-	record, err := a.resolveRemote(ctx, state, f.args[0], f.values["scope"])
-	if err != nil {
-		return err
-	}
-	accessHost, _, err := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("access-%d", os.Getpid()))
-	if err != nil {
-		return err
-	}
-	_, accessErr := appRuntime.RequestLease(ctx, state, accessHost, record.Scope.String(), record.PipeID)
-	_ = accessHost.Close()
-	if accessErr != nil {
-		return accessErr
+	var record discovery.PipeRecord
+	if tokenValue := f.values["token"]; tokenValue != "" {
+		token, decodeErr := authority.Decode(tokenValue)
+		if decodeErr != nil {
+			return decodeErr
+		}
+		issuer, keyErr := authority.PublicFromString(token.Issuer)
+		if keyErr != nil {
+			return keyErr
+		}
+		if verifyErr := token.Verify(issuer, time.Now().UTC()); verifyErr != nil || token.Type != "share.invite" || token.PipeEndpoint == nil || token.AuthorityAddress == "" {
+			return errors.New("authorization_denied: invalid share invite")
+		}
+		clientPath := state.SecretPath("clients", "invite-"+token.JTI+".key")
+		if _, clientErr := loadOrGeneratePrivate(clientPath); clientErr != nil {
+			return clientErr
+		}
+		if putErr := state.PutMembership(ctx, store.Membership{Scope: token.Scope.String(), Role: "invite", Token: tokenValue, AuthorityPublic: token.Issuer, AuthorityAddress: token.AuthorityAddress, ClientKeyFile: clientPath}); putErr != nil {
+			return fmt.Errorf("persistence_failed: %w", putErr)
+		}
+		accessHost, _, hostErr := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("redeem-%d", os.Getpid()))
+		if hostErr != nil {
+			return hostErr
+		}
+		access, refresh, redeemErr := appRuntime.RedeemShareInvite(ctx, state, accessHost, token.Scope.String(), tokenValue)
+		_ = accessHost.Close()
+		if redeemErr != nil {
+			return redeemErr
+		}
+		lease, leaseErr := authority.Decode(access)
+		if leaseErr != nil {
+			return leaseErr
+		}
+		if err := state.PutConnectLease(ctx, token.Audience, token.Scope.String(), access, refresh, lease.ExpiresAt); err != nil {
+			return fmt.Errorf("persistence_failed: %w", err)
+		}
+		record = discovery.PipeRecord{PipeID: token.Audience, DisplayName: token.DisplayNameHint, RuntimePeerID: token.PipeEndpoint.PeerID, Scope: token.Scope, Protocol: token.PipeEndpoint.Protocol, Addresses: append([]string(nil), token.PipeEndpoint.Addresses...)}
+	} else {
+		record, err = a.resolveRemote(ctx, state, f.args[0], f.values["scope"])
+		if err != nil {
+			return err
+		}
+		accessHost, _, hostErr := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("access-%d", os.Getpid()))
+		if hostErr != nil {
+			return hostErr
+		}
+		_, accessErr := appRuntime.RequestLease(ctx, state, accessHost, record.Scope.String(), record.PipeID)
+		_ = accessHost.Close()
+		if accessErr != nil {
+			return accessErr
+		}
 	}
 	name := "connect-" + strings.TrimPrefix(record.PipeID, "pip_")
 	if len(name) > 32 {
@@ -1299,6 +1413,9 @@ func (a App) help() {
 Usage:
   tubo attach <target> --name <name> [-d]
   tubo connect <pipe-name|pipe/id> [--local host:port] [-d]
+  tubo connect --token <share-invite> --local host:port [-d]
+  tubo share pipe/<name> [--json]
+  tubo revoke invite|session|pipe-access|pipe-publish <id>
   tubo service create <name> --target <url>
   tubo pipe create <name> --ingress <kind> --target <resource>
   tubo start|restart|stop|rm pipe/<name>

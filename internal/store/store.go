@@ -21,7 +21,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
 
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 const maxScopeSyncLeaseTTL = 5 * time.Minute
 
@@ -128,6 +128,16 @@ type Session struct {
 	BytesOut             int64     `json:"bytes_out"`
 }
 
+type Revocation struct {
+	Scope       string    `json:"scope"`
+	SubjectType string    `json:"subject_type"`
+	SubjectJTI  string    `json:"subject_jti"`
+	RevokedAt   time.Time `json:"revoked_at"`
+	Epoch       uint64    `json:"epoch"`
+}
+
+var ErrInviteRedeemed = errors.New("invite already redeemed by another client")
+
 type PeerAlias struct {
 	PeerID    string    `json:"peer_id"`
 	Name      string    `json:"name"`
@@ -230,6 +240,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS scope_freshness(scope TEXT PRIMARY KEY, last_attempt TEXT NOT NULL DEFAULT '', last_success TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', complete INTEGER NOT NULL DEFAULT 0, error_class TEXT NOT NULL DEFAULT '', next_retry TEXT NOT NULL DEFAULT '', snapshot_generation INTEGER NOT NULL DEFAULT 0, snapshot_high_water INTEGER NOT NULL DEFAULT 0, snapshot_digest TEXT NOT NULL DEFAULT '')`,
 		`CREATE TABLE IF NOT EXISTS authority_snapshots(scope TEXT PRIMARY KEY, generation INTEGER NOT NULL, high_water INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS scope_sync_leases(scope TEXT PRIMARY KEY, holder_ref TEXT NOT NULL, holder_process_identity TEXT NOT NULL, lease_token TEXT NOT NULL UNIQUE, acquired_at TEXT NOT NULL, renewed_at TEXT NOT NULL, expires_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS revocations(scope TEXT NOT NULL, subject_type TEXT NOT NULL, subject_jti TEXT NOT NULL, revoked_at TEXT NOT NULL, epoch INTEGER NOT NULL, PRIMARY KEY(scope,subject_type,subject_jti))`,
+		`CREATE TABLE IF NOT EXISTS invite_redemptions(jti TEXT NOT NULL, pipe_id TEXT NOT NULL, redeemed_at TEXT NOT NULL, session_id TEXT NOT NULL, client_public TEXT NOT NULL, PRIMARY KEY(jti,pipe_id))`,
+		`CREATE TABLE IF NOT EXISTS connect_leases(pipe_id TEXT PRIMARY KEY, scope TEXT NOT NULL, access_lease TEXT NOT NULL, refresh_lease TEXT NOT NULL, expires_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runs(primary_ref TEXT PRIMARY KEY, kind TEXT NOT NULL, pid INTEGER NOT NULL, process_identity TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'foreground', status TEXT NOT NULL, peer_id TEXT NOT NULL, address TEXT NOT NULL, started_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS supervisors(primary_ref TEXT PRIMARY KEY, manager TEXT NOT NULL, label TEXT NOT NULL UNIQUE, unit_path TEXT NOT NULL, installed_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, pipe_ref TEXT NOT NULL, initial_transport_path TEXT NOT NULL, started_at TEXT NOT NULL, bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0)`,
@@ -1549,6 +1562,153 @@ func (s *Store) RuntimePeers(ctx context.Context) ([]RuntimePeer, error) {
 func (s *Store) ClearRuntimePeers(ctx context.Context, ref string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM runtime_peers WHERE run_ref=?`, ref)
 	return err
+}
+
+// Revoke persists a scope-bound revocation. Epochs for pipe-access and
+// pipe-publish subjects never move backwards, including duplicate retries.
+func (s *Store) Revoke(ctx context.Context, scope, subjectType, subjectJTI string, epoch uint64) error {
+	if strings.TrimSpace(scope) == "" || strings.TrimSpace(subjectType) == "" || strings.TrimSpace(subjectJTI) == "" || len(scope) > 8192 || len(subjectType) > 128 || len(subjectJTI) > 8192 {
+		return errors.New("invalid revocation")
+	}
+	if epoch == 0 {
+		return errors.New("invalid revocation epoch")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var existing uint64
+	err = tx.QueryRowContext(ctx, `SELECT epoch FROM revocations WHERE scope=? AND subject_type=? AND subject_jti=?`, scope, subjectType, subjectJTI).Scan(&existing)
+	if err == nil && existing > epoch {
+		return errors.New("revocation epoch rollback")
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	// For pipe epoch revocations, reject a lower epoch for same pipe/type even
+	// when caller uses a different future subject encoding.
+	if subjectType == "pipe-access" || subjectType == "pipe-publish" {
+		var maximum sql.NullInt64
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(epoch) FROM revocations WHERE scope=? AND subject_type=? AND subject_jti=?`, scope, subjectType, subjectJTI).Scan(&maximum); err != nil {
+			return err
+		}
+		if maximum.Valid && uint64(maximum.Int64) > epoch {
+			return errors.New("revocation epoch rollback")
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO revocations(scope,subject_type,subject_jti,revoked_at,epoch) VALUES(?,?,?,?,?) ON CONFLICT(scope,subject_type,subject_jti) DO UPDATE SET revoked_at=excluded.revoked_at,epoch=excluded.epoch WHERE excluded.epoch>=revocations.epoch`, scope, subjectType, subjectJTI, time.Now().UTC().Format(time.RFC3339Nano), epoch)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) RevocationEpoch(ctx context.Context, scope, subjectType, subjectJTI string) (uint64, error) {
+	var epoch uint64
+	err := s.db.QueryRowContext(ctx, `SELECT epoch FROM revocations WHERE scope=? AND subject_type=? AND subject_jti=?`, scope, subjectType, subjectJTI).Scan(&epoch)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	return epoch, err
+}
+
+func (s *Store) IsRevoked(ctx context.Context, scope, subjectType, subjectJTI string) (bool, error) {
+	var value int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM revocations WHERE scope=? AND subject_type=? AND subject_jti=?`, scope, subjectType, subjectJTI).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// RedeemInvite atomically consumes a one-time invite. Repeating same JTI and
+// client key is idempotent; another client cannot observe success.
+func (s *Store) RedeemInvite(ctx context.Context, jti, pipeID, sessionID, clientPublic string) (bool, error) {
+	if strings.TrimSpace(jti) == "" || strings.TrimSpace(pipeID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(clientPublic) == "" {
+		return false, errors.New("invalid invite redemption")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var client string
+	err = tx.QueryRowContext(ctx, `SELECT client_public FROM invite_redemptions WHERE jti=? AND pipe_id=?`, jti, pipeID).Scan(&client)
+	if err == nil {
+		if client != clientPublic {
+			return false, ErrInviteRedeemed
+		}
+		return false, tx.Commit()
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO invite_redemptions(jti,pipe_id,redeemed_at,session_id,client_public) VALUES(?,?,?,?,?)`, jti, pipeID, time.Now().UTC().Format(time.RFC3339Nano), sessionID, clientPublic)
+	if err != nil {
+		return false, err
+	}
+	return true, tx.Commit()
+}
+
+func (s *Store) RedemptionCount(ctx context.Context, jti, pipeID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM invite_redemptions WHERE jti=? AND pipe_id=?`, jti, pipeID).Scan(&count)
+	return count, err
+}
+
+func (s *Store) Revocations(ctx context.Context, scope string, subjectJTIs []string) ([]Revocation, error) {
+	if len(subjectJTIs) == 0 {
+		return nil, nil
+	}
+	if len(subjectJTIs) > 256 {
+		return nil, errors.New("too many revocation subjects")
+	}
+	marks, args := make([]string, len(subjectJTIs)), make([]any, 0, len(subjectJTIs)+1)
+	args = append(args, scope)
+	for i, jti := range subjectJTIs {
+		marks[i] = "?"
+		args = append(args, jti)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT scope,subject_type,subject_jti,revoked_at,epoch FROM revocations WHERE scope=? AND subject_jti IN (`+strings.Join(marks, ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Revocation
+	for rows.Next() {
+		var v Revocation
+		var at string
+		if err := rows.Scan(&v.Scope, &v.SubjectType, &v.SubjectJTI, &at, &v.Epoch); err != nil {
+			return nil, err
+		}
+		v.RevokedAt, err = time.Parse(time.RFC3339Nano, at)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) PutConnectLease(ctx context.Context, pipeID, scope, accessLease, refreshLease string, expiresAt time.Time) error {
+	if pipeID == "" || scope == "" || accessLease == "" || refreshLease == "" || expiresAt.IsZero() {
+		return errors.New("invalid connect lease")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO connect_leases(pipe_id,scope,access_lease,refresh_lease,expires_at) VALUES(?,?,?,?,?) ON CONFLICT(pipe_id) DO UPDATE SET scope=excluded.scope,access_lease=excluded.access_lease,refresh_lease=excluded.refresh_lease,expires_at=excluded.expires_at`, pipeID, scope, accessLease, refreshLease, expiresAt.UTC().Format(time.RFC3339Nano))
+	return err
+}
+func (s *Store) ConnectLease(ctx context.Context, pipeID string) (scope, accessLease, refreshLease string, expiresAt time.Time, err error) {
+	var at string
+	err = s.db.QueryRowContext(ctx, `SELECT scope,access_lease,refresh_lease,expires_at FROM connect_leases WHERE pipe_id=?`, pipeID).Scan(&scope, &accessLease, &refreshLease, &at)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = fmt.Errorf("%w: connect lease for %s", domain.ErrNotFound, pipeID)
+		return
+	}
+	if err == nil {
+		expiresAt, err = time.Parse(time.RFC3339Nano, at)
+	}
+	return
 }
 
 func (s *Store) PutSession(ctx context.Context, v Session) error {
