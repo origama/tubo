@@ -157,7 +157,8 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 		if next <= sequence {
 			next = sequence + 1
 		}
-		record := discovery.PipeRecord{Version: 2, PipeID: spec.PipeID, DisplayName: spec.Ref.Name, RuntimePeerID: h.ID().String(), Scope: *spec.Scope, Protocol: wire.TunnelID, Capabilities: []string{"raw-duplex", "half-close"}, Addresses: []string{address}, Visibility: spec.Visibility, Access: spec.Access, PublishGrant: publishGrant, IssuedAt: now, ExpiresAt: expires, Sequence: next}
+		caps := []string{"raw-duplex", "half-close", wire.CapSessionResumeV1}
+		record := discovery.PipeRecord{Version: 2, PipeID: spec.PipeID, DisplayName: spec.Ref.Name, RuntimePeerID: h.ID().String(), Scope: *spec.Scope, Protocol: wire.TunnelID, Capabilities: caps, Addresses: []string{address}, Visibility: spec.Visibility, Access: spec.Access, PublishGrant: publishGrant, IssuedAt: now, ExpiresAt: expires, Sequence: next}
 		if err := record.Sign(owner); err != nil {
 			return err
 		}

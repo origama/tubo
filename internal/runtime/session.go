@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -198,8 +199,9 @@ type sessionPump struct {
 	// Lifecycle
 	ctx           context.Context
 	cancel        context.CancelFunc
+	carrierCtx    context.Context
+	carrierCancel context.CancelFunc
 	detachedTimer *time.Timer
-	done          chan struct{}
 
 	// ACK ticker
 	ackTicker *time.Ticker
@@ -211,6 +213,9 @@ type sessionPump struct {
 
 	// Resume registry reference
 	registry *sessionRegistry
+
+	// Role: true for client (initiator), false for server (responder)
+	isClient bool
 }
 
 // sessionRegistry is a map of sessionID -> *sessionPump for resume dispatch.
@@ -219,7 +224,9 @@ type sessionRegistry struct {
 	sessions map[string]*sessionPump
 }
 
-var globalSessionRegistry = &sessionRegistry{sessions: make(map[string]*sessionPump)}
+func newSessionRegistry() *sessionRegistry {
+	return &sessionRegistry{sessions: make(map[string]*sessionPump)}
+}
 
 func (r *sessionRegistry) get(id string) *sessionPump {
 	r.mu.Lock()
@@ -237,6 +244,15 @@ func (r *sessionRegistry) remove(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.sessions, id)
+}
+
+// instanceRegistry holds the per-pipe-runtime registry for resume dispatch.
+// Set by the pipe runtime before handling resume streams.
+var instanceRegistry = newSessionRegistry()
+
+// SetInstanceRegistry sets the global instance registry for resume dispatch.
+func SetInstanceRegistry(reg *sessionRegistry) {
+	instanceRegistry = reg
 }
 
 // sessionConfig holds configuration for a new session pump.
@@ -270,6 +286,7 @@ func newSessionPump(cfg sessionConfig) *sessionPump {
 	if cfg.ToPath == "" {
 		cfg.ToPath = "relayed"
 	}
+	carrierCtx, carrierCancel := context.WithCancel(ctx)
 	sp := &sessionPump{
 		SessionID:         cfg.SessionID,
 		PipeID:            cfg.PipeID,
@@ -287,12 +304,14 @@ func newSessionPump(cfg sessionConfig) *sessionPump {
 		maxInflightPerDir: cfg.MaxInflightPerDir,
 		ctx:               ctx,
 		cancel:            cancel,
-		done:              make(chan struct{}),
+		carrierCtx:        carrierCtx,
+		carrierCancel:     carrierCancel,
 		ackTicker:         time.NewTicker(DefaultAckInterval),
+		isClient:          cfg.Host != nil, // client has a host for outbound streams
 	}
 	sp.c2s.retained = &bytes.Buffer{}
 	sp.s2c.retained = &bytes.Buffer{}
-	sp.registry = globalSessionRegistry
+	sp.registry = instanceRegistry
 	sp.registry.put(cfg.SessionID, sp)
 	return sp
 }
@@ -314,22 +333,27 @@ func (sp *sessionPump) SetControlStream(stream core.Stream) {
 // Stop terminates the session pump and releases resources.
 func (sp *sessionPump) Stop() {
 	sp.mu.Lock()
-	state := sp.state
-	sp.mu.Unlock()
-	if state == StateClosed {
+	if sp.state == StateClosed {
+		sp.mu.Unlock()
 		return
 	}
+	sp.state = StateClosed
+	sp.mu.Unlock()
+
 	sp.cancel()
 	sp.ackTicker.Stop()
+
 	sp.mu.Lock()
-	sp.state = StateClosed
 	if sp.detachedTimer != nil {
 		sp.detachedTimer.Stop()
 		sp.detachedTimer = nil
 	}
+	if sp.carrierCancel != nil {
+		sp.carrierCancel()
+	}
 	sp.mu.Unlock()
+
 	sp.registry.remove(sp.SessionID)
-	<-sp.done
 }
 
 // generateResumeSecret creates a random 32-byte resume secret.
@@ -350,13 +374,37 @@ func randomNonceStr() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// computeProof calculates HMAC-SHA256 proof.
+// writeResumeFrame writes a frame bounded by MaxResumeFrame (4 KiB).
+func writeResumeFrame(w io.Writer, v any) error {
+	return wire.WriteResumeFrame(w, v)
+}
+
+// computeProof calculates HMAC-SHA256 proof and returns base64 string.
 func computeProof(secret []byte, parts ...[]byte) string {
 	mac := hmac.New(sha256.New, secret)
 	for _, p := range parts {
 		mac.Write(p)
 	}
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// computeProofRaw returns the raw HMAC-SHA256 digest for constant-time comparison.
+func computeProofRaw(secret []byte, parts ...[]byte) []byte {
+	mac := hmac.New(sha256.New, secret)
+	for _, p := range parts {
+		mac.Write(p)
+	}
+	return mac.Sum(nil)
+}
+
+// proofsMatch compares proof strings using constant-time HMAC comparison.
+func proofsMatch(secret []byte, expectedProof string, parts ...[]byte) bool {
+	expectedRaw, err := base64.RawURLEncoding.DecodeString(expectedProof)
+	if err != nil {
+		return false
+	}
+	actualRaw := computeProofRaw(secret, parts...)
+	return hmac.Equal(expectedRaw, actualRaw)
 }
 
 // uint64Bytes encodes a uint64 as big-endian bytes.
@@ -436,65 +484,78 @@ func (sp *sessionPump) proofForActivate(epoch uint64, clientNonce, serverNonce, 
 	return computeProof(sp.resumeSecret, parts...)
 }
 
-// runServerSession starts the session pump for the server side.
-// It reads from the active carrier and writes to the target, and vice versa.
-func (sp *sessionPump) runServerSession() {
-	defer close(sp.done)
-	defer sp.Stop()
+// pumpCarrier spawns the carrier goroutines. It uses sp.activeCarrier directly
+// from the struct so that carrier swaps take effect on the next call.
+func (sp *sessionPump) pumpCarrier() {
+	sp.mu.Lock()
+	carrier := sp.activeCarrier
+	sp.mu.Unlock()
+	if carrier == nil {
+		return
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// c2s: read from carrier, write to target
 	go func() {
 		defer wg.Done()
-		sp.readFromCarrier(sp.activeCarrier, sp.targetConn, &sp.c2s)
+		sp.readFromCarrier(carrier, sp.targetConn, &sp.c2s)
 	}()
 
-	// s2c: read from target, write to carrier
 	go func() {
 		defer wg.Done()
-		sp.readFromSource(sp.targetConn, sp.activeCarrier, &sp.s2c, &sp.c2s)
+		sp.readFromSource(sp.targetConn, carrier, &sp.s2c, &sp.c2s)
 	}()
-
-	// ACK sender goroutine
-	go sp.sendAcks()
 
 	wg.Wait()
 }
 
-// runClientSession starts the session pump for the client side.
-// It reads from the local connection and writes to the carrier, and vice versa.
-func (sp *sessionPump) runClientSession() {
-	defer close(sp.done)
+// runServerSession starts the session pump for the server side.
+func (sp *sessionPump) runServerSession() {
 	defer sp.Stop()
 
-	var wg sync.WaitGroup
-	wg.Add(3)
-
-	// c2s: read from local, write to carrier
-	go func() {
-		defer wg.Done()
-		sp.readFromSource(sp.targetConn, sp.activeCarrier, &sp.c2s, &sp.s2c)
-	}()
-
-	// s2c: read from carrier, write to local
-	go func() {
-		defer wg.Done()
-		sp.readFromCarrier(sp.activeCarrier, sp.targetConn, &sp.s2c)
-	}()
-
-	// ACK sender goroutine
 	go sp.sendAcks()
+	sp.pumpCarrier()
+}
+
+// runClientSession starts the session pump for the client side.
+func (sp *sessionPump) runClientSession() {
+	defer sp.Stop()
+
+	go sp.sendAcks()
+
+	sp.mu.Lock()
+	carrier := sp.activeCarrier
+	sp.mu.Unlock()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		sp.readFromSource(sp.targetConn, carrier, &sp.c2s, &sp.s2c)
+	}()
+
+	go func() {
+		defer wg.Done()
+		sp.readFromCarrier(carrier, sp.targetConn, &sp.s2c)
+	}()
 
 	wg.Wait()
 }
 
 // readFromCarrier reads from the carrier stream and writes to the local endpoint.
-// It tracks delivery offsets and sends ACKs.
+// It checks the carrier context to detect carrier swaps.
 func (sp *sessionPump) readFromCarrier(carrier io.Reader, local io.Writer, dir *directionState) {
 	buf := make([]byte, 32<<10)
 	for {
+		select {
+		case <-sp.carrierCtx.Done():
+			// Carrier was swapped; this goroutine is stale
+			return
+		default:
+		}
+
 		sp.mu.Lock()
 		epoch := sp.epoch
 		state := sp.state
@@ -511,7 +572,6 @@ func (sp *sessionPump) readFromCarrier(carrier io.Reader, local io.Writer, dir *
 			currentEpoch := sp.epoch
 			sp.mu.Unlock()
 			if epoch != currentEpoch {
-				// Late bytes from old carrier - discard
 				continue
 			}
 
@@ -521,7 +581,6 @@ func (sp *sessionPump) readFromCarrier(carrier io.Reader, local io.Writer, dir *
 				w, werr := local.Write(buf[written:n])
 				written += w
 				if werr != nil && written < n {
-					// Partial write with error - close session
 					sp.mu.Lock()
 					sp.state = StateClosing
 					sp.mu.Unlock()
@@ -539,7 +598,6 @@ func (sp *sessionPump) readFromCarrier(carrier io.Reader, local io.Writer, dir *
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				// Carrier EOF - may be barrier or real EOF
 				sp.mu.Lock()
 				state := sp.state
 				sp.mu.Unlock()
@@ -548,10 +606,8 @@ func (sp *sessionPump) readFromCarrier(carrier io.Reader, local io.Writer, dir *
 					dir.oldEOFDrained = true
 					dir.mu.Unlock()
 				}
-				// Don't propagate as application FIN
 				return
 			}
-			// Read error - carrier failure
 			sp.handleCarrierFailure()
 			return
 		}
@@ -559,10 +615,15 @@ func (sp *sessionPump) readFromCarrier(carrier io.Reader, local io.Writer, dir *
 }
 
 // readFromSource reads from the local source and writes to the carrier.
-// It retains bytes until acknowledged by the peer.
 func (sp *sessionPump) readFromSource(source io.Reader, carrier io.Writer, dir *directionState, otherDir *directionState) {
 	buf := make([]byte, 32<<10)
 	for {
+		select {
+		case <-sp.carrierCtx.Done():
+			return
+		default:
+		}
+
 		sp.mu.Lock()
 		if sp.state == StateClosed || sp.state == StateClosing {
 			sp.mu.Unlock()
@@ -570,34 +631,35 @@ func (sp *sessionPump) readFromSource(source io.Reader, carrier io.Writer, dir *
 		}
 		sp.mu.Unlock()
 
-		// Check if we're quiescing and should stop writing
 		dir.mu.Lock()
 		if dir.currentTransferComplete {
 			dir.mu.Unlock()
-			// Wait for barrier or state change
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
 		dir.mu.Unlock()
 
+		// Aggregate cap check
+		if sp.currentAggregate.Load() > DefaultMaxAggregateMemory {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
 		n, err := source.Read(buf)
 		if n > 0 {
-			// Check retained buffer limits
 			dir.mu.Lock()
 			if dir.sourceNext+uint64(n) > dir.peerDelivered+uint64(sp.maxInflightPerDir) {
-				// Backpressure: wait for ACK to free space
 				dir.mu.Unlock()
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
 
-			// Retain for potential retransmission
 			dir.retained.Write(buf[:n])
+			sp.currentAggregate.Add(int64(n))
 			dir.sourceNext += uint64(n)
 			dir.carrierSent += uint64(n)
 			dir.mu.Unlock()
 
-			// Write to carrier
 			written := 0
 			for written < n {
 				w, werr := carrier.Write(buf[written:n])
@@ -610,17 +672,14 @@ func (sp *sessionPump) readFromSource(source io.Reader, carrier io.Writer, dir *
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				// Application FIN
 				dir.mu.Lock()
 				dir.finSeen = true
 				dir.mu.Unlock()
-				// Propagate CloseWrite on carrier
 				if cw, ok := carrier.(closeWriter); ok {
 					_ = cw.CloseWrite()
 				}
 				return
 			}
-			// Read error - close session
 			sp.mu.Lock()
 			sp.state = StateClosing
 			sp.mu.Unlock()
@@ -631,7 +690,22 @@ func (sp *sessionPump) readFromSource(source io.Reader, carrier io.Writer, dir *
 }
 
 // sendAcks periodically sends ACKs for received data.
+// Client sends ACKs for s2c direction (data received from server).
+// Server sends ACKs for c2s direction (data received from client).
 func (sp *sessionPump) sendAcks() {
+	// Determine which direction we ACK based on role
+	ackDir := dirC2S // server acks c2s
+	if sp.isClient {
+		ackDir = dirS2C // client acks s2c
+	}
+
+	var dir *directionState
+	if ackDir == dirC2S {
+		dir = &sp.c2s
+	} else {
+		dir = &sp.s2c
+	}
+
 	for {
 		select {
 		case <-sp.ctx.Done():
@@ -646,11 +720,10 @@ func (sp *sessionPump) sendAcks() {
 				continue
 			}
 
-			// Send ACK for c2s direction (we're the receiver)
-			sp.c2s.mu.Lock()
-			delivered := sp.c2s.peerDelivered
-			finDelivered := sp.c2s.finDelivered
-			sp.c2s.mu.Unlock()
+			dir.mu.Lock()
+			delivered := dir.peerDelivered
+			finDelivered := dir.finDelivered
+			dir.mu.Unlock()
 
 			sp.mu.Lock()
 			sp.controlSeq++
@@ -667,14 +740,14 @@ func (sp *sessionPump) sendAcks() {
 					SessionID:       sp.SessionID,
 					Epoch:           epoch,
 					ControlSeq:      seq,
-					Direction:       dirC2S,
+					Direction:       ackDir,
 					DeliveredOffset: delivered,
 					FinDelivered:    finDelivered,
-					Proof:           sp.computeAckProof(epoch, dirC2S, delivered, finDelivered),
+					Proof:           sp.computeAckProof(epoch, ackDir, delivered, finDelivered),
 				},
 			}
 
-			_ = wire.WriteFrame(cs, ack)
+			_ = writeResumeFrame(cs, ack)
 		}
 	}
 }
@@ -742,13 +815,13 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 	if hello.NextEpoch != expectedEpoch {
 		return
 	}
-	if state != StateDetached && state != StateActive {
+	if state != StateDetached && state != StateActive && state != StateProbing {
 		return
 	}
 
-	// Verify proof
-	expectedProof := sp.proofForHello(hello.NextEpoch, hello.Nonce)
-	if hello.Proof != expectedProof {
+	// Verify proof with constant-time comparison
+	helloParts := sp.canonicalProofParts(hello.NextEpoch, hello.Nonce, "")
+	if !proofsMatch(sp.resumeSecret, hello.Proof, helloParts...) {
 		return
 	}
 
@@ -763,7 +836,7 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 		Nonce:     serverNonce,
 		Proof:     sp.proofForChallenge(hello.NextEpoch, hello.Nonce, serverNonce),
 	}
-	if err := wire.WriteFrame(stream, challenge); err != nil {
+	if err := writeResumeFrame(stream, challenge); err != nil {
 		return
 	}
 
@@ -781,23 +854,38 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 
 	// Verify commit proof
 	sp.c2s.mu.Lock()
-	c2sOldSent := sp.c2s.carrierSent
+	s2cDelivered := sp.s2c.peerDelivered
 	sp.c2s.mu.Unlock()
 	sp.s2c.mu.Lock()
-	s2cDelivered := sp.s2c.peerDelivered
 	s2cFinDelivered := sp.s2c.finDelivered
 	sp.s2c.mu.Unlock()
 
-	expectedCommitProof := sp.proofForCommit(hello.NextEpoch, hello.Nonce, serverNonce, c2sOldSent, s2cDelivered, sp.c2s.finSeen, s2cFinDelivered)
-	if commit.Proof != expectedCommitProof {
+	// Use the client-reported C2SOldSent for proof, not local carrierSent
+	// (server is c2s receiver so its carrierSent is 0; client reported the real value)
+	commitParts := sp.canonicalProofParts(hello.NextEpoch, hello.Nonce, serverNonce,
+		uint64Str(commit.C2SOldSent), uint64Str(s2cDelivered))
+	if commit.C2SFinSeen {
+		commitParts = append(commitParts, []byte("fin"))
+	}
+	if commit.S2CFinDelivered {
+		commitParts = append(commitParts, []byte("fin_delivered"))
+	}
+	if !proofsMatch(sp.resumeSecret, commit.Proof, commitParts...) {
 		return
 	}
 
 	// Validate offsets
-	if commit.C2SOldSent < sp.c2s.peerDelivered || commit.C2SOldSent > c2sOldSent {
+	sp.c2s.mu.Lock()
+	c2sLocalDelivered := sp.c2s.peerDelivered
+	sp.c2s.mu.Unlock()
+	sp.s2c.mu.Lock()
+	s2cCarrierSent := sp.s2c.carrierSent
+	sp.s2c.mu.Unlock()
+
+	if commit.C2SOldSent < c2sLocalDelivered {
 		return
 	}
-	if commit.S2CDelivered > sp.s2c.carrierSent {
+	if commit.S2CDelivered > s2cCarrierSent {
 		return
 	}
 	if commit.C2SFinSeen && !sp.c2s.finSeen {
@@ -827,7 +915,7 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 		S2CFinSeen:      s2cFinSeen,
 		Proof:           sp.proofForResult(hello.NextEpoch, hello.Nonce, serverNonce, c2sDelivered, s2cOldSent, c2sDelivered, commit.S2CDelivered, sp.c2s.finDelivered, s2cFinSeen),
 	}
-	if err := wire.WriteFrame(stream, result); err != nil {
+	if err := writeResumeFrame(stream, result); err != nil {
 		return
 	}
 
@@ -837,8 +925,8 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 	}
 
 	transcriptDigest := fmt.Sprintf("%s:%s:%d:%s:%s", sp.SessionID, hello.Nonce, hello.NextEpoch, serverNonce, "activate")
-	expectedActivateProof := sp.proofForActivate(hello.NextEpoch, hello.Nonce, serverNonce, transcriptDigest)
-	if activate.Proof != expectedActivateProof {
+	activateParts := sp.canonicalProofParts(hello.NextEpoch, hello.Nonce, serverNonce, transcriptDigest)
+	if !proofsMatch(sp.resumeSecret, activate.Proof, activateParts...) {
 		return
 	}
 
@@ -847,7 +935,7 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 		Epoch:     hello.NextEpoch,
 		Proof:     sp.proofForActivate(hello.NextEpoch, hello.Nonce, serverNonce, transcriptDigest),
 	}
-	if err := wire.WriteFrame(stream, activated); err != nil {
+	if err := writeResumeFrame(stream, activated); err != nil {
 		return
 	}
 
@@ -855,13 +943,20 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 	sp.activateResume(stream, hello.NextEpoch, hello.Nonce, serverNonce, c2sDelivered, commit.S2CDelivered)
 }
 
-// activateResume installs the new carrier and replays retained bytes.
+// activateResume installs the new carrier, replays retained bytes, and spawns
+// fresh pump goroutines for the new carrier.
 func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clientNonce, serverNonce string, c2sResumeAt, s2cResumeAt uint64) {
+	// Cancel old carrier goroutines
 	sp.mu.Lock()
+	if sp.carrierCancel != nil {
+		sp.carrierCancel()
+	}
 	oldStream := sp.activeCarrier
 	sp.activeCarrier = stream
 	sp.epoch = newEpoch
 	sp.state = StateActive
+	// Create new carrier context for the new goroutines
+	sp.carrierCtx, sp.carrierCancel = context.WithCancel(sp.ctx)
 	sp.mu.Unlock()
 
 	// Close old carrier without propagating FIN
@@ -876,12 +971,14 @@ func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clien
 		if uint64(len(replay)) > sp.c2s.sourceNext-sp.c2s.peerDelivered {
 			replay = replay[:sp.c2s.sourceNext-sp.c2s.peerDelivered]
 		}
-		// Write retained bytes to new carrier
 		if len(replay) > 0 {
 			_, _ = stream.Write(replay)
 		}
 	}
 	sp.c2s.mu.Unlock()
+
+	// Spawn fresh pump goroutines for the new carrier
+	go sp.pumpCarrier()
 
 	// Record path event
 	event := store.PathEvent{
@@ -896,7 +993,6 @@ func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clien
 	}
 	_ = sp.State.PutPathEvent(context.Background(), event)
 
-	// Update session current transport path
 	_ = sp.State.PutSession(context.Background(), store.Session{
 		ID:                   sp.SessionID,
 		CurrentTransportPath: sp.toPath,
@@ -905,13 +1001,56 @@ func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clien
 	runtimeInfof("session resumed epoch=%d session=%s path=%s", newEpoch, sp.SessionID, sp.toPath)
 }
 
+// readControlFrame reads a framed control message and decodes it into the
+// provided value. Unlike wire.ReadFrame, it does NOT use DisallowUnknownFields
+// because control frames carry a "type" field alongside the message fields.
+func readControlFrame(r io.Reader, value any) error {
+	var size [4]byte
+	if _, err := io.ReadFull(r, size[:]); err != nil {
+		return err
+	}
+	n := binary.BigEndian.Uint32(size[:])
+	if n == 0 || n > wire.MaxResumeFrame {
+		return fmt.Errorf("invalid control frame size %d", n)
+	}
+	data := make([]byte, int(n))
+	if _, err := io.ReadFull(r, data); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, value); err != nil {
+		return err
+	}
+	return nil
+}
+
+// controlFrameType extracts the "type" field from a raw JSON frame without
+// decoding into a concrete struct.
+func controlFrameType(r io.Reader) (string, []byte, error) {
+	var size [4]byte
+	if _, err := io.ReadFull(r, size[:]); err != nil {
+		return "", nil, err
+	}
+	n := binary.BigEndian.Uint32(size[:])
+	if n == 0 || n > wire.MaxResumeFrame {
+		return "", nil, fmt.Errorf("invalid control frame size %d", n)
+	}
+	data := make([]byte, int(n))
+	if _, err := io.ReadFull(r, data); err != nil {
+		return "", nil, err
+	}
+	var header struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return "", nil, err
+	}
+	return header.Type, data, nil
+}
+
 // handleControlStream processes incoming control messages.
-// The role declaration is sent once at stream open; subsequent frames are
-// typed control messages.
 func (sp *sessionPump) handleControlStream(stream core.Stream) {
 	defer stream.Close()
 
-	// Read role declaration once
 	var roleDecl wire.StreamRoleDeclaration
 	if err := wire.ReadFrame(stream, &roleDecl); err != nil {
 		return
@@ -921,43 +1060,39 @@ func (sp *sessionPump) handleControlStream(stream core.Stream) {
 	}
 
 	for {
-		// Read typed control message directly
-		type controlHeader struct {
-			Type string `json:"type"`
-		}
-		var header controlHeader
-		if err := wire.ReadFrame(stream, &header); err != nil {
+		msgType, rawData, err := controlFrameType(stream)
+		if err != nil {
 			return
 		}
 
-		switch header.Type {
+		switch msgType {
 		case "ack":
 			var ack wire.Ack
-			if err := wire.ReadFrame(stream, &ack); err != nil {
+			if err := json.Unmarshal(rawData, &ack); err != nil {
 				return
 			}
 			sp.handleAck(ack)
 		case "switch_prepare":
 			var prep wire.SwitchPrepare
-			if err := wire.ReadFrame(stream, &prep); err != nil {
+			if err := json.Unmarshal(rawData, &prep); err != nil {
 				return
 			}
 			sp.handleSwitchPrepare(prep)
 		case "barrier":
 			var bar wire.Barrier
-			if err := wire.ReadFrame(stream, &bar); err != nil {
+			if err := json.Unmarshal(rawData, &bar); err != nil {
 				return
 			}
 			sp.handleBarrier(bar)
 		case "barrier_ack":
 			var back wire.BarrierAck
-			if err := wire.ReadFrame(stream, &back); err != nil {
+			if err := json.Unmarshal(rawData, &back); err != nil {
 				return
 			}
 			sp.handleBarrierAck(back)
 		case "switch_abort":
 			var abort wire.SwitchAbort
-			if err := wire.ReadFrame(stream, &abort); err != nil {
+			if err := json.Unmarshal(rawData, &abort); err != nil {
 				return
 			}
 			sp.handleSwitchAbort(abort)
@@ -1065,14 +1200,13 @@ func (sp *sessionPump) handleSwitchAbort(abort wire.SwitchAbort) {
 
 // HandleResumeStreamID is the stream handler for incoming resume streams.
 func HandleResumeStreamID(stream core.Stream) {
-	// Read the stream role declaration
 	var roleDecl wire.StreamRoleDeclaration
 	if err := wire.ReadFrame(stream, &roleDecl); err != nil {
 		_ = stream.Reset()
 		return
 	}
 
-	pump := globalSessionRegistry.get(roleDecl.SessionID)
+	pump := instanceRegistry.get(roleDecl.SessionID)
 	if pump == nil {
 		_ = stream.Reset()
 		return
@@ -1087,6 +1221,29 @@ func HandleResumeStreamID(stream core.Stream) {
 	default:
 		_ = stream.Reset()
 	}
+}
+
+// verifyConnPath checks that the actual libp2p connection matches the expected
+// path type. It uses Conn.Stat().Limited to detect relayed connections.
+// Returns true if the path matches, false if there's a mismatch.
+func verifyConnPath(stream core.Stream, expectedPath string) bool {
+	conn := stream.Conn()
+	if conn == nil {
+		return false
+	}
+	stat := conn.ConnState()
+	// Transport indicates whether the connection uses a relay
+	isRelayed := stat.Transport == "relay" || stat.Transport == "circuit"
+
+	if expectedPath == "direct" && isRelayed {
+		return false
+	}
+	if expectedPath == "relayed" && !isRelayed {
+		// Allow relayed when expected, but direct is also fine
+		// (we may have a direct connection available)
+		return true
+	}
+	return true
 }
 
 // StartResumeHandshake initiates a resume handshake as the client.
@@ -1107,7 +1264,12 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 	if err != nil {
 		return fmt.Errorf("open resume stream: %w", err)
 	}
-	defer stream.Close()
+
+	// Verify the actual connection path matches expectations
+	if !verifyConnPath(stream, newPath) {
+		stream.Close()
+		return fmt.Errorf("path mismatch: expected %s, got relayed", newPath)
+	}
 
 	_ = stream.SetDeadline(time.Now().Add(DefaultResumeHandshakeTimeout))
 
@@ -1116,7 +1278,8 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 		Role:      wire.StreamRoleResume,
 		SessionID: sp.SessionID,
 	}
-	if err := wire.WriteFrame(stream, roleDecl); err != nil {
+	if err := writeResumeFrame(stream, roleDecl); err != nil {
+		stream.Close()
 		return fmt.Errorf("write role decl: %w", err)
 	}
 
@@ -1133,7 +1296,7 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 		Nonce:     clientNonce,
 		Proof:     sp.proofForHello(newEpoch, clientNonce),
 	}
-	if err := wire.WriteFrame(stream, hello); err != nil {
+	if err := writeResumeFrame(stream, hello); err != nil {
 		return fmt.Errorf("write hello: %w", err)
 	}
 
@@ -1164,7 +1327,7 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 		S2CFinDelivered: s2cFinDelivered,
 		Proof:           sp.proofForCommit(newEpoch, clientNonce, serverNonce, c2sSent, s2cDelivered, sp.c2s.finSeen, s2cFinDelivered),
 	}
-	if err := wire.WriteFrame(stream, commit); err != nil {
+	if err := writeResumeFrame(stream, commit); err != nil {
 		return fmt.Errorf("write commit: %w", err)
 	}
 
@@ -1184,7 +1347,7 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 		TranscriptDigest: transcriptDigest,
 		Proof:            sp.proofForActivate(result.Epoch, clientNonce, serverNonce, transcriptDigest),
 	}
-	if err := wire.WriteFrame(stream, activate); err != nil {
+	if err := writeResumeFrame(stream, activate); err != nil {
 		return fmt.Errorf("write activate: %w", err)
 	}
 
@@ -1214,7 +1377,7 @@ func (sp *sessionPump) OpenControlStream(ctx context.Context, peerID peer.ID) er
 		Role:      wire.StreamRoleControl,
 		SessionID: sp.SessionID,
 	}
-	if err := wire.WriteFrame(stream, roleDecl); err != nil {
+	if err := writeResumeFrame(stream, roleDecl); err != nil {
 		stream.Close()
 		return fmt.Errorf("write role decl: %w", err)
 	}
@@ -1265,7 +1428,7 @@ func (sp *sessionPump) TryPlannedSwitch(ctx context.Context, peerID peer.ID, new
 			Proof:          sp.computeAckProof(newEpoch, "switch", 0, false),
 		},
 	}
-	if err := wire.WriteFrame(cs, prep); err != nil {
+	if err := writeResumeFrame(cs, prep); err != nil {
 		return err
 	}
 
@@ -1285,7 +1448,7 @@ func (sp *sessionPump) TryPlannedSwitch(ctx context.Context, peerID peer.ID, new
 			Proof:     sp.computeAckProof(newEpoch, "barrier_c2s", sp.c2s.carrierSent, sp.c2s.finSeen),
 		},
 	}
-	if err := wire.WriteFrame(cs, bar); err != nil {
+	if err := writeResumeFrame(cs, bar); err != nil {
 		return err
 	}
 
@@ -1301,7 +1464,7 @@ func (sp *sessionPump) TryPlannedSwitch(ctx context.Context, peerID peer.ID, new
 			Proof:     sp.computeAckProof(newEpoch, "barrier_s2c", sp.s2c.carrierSent, sp.s2c.finSeen),
 		},
 	}
-	if err := wire.WriteFrame(cs, bar2); err != nil {
+	if err := writeResumeFrame(cs, bar2); err != nil {
 		return err
 	}
 
