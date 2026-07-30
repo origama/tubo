@@ -16,9 +16,10 @@ import (
 	core "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/pnet"
-	swarm "github.com/libp2p/go-libp2p/p2p/net/swarm"
+	"github.com/libp2p/go-libp2p/p2p/net/swarm"
 	circuitclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
 	circuitrelay "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
+	holepunch "github.com/libp2p/go-libp2p/p2p/protocol/holepunch"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -40,7 +41,14 @@ func Open(ctx context.Context, options Options) (host.Host, error) {
 	if listen == "" {
 		listen = "/ip4/0.0.0.0/tcp/0"
 	}
-	opts := []libp2p.Option{libp2p.Identity(identity), libp2p.ListenAddrStrings(listen), libp2p.DisableMetrics(), libp2p.EnableRelay()}
+	opts := []libp2p.Option{
+		libp2p.Identity(identity),
+		libp2p.ListenAddrStrings(listen, "/ip4/0.0.0.0/udp/0/quic-v1"),
+		libp2p.DisableMetrics(),
+		libp2p.EnableRelay(),
+		libp2p.EnableHolePunching(holepunch.DirectDialTimeout(5 * time.Second)),
+		libp2p.EnableAutoNATv2(),
+	}
 	if options.BandwidthReporter != nil {
 		opts = append(opts, libp2p.BandwidthReporter(options.BandwidthReporter))
 	}

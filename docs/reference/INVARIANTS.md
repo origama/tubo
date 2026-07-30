@@ -45,6 +45,14 @@ These invariants are acceptance criteria, not aspirations.
 5. Handshake deadlines are cleared after authorization and target selection; established sessions have no absolute lifetime timeout.
 6. A failed setup may be retried before application bytes flow. Tubo never transparently replays bytes after forwarding begins.
 7. Direct paths are preferred when usable; relay is the deterministic fallback; a session may later upgrade to direct.
+8. A resume-capable session (negotiated `session-resume-v1`) uses a separate control stream for continuous ACKs and barrier coordination.
+9. Tubo buffers at most the negotiated per-direction unacknowledged window (default 1 MiB). It never buffers a complete application payload.
+10. A resume-capable session may retransmit only bytes not yet committed to the receiving application connection. Bytes already acknowledged as delivered must never be delivered again.
+11. Migration requires an authenticated, monotonic-epoch resume handshake and receiver-committed byte offsets. Failure, ambiguity, offset mismatch, or an out-of-window resume closes the application connection.
+12. Without negotiated resume support, recovery creates a new application connection and session.
+13. Carrier EOF is not application half-close during migration. Half-close is sequenced after its final byte offset.
+14. One active carrier per epoch is enforced by epoch fencing. Late bytes from an old carrier are discarded after epoch advance.
+15. Session resume secret is memory-only, never persisted or logged.
 
 ## Discovery
 

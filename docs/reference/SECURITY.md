@@ -60,6 +60,22 @@ Public sharing is unlisted and invite-only by default. A self-contained invite m
 
 Do not claim immediate revocation without such a check.
 
+### Session resume security
+
+Session resume uses a memory-only `resume_secret` (32 random bytes) negotiated during `OpenOK`. It is never persisted, logged, or included in any output. The resume handshake uses HMAC-SHA256 proof bound to:
+
+- domain label (`tubo-resume-v1`)
+- `pipe_id`
+- `session_id`
+- epoch
+- client and server peer IDs
+- client and server nonces (each 32 random bytes)
+- canonical counters and transcript digest
+
+Proofs are verified on every message. A mismatched proof, nonce, or epoch closes the candidate stream. The candidate stream must reach the same authenticated peer; claimed direct/relay labels are verified locally from the libp2p connection state, never trusted from peer-supplied fields.
+
+One candidate carrier per session is enforced. The resume secret never leaves the session's memory.
+
 ## Private overlay
 
 A swarm PSK provides transport isolation but is a shared secret, not identity or authorization. Compromise requires rotation. Application grants remain mandatory.

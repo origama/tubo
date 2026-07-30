@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Added
+- Session resume protocol `/tubo/tunnel-resume/2.1` with control and resume stream roles, authenticated via HMAC-SHA256 proof over memory-only resume secret.
+- `sessionPump`: bounded, epoch-fenced, receiver-committed byte transport replacing uncoordinated `copyDuplex` for resume-capable sessions.
+- Continuous ACK sender (every 64 KiB or 25 ms) with retained replay window (1 MiB per direction, 64 MiB aggregate).
+- Planned switch barrier (relay ↔ direct): SwitchPrepare, Barrier, BarrierAck, SwitchAbort messages.
+- Abrupt carrier recovery: epoch + 1 relay resume candidate, replay unacked only, detached grace timer (10 s).
+- Resume handshake: ResumeHello, ResumeChallenge, ResumeCommit, ResumeResult, ResumeActivate, ResumeActivated.
+- `current_transport_path` field on sessions and `path_events` table tracking transport transitions with epoch and committed offsets.
+- DCUtR hole punching (`EnableHolePunching` with 5s `DirectDialTimeout`), AutoNATv2 auto reachability, and QUIC-v1 listen in libp2p host.
+- `session-resume-v1` capability negotiation in tunnel handshake.
+- `ResumeOffer` in `OpenResult` carrying resume secret, control protocol, and buffer limits.
 - `tubo watch pipes [--scope …] [--interval …] [--json]`: deterministic, membership-authorized multi-scope pipe changes from verified local state with explicit `added`, `updated`, `expired`, `removed`, `degraded`, and `recovered` event types; JSON is NDJSON and slow stdout consumers backpressure polling without an event queue.
 - Schema 8 transactional revocations, atomic one-time share-invite redemptions, 10-minute access leases, 48-hour online-checked refresh leases, and pipe-only invite endpoints. Refresh updates later sessions only; established tunnels remain bounded by initial access lease until a future tunnel resume/switch protocol.
 - `tubo share pipe/<name> --json`, `tubo revoke invite|session|pipe-access|pipe-publish <id>`, and `connect --token <invite>` foundation.
@@ -35,10 +45,11 @@
 ### Compatibility
 - Product version: `0.1.0-dev`
 - Protocol version: `2.1` for negotiated authority snapshots; tunnel and existing authority operations remain `2.0`
-- State schema version: `8`
-- Mixed-version behavior: schema-6 binaries reject schema-7 state; new consumers require authority 2.1 for deletion-capable `records.list`; 2.0 has no deletion fallback. Protocol 1.x is rejected
+- State schema version: `10`
+- Protocol version: `2.1` for tunnel resume; tunnel open remains `2.0`
+- Mixed-version behavior: schema-8/9 binaries reject schema-10 state; session resume requires both peers to advertise `session-resume-v1`; protocol 1.x is rejected
 - Compatibility with previous Tubo versions: intentionally unsupported
-- Rollout: back up state, deploy authority/origin with 2.1 before consumers, then deploy schema-8 consumers using isolated `TUBO_HOME`
-- Rollback: uninstall/bootout exact registered launchd labels or stop exact systemd units before binary/state rollback; restore pre-schema-8 state backup because no downgrade migration exists
-- Validation: `make verify-local`; prior isolated three-machine member/viewer HTTP run `20260728T151219Z-60255`; periodic-sync three-machine authority-2.1 campaign passed: `20260730T092006Z-83493` (`generated/e2e-three-machine/20260730T092006Z-83493/artifacts/report.json`)
+- Rollout: back up state, deploy schema-10 binary, restart. Resume sessions work only when both peers are upgraded
+- Rollback: stop schema-10 binaries and restore pre-schema-10 backup; no downgrade migration exists
+- Validation: `make verify-local`; no three-machine campaign run
 - Operator action: use isolated state and do not point this binary at an existing Tubo home

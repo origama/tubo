@@ -8,12 +8,22 @@ There is intentionally no negotiation or fallback to previous Tubo protocols.
 
 ```text
 /tubo/tunnel/2.0
+/tubo/tunnel-resume/2.1
 /tubo/records/2.0
 /tubo/authority/2.0
 /tubo/authority/2.1
 ```
 
 All decoders are length-bounded before allocation. Protocol errors reset only the affected stream.
+
+### Tunnel resume protocol 2.1
+
+`/tubo/tunnel-resume/2.1` serves two stream roles declared in the first framed message:
+
+- `role=control`: continuous framed stream for ACKs, barriers, and switch coordination.
+- `role=resume`: authenticated handshake that becomes raw carrier after `ResumeActivated`.
+
+Both stream types are independent libp2p streams under the same protocol ID. The control stream must not become a single point of failure: the resume handshake carries full authenticated state so recovery works even if the control stream is unavailable.
 
 ## Tunnel data plane
 
@@ -61,7 +71,95 @@ No absolute lifetime applies after `OpenOK`. Relay circuit byte/duration truncat
 
 ### Retry rule
 
-Setup may retry another direct/relay candidate before `OpenOK` and before application bytes are accepted. A local pipe re-resolves its exact `pipe_id` from its pinned authority scope every five minutes and after one classified transient pre-`OpenOK` dial/stream/handshake failure. Recovery is bounded by discovery retry cooldown and one setup retry; a newer verified record atomically replaces only later connection attempts. Terminal authorization/protocol responses never trigger re-resolution. Once bytes flow, Tubo does not replay them. Recovery creates a new application connection/session.
+Setup may retry another direct/relay candidate before `OpenOK` and before application bytes are accepted. A local pipe re-resolves its exact `pipe_id` from its pinned authority scope every five minutes and after one classified transient pre-`OpenOK` dial/stream/handshake failure. Recovery is bounded by discovery retry cooldown and one setup retry; a newer verified record atomically replaces only later connection attempts. Terminal authorization/protocol responses never trigger re-resolution. Once bytes flow, Tubo does not replay them. Recovery creates a new application connection/session unless session resume is negotiated.
+
+### Session resume
+
+When both peers advertise `session-resume-v1` capability and `OpenOK` includes a `ResumeOffer`, the session is resume-capable. A separate control stream carries continuous ACKs, barrier coordination, and switch commands. The resume handshake authenticates via HMAC-SHA256 proof over a memory-only `resume_secret`.
+
+#### Resume handshake messages
+
+All resume messages are bounded to 4 KiB, use the same length-prefixed JSON encoding as the initial handshake, and are limited by `MaxResumeFrame`.
+
+```text
+client                              server
+  |--- ResumeHello -------------------->|
+  |    version, pipe_id, session_id,    |
+  |    next_epoch, nonce, proof         |
+  |<-- ResumeChallenge -----------------|  
+  |    session_id, next_epoch, nonce,   |
+  |    proof                            |
+  |--- ResumeCommit ------------------->|
+  |    session_id, next_epoch,          |
+  |    client_nonce, server_nonce,      |
+  |    c2s_old_sent, s2c_delivered,     |
+  |    c2s_fin_seen, s2c_fin_delivered, |
+  |    proof                            |
+  |<-- ResumeResult --------------------|
+  |    ok, session_id, epoch,           |
+  |    c2s_delivered, s2c_old_sent,     |
+  |    c2s_resume_at, s2c_resume_at,    |
+  |    c2s_fin_delivered, s2c_fin_seen, |
+  |    proof                            |
+  |--- ResumeActivate ------------------>|
+  |    session_id, epoch,               |
+  |    transcript_digest, proof         |
+  |<-- ResumeActivated -----------------|
+  |=== raw full-duplex bytes ===========|
+```
+
+After `ResumeActivated`, framing ends and the stream becomes the raw carrier.
+
+#### Control messages
+
+| Message | Purpose |
+|---|---|
+| `Ack` | Continuous receiver-committed offset |
+| `SwitchPrepare` | Announce intent to switch epoch |
+| `Barrier` | Quiesce one direction at cut offset |
+| `BarrierAck` | Confirm barrier completion |
+| `SwitchAbort` | Cancel planned switch |
+| `SwitchSuggested` | Server hint to initiate switch |
+
+#### Limits
+
+| Element | Maximum |
+|---|---|
+| resume/control frame | 4 KiB |
+| unacknowledged data per direction | 1 MiB |
+| aggregate session memory | 64 MiB |
+| ACK interval | 64 KiB or 25 ms |
+| candidate handshake | 10 s |
+| detached grace | 10 s |
+| nonce/resume secret | 32 bytes |
+| epoch/offsets | uint64 |
+
+#### Planned switch sequence
+
+1. `ACTIVE(epoch, relay)`: old carrier continues.
+2. `PROBING`: open and authenticate direct candidate. No application pause.
+3. `QUIESCING`: stop old carrier writers at exact cut offsets. Source readers continue into bounded buffers.
+4. Receiver drains old carrier through cut, commits bytes locally, sends `BarrierAck`.
+5. Both directions freeze old generation. Late bytes cannot reach application.
+6. Exchange `ResumeCommit/Result`.
+7. Sender resumes at receiver's exact committed offset. Only retained bytes retransmitted.
+8. Exchange activation. Install candidate as sole active carrier.
+9. Emit path event only after both directions activate.
+10. Close/reset old carrier without propagating application FIN.
+
+#### Abrupt recovery
+
+On unexpected carrier failure:
+
+1. Fence failed carrier generation immediately.
+2. Do not close target or local application socket.
+3. Preserve retained buffers and committed receiver offsets.
+4. Client opens relay resume candidate with epoch + 1.
+5. Resume handshake exchanges receiver-committed offsets.
+6. Replay only bytes at or above those offsets.
+7. If relay resume fails, offset outside window, grace expires, or commit ambiguous: close session and both endpoints.
+
+Single coordinator (client) prevents split-brain. Server may send `SwitchSuggested`, but client chooses epoch and candidate.
 
 ## Pipe chaining
 
