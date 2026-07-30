@@ -595,6 +595,17 @@ func (c *localLeaseCache) startRefresh(ctx context.Context, state *store.Store, 
 }
 
 func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, resolver *localPipeRecordResolver, leases *localLeaseCache, local net.Conn) {
+	serveLocalConnectionWithOpener(ctx, state, spec, resolver, local, func(record discovery.PipeRecord) localConnectionResult {
+		return openLocalConnection(ctx, state, h, spec, record, leases, local)
+	})
+}
+
+// serveLocalConnectionWithOpener owns the recovery decision separately from
+// transport setup. Keeping this seam internal makes the safety boundary
+// testable: an opener may be retried exactly once only after a transient
+// pre-OpenOK failure and a verified endpoint change. The opener owns all
+// application reads, so this loop never consumes local bytes itself.
+func serveLocalConnectionWithOpener(ctx context.Context, state *store.Store, spec domain.PipeSpec, resolver *localPipeRecordResolver, local net.Conn, open func(discovery.PipeRecord) localConnectionResult) {
 	defer local.Close()
 	opened := false
 	failureReason := "authority_unreachable"
@@ -606,7 +617,7 @@ func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, 
 	// One bounded retry is permitted only after a classified transient setup
 	// failure and only before OpenOK. No data is read from local until OpenOK.
 	for attempt := 0; attempt < 2; attempt++ {
-		result := openLocalConnection(ctx, state, h, spec, resolver.current(), leases, local)
+		result := open(resolver.current())
 		failureReason = result.reason
 		if result.opened {
 			opened = true
