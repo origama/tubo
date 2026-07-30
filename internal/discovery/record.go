@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -61,7 +62,7 @@ func Parse(data []byte) (PipeRecord, error) {
 	if err := decoder.Decode(&r); err != nil {
 		return r, err
 	}
-	if decoder.Decode(&struct{}{}) == nil {
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return r, errors.New("trailing record payload")
 	}
 	return r, nil

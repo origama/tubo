@@ -48,6 +48,9 @@ Legend for evidence classes:
 | invite-only pipe is absent from listing but exact invite connects | D, 3M |
 | relay forwards opaque records but consumer verifies | I, D, 3M |
 | tampered/wrong-scope/expired/replayed record rejected | U, I |
+| complete pinned-authority 2.1 snapshot atomically reconciles verified records and trusted freshness; local publication/expiry advances metadata; delayed rollback, same-generation ambiguity, partial/cache/peer/2.0 response never deletes local/authority rows | U, I, race |
+| membership-backed published/local runtimes elect one fenced periodic authority-2.1 sync owner per local state/scope; expiry takeover, stale token/PID fencing, retry suppression, outage recovery, and redacted scope status preserve cache/authority boundaries | U, I, race, 3M (`periodic-sync` pass `20260730T092006Z-83493`; `generated/e2e-three-machine/20260730T092006Z-83493/artifacts/report.json`) |
+| cache-first `get pipes`: strictly-under-five-minute fresh/default and `--cached-only` reach zero overlay-host operations; exact TTL boundary stale default bounded-refreshes with verified-cache fallback; `--refresh` bypasses cooldown; scoped local/JSON rows preserve unaffected scopes | U, I, race |
 | bounded relay cache and truncated response | U, I, D |
 | service local target absent from all remote record/output | U, D, 3M |
 
@@ -70,6 +73,8 @@ Legend for evidence classes:
 | Behavior | Evidence |
 |---|---|
 | concurrent disjoint transactions are preserved | U, I, race |
+| concurrent/delayed authority-2.1 snapshot reconciliation preserves newer generation records and freshness; authority restart preserves monotonic generation; failed refresh enforces bounded retry deadline | U, I, race |
+| transactional per-scope sync lease commit/renew/release fences delayed final reconciliation/failure writes; crash expiry permits one successor without token/status secret leakage | U, race |
 | invite redemption and quota checks are atomic | U, I, race |
 | killed writer leaves parseable committed state | I |
 | disk-full/read-only/lock failures return failure | I |
@@ -90,4 +95,7 @@ Before the first usable release and every security/transport release:
 5. TLS passthrough;
 6. stable pipe ID and reconnect after origin runtime restart;
 7. `ps`/`inspect` ontology and redacted logical/transport paths;
-8. evidence that all test state was isolated from existing installations.
+8. evidence that all test state was isolated from existing installations;
+9. periodic-sync local election: split authority/publisher homes, two same-home contenders, exact crash/no-pre-expiry takeover, relay outage/recovery, and cached-only convergence (`tests/e2e/three-machine/scenarios/periodic-sync.sh`).
+
+A checked-in scenario is not 3M completion. Required 3M evidence is a retained exact run ID and `generated/e2e-three-machine/<run-id>/artifacts/report.json` with `result: pass`.

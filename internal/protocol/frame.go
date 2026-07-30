@@ -10,10 +10,11 @@ import (
 )
 
 const (
-	TunnelID    = "/tubo/tunnel/2.0"
-	RecordsID   = "/tubo/records/2.0"
-	AuthorityID = "/tubo/authority/2.0"
-	MaxFrame    = 64 << 10
+	TunnelID            = "/tubo/tunnel/2.0"
+	RecordsID           = "/tubo/records/2.0"
+	AuthorityID         = "/tubo/authority/2.0"
+	AuthoritySnapshotID = "/tubo/authority/2.1"
+	MaxFrame            = 64 << 10
 )
 
 func WriteFrame(w io.Writer, value any) error {
@@ -51,7 +52,7 @@ func ReadFrame(r io.Reader, value any) error {
 	if err := decoder.Decode(value); err != nil {
 		return err
 	}
-	if decoder.Decode(&struct{}{}) == nil {
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return errors.New("trailing frame payload")
 	}
 	return nil
@@ -87,6 +88,27 @@ type AuthorityResponse struct {
 	Lease   string            `json:"lease,omitempty"`
 	Grant   string            `json:"grant,omitempty"`
 	Records []json.RawMessage `json:"records,omitempty"`
+}
+
+// AuthoritySnapshotRequest is exclusive to /tubo/authority/2.1 records.list.
+// It deliberately has no operation field: this protocol serves one bounded,
+// complete snapshot operation only.
+type AuthoritySnapshotRequest struct {
+	Token        string `json:"token"`
+	ClientPublic string `json:"client_public"`
+	Nonce        string `json:"nonce"`
+	Proof        string `json:"proof"`
+}
+
+// AuthoritySnapshotResponse carries authority-global ordering metadata. Both
+// counters are issued by pinned authority; record sequences are never used as
+// snapshot ordering metadata.
+type AuthoritySnapshotResponse struct {
+	OK         bool              `json:"ok"`
+	Error      string            `json:"error,omitempty"`
+	Generation uint64            `json:"generation,omitempty"`
+	HighWater  uint64            `json:"high_water,omitempty"`
+	Records    []json.RawMessage `json:"records,omitempty"`
 }
 
 type ClientHello struct {

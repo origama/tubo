@@ -12,7 +12,7 @@ import (
 
 var (
 	productVersion  = "0.1.0-dev"
-	protocolVersion = "2.0"
+	protocolVersion = "2.1"
 	commitSHA       = "dev"
 	buildDate       = "unknown"
 )

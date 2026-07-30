@@ -1,6 +1,6 @@
 # State and persistence
 
-Implementation status: schema version 4 uses pure-Go SQLite in WAL mode. Current tables cover services, pipes, scopes, memberships, verified records, runs, supervisor registrations, sessions, peer aliases, per-run network statistics, observed runtime peers, and migrations. Grant/revocation/redemption tables are added with corresponding features, not as inert placeholders.
+Implementation status: schema version 7 uses pure-Go SQLite in WAL mode. Current tables cover services, pipes, scopes, memberships, verified records, per-scope discovery freshness, authority snapshots, per-scope sync leases, runs, supervisor registrations, sessions, peer aliases, per-run network statistics, observed runtime peers, and migrations. Grant/revocation/redemption tables are added with corresponding features, not as inert placeholders.
 
 ## Separation
 
@@ -57,6 +57,9 @@ forward_grants
 access_leases
 refresh_leases
 discovery_records
+scope_freshness
+authority_snapshots
+scope_sync_leases
 revocations
 invite_redemptions
 schema_migrations
@@ -73,9 +76,23 @@ Transactions enforce:
 - atomic quota check plus grant insertion;
 - monotonic revocation epochs;
 - conditional lifecycle updates;
+- complete pinned-authority 2.1 discovery snapshots atomically upsert verified records, prune expiry, remove absent records, and commit trusted freshness;
+- partial, peer/cache, malformed, 2.0, rollback, same-generation-ambiguous, or persistence-failed refreshes preserve prior valid records;
 - schema migration before runtime start.
 
-### Secrets
+#### Discovery freshness and snapshots
+
+`scope_freshness` is consumer-local observation metadata, never authority. Each scope stores last attempt/success, source, completion, stable error class, bounded next retry, accepted authority generation/high-water, and canonical snapshot digest. A refresh before `next_retry` fails with stable `discovery_retry_after` without opening a fresh authority dial. `authority_snapshots` is separate authority-owned persistent metadata: authority-global generation plus authority mutation high-water, read atomically with authority records. Generic cache expiry cleanup touches only discovered rows; authority snapshot reads prune authority-owned expiry and advance metadata in same transaction.
+
+Only a bounded successful `/tubo/authority/2.1` `records.list` response from pinned scope authority is a complete deletion-capable snapshot. CLI cache-first inventory treats this observation as fresh for strictly less than five minutes; this consumer-side TTL never grants authority or changes record verification. Every record is parsed and verified against pinned authority, scope, owner-derived `pipe_id`, signature, publication grant, expiry, and sequence before one reconciliation transaction begins. Client requires nonzero authority generation, rejects generation/high-water rollback and same-generation changed digest/high-water, then may remove absent discovered-cache records only; local and authority rows are retained. Per-pipe sequence is replay protection only, never scope snapshot ordering. Cache, relay, peer, malformed, partial, and 2.0 responses may only preserve/add verified records and never authorize deletion. Expired records are pruned and never resolve.
+
+#### Periodic sync lease
+
+`scope_sync_leases` has one row per scope: non-secret holder ref/process identity, opaque fencing token, acquisition/renewal times, and expiry. Acquire, renew, and release compare scope plus token and holder identity atomically. An expired lease can transfer after committed expiry; stale PID/token holders cannot renew, release, reconcile, or record refresh failure for a successor. Lease commit precedes a scheduler attempt; storage errors grant no in-memory ownership. Token and process identity never appear in status output.
+
+Membership-backed published and local-pipe runtimes contend locally every bounded interval with bounded jitter. Owner renews before expiry and gives each shared authority-2.1 fetch a 20-second outer deadline; renewal loss/cancellation stops later attempts. Persisted `next_retry` remains final dial suppression. Final reconcile and failure freshness writes recheck current unexpired lease fencing in same transaction. Local authorities do not self-sync or mint membership tokens: authority records remain local source-of-truth.
+
+## Secrets
 
 Private material stays outside the database where practical:
 
@@ -139,5 +156,7 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 
 - State schema has its own monotonically increasing version.
 - Migrations run transactionally and retain a backup before destructive transformations.
+- Schema 6 adds `authority_snapshots` and `scope_freshness.snapshot_digest`; schema 5 freshness generation/high-water was locally derived, so migration transactionally clears only that untrusted ordering metadata and completion state while retaining valid cached records.
+- Schema 7 adds `scope_sync_leases` without changing cached records or authority snapshot metadata. Older binaries reject schema 7. No downgrade migration exists; restore pre-upgrade backup before rollback.
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.

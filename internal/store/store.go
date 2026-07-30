@@ -2,7 +2,9 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +21,11 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
 
-const SchemaVersion = 4
+const SchemaVersion = 7
+
+const maxScopeSyncLeaseTTL = 5 * time.Minute
+
+var ErrScopeSyncLeaseLost = errors.New("scope sync lease lost")
 
 type Store struct {
 	db       *sql.DB
@@ -43,6 +49,11 @@ type Membership struct {
 	ClientKeyFile    string `json:"client_key_file"`
 }
 
+const (
+	SnapshotSourcePinnedAuthority = "pinned_authority"
+	MaxSnapshotRecords            = 256
+)
+
 type Record struct {
 	Scope      string
 	PipeID     string
@@ -51,6 +62,39 @@ type Record struct {
 	ExpiresAt  time.Time
 	Sequence   uint64
 	Discovered bool
+}
+
+type ScopeSyncLease struct {
+	Scope           string    `json:"scope"`
+	HolderRef       string    `json:"holder_ref,omitempty"`
+	ProcessIdentity string    `json:"-"`
+	Token           string    `json:"-"`
+	AcquiredAt      time.Time `json:"acquired_at,omitempty"`
+	RenewedAt       time.Time `json:"renewed_at,omitempty"`
+	ExpiresAt       time.Time `json:"expires_at,omitempty"`
+	Active          bool      `json:"active"`
+}
+
+type ScopeFreshness struct {
+	Scope              string     `json:"scope"`
+	LastAttempt        *time.Time `json:"last_attempt,omitempty"`
+	LastSuccess        *time.Time `json:"last_success,omitempty"`
+	Source             string     `json:"source,omitempty"`
+	Complete           bool       `json:"complete"`
+	ErrorClass         string     `json:"error_class,omitempty"`
+	NextRetry          *time.Time `json:"next_retry,omitempty"`
+	SnapshotGeneration uint64     `json:"snapshot_generation"`
+	SnapshotHighWater  uint64     `json:"snapshot_high_water"`
+	SnapshotDigest     string     `json:"-"`
+}
+
+type AuthoritativeSnapshot struct {
+	Source     string
+	Complete   bool
+	Generation uint64 // authority-global, trusted deletion ordering
+	HighWater  uint64 // authority mutation watermark; never deletion ordering
+	Digest     string // canonical complete snapshot digest
+	Records    []Record
 }
 
 type Run struct {
@@ -183,6 +227,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS scopes(name TEXT PRIMARY KEY, authority_public TEXT NOT NULL, authority_key_file TEXT NOT NULL, namespace_key_file TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS memberships(scope TEXT PRIMARY KEY, role TEXT NOT NULL, token TEXT NOT NULL, authority_public TEXT NOT NULL, authority_address TEXT NOT NULL, client_key_file TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS records(scope TEXT NOT NULL, pipe_id TEXT NOT NULL, name TEXT NOT NULL, payload BLOB NOT NULL, expires_at TEXT NOT NULL, sequence INTEGER NOT NULL, discovered INTEGER NOT NULL, PRIMARY KEY(scope,pipe_id))`,
+		`CREATE TABLE IF NOT EXISTS scope_freshness(scope TEXT PRIMARY KEY, last_attempt TEXT NOT NULL DEFAULT '', last_success TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', complete INTEGER NOT NULL DEFAULT 0, error_class TEXT NOT NULL DEFAULT '', next_retry TEXT NOT NULL DEFAULT '', snapshot_generation INTEGER NOT NULL DEFAULT 0, snapshot_high_water INTEGER NOT NULL DEFAULT 0, snapshot_digest TEXT NOT NULL DEFAULT '')`,
+		`CREATE TABLE IF NOT EXISTS authority_snapshots(scope TEXT PRIMARY KEY, generation INTEGER NOT NULL, high_water INTEGER NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS scope_sync_leases(scope TEXT PRIMARY KEY, holder_ref TEXT NOT NULL, holder_process_identity TEXT NOT NULL, lease_token TEXT NOT NULL UNIQUE, acquired_at TEXT NOT NULL, renewed_at TEXT NOT NULL, expires_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runs(primary_ref TEXT PRIMARY KEY, kind TEXT NOT NULL, pid INTEGER NOT NULL, process_identity TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'foreground', status TEXT NOT NULL, peer_id TEXT NOT NULL, address TEXT NOT NULL, started_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS supervisors(primary_ref TEXT PRIMARY KEY, manager TEXT NOT NULL, label TEXT NOT NULL UNIQUE, unit_path TEXT NOT NULL, installed_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, pipe_ref TEXT NOT NULL, initial_transport_path TEXT NOT NULL, started_at TEXT NOT NULL, bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0)`,
@@ -199,6 +246,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if existing.Valid && existing.Int64 > SchemaVersion {
 		return fmt.Errorf("state schema %d is newer than supported schema %d", existing.Int64, SchemaVersion)
+	}
+	currentSchema := int64(0)
+	if existing.Valid {
+		currentSchema = existing.Int64
 	}
 	for _, statement := range statements[1:] {
 		if _, err := tx.ExecContext(ctx, statement); err != nil {
@@ -230,6 +281,38 @@ func (s *Store) migrate(ctx context.Context) error {
 	if !hasSource {
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE runs ADD COLUMN source TEXT NOT NULL DEFAULT 'foreground'`); err != nil {
 			return fmt.Errorf("schema 4 runs source: %w", err)
+		}
+	}
+	freshnessColumns, err := tx.QueryContext(ctx, `PRAGMA table_info(scope_freshness)`)
+	if err != nil {
+		return fmt.Errorf("schema freshness columns: %w", err)
+	}
+	hasDigest := false
+	for freshnessColumns.Next() {
+		var cid int
+		var name, valueType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := freshnessColumns.Scan(&cid, &name, &valueType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = freshnessColumns.Close()
+			return fmt.Errorf("schema freshness columns: %w", err)
+		}
+		hasDigest = hasDigest || name == "snapshot_digest"
+	}
+	if err := freshnessColumns.Close(); err != nil {
+		return fmt.Errorf("schema freshness columns: %w", err)
+	}
+	if !hasDigest {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE scope_freshness ADD COLUMN snapshot_digest TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("schema 6 snapshot digest: %w", err)
+		}
+	}
+	// Schema 5 metadata was locally derived and cannot prove remote authority
+	// ordering. Retain cached records, but force 2.1 to establish provenance.
+	if currentSchema == 5 {
+		if _, err := tx.ExecContext(ctx, `UPDATE scope_freshness SET source='',complete=0,snapshot_generation=0,snapshot_high_water=0,snapshot_digest=''`); err != nil {
+			return fmt.Errorf("schema 6 freshness provenance reset: %w", err)
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)`, SchemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
@@ -703,15 +786,27 @@ func (s *Store) CurrentScope(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("%w: no scope", domain.ErrNotFound)
 }
 
-func (s *Store) PutRecord(ctx context.Context, v Record) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
+func validateStoredRecord(v Record, now time.Time) error {
+	parts := strings.Split(v.Scope, "/")
+	if len(parts) != 2 || (domain.Scope{Cluster: parts[0], Namespace: parts[1]}).Validate() != nil || strings.TrimSpace(v.PipeID) == "" || len(v.PipeID) > 8192 || len(v.Name) > 8192 {
+		return errors.New("invalid record index")
+	}
+	if len(v.Payload) == 0 || len(v.Payload) > 64<<10 || v.Sequence == 0 || v.Sequence > uint64(^uint64(0)>>1) {
+		return errors.New("invalid record bounds")
+	}
+	if !v.ExpiresAt.After(now) {
+		return errors.New("record expired")
+	}
+	return nil
+}
+
+func putRecordTx(ctx context.Context, tx *sql.Tx, v Record, now time.Time) error {
+	if err := validateStoredRecord(v, now); err != nil {
 		return err
 	}
-	defer tx.Rollback()
 	var sequence uint64
 	var payload []byte
-	err = tx.QueryRowContext(ctx, `SELECT sequence,payload FROM records WHERE scope=? AND pipe_id=?`, v.Scope, v.PipeID).Scan(&sequence, &payload)
+	err := tx.QueryRowContext(ctx, `SELECT sequence,payload FROM records WHERE scope=? AND pipe_id=?`, v.Scope, v.PipeID).Scan(&sequence, &payload)
 	switch {
 	case err == nil && v.Sequence < sequence:
 		return errors.New("replayed record sequence")
@@ -727,12 +822,472 @@ func (s *Store) PutRecord(ctx context.Context, v Record) error {
 	default:
 		_, err = tx.ExecContext(ctx, `UPDATE records SET name=?,payload=?,expires_at=?,sequence=?,discovered=? WHERE scope=? AND pipe_id=?`, v.Name, v.Payload, v.ExpiresAt.UTC().Format(time.RFC3339Nano), v.Sequence, v.Discovered, v.Scope, v.PipeID)
 	}
+	return err
+}
+
+func putDiscoveredRecordTx(ctx context.Context, tx *sql.Tx, v Record, now time.Time) error {
+	v.Discovered = true
+	var discovered bool
+	err := tx.QueryRowContext(ctx, `SELECT discovered FROM records WHERE scope=? AND pipe_id=?`, v.Scope, v.PipeID).Scan(&discovered)
+	if err == nil && !discovered {
+		// Local and authority rows own this key in local state. A remote cache
+		// snapshot must neither replace nor later make them deletion candidates.
+		return nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	return putRecordTx(ctx, tx, v, now)
+}
+
+func (s *Store) PutRecord(ctx context.Context, v Record) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := putRecordTx(ctx, tx, v, time.Now().UTC()); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
+
+func optionalTime(value string) (*time.Time, error) {
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+func scanFreshness(scan func(...any) error) (ScopeFreshness, error) {
+	var value ScopeFreshness
+	var attempt, success, retry string
+	var complete int
+	if err := scan(&value.Scope, &attempt, &success, &value.Source, &complete, &value.ErrorClass, &retry, &value.SnapshotGeneration, &value.SnapshotHighWater, &value.SnapshotDigest); err != nil {
+		return value, err
+	}
+	var err error
+	if value.LastAttempt, err = optionalTime(attempt); err != nil {
+		return value, err
+	}
+	if value.LastSuccess, err = optionalTime(success); err != nil {
+		return value, err
+	}
+	if value.NextRetry, err = optionalTime(retry); err != nil {
+		return value, err
+	}
+	value.Complete = complete != 0
+	return value, nil
+}
+
+func (s *Store) ScopeFreshness(ctx context.Context, scope string) (ScopeFreshness, error) {
+	value, err := scanFreshness(func(dest ...any) error {
+		return s.db.QueryRowContext(ctx, `SELECT scope,last_attempt,last_success,source,complete,error_class,next_retry,snapshot_generation,snapshot_high_water,snapshot_digest FROM scope_freshness WHERE scope=?`, scope).Scan(dest...)
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return value, fmt.Errorf("%w: discovery freshness for %s", domain.ErrNotFound, scope)
+	}
+	return value, err
+}
+
+func (s *Store) EnsureAuthoritySnapshot(ctx context.Context, scope string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO authority_snapshots(scope,generation,high_water) VALUES(?,?,?) ON CONFLICT(scope) DO NOTHING`, scope, 1, 1)
+	return err
+}
+
+func advanceAuthoritySnapshotTx(ctx context.Context, tx *sql.Tx, scope string) error {
+	var generation, highWater uint64
+	err := tx.QueryRowContext(ctx, `SELECT generation,high_water FROM authority_snapshots WHERE scope=?`, scope).Scan(&generation, &highWater)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		_, err = tx.ExecContext(ctx, `INSERT INTO authority_snapshots(scope,generation,high_water) VALUES(?,?,?)`, scope, 1, 1)
+	case err == nil:
+		if generation == uint64(^uint64(0)>>1) || highWater == uint64(^uint64(0)>>1) {
+			return errors.New("authority snapshot counter exhausted")
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE authority_snapshots SET generation=?,high_water=? WHERE scope=?`, generation+1, highWater+1, scope)
+	}
+	return err
+}
+
+// AuthoritySnapshot prunes expired authority-owned records, advances metadata
+// with that removal, then reads records and metadata in one transaction. More
+// records than limit yields complete=false and can never
+// authorize deletion on receivers.
+func (s *Store) AuthoritySnapshot(ctx context.Context, scope string, limit int) (records []Record, generation, highWater uint64, complete bool, err error) {
+	if limit <= 0 || limit > MaxSnapshotRecords {
+		return nil, 0, 0, false, errors.New("invalid authority snapshot limit")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, 0, false, err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	pruned, err := tx.ExecContext(ctx, `DELETE FROM records WHERE scope=? AND discovered=0 AND expires_at<=?`, scope, now.Format(time.RFC3339Nano))
+	if err != nil {
+		return nil, 0, 0, false, err
+	}
+	if changed, err := pruned.RowsAffected(); err != nil {
+		return nil, 0, 0, false, err
+	} else if changed > 0 {
+		if err := advanceAuthoritySnapshotTx(ctx, tx, scope); err != nil {
+			return nil, 0, 0, false, err
+		}
+	}
+	err = tx.QueryRowContext(ctx, `SELECT generation,high_water FROM authority_snapshots WHERE scope=?`, scope).Scan(&generation, &highWater)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, 0, 0, false, errors.New("authority snapshot not initialized")
+	}
+	if err != nil || generation == 0 || highWater == 0 {
+		if err != nil {
+			return nil, 0, 0, false, err
+		}
+		return nil, 0, 0, false, errors.New("invalid authority snapshot metadata")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT scope,pipe_id,name,payload,expires_at,sequence,discovered FROM records WHERE scope=? AND discovered=0 AND expires_at>? ORDER BY name,pipe_id LIMIT ?`, scope, now.Format(time.RFC3339Nano), limit+1)
+	if err != nil {
+		return nil, 0, 0, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var record Record
+		var expires string
+		if err := rows.Scan(&record.Scope, &record.PipeID, &record.Name, &record.Payload, &expires, &record.Sequence, &record.Discovered); err != nil {
+			return nil, 0, 0, false, err
+		}
+		record.ExpiresAt, err = time.Parse(time.RFC3339Nano, expires)
+		if err != nil {
+			return nil, 0, 0, false, err
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, 0, false, err
+	}
+	complete = len(records) <= limit
+	if !complete {
+		records = records[:limit]
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, 0, 0, false, err
+	}
+	return records, generation, highWater, complete, nil
+}
+
+// PutAuthoritativeRecord commits an authority-owned record with a new
+// authority-global snapshot generation and mutation watermark. Per-pipe record
+// sequence is not read here and is never global snapshot ordering.
+func (s *Store) PutAuthoritativeRecord(ctx context.Context, v Record) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	if err := putRecordTx(ctx, tx, v, now); err != nil {
+		return err
+	}
+	if err := advanceAuthoritySnapshotTx(ctx, tx, v.Scope); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func validScopeSyncLeaseInput(scope, holderRef, processIdentity string, ttl time.Duration) error {
+	if strings.TrimSpace(scope) == "" || len(scope) > 255 || strings.TrimSpace(holderRef) == "" || len(holderRef) > 255 || strings.TrimSpace(processIdentity) == "" || len(processIdentity) > 4096 {
+		return errors.New("invalid scope sync lease identity")
+	}
+	if ttl <= 0 || ttl > maxScopeSyncLeaseTTL {
+		return errors.New("invalid scope sync lease ttl")
+	}
+	return nil
+}
+
+func newScopeSyncLeaseToken() (string, error) {
+	value := make([]byte, 32)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+// AcquireScopeSyncLease commits an expiring, fenced owner before returning it.
+// A live owner always wins; callers must wait for expiry before retrying.
+func (s *Store) AcquireScopeSyncLease(ctx context.Context, scope, holderRef, processIdentity string, now time.Time, ttl time.Duration) (ScopeSyncLease, bool, error) {
+	if err := validScopeSyncLeaseInput(scope, holderRef, processIdentity, ttl); err != nil {
+		return ScopeSyncLease{}, false, err
+	}
+	token, err := newScopeSyncLeaseToken()
+	if err != nil {
+		return ScopeSyncLease{}, false, err
+	}
+	now = now.UTC()
+	lease := ScopeSyncLease{Scope: scope, HolderRef: holderRef, ProcessIdentity: processIdentity, Token: token, AcquiredAt: now, RenewedAt: now, ExpiresAt: now.Add(ttl), Active: true}
+	result, err := s.db.ExecContext(ctx, `INSERT INTO scope_sync_leases(scope,holder_ref,holder_process_identity,lease_token,acquired_at,renewed_at,expires_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET holder_ref=excluded.holder_ref,holder_process_identity=excluded.holder_process_identity,lease_token=excluded.lease_token,acquired_at=excluded.acquired_at,renewed_at=excluded.renewed_at,expires_at=excluded.expires_at WHERE scope_sync_leases.expires_at<=excluded.acquired_at`, scope, holderRef, processIdentity, token, lease.AcquiredAt.Format(time.RFC3339Nano), lease.RenewedAt.Format(time.RFC3339Nano), lease.ExpiresAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return ScopeSyncLease{}, false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return ScopeSyncLease{}, false, err
+	}
+	if changed != 1 {
+		return ScopeSyncLease{}, false, nil
+	}
+	return lease, true, nil
+}
+
+func validLeaseFence(lease ScopeSyncLease) bool {
+	return lease.Scope != "" && lease.HolderRef != "" && lease.ProcessIdentity != "" && lease.Token != ""
+}
+
+// RenewScopeSyncLease compares every fencing field and rejects expired owners.
+func (s *Store) RenewScopeSyncLease(ctx context.Context, lease ScopeSyncLease, now time.Time, ttl time.Duration) (bool, error) {
+	if !validLeaseFence(lease) || validScopeSyncLeaseInput(lease.Scope, lease.HolderRef, lease.ProcessIdentity, ttl) != nil {
+		return false, errors.New("invalid scope sync lease")
+	}
+	now = now.UTC()
+	expires := now.Add(ttl)
+	result, err := s.db.ExecContext(ctx, `UPDATE scope_sync_leases SET renewed_at=?,expires_at=? WHERE scope=? AND holder_ref=? AND holder_process_identity=? AND lease_token=? AND expires_at>?`, now.Format(time.RFC3339Nano), expires.Format(time.RFC3339Nano), lease.Scope, lease.HolderRef, lease.ProcessIdentity, lease.Token, now.Format(time.RFC3339Nano))
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return changed == 1, nil
+}
+
+// ReleaseScopeSyncLease cannot delete a successor acquired with another token.
+func (s *Store) ReleaseScopeSyncLease(ctx context.Context, lease ScopeSyncLease) (bool, error) {
+	if !validLeaseFence(lease) {
+		return false, errors.New("invalid scope sync lease")
+	}
+	result, err := s.db.ExecContext(ctx, `DELETE FROM scope_sync_leases WHERE scope=? AND holder_ref=? AND holder_process_identity=? AND lease_token=?`, lease.Scope, lease.HolderRef, lease.ProcessIdentity, lease.Token)
+	if err != nil {
+		return false, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return changed == 1, nil
+}
+
+// ScopeSyncLease returns only a live owner. Its fencing token remains private.
+func (s *Store) ScopeSyncLease(ctx context.Context, scope string) (ScopeSyncLease, error) {
+	if strings.TrimSpace(scope) == "" || len(scope) > 255 {
+		return ScopeSyncLease{}, errors.New("invalid scope sync lease scope")
+	}
+	var value ScopeSyncLease
+	var acquired, renewed, expires string
+	err := s.db.QueryRowContext(ctx, `SELECT scope,holder_ref,holder_process_identity,lease_token,acquired_at,renewed_at,expires_at FROM scope_sync_leases WHERE scope=?`, scope).Scan(&value.Scope, &value.HolderRef, &value.ProcessIdentity, &value.Token, &acquired, &renewed, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ScopeSyncLease{Scope: scope}, nil
+	}
+	if err != nil {
+		return ScopeSyncLease{}, err
+	}
+	var parseErr error
+	if value.AcquiredAt, parseErr = time.Parse(time.RFC3339Nano, acquired); parseErr != nil {
+		return ScopeSyncLease{}, parseErr
+	}
+	if value.RenewedAt, parseErr = time.Parse(time.RFC3339Nano, renewed); parseErr != nil {
+		return ScopeSyncLease{}, parseErr
+	}
+	if value.ExpiresAt, parseErr = time.Parse(time.RFC3339Nano, expires); parseErr != nil {
+		return ScopeSyncLease{}, parseErr
+	}
+	value.Active = value.ExpiresAt.After(time.Now().UTC())
+	// Status callers receive holder ref and expiry only. Fencing fields are
+	// returned solely by successful acquisition and never by status reads.
+	value.ProcessIdentity, value.Token = "", ""
+	if !value.Active {
+		value.HolderRef = ""
+	}
+	return value, nil
+}
+
+func leaseCurrentTx(ctx context.Context, tx *sql.Tx, lease ScopeSyncLease, now time.Time) error {
+	if !validLeaseFence(lease) {
+		return ErrScopeSyncLeaseLost
+	}
+	var expiry string
+	err := tx.QueryRowContext(ctx, `SELECT expires_at FROM scope_sync_leases WHERE scope=? AND holder_ref=? AND holder_process_identity=? AND lease_token=?`, lease.Scope, lease.HolderRef, lease.ProcessIdentity, lease.Token).Scan(&expiry)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrScopeSyncLeaseLost
+		}
+		return err
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, expiry)
+	if err != nil {
+		return err
+	}
+	if !parsed.After(now.UTC()) {
+		return ErrScopeSyncLeaseLost
+	}
+	return nil
+}
+
+func (s *Store) recordSnapshotFailure(ctx context.Context, scope, source, errorClass string, nextRetry *time.Time, lease *ScopeSyncLease) error {
+	if source != SnapshotSourcePinnedAuthority || errorClass == "" {
+		return errors.New("invalid discovery refresh failure")
+	}
+	now := time.Now().UTC()
+	retry := ""
+	if nextRetry != nil {
+		retry = nextRetry.UTC().Format(time.RFC3339Nano)
+	}
+	if lease == nil {
+		_, err := s.db.ExecContext(ctx, `INSERT INTO scope_freshness(scope,last_attempt,source,complete,error_class,next_retry) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET last_attempt=excluded.last_attempt,source=excluded.source,complete=0,error_class=excluded.error_class,next_retry=excluded.next_retry`, scope, now.Format(time.RFC3339Nano), source, false, errorClass, retry)
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := leaseCurrentTx(ctx, tx, *lease, now); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO scope_freshness(scope,last_attempt,source,complete,error_class,next_retry) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET last_attempt=excluded.last_attempt,source=excluded.source,complete=0,error_class=excluded.error_class,next_retry=excluded.next_retry`, scope, now.Format(time.RFC3339Nano), source, false, errorClass, retry); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) RecordSnapshotFailure(ctx context.Context, scope, source, errorClass string, nextRetry *time.Time) error {
+	return s.recordSnapshotFailure(ctx, scope, source, errorClass, nextRetry, nil)
+}
+
+func (s *Store) RecordSnapshotFailureWithLease(ctx context.Context, lease ScopeSyncLease, source, errorClass string, nextRetry *time.Time) error {
+	return s.recordSnapshotFailure(ctx, lease.Scope, source, errorClass, nextRetry, &lease)
+}
+
+// ReconcileAuthoritativeSnapshot changes cache state only for one complete,
+// pinned-authority snapshot. Caller must cryptographically verify every record
+// before this method starts its transaction. SQLite may return SQLITE_BUSY when
+// concurrent writers upgrade transactions; retry whole transaction so callers
+// never observe an in-memory-only reconciliation success.
+func (s *Store) ReconcileAuthoritativeSnapshot(ctx context.Context, scope string, snapshot AuthoritativeSnapshot) error {
+	return s.reconcileAuthoritativeSnapshot(ctx, scope, snapshot, nil)
+}
+
+// ReconcileAuthoritativeSnapshotWithLease fences final cache/freshness writes
+// against a current, unexpired periodic sync owner.
+func (s *Store) ReconcileAuthoritativeSnapshotWithLease(ctx context.Context, lease ScopeSyncLease, snapshot AuthoritativeSnapshot) error {
+	return s.reconcileAuthoritativeSnapshot(ctx, lease.Scope, snapshot, &lease)
+}
+
+func (s *Store) reconcileAuthoritativeSnapshot(ctx context.Context, scope string, snapshot AuthoritativeSnapshot, lease *ScopeSyncLease) error {
+	for attempt := 0; ; attempt++ {
+		err := s.reconcileAuthoritativeSnapshotOnce(ctx, scope, snapshot, lease)
+		if err == nil || (!strings.Contains(err.Error(), "database is locked") && !strings.Contains(err.Error(), "SQLITE_BUSY")) {
+			return err
+		}
+		if attempt == 9 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 5 * time.Millisecond):
+		}
+	}
+}
+
+func (s *Store) reconcileAuthoritativeSnapshotOnce(ctx context.Context, scope string, snapshot AuthoritativeSnapshot, lease *ScopeSyncLease) error {
+	if snapshot.Source != SnapshotSourcePinnedAuthority || !snapshot.Complete || snapshot.Generation == 0 || snapshot.HighWater == 0 || len(snapshot.Digest) != 64 || len(snapshot.Records) > MaxSnapshotRecords {
+		return errors.New("invalid authoritative snapshot metadata")
+	}
+	now := time.Now().UTC()
+	seen := make(map[string]struct{}, len(snapshot.Records))
+	for _, record := range snapshot.Records {
+		if record.Scope != scope {
+			return errors.New("invalid authoritative snapshot record")
+		}
+		if _, duplicate := seen[record.PipeID]; duplicate {
+			return errors.New("duplicate record in authoritative snapshot")
+		}
+		seen[record.PipeID] = struct{}{}
+		if err := validateStoredRecord(record, now); err != nil {
+			return err
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if lease != nil {
+		if err := leaseCurrentTx(ctx, tx, *lease, now); err != nil {
+			return err
+		}
+	}
+	var currentGeneration, currentHighWater uint64
+	var currentDigest string
+	err = tx.QueryRowContext(ctx, `SELECT snapshot_generation,snapshot_high_water,snapshot_digest FROM scope_freshness WHERE scope=?`, scope).Scan(&currentGeneration, &currentHighWater, &currentDigest)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil && (snapshot.Generation < currentGeneration || snapshot.HighWater < currentHighWater) {
+		return errors.New("rollback authoritative snapshot generation")
+	}
+	if err == nil && snapshot.Generation == currentGeneration && currentDigest != "" && (snapshot.Digest != currentDigest || snapshot.HighWater != currentHighWater) {
+		return errors.New("ambiguous authoritative snapshot generation")
+	}
+	for _, record := range snapshot.Records {
+		if err := putDiscoveredRecordTx(ctx, tx, record, now); err != nil {
+			return err
+		}
+	}
+	// Only authority-global generation orders deletion. Per-pipe sequence is
+	// replay protection for one record, never a scope-wide snapshot watermark.
+	if len(snapshot.Records) == 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM records WHERE scope=? AND discovered=1`, scope); err != nil {
+			return err
+		}
+	} else {
+		ids := make([]any, 0, len(snapshot.Records)+1)
+		ids = append(ids, scope)
+		marks := make([]string, 0, len(snapshot.Records))
+		for _, record := range snapshot.Records {
+			marks = append(marks, "?")
+			ids = append(ids, record.PipeID)
+		}
+		query := `DELETE FROM records WHERE scope=? AND discovered=1 AND pipe_id NOT IN (` + strings.Join(marks, ",") + `)`
+		if _, err := tx.ExecContext(ctx, query, ids...); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM records WHERE scope=? AND discovered=1 AND expires_at<=?`, scope, now.Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO scope_freshness(scope,last_attempt,last_success,source,complete,error_class,next_retry,snapshot_generation,snapshot_high_water,snapshot_digest) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET last_attempt=excluded.last_attempt,last_success=excluded.last_success,source=excluded.source,complete=excluded.complete,error_class='',next_retry='',snapshot_generation=excluded.snapshot_generation,snapshot_high_water=excluded.snapshot_high_water,snapshot_digest=excluded.snapshot_digest`, scope, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), snapshot.Source, true, "", "", snapshot.Generation, snapshot.HighWater, snapshot.Digest); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *Store) PruneExpiredRecords(ctx context.Context, now time.Time) (int64, error) {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM records WHERE discovered=1 AND expires_at<=?`, now.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *Store) Records(ctx context.Context, scope string) ([]Record, error) {
+	if _, err := s.PruneExpiredRecords(ctx, time.Now().UTC()); err != nil {
+		return nil, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT scope,pipe_id,name,payload,expires_at,sequence,discovered FROM records WHERE scope=? AND expires_at>? ORDER BY name,pipe_id`, scope, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
@@ -754,6 +1309,9 @@ func (s *Store) Records(ctx context.Context, scope string) ([]Record, error) {
 	return out, rows.Err()
 }
 func (s *Store) Record(ctx context.Context, pipeID string) (Record, error) {
+	if _, err := s.PruneExpiredRecords(ctx, time.Now().UTC()); err != nil {
+		return Record{}, err
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT scope,pipe_id,name,payload,expires_at,sequence,discovered FROM records WHERE pipe_id=? AND expires_at>? ORDER BY scope`, pipeID, time.Now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return Record{}, err
@@ -792,6 +1350,9 @@ func (s *Store) RecordSequence(ctx context.Context, scope, pipeID string) (uint6
 	return sequence, err
 }
 func (s *Store) RecordInScope(ctx context.Context, scope, pipeID string) (Record, error) {
+	if _, err := s.PruneExpiredRecords(ctx, time.Now().UTC()); err != nil {
+		return Record{}, err
+	}
 	var value Record
 	var expires string
 	err := s.db.QueryRowContext(ctx, `SELECT scope,pipe_id,name,payload,expires_at,sequence,discovered FROM records WHERE scope=? AND pipe_id=? AND expires_at>?`, scope, pipeID, time.Now().UTC().Format(time.RFC3339Nano)).Scan(&value.Scope, &value.PipeID, &value.Name, &value.Payload, &expires, &value.Sequence, &value.Discovered)

@@ -8,7 +8,7 @@ Technical contracts for Tubo Rebuilt live here.
 - [`reference/ONTOLOGY.md`](reference/ONTOLOGY.md) — service, pipe, run, session, record
 - [`reference/INVARIANTS.md`](reference/INVARIANTS.md) — binding product and security invariants
 - [`reference/CLI.md`](reference/CLI.md) — target command and output contract
-- [`reference/PROTOCOL.md`](reference/PROTOCOL.md) — protocol 2.0 data/control plane
+- [`reference/PROTOCOL.md`](reference/PROTOCOL.md) — protocol 2.1 authority snapshot extension and 2.0 data/control plane
 - [`reference/SECURITY.md`](reference/SECURITY.md) — trust boundaries and threat model
 - [`reference/STATE.md`](reference/STATE.md) — static config, transactional state, secrets
 - [`reference/VERSIONING.md`](reference/VERSIONING.md) — product, protocol, and state versions

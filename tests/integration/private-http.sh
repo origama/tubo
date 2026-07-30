@@ -148,8 +148,8 @@ done
 
 kill "$relay_pid"
 for _ in $(seq 1 100); do kill -0 "$relay_pid" 2>/dev/null || break; sleep 0.1; done
-cached="$(env TUBO_HOME="$CLIENT_HOME" "$T" get pipes --scope solar/default --json 2>/dev/null)"
-printf '%s' "$cached" | python3 -c "import json,sys; value=json.load(sys.stdin); assert value.get('discovery_errors'); assert any(x['id']=='$pipe_id' for x in value['items'])"
+cached="$(env TUBO_HOME="$CLIENT_HOME" "$T" get pipes --scope solar/default --refresh --json 2>/dev/null)"
+printf '%s' "$cached" | python3 -c "import json,sys; value=json.load(sys.stdin); assert any(x.get('refresh_error',{}).get('class') in {'authority_unreachable','discovery_unreachable'} for x in value['scopes']); assert any(x['id']=='$pipe_id' for x in value['items'])"
 start "$RELAY_HOME" relay-restarted "$T" relay --listen "/ip4/127.0.0.1/tcp/$RELAY_PORT" --public-addr "/ip4/127.0.0.1/tcp/$RELAY_PORT" --swarm-key "$WORK/swarm.key"
 relay_pid="$LAST_PID"
 recovered=0

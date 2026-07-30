@@ -37,6 +37,9 @@ func RunAuthority(ctx context.Context, state *store.Store, cluster, scopeName st
 	if parsed.Cluster != cluster {
 		return fmt.Errorf("authority cluster %s does not match scope %s", cluster, scopeName)
 	}
+	if err := state.EnsureAuthoritySnapshot(ctx, scopeName); err != nil {
+		return fmt.Errorf("initialize authority snapshot: %w", err)
+	}
 	private, err := authority.ReadPrivate(scope.AuthorityKeyFile)
 	if err != nil {
 		return err
@@ -61,6 +64,7 @@ func RunAuthority(ctx context.Context, state *store.Store, cluster, scopeName st
 	}
 	handler := &authorityHandler{state: state, scope: *parsed, private: private, public: private.Public().(ed25519.PublicKey)}
 	h.SetStreamHandler(protocol.ID(wire.AuthorityID), handler.handle)
+	h.SetStreamHandler(protocol.ID(wire.AuthoritySnapshotID), handler.handleSnapshot)
 	ref := "authority/" + cluster
 	run := store.Run{PrimaryRef: ref, Kind: "authority", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: address, StartedAt: time.Now().UTC()}
 	if err := state.PutRun(ctx, run); err != nil {
@@ -192,7 +196,7 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 		if err != nil {
 			return fail(err)
 		}
-		if err := h.state.PutRecord(ctx, store.Record{Scope: h.scope.String(), PipeID: record.PipeID, Name: record.DisplayName, Payload: payload, ExpiresAt: record.ExpiresAt, Sequence: record.Sequence}); err != nil {
+		if err := h.state.PutAuthoritativeRecord(ctx, store.Record{Scope: h.scope.String(), PipeID: record.PipeID, Name: record.DisplayName, Payload: payload, ExpiresAt: record.ExpiresAt, Sequence: record.Sequence}); err != nil {
 			return fail(err)
 		}
 		return wire.AuthorityResponse{OK: true}
@@ -200,7 +204,7 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 		if invite.Role != "member" && invite.Role != "viewer" && invite.Role != "publisher" && invite.Role != "forwarder" {
 			return fail(errors.New("authorization_denied: role cannot discover"))
 		}
-		records, err := h.state.Records(ctx, h.scope.String())
+		records, _, _, complete, err := h.state.AuthoritySnapshot(ctx, h.scope.String(), store.MaxSnapshotRecords)
 		if err != nil {
 			return fail(err)
 		}
@@ -208,14 +212,21 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 		size := 0
 		for _, stored := range records {
 			record, err := discovery.Parse(stored.Payload)
-			if err != nil || record.Verify(h.public, h.scope, time.Now().UTC()) != nil || record.Visibility != domain.VisibilityDiscoverable {
+			if err != nil || record.Verify(h.public, h.scope, time.Now().UTC()) != nil {
+				return fail(errors.New("persistence_failed: authority stored invalid discovery record"))
+			}
+			if record.Visibility != domain.VisibilityDiscoverable {
 				continue
 			}
-			if len(result) >= 256 || size+len(stored.Payload) > wire.MaxFrame/2 {
+			if size+len(stored.Payload) > wire.MaxFrame/2 {
+				complete = false
 				break
 			}
 			result = append(result, json.RawMessage(stored.Payload))
 			size += len(stored.Payload)
+		}
+		if !complete {
+			return fail(errors.New("incomplete authoritative snapshot: response exceeds bounds"))
 		}
 		return wire.AuthorityResponse{OK: true, Records: result}
 	case "connect_access.issue":
@@ -264,6 +275,75 @@ func (h *authorityHandler) process(ctx context.Context, request wire.AuthorityRe
 	default:
 		return fail(errors.New("invalid_input: unknown authority operation"))
 	}
+}
+
+// handleSnapshot serves only negotiated authority 2.1 records.list. Legacy
+// authority 2.0 remains registered for its explicit compatibility surface, but
+// cannot provide deletion-capable snapshot metadata.
+func (h *authorityHandler) handleSnapshot(stream core.Stream) {
+	defer stream.Close()
+	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
+	var request wire.AuthoritySnapshotRequest
+	if err := wire.ReadFrame(stream, &request); err != nil {
+		_ = stream.Reset()
+		return
+	}
+	response := h.processSnapshot(context.Background(), request)
+	if err := wire.WriteFrame(stream, response); err != nil {
+		_ = stream.Reset()
+	}
+}
+
+func (h *authorityHandler) processSnapshot(ctx context.Context, request wire.AuthoritySnapshotRequest) wire.AuthoritySnapshotResponse {
+	fail := func(err error) wire.AuthoritySnapshotResponse {
+		return wire.AuthoritySnapshotResponse{OK: false, Error: err.Error()}
+	}
+	if !boundedStrings(8192, request.ClientPublic, request.Nonce, request.Proof) || len(request.Token) > authority.MaxTokenSize {
+		return fail(errors.New("invalid_input: authority field exceeds limit"))
+	}
+	invite, err := authority.Decode(request.Token)
+	if err != nil {
+		return fail(fmt.Errorf("authorization_denied: %w", err))
+	}
+	if err := invite.Verify(h.public, time.Now().UTC()); err != nil {
+		return fail(fmt.Errorf("authorization_denied: %w", err))
+	}
+	if invite.Type != "membership.invite" || invite.Scope != h.scope {
+		return fail(errors.New("authorization_denied: invalid membership invite"))
+	}
+	if invite.Role != "member" && invite.Role != "viewer" && invite.Role != "publisher" && invite.Role != "forwarder" {
+		return fail(errors.New("authorization_denied: role cannot discover"))
+	}
+	clientPublic, err := authority.PublicFromString(request.ClientPublic)
+	if err != nil {
+		return fail(errors.New("authorization_denied: invalid client key"))
+	}
+	if !authority.VerifyProof(clientPublic, request.Proof, "tubo-authority-v2", "records.list", "", request.Nonce, invite.JTI) {
+		return fail(errors.New("authorization_denied: invalid proof of possession"))
+	}
+	records, generation, highWater, complete, err := h.state.AuthoritySnapshot(ctx, h.scope.String(), store.MaxSnapshotRecords)
+	if err != nil {
+		return fail(err)
+	}
+	if !complete {
+		return fail(errors.New("incomplete authoritative snapshot: response exceeds bounds"))
+	}
+	result := make([]json.RawMessage, 0, len(records))
+	for _, stored := range records {
+		record, err := discovery.Parse(stored.Payload)
+		if err != nil || record.Verify(h.public, h.scope, time.Now().UTC()) != nil {
+			return fail(errors.New("persistence_failed: authority stored invalid discovery record"))
+		}
+		if record.Visibility == domain.VisibilityDiscoverable {
+			result = append(result, json.RawMessage(stored.Payload))
+		}
+	}
+	response := wire.AuthoritySnapshotResponse{OK: true, Generation: generation, HighWater: highWater, Records: result}
+	encoded, err := json.Marshal(response)
+	if err != nil || len(encoded) > wire.MaxFrame {
+		return fail(errors.New("incomplete authoritative snapshot: response exceeds bounds"))
+	}
+	return response
 }
 
 func waitSignal(ctx context.Context) error { return waitSignalRenew(ctx, 0, nil, nil) }

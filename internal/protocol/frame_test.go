@@ -30,6 +30,29 @@ func TestFrameRoundTripAndUnknownFieldRejection(t *testing.T) {
 	}
 }
 
+func TestAuthoritySnapshotFramesRejectAllTrailingBytes(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		value   any
+	}{
+		{"request malformed", `{"token":"token","client_public":"key","nonce":"nonce","proof":"proof"}x`, &AuthoritySnapshotRequest{}},
+		{"request second JSON", `{"token":"token","client_public":"key","nonce":"nonce","proof":"proof"}{}`, &AuthoritySnapshotRequest{}},
+		{"response malformed", `{"ok":true,"generation":1,"high_water":1}x`, &AuthoritySnapshotResponse{}},
+		{"response second JSON", `{"ok":true,"generation":1,"high_water":1}{}`, &AuthoritySnapshotResponse{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buffer bytes.Buffer
+			_ = binary.Write(&buffer, binary.BigEndian, uint32(len(tc.payload)))
+			buffer.WriteString(tc.payload)
+			if err := ReadFrame(&buffer, tc.value); err == nil || !strings.Contains(err.Error(), "trailing frame payload") {
+				t.Fatalf("trailing payload accepted: %v", err)
+			}
+		})
+	}
+}
+
 func TestFrameRejectsOversizeBeforeAllocation(t *testing.T) {
 	var buffer bytes.Buffer
 	_ = binary.Write(&buffer, binary.BigEndian, uint32(MaxFrame+1))

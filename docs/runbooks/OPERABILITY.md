@@ -94,7 +94,7 @@ Linux systemd templates live in [`../../deploy/systemd/README.md`](../../deploy/
 
 - relay unavailable: runs mark degraded, local listeners remain bound, verified cached pipe inventory remains available with an explicit discovery warning, and new relayed sessions fail closed; configured-relay recovery retries every five seconds with bounded 15-second dials and explicitly clears stale libp2p dial backoff; successful reconnect renews reservations/records and returns runs to ready without process restart;
 - authority unavailable: existing access remains TTL-bounded; issuance/refresh fails clearly; remote publishers retry failed grant/announcement renewal every five seconds after the normal renewal deadline until authority recovers;
-- discovery unavailable: exact cached records remain locally inspectable; `get pipes` returns verified cached/local rows plus `discovery_errors` instead of hiding inventory; new authorization still fails when authority is unavailable;
+- discovery unavailable: exact cached records remain locally inspectable; stale `get pipes` attempts one bounded refresh, then returns verified cached/local rows with scoped `refresh_error.class` and stderr diagnostics instead of hiding inventory; `--cached-only` opens no discovery sockets; new authorization still fails when authority is unavailable;
 - service target unavailable: pipe remains running but rejects sessions with `target_unreachable` and reports degraded target health;
 - state store unavailable: mutation and credential refresh fail closed.
 

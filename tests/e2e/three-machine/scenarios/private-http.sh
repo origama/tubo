@@ -6,8 +6,8 @@ run_private_http() {
 
   log 'generating isolated swarm key'
   client_sh "$CLIENT_BIN" keygen swarm --out "$LOCAL_ROOT/swarm.key"
-  scp -q "$LOCAL_ROOT/swarm.key" "$RELAY_HOST:$REMOTE_ROOT/swarm.key"
-  scp -q "$LOCAL_ROOT/swarm.key" "$PUBLISHER_HOST:$REMOTE_ROOT/swarm.key"
+  remote_scp_to "$LOCAL_ROOT/swarm.key" "$RELAY_HOST" "$REMOTE_ROOT/swarm.key"
+  remote_scp_to "$LOCAL_ROOT/swarm.key" "$PUBLISHER_HOST" "$REMOTE_ROOT/swarm.key"
   remote "$RELAY_HOST" "chmod 600 '$REMOTE_ROOT/swarm.key'"
   remote "$PUBLISHER_HOST" "chmod 600 '$REMOTE_ROOT/swarm.key'"
 
@@ -16,6 +16,7 @@ run_private_http() {
   relay_status="$(wait_remote_json "$RELAY_HOST" "'$REMOTE_ROOT/bin/tubo' inspect relay/default --json" "value['status']" ready 90)" || fail 'relay did not become ready'
   printf '%s\n' "$relay_status" >"$ARTIFACTS/relay-status.json"
   relay_peer_id="$(printf '%s' "$relay_status" | json_get "value['peer_id']")"
+  validate_generated_value "$relay_peer_id"
   relay_addr="/ip4/$RELAY_PUBLIC_IP/tcp/$RELAY_PORT/p2p/$relay_peer_id"
   log "relay address: $relay_addr"
 
@@ -48,8 +49,7 @@ run_private_http() {
   log 'creating member and viewer invitations'
   member_invite="$(remote "$PUBLISHER_HOST" "env TUBO_HOME='$REMOTE_ROOT/home' '$REMOTE_ROOT/bin/tubo' scope invite solar/default --role member --expires 2h --json")"
   viewer_invite="$(remote "$PUBLISHER_HOST" "env TUBO_HOME='$REMOTE_ROOT/home' '$REMOTE_ROOT/bin/tubo' scope invite solar/default --role viewer --expires 2h --json")"
-  printf '%s\n' "$member_invite" >"$ARTIFACTS/member-invite.json"
-  printf '%s\n' "$viewer_invite" >"$ARTIFACTS/viewer-invite.json"
+  # Invite values remain shell-local; artifacts never receive bearer material.
   member_token="$(printf '%s' "$member_invite" | json_get "value['token']")"
   viewer_token="$(printf '%s' "$viewer_invite" | json_get "value['token']")"
 
@@ -83,7 +83,7 @@ run_private_http() {
   if printf '%s' "$viewer_pipes" | grep -F '127.0.0.1:' >/dev/null; then fail 'viewer listing leaked a local service target'; fi
   if env TUBO_HOME="$VIEWER_HOME" "$CLIENT_BIN" connect "pipe/$origin_pipe_id" --local "127.0.0.1:$VIEWER_PORT" -d --json >"$ARTIFACTS/viewer-connect.json" 2>"$ARTIFACTS/viewer-connect.err"; then
     viewer_pid="$(json_get "value['pid']" <"$ARTIFACTS/viewer-connect.json")"
-    printf '%s\n' "$viewer_pid" >"$LOCAL_ROOT/viewer.pid"
+    record_local_runner viewer "$viewer_pid" '_run-pipe'
     fail 'viewer connect unexpectedly succeeded'
   fi
   grep -F 'authorization_denied' "$ARTIFACTS/viewer-connect.err" >/dev/null || fail 'viewer connect failed without authorization_denied class'
@@ -91,8 +91,8 @@ run_private_http() {
   log 'creating local consumer pipe through connect preset'
   client_sh "$CLIENT_BIN" connect "pipe/$origin_pipe_id" --local "127.0.0.1:$CLIENT_PORT" -d --json >"$ARTIFACTS/client-connect.json"
   client_pid="$(json_get "value['pid']" <"$ARTIFACTS/client-connect.json")"
-  printf '%s\n' "$client_pid" >"$LOCAL_ROOT/client.pid"
   client_pipe_ref="$(json_get "value['ref']" <"$ARTIFACTS/client-connect.json")"
+  record_local_runner client "$client_pid" "_run-pipe $client_pipe_ref"
   response=''
   for _ in $(seq 1 90); do
     if response="$(curl -fsS -X POST -H 'Content-Type: text/plain' --data 'hello-from-macb' "http://127.0.0.1:$CLIENT_PORT/v1/dummy?from=macb")"; then

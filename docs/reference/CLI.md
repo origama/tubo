@@ -131,18 +131,25 @@ On macOS, `supervise install` writes one user-owned `launchd` plist under `~/Lib
 
 `get peers` returns the union of local aliases and peers currently observed by live local libp2p runtimes. `SOURCE=alias`, `observed`, or `alias+observed` distinguishes them; `OBSERVED BY` names local primary runs. This is a local network view, not a synchronized membership roster, so different machines normally report different peers. Peer aliases remain operator-only metadata, are not synchronized, and never become authorization input. `config print` masks secret paths. Verbose diagnostics use stderr and never contaminate JSON stdout.
 
+`get scopes --json` and `inspect scope/<scope> --json` expose a `sync` projection with optional `owner_ref`, `lease_expires_at`, `last_success`, `next_retry`, and stable `error_class`. It never exposes fencing tokens, process identity, membership material, or service targets. Only membership-backed published/local pipe runtimes contend for periodic sync; a local authority never self-syncs.
+
 ## Discovery
 
 ```bash
-tubo get pipes
-tubo get pipes --live
+tubo get pipes [--scope cluster/namespace] [--refresh|--cached-only]
 tubo get pipe/<pipe-id>
 tubo watch pipes
 ```
 
 `get services` is local-only. Remote connectivity is represented by verified pipes. Human `get pipes` output includes stable ID, source, scope, ingress, target ref, access, status, session count, path, and path source. A local definition and its verified network record are merged as `local+network`; re-exports into distinct scopes remain separate rows. JSON exposes the same fields plus peer, capabilities, and record expiry.
 
-Current implementation advertises only relay circuit addresses, so network rows report `relayed`. `direct` and `mixed` are reserved for verified direct candidates once direct dialing/hole punching is implemented. When live discovery is unavailable, `get pipes` still returns verified cached/local rows; JSON adds `discovery_errors`, while human output writes warnings to stderr.
+Current implementation advertises only relay circuit addresses, so network rows report `relayed`. `direct` and `mixed` are reserved for verified direct candidates once direct dialing/hole punching is implemented.
+
+`get pipes` is cache-first. A scope cache is `fresh` only after a complete pinned-authority 2.1 snapshot success strictly less than five minutes old. Default listing opens no discovery network socket for fresh scopes; stale or missing selected memberships receive one bounded synchronous refresh before verified cached/local projection. `--refresh` refreshes every selected membership and bypasses this freshness window plus persisted discovery retry cooldown, without bypassing request bounds or verification. `--cached-only` never refreshes or opens discovery network sockets. Flags are mutually exclusive. `--live` is obsolete and rejected with `invalid_input`; use `--refresh`. No selected membership is local-only and opens no discovery network socket.
+
+`--scope` filters both network rows and scoped local pipe definitions to that exact scope. Unscoped local pipes have no discovery scope and remain visible under every `--scope` filter; they are local-only rows and never cause a network operation.
+
+JSON stdout remains one object: `items` plus typed `scopes` entries with `scope`, `cache_state` (`fresh`, `stale`, or `missing`), optional pinned snapshot `source`/`last_success`, `refresh_attempted`, and optional `refresh_error.class`. Refresh errors are scope-local structured classes and do not include tokens, keys, service targets, addresses, or private routes. Human table keeps pipe-row `SOURCE` semantics and adds `FRESHNESS`; refresh warnings go only to stderr. On refresh failure, verified unexpired cache and local rows remain visible.
 
 ## Infrastructure
 
@@ -181,6 +188,7 @@ conflict
 authorization_denied
 authority_unreachable
 discovery_unreachable
+discovery_retry_after
 pipe_unreachable
 relay_unavailable
 persistence_failed

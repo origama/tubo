@@ -1,6 +1,6 @@
-# Protocol 2.0
+# Protocol 2.1
 
-Status: protocol 2.0 implements authority-backed remote publication grants, record announcement/listing, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, access refresh, revocation, and negotiated minor extensions are pending.
+Status: protocol 2.1 adds negotiated authority snapshot ordering for destructive `records.list` reconciliation. Protocol 2.0 implements authority-backed remote publication grants, record announcement/listing compatibility surface, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, access refresh, revocation, and further negotiated extensions are pending.
 
 There is intentionally no negotiation or fallback to previous Tubo protocols.
 
@@ -10,6 +10,7 @@ There is intentionally no negotiation or fallback to previous Tubo protocols.
 /tubo/tunnel/2.0
 /tubo/records/2.0
 /tubo/authority/2.0
+/tubo/authority/2.1
 ```
 
 All decoders are length-bounded before allocation. Protocol errors reset only the affected stream.
@@ -82,7 +83,7 @@ SyncSummary
 SyncRecords
 ```
 
-Responses are bounded and indicate truncation. Pagination/cursors are required before claiming complete enumeration.
+`/tubo/authority/2.0` retains `records.list` only for explicit compatibility surface; its response has no trusted ordering metadata and cannot delete cache entries. `/tubo/authority/2.1` successful `records.list` response is one complete bounded snapshot of discoverable records for its pinned scope. Authority rejects an over-count or over-byte response as `incomplete authoritative snapshot`; receivers retain prior verified cache and must not delete from it. Future pagination/cursors require an explicit protocol-version decision before any paged response can claim complete enumeration.
 
 A record includes:
 
@@ -116,7 +117,9 @@ Consumer verification order:
 7. runtime peer/address binding;
 8. time/TTL;
 9. replay/sequence;
-10. cache insertion.
+10. atomic complete-snapshot reconciliation and cache insertion.
+
+Before reconciliation, receiver bounds every response and verifies every record. Absent records are removed only from a complete pinned-authority `/tubo/authority/2.1` snapshot with nonzero authority-issued generation. Receiver persists accepted generation, authority mutation high-water, and canonical snapshot digest only after successful commit. It rejects lower generation/high-water and same-generation changed digest or high-water responses. Relay, cache, peer, malformed, partial, and `/tubo/authority/2.0` responses never authorize deletion.
 
 ## Authority protocol
 
@@ -134,8 +137,21 @@ revocation.query
 
 There is one issuer key class per scope. Pipe runtimes do not issue delegated connect leases.
 
-Initial maximum encoded request/response size is 64 KiB. Unknown fields are rejected in security-sensitive requests until additive compatibility rules are explicitly defined.
+Initial maximum encoded request/response size is 64 KiB. `records.list` returns no partial success: oversized snapshots fail rather than silently truncate. Unknown fields are rejected in security-sensitive requests until additive compatibility rules are explicitly defined.
+
+### Authority snapshot extension 2.1
+
+`/tubo/authority/2.1` serves only `records.list`; it has separate strict request/response structs:
+
+```text
+request:  token, client_public, nonce, proof
+response: ok, error, generation, high_water, records
+```
+
+Request proof binds literal operation `records.list`. Authority reads records plus metadata in one transaction. `generation` is nonzero, authority-global, persistent across authority restart, and sole deletion ordering value. `high_water` is nonzero authority mutation watermark, increments with authority snapshot mutation, and is diagnostic/consistency metadata only; it is not derived from nor compared with per-pipe record sequence. Client does not fall back to 2.0 when 2.1 unavailable and retains cache while reporting refresh failure.
+
+`/tubo/authority/2.0` remains handler-compatible for explicit legacy operations. Its `records.list` response has no ordering metadata and new consumers must fail closed for reconciliation.
 
 ## Version behavior
 
-A protocol major mismatch is rejected. Minor additions require explicit capability negotiation and bounded optional fields. See `VERSIONING.md`.
+A protocol major mismatch is rejected. Authority 2.1 snapshot consumers require that exact protocol ID; unavailable 2.1 is failure, not 2.0 fallback. Minor additions require explicit capability negotiation and bounded optional fields. See `VERSIONING.md`.

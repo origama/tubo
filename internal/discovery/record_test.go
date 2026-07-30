@@ -32,6 +32,9 @@ func TestRecordVerifiesAndNeverContainsServiceTarget(t *testing.T) {
 	if err := record.Verify(authorityPublic, scope, now); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := Parse(append(data, 'x')); err == nil || !strings.Contains(err.Error(), "trailing record payload") {
+		t.Fatalf("malformed record suffix accepted: %v", err)
+	}
 	record.DisplayName = "tampered"
 	if err := record.Verify(authorityPublic, scope, now); err == nil {
 		t.Fatal("tampered record verified")

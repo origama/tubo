@@ -47,7 +47,7 @@ cd ~/local_repos/origama/tuboRebuilt
 make e2e-three-machine-preflight
 ```
 
-This checks local build/SSH tools, both SSH aliases, remote OS/architecture, curl, writable `/tmp`, and that selected relay, publisher HTTP, and local client ports are not already listening. It is read-only.
+This checks local build/SSH tools, both SSH aliases, remote OS/architecture, curl, writable `/tmp`, and that selected relay, publisher HTTP, local client, and periodic-sync contender ports are not already listening. It builds an owner-only per-run SSH `known_hosts` bundle only from existing operator-verified alias entries in `~/.ssh/known_hosts`; it never runs `ssh-keyscan`, accepts changed keys, or uses SSH multiplexing. Each host gets a fresh non-multiplexed probe with relevant effective SSH settings and full failure stderr. Failed scenario preflight writes retained local `artifacts/report.json` with phase `preflight` and stable `preflight_failure`; it never collects artifacts or runs cleanup because no run state exists.
 
 The selected relay port must also be permitted by both the host firewall and the Linode/cloud firewall. The isolated default is TCP `44001`; this is deliberately different from the currently installed relay on `4001`. If `44001` is not open, add a temporary narrowly scoped firewall rule or choose another isolated port. Do not stop the current relay merely to reuse `4001`.
 
@@ -67,7 +67,6 @@ Override through exported variables or untracked `tests/e2e/three-machine/.env.l
 
 ```bash
 TUBO_E2E_CONFIRM=three-machine \
-KEEP_WORK=1 \
 make e2e-three-machine E2E_SCENARIO=private-http
 ```
 
@@ -90,7 +89,22 @@ The scenario performs these assertions:
 15. records each run's PID, process identity, and source; harness-managed processes must remain isolated `foreground`/`detached` runs and must never register a host supervisor;
 15. captures status, process, pipe, session, response, and logs as artifacts.
 
+Periodic-sync artifacts intentionally omit raw invites, keys, homes, databases, service targets, fencing tokens, and process identities.
+
 Implementation now covers commands and relay data path required by this scenario. Local loopback equivalent runs in `make verify-local`; real three-machine execution remains separate and requires explicit confirmation.
+
+## Periodic sync election scenario
+
+`periodic-sync` uses split homes on `oripi`: an authority-only home creates `solar/default` and does not join membership; a distinct publisher-member home serves/publishes origin. `macb` uses one member home with two distinct local pipes. Therefore one active `owner_ref` proves one local state/scope scheduler owner, never one global network owner.
+
+```bash
+TUBO_E2E_CONFIRM=three-machine \
+  make e2e-three-machine E2E_SCENARIO=periodic-sync
+```
+
+It performs a one-time setup refresh, then uses only `get pipes --cached-only` and local scope-status observations for election/outage/convergence. Election polling requires `last_success` strictly later than pre-contender baseline. After successor lease takeover, scope status must show successor `last_success` strictly later than pre-crash baseline within 90s: controller 60s cadence, up to 6s jitter, 20s attempt deadline, and polling grace. It validates exact PID + `/proc/<pid>/cmdline` run-root/resource checks before `SIGKILL` of elected contender and isolated relay. No `stop`/release runs before crash. Lease samples reject successor ownership before recorded expiry. Relay outage must retain origin cache and record bounded `authority_unreachable` or `discovery_unreachable`; restart requires same PeerID plus exact new PID, live `/proc` command, and `started_at` newer than pre-kill status. Before one later-pipe start, a fresh publisher CLI process must force-refresh and record `last_success` newer than restarted relay; post-recovery new publication must appear in cached-only output. Default limits: 65s takeover, 120s outage, 180s recovery. Override only with `TUBO_E2E_SYNC_{TAKEOVER,OUTAGE,RECOVERY}_TIMEOUT`.
+
+Failure classes include `assertion_failed`, `sync_takeover_timeout`, `sync_recovery_timeout`, `unsafe_pid_rejected`, `relay_identity_changed`, `artifact_finalization_failed`, `cleanup_failure`, and `internal_error`, alongside classes in Failure classification below. Failed runs preserve completed phase and class in `report.json`; original scenario failure class wins over finalization/cleanup failure. Artifact finalization removes complete text-log lines containing known generated secret or local-target values and rejects those values in structured artifacts. Scenario implementation is not successful 3M evidence: retain exact run ID plus `artifacts/report.json` with `result: pass` before updating evidence claims.
 
 ## Artifacts
 
@@ -101,29 +115,23 @@ generated/e2e-three-machine/<run-id>/
   bin/
 ```
 
-Remote while preserved:
+Remote run roots are removed by exit trap after artifact collection. Redacted local artifacts remain for review.
 
-```text
-/tmp/tubo-rebuilt-e2e-<run-id>/
-  bin/
-  home/
-  logs/
-  pids/
-```
-
-A successful report must include the run ID, machine aliases, relay address, origin `pipe_id`, response body, `ps` JSON, pipe inspection, and logs.
+`periodic-sync` `report.json` includes scenario/run ID, result, phase, stable failure class, validated host aliases, relay address, origin/new pipe IDs, election timestamps/refs, configured bounds, and names of required evidence files. Evidence files contain source SHA/dirty metadata, phase JSONL, redacted relay status, redacted scope views, cached listings, takeover samples, and safe process resource/status projections. Every persisted `*-ps-*.json` and `relay-*-status.json` contains only each resource `primary_ref` and `status`; it never contains `pid`, `peer_id`, `address`, `process_identity`, or another process identity field. Relay logs have no safe artifact schema and are removed. Exact PID/resource cleanup manifests remain private under run state and are deleted by cleanup. Private HTTP keeps response/process/inspection evidence separately. No report or artifact may contain an invite value, swarm-key value, database/home copy, fencing token, process identity, or service target.
 
 ## Cleanup
 
-When `KEEP_WORK=1` was used:
+For an explicit exact-run cleanup retry after interrupted SSH cleanup:
 
-```bash
+```
 TUBO_E2E_RUN_ID=<exact-run-id> \
 TUBO_E2E_CONFIRM=three-machine \
 ./tests/e2e/three-machine/run.sh clean
 ```
 
-Inspect paths before cleanup. Never replace the run ID with a glob.
+Inspect paths before cleanup. Never replace run ID with glob. Default exit and this explicit cleanup remove exact remote run root plus local swarm key, client/viewer/authority/publisher homes, PID files, and secret-value manifest. Redacted `artifacts/` remain under exact local run root for review.
+
+Set `KEEP_WORK=1` only for an inspected debugging run. Finalization still redacts retained artifacts, but skips cleanup and preserves exact run-specific local and remote roots, including secret-bearing state, under owner-only `0700` roots. Run exact-ID `clean` after inspection; default remains cleanup.
 
 ## Mandatory scenarios
 
@@ -188,6 +196,15 @@ authorization_denied_unexpected
 pipe_readiness_timeout
 data_plane_mismatch
 cleanup_failure
+artifact_finalization_failed
+internal_error
+invalid_input
+preflight_failure
+unsafe_pid_rejected
+relay_identity_changed
+sync_takeover_timeout
+sync_recovery_timeout
+assertion_failed
 ```
 
 Infrastructure failure is not evidence of product correctness. Preserve artifacts and report which phases completed.

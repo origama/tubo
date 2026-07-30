@@ -72,6 +72,34 @@ func (a App) scopeUse(ctx context.Context, state *store.Store, args []string) er
 	return a.emit(f.bools["json"], map[string]any{"ref": "scope/" + f.args[0], "status": "current"}, "scope/"+f.args[0]+" current")
 }
 
+func scopeSyncProjection(ctx context.Context, state *store.Store, scope string) (map[string]any, error) {
+	value := map[string]any{}
+	lease, err := state.ScopeSyncLease(ctx, scope)
+	if err != nil {
+		return nil, err
+	}
+	if lease.Active {
+		value["owner_ref"] = lease.HolderRef
+		value["lease_expires_at"] = lease.ExpiresAt
+	}
+	freshness, err := state.ScopeFreshness(ctx, scope)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		return nil, err
+	}
+	if err == nil {
+		if freshness.LastSuccess != nil {
+			value["last_success"] = freshness.LastSuccess
+		}
+		if freshness.NextRetry != nil {
+			value["next_retry"] = freshness.NextRetry
+		}
+		if freshness.ErrorClass != "" {
+			value["error_class"] = freshness.ErrorClass
+		}
+	}
+	return value, nil
+}
+
 func (a App) getLocal(ctx context.Context, state *store.Store, f flags) error {
 	kind := f.args[0]
 	var items any
@@ -101,8 +129,12 @@ func (a App) getLocal(ctx context.Context, state *store.Store, f flags) error {
 		rows := []map[string]any{}
 		seen := map[string]int{}
 		for _, value := range local {
+			sync, err := scopeSyncProjection(ctx, state, value.Name)
+			if err != nil {
+				return err
+			}
 			seen[value.Name] = len(rows)
-			rows = append(rows, map[string]any{"ref": "scope/" + value.Name, "name": value.Name, "authority": true, "current": value.Name == current})
+			rows = append(rows, map[string]any{"ref": "scope/" + value.Name, "name": value.Name, "authority": true, "current": value.Name == current, "sync": sync})
 			refs = append(refs, "scope/"+value.Name)
 		}
 		for _, value := range memberships {
@@ -110,7 +142,11 @@ func (a App) getLocal(ctx context.Context, state *store.Store, f flags) error {
 				rows[index]["role"] = value.Role
 				continue
 			}
-			rows = append(rows, map[string]any{"ref": "scope/" + value.Scope, "name": value.Scope, "authority": false, "role": value.Role, "current": value.Scope == current})
+			sync, err := scopeSyncProjection(ctx, state, value.Scope)
+			if err != nil {
+				return err
+			}
+			rows = append(rows, map[string]any{"ref": "scope/" + value.Scope, "name": value.Scope, "authority": false, "role": value.Role, "current": value.Scope == current, "sync": sync})
 			refs = append(refs, "scope/"+value.Scope)
 		}
 		items = rows
@@ -187,6 +223,11 @@ func (a App) inspectLocal(ctx context.Context, state *store.Store, raw string, j
 		if !found {
 			return fmt.Errorf("%w: %s", domain.ErrNotFound, raw)
 		}
+		sync, err := scopeSyncProjection(ctx, state, name)
+		if err != nil {
+			return err
+		}
+		value["sync"] = sync
 		return a.emit(jsonOutput, value, raw)
 	case strings.HasPrefix(raw, "overlay/"):
 		value, err := state.Config()

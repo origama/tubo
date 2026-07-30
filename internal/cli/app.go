@@ -31,6 +31,9 @@ type App struct {
 	Quiet                                                 bool
 	Verbosity                                             int
 	LogLevel                                              string
+	fetchRecords                                          func(context.Context, *store.Store, string, appRuntime.FetchRecordsOptions) error
+	networkOperationObserver                              appRuntime.NetworkOperationObserver
+	now                                                   func() time.Time
 }
 type flags struct {
 	values map[string]string
@@ -40,7 +43,7 @@ type flags struct {
 
 func parse(args []string) (flags, error) {
 	f := flags{values: map[string]string{}, bools: map[string]bool{}}
-	boolean := map[string]bool{"json": true, "d": true, "one-time": true, "once": true, "force": true, "stale": true, "follow": true}
+	boolean := map[string]bool{"json": true, "d": true, "one-time": true, "once": true, "force": true, "stale": true, "follow": true, "refresh": true, "cached-only": true}
 	for i := 0; i < len(args); i++ {
 		value := args[i]
 		if value == "-d" || value == "-f" {
@@ -52,6 +55,9 @@ func parse(args []string) (flags, error) {
 			continue
 		}
 		key := strings.TrimPrefix(value, "--")
+		if key == "live" || strings.HasPrefix(key, "live=") {
+			return f, errors.New("invalid_input: --live is obsolete; use --refresh")
+		}
 		if boolean[key] {
 			f.bools[key] = true
 			continue
@@ -834,6 +840,61 @@ func (a App) attach(ctx context.Context, state *store.Store, args []string) erro
 	return runPipeForeground(ctx, state, "pipe/"+name)
 }
 
+const pipeCacheFreshTTL = 5 * time.Minute
+
+func (a App) currentTime() time.Time {
+	if a.now != nil {
+		return a.now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+type pipeRefreshError struct {
+	Class string `json:"class"`
+}
+
+type pipeScopeStatus struct {
+	Scope            string            `json:"scope"`
+	CacheState       string            `json:"cache_state"`
+	Source           string            `json:"source,omitempty"`
+	LastSuccess      *time.Time        `json:"last_success,omitempty"`
+	RefreshAttempted bool              `json:"refresh_attempted"`
+	RefreshError     *pipeRefreshError `json:"refresh_error,omitempty"`
+}
+
+func pipeCacheStatus(value store.ScopeFreshness, found bool, now time.Time) pipeScopeStatus {
+	status := pipeScopeStatus{Scope: value.Scope, CacheState: "missing", Source: value.Source, LastSuccess: value.LastSuccess}
+	if !found {
+		return status
+	}
+	status.Scope = value.Scope
+	if value.Complete && value.Source == store.SnapshotSourcePinnedAuthority && value.LastSuccess != nil && !value.LastSuccess.After(now) && now.Sub(*value.LastSuccess) < pipeCacheFreshTTL {
+		status.CacheState = "fresh"
+	} else {
+		status.CacheState = "stale"
+	}
+	return status
+}
+
+func pipeRefreshErrorClass(err error) string {
+	message := err.Error()
+	for _, class := range []string{"invalid_input", "not_found", "authorization_denied", "authority_unreachable", "discovery_unreachable", "discovery_retry_after", "persistence_failed", "partial_snapshot", "invalid_snapshot"} {
+		if strings.Contains(message, class) {
+			return class
+		}
+	}
+	return "discovery_unreachable"
+}
+
+func (a App) refreshPipeRecords(ctx context.Context, state *store.Store, scope string, force bool) error {
+	options := appRuntime.FetchRecordsOptions{Force: force, NetworkOperationObserver: a.networkOperationObserver}
+	if a.fetchRecords != nil {
+		return a.fetchRecords(ctx, state, scope, options)
+	}
+	_, err := appRuntime.FetchRecordsWithOptions(ctx, state, scope, options)
+	return err
+}
+
 func (a App) get(ctx context.Context, state *store.Store, args []string) error {
 	f, err := parse(args)
 	if err != nil {
@@ -845,39 +906,62 @@ func (a App) get(ctx context.Context, state *store.Store, args []string) error {
 	if f.args[0] != "pipes" {
 		return a.getLocal(ctx, state, f)
 	}
+	if f.bools["refresh"] && f.bools["cached-only"] {
+		return errors.New("invalid_input: --refresh and --cached-only cannot be used together")
+	}
 	scope := f.values["scope"]
-	discoveryErrors := []string{}
-	if scope != "" {
-		if _, err := appRuntime.FetchRecords(ctx, state, scope); err != nil {
-			discoveryErrors = append(discoveryErrors, err.Error())
+	memberships, err := state.Memberships(ctx)
+	if err != nil {
+		return err
+	}
+	statuses := make([]pipeScopeStatus, 0, len(memberships))
+	statusByScope := make(map[string]string, len(memberships))
+	now := a.currentTime()
+	for _, membership := range memberships {
+		if scope != "" && membership.Scope != scope {
+			continue
 		}
-	} else {
-		memberships, err := state.Memberships(ctx)
-		if err != nil {
-			return err
+		freshness, freshnessErr := state.ScopeFreshness(ctx, membership.Scope)
+		found := freshnessErr == nil
+		if freshnessErr != nil && !errors.Is(freshnessErr, domain.ErrNotFound) {
+			return fmt.Errorf("persistence_failed: discovery freshness: %w", freshnessErr)
 		}
-		for _, membership := range memberships {
-			if _, err := appRuntime.FetchRecords(ctx, state, membership.Scope); err != nil {
-				discoveryErrors = append(discoveryErrors, fmt.Sprintf("%s: %v", membership.Scope, err))
+		if !found {
+			freshness.Scope = membership.Scope
+		}
+		status := pipeCacheStatus(freshness, found, now)
+		if !f.bools["cached-only"] && (f.bools["refresh"] || status.CacheState != "fresh") {
+			status.RefreshAttempted = true
+			if refreshErr := a.refreshPipeRecords(ctx, state, membership.Scope, f.bools["refresh"]); refreshErr != nil {
+				status.RefreshError = &pipeRefreshError{Class: pipeRefreshErrorClass(refreshErr)}
+				updated, updatedErr := state.ScopeFreshness(ctx, membership.Scope)
+				if updatedErr == nil {
+					status = pipeCacheStatus(updated, true, a.currentTime())
+					status.RefreshAttempted = true
+					status.RefreshError = &pipeRefreshError{Class: pipeRefreshErrorClass(refreshErr)}
+				}
+			} else if updated, updatedErr := state.ScopeFreshness(ctx, membership.Scope); updatedErr == nil {
+				status = pipeCacheStatus(updated, true, a.currentTime())
+				status.RefreshAttempted = true
 			}
 		}
+		statuses = append(statuses, status)
+		statusByScope[membership.Scope] = status.CacheState
 	}
-	items, err := buildPipeViews(ctx, state, scope)
+	items, err := buildPipeViews(ctx, state, scope, statusByScope)
 	if err != nil {
 		return err
 	}
 	if f.bools["json"] {
-		value := map[string]any{"items": items}
-		if len(discoveryErrors) > 0 {
-			value["discovery_errors"] = discoveryErrors
-		}
-		return json.NewEncoder(a.Out).Encode(value)
+		return json.NewEncoder(a.Out).Encode(map[string]any{"items": items, "scopes": statuses})
 	}
 	if err := renderPipeViews(a.Out, items); err != nil {
 		return err
 	}
-	for _, value := range discoveryErrors {
-		fmt.Fprintf(a.Err, "warning: discovery unavailable; showing verified cache: %s\n", value)
+	for _, status := range statuses {
+		if status.RefreshError != nil {
+			fmt.Fprintf(a.Err, "warning: discovery scope=%s cache=%s error_class=%s; showing verified cache\n", status.Scope, status.CacheState, status.RefreshError.Class)
+		}
 	}
 	return nil
 }

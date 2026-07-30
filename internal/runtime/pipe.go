@@ -153,13 +153,16 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 		if err != nil {
 			return err
 		}
-		if err := state.PutRecord(context.Background(), store.Record{Scope: spec.Scope.String(), PipeID: spec.PipeID, Name: spec.Ref.Name, Payload: payload, ExpiresAt: record.ExpiresAt, Sequence: record.Sequence}); err != nil {
-			return err
-		}
+		stored := store.Record{Scope: spec.Scope.String(), PipeID: spec.PipeID, Name: spec.Ref.Name, Payload: payload, ExpiresAt: record.ExpiresAt, Sequence: record.Sequence}
 		if remotePublisher {
+			if err := state.PutRecord(context.Background(), stored); err != nil {
+				return err
+			}
 			if err := AnnounceRecord(context.Background(), state, h, record); err != nil {
 				return err
 			}
+		} else if err := state.PutAuthoritativeRecord(context.Background(), stored); err != nil {
+			return err
 		}
 		sequence = next
 		return nil
@@ -181,6 +184,11 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 		_ = state.PutRun(context.Background(), run)
 		runtimeInfof("stopped %s", spec.Ref)
 	}()
+	stopSync, err := StartScopeSync(ctx, state, spec.Scope.String(), spec.Ref.String())
+	if err != nil {
+		return err
+	}
+	defer stopSync()
 	lastRenewed := time.Now()
 	return waitSignalRenew(ctx, 5*time.Second, func() error {
 		disconnected := !node.PeerConnected(h, relayInfo.ID)
@@ -352,6 +360,11 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 		_ = state.PutRun(context.Background(), run)
 		runtimeInfof("stopped %s", spec.Ref)
 	}()
+	stopSync, err := StartScopeSync(ctx, state, record.Scope.String(), spec.Ref.String())
+	if err != nil {
+		return err
+	}
+	defer stopSync()
 	go func() { <-ctx.Done(); listener.Close() }()
 	go func() {
 		signals := make(chan os.Signal, 1)

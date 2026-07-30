@@ -16,6 +16,7 @@ build:
 
 contract:
 	./tests/contracts/cli.sh
+	./tests/contracts/e2e-three-machine.sh
 
 integration:
 	./tests/integration/private-http.sh

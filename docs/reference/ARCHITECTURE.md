@@ -91,7 +91,7 @@ A publisher signs one `PipeRecord`. The same envelope is used for:
 - peer sync;
 - opaque relay forwarding.
 
-Consumers decrypt when required and verify the authority, pipe owner, scope, grant, expiry, and replay state before cache insertion. CLI views are projections, not alternate data models.
+Consumers decrypt when required and verify the authority, pipe owner, scope, grant, expiry, and replay state before cache insertion. Membership-backed published/local pipe runtimes may contend for one persisted fenced per-scope scheduler lease and use shared authority-2.1 reconciliation; this is local cache scheduling, not authority. Local authority runtimes do not self-sync. CLI views are projections, not alternate data models.
 
 ## Authority
 
