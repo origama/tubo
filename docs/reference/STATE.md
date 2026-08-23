@@ -74,7 +74,7 @@ Transactions enforce:
 - create-if-missing/reuse-if-compatible/conflict;
 - one target per pipe;
 - no fake success on commit failure;
-- atomic invite redemption;
+- atomic invite redemption: insert-first unique-key arbitration on `(jti, pipe_id)` commits one winner; same-client retry is idempotent without changing its stored session, and another client is denied; persistence errors fail closed;
 - atomic quota check plus grant insertion;
 - monotonic revocation epochs;
 - conditional lifecycle updates;

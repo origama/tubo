@@ -92,7 +92,7 @@ Legend for evidence classes:
 | concurrent disjoint transactions are preserved | U, I, race |
 | concurrent/delayed authority-2.1 snapshot reconciliation preserves newer generation records and freshness; authority restart preserves monotonic generation; failed refresh enforces bounded retry deadline | U, I, race |
 | transactional per-scope sync lease commit/renew/release fences delayed final reconciliation/failure writes; crash expiry permits one successor without token/status secret leakage | U, race |
-| invite redemption and quota checks are atomic | U, I, race |
+| concurrent invite redemption has one `(jti, pipe_id)` winner; same-client retries are idempotent and competing clients are denied without raw SQLite errors; quota checks remain atomic | U, I, race |
 | killed writer leaves parseable committed state | I |
 | disk-full/read-only/lock failures return failure | I |
 | detached readiness failure kills owned child and rolls back registry | I, D |

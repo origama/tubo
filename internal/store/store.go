@@ -1671,27 +1671,29 @@ func (s *Store) RedeemInvite(ctx context.Context, jti, pipeID, sessionID, client
 	if strings.TrimSpace(jti) == "" || strings.TrimSpace(pipeID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(clientPublic) == "" {
 		return false, errors.New("invalid invite redemption")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO invite_redemptions(jti,pipe_id,redeemed_at,session_id,client_public) VALUES(?,?,?,?,?) ON CONFLICT(jti,pipe_id) DO NOTHING`, jti, pipeID, time.Now().UTC().Format(time.RFC3339Nano), sessionID, clientPublic)
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback()
-	var client string
-	err = tx.QueryRowContext(ctx, `SELECT client_public FROM invite_redemptions WHERE jti=? AND pipe_id=?`, jti, pipeID).Scan(&client)
-	if err == nil {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	switch affected {
+	case 1:
+		return true, nil
+	case 0:
+		var client string
+		if err := s.db.QueryRowContext(ctx, `SELECT client_public FROM invite_redemptions WHERE jti=? AND pipe_id=?`, jti, pipeID).Scan(&client); err != nil {
+			return false, err
+		}
 		if client != clientPublic {
 			return false, ErrInviteRedeemed
 		}
-		return false, tx.Commit()
+		return false, nil
+	default:
+		return false, fmt.Errorf("unexpected invite redemption rows affected: %d", affected)
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return false, err
-	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO invite_redemptions(jti,pipe_id,redeemed_at,session_id,client_public) VALUES(?,?,?,?,?)`, jti, pipeID, time.Now().UTC().Format(time.RFC3339Nano), sessionID, clientPublic)
-	if err != nil {
-		return false, err
-	}
-	return true, tx.Commit()
 }
 
 func (s *Store) RedemptionCount(ctx context.Context, jti, pipeID string) (int, error) {
