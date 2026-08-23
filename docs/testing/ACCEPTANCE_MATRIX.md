@@ -90,10 +90,10 @@ Legend for evidence classes:
 | Behavior | Evidence |
 |---|---|
 | concurrent disjoint transactions are preserved | U, I, race |
-| concurrent/delayed authority-2.1 snapshot reconciliation preserves newer generation records and freshness; authority restart preserves monotonic generation; failed refresh enforces bounded retry deadline | U, I, race |
+| immediate writer reservation deterministically rejects competing zero-wait `BEGIN IMMEDIATE`; controlled deferred read-to-write upgrades return typed `SQLITE_BUSY`; concurrent/delayed authority-2.1 reconciliation preserves newer generation records/freshness; generation rollback and same-generation ambiguity fail closed; failed/canceled/lease-lost snapshots preserve prior state; authority restart preserves monotonic generation | U, I, race |
 | transactional per-scope sync lease commit/renew/release fences delayed final reconciliation/failure writes; crash expiry permits one successor without token/status secret leakage | U, race |
 | concurrent invite redemption has one `(jti, pipe_id)` winner; same-client retries are idempotent and competing clients are denied without raw SQLite errors; quota checks remain atomic | U, I, race |
-| killed writer leaves parseable committed state | I |
+| canceled `Store.Open` released after blocked immediate writer acquisition returns no Store and commits no migration/schema state; killed writer leaves parseable committed state | U, I |
 | disk-full/read-only/lock failures return failure | I |
 | detached readiness failure kills owned child and rolls back registry | I, D |
 | stale PID/process identity cannot kill unrelated process | U, I |

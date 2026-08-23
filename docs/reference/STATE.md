@@ -2,7 +2,7 @@
 
 **Prototype reference contract:** This document describes `prototype-v2-final` persistence. Future code follows [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md): persistence is adapter behind narrow consumer-defined capabilities, while one embedded transactional SQLite database may remain implementation. Current schema/tables/migrations are not automatic A0–A4 compatibility constraints.
 
-Implementation status: schema version 8 uses pure-Go SQLite in WAL mode. Current tables cover services, pipes, scopes, memberships, verified records, per-scope discovery freshness, authority snapshots, per-scope sync leases, runs, supervisor registrations, sessions, peer aliases, per-run network statistics, observed runtime peers, and migrations. Grant/revocation/redemption tables are added with corresponding features, not as inert placeholders.
+Implementation status: schema version 10 uses pure-Go SQLite in WAL mode. Current tables cover services, pipes, scopes, memberships, verified records, per-scope discovery freshness, authority snapshots, per-scope sync leases, runs, supervisor registrations, sessions, peer aliases, per-run network statistics, observed runtime peers, and migrations. Grant/revocation/redemption tables are added with corresponding features, not as inert placeholders.
 
 ## Separation
 
@@ -67,7 +67,7 @@ invite_redemptions
 schema_migrations
 ```
 
-SQLite in WAL mode using a pure-Go driver is the preferred first implementation, subject to a small spike for cross-compilation and lock behavior. A different embedded store requires an ADR demonstrating equal transaction, crash, migration, query, and operational properties.
+SQLite in WAL mode using a pure-Go driver is the preferred first implementation, subject to a small spike for cross-compilation and lock behavior. Write-bearing Store transactions use database-native `BEGIN IMMEDIATE` arbitration, reserving SQLite's one writer before mutation-controlling reads while leaving WAL readers and the configured pool available. A different embedded store requires an ADR demonstrating equal transaction, crash, migration, query, and operational properties.
 
 Transactions enforce:
 
@@ -78,15 +78,15 @@ Transactions enforce:
 - atomic quota check plus grant insertion;
 - monotonic revocation epochs;
 - conditional lifecycle updates;
-- complete pinned-authority 2.1 discovery snapshots atomically upsert verified records, prune expiry, remove absent records, and commit trusted freshness;
-- partial, peer/cache, malformed, 2.0, rollback, same-generation-ambiguous, or persistence-failed refreshes preserve prior valid records;
-- schema migration before runtime start.
+- complete pinned-authority 2.1 discovery snapshots atomically upsert verified records, prune expiry, remove absent records, and commit trusted freshness after writer reservation; no retry/backoff replays a snapshot transaction;
+- partial, peer/cache, malformed, 2.0, rollback, same-generation-ambiguous, lease-lost, canceled, or persistence-failed refreshes preserve prior valid records;
+- schema migration before runtime start, transactionally; cancellation observed after writer acquisition aborts before migration mutation.
 
 #### Discovery freshness and snapshots
 
 `scope_freshness` is consumer-local observation metadata, never authority. Each scope stores last attempt/success, source, completion, stable error class, bounded next retry, accepted authority generation/high-water, and canonical snapshot digest. A refresh before `next_retry` fails with stable `discovery_retry_after` without opening a fresh authority dial. `authority_snapshots` is separate authority-owned persistent metadata: authority-global generation plus authority mutation high-water, read atomically with authority records. Generic cache expiry cleanup touches only discovered rows; authority snapshot reads prune authority-owned expiry and advance metadata in same transaction.
 
-Only a bounded successful `/tubo/authority/2.1` `records.list` response from pinned scope authority is a complete deletion-capable snapshot. CLI cache-first inventory treats this observation as fresh for strictly less than five minutes; this consumer-side TTL never grants authority or changes record verification. Every record is parsed and verified against pinned authority, scope, owner-derived `pipe_id`, signature, publication grant, expiry, and sequence before one reconciliation transaction begins. Client requires nonzero authority generation, rejects generation/high-water rollback and same-generation changed digest/high-water, then may remove absent discovered-cache records only; local and authority rows are retained. Per-pipe sequence is replay protection only, never scope snapshot ordering. Cache, relay, peer, malformed, partial, and 2.0 responses may only preserve/add verified records and never authorize deletion. Expired records are pruned and never resolve.
+Only a bounded successful `/tubo/authority/2.1` `records.list` response from pinned scope authority is a complete deletion-capable snapshot. Reconciliation samples expiry and rechecks a lease fence only after its immediate writer reservation, so a waiting stale owner cannot commit. CLI cache-first inventory treats this observation as fresh for strictly less than five minutes; this consumer-side TTL never grants authority or changes record verification. Every record is parsed and verified against pinned authority, scope, owner-derived `pipe_id`, signature, publication grant, expiry, and sequence before one reconciliation transaction begins. Client requires nonzero authority generation, rejects generation/high-water rollback and same-generation changed digest/high-water, then may remove absent discovered-cache records only; local and authority rows are retained. Per-pipe sequence is replay protection only, never scope snapshot ordering. Cache, relay, peer, malformed, partial, and 2.0 responses may only preserve/add verified records and never authorize deletion. Expired records are pruned and never resolve.
 
 #### Periodic sync lease
 

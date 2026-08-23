@@ -25,7 +25,11 @@ const SchemaVersion = 10
 
 const maxScopeSyncLeaseTTL = 5 * time.Minute
 
-var ErrScopeSyncLeaseLost = errors.New("scope sync lease lost")
+var (
+	ErrScopeSyncLeaseLost             = errors.New("scope sync lease lost")
+	errAuthoritativeSnapshotRollback  = errors.New("rollback authoritative snapshot generation")
+	errAuthoritativeSnapshotAmbiguous = errors.New("ambiguous authoritative snapshot generation")
+)
 
 type Store struct {
 	db       *sql.DB
@@ -197,6 +201,12 @@ func Home() (string, error) {
 }
 
 func Open(ctx context.Context) (*Store, error) {
+	return openWithDriver(ctx, "sqlite")
+}
+
+// openWithDriver keeps Open's lifecycle and migration behavior in one path;
+// tests substitute only the database driver to control SQLite writer timing.
+func openWithDriver(ctx context.Context, driverName string) (*Store, error) {
 	home, err := Home()
 	if err != nil {
 		return nil, err
@@ -209,8 +219,8 @@ func Open(ctx context.Context) (*Store, error) {
 			return nil, fmt.Errorf("chmod %s: %w", dir, err)
 		}
 	}
-	dsn := "file:" + filepath.Join(home, "state.db") + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
-	db, err := sql.Open("sqlite", dsn)
+	dsn := "file:" + filepath.Join(home, "state.db") + "?_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	db, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, err
 	}
@@ -231,6 +241,21 @@ func Open(ctx context.Context) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// beginWriteTx reserves SQLite's writer and rejects cancellation before any
+// caller can read state or issue a mutation through the transaction.
+func (s *Store) beginWriteTx(ctx context.Context) (*sql.Tx, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = tx.Rollback()
+		return nil, err
+	}
+	return tx, nil
+}
+
 func (s *Store) Home() string { return s.home }
 func (s *Store) SecretPath(parts ...string) string {
 	all := append([]string{s.home, "secrets"}, parts...)
@@ -238,11 +263,14 @@ func (s *Store) SecretPath(parts ...string) string {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS services(ref TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, spec BLOB NOT NULL)`,
@@ -512,7 +540,7 @@ func (s *Store) Pipes(ctx context.Context) ([]domain.PipeSpec, error) {
 }
 
 func (s *Store) DeletePipe(ctx context.Context, ref string) (string, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -558,7 +586,7 @@ func (s *Store) DeletePipe(ctx context.Context, ref string) (string, error) {
 }
 
 func (s *Store) DeleteService(ctx context.Context, ref string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -897,7 +925,7 @@ func putDiscoveredRecordTx(ctx context.Context, tx *sql.Tx, v Record, now time.T
 }
 
 func (s *Store) PutRecord(ctx context.Context, v Record) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -978,7 +1006,7 @@ func (s *Store) AuthoritySnapshot(ctx context.Context, scope string, limit int) 
 	if limit <= 0 || limit > MaxSnapshotRecords {
 		return nil, 0, 0, false, errors.New("invalid authority snapshot limit")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return nil, 0, 0, false, err
 	}
@@ -1039,7 +1067,7 @@ func (s *Store) AuthoritySnapshot(ctx context.Context, scope string, limit int) 
 // authority-global snapshot generation and mutation watermark. Per-pipe record
 // sequence is not read here and is never global snapshot ordering.
 func (s *Store) PutAuthoritativeRecord(ctx context.Context, v Record) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -1196,20 +1224,25 @@ func (s *Store) recordSnapshotFailure(ctx context.Context, scope, source, errorC
 	if source != SnapshotSourcePinnedAuthority || errorClass == "" {
 		return errors.New("invalid discovery refresh failure")
 	}
+	if lease == nil {
+		now := time.Now().UTC()
+		retry := ""
+		if nextRetry != nil {
+			retry = nextRetry.UTC().Format(time.RFC3339Nano)
+		}
+		_, err := s.db.ExecContext(ctx, `INSERT INTO scope_freshness(scope,last_attempt,source,complete,error_class,next_retry) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET last_attempt=excluded.last_attempt,source=excluded.source,complete=0,error_class=excluded.error_class,next_retry=excluded.next_retry`, scope, now.Format(time.RFC3339Nano), source, false, errorClass, retry)
+		return err
+	}
+	tx, err := s.beginWriteTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	now := time.Now().UTC()
 	retry := ""
 	if nextRetry != nil {
 		retry = nextRetry.UTC().Format(time.RFC3339Nano)
 	}
-	if lease == nil {
-		_, err := s.db.ExecContext(ctx, `INSERT INTO scope_freshness(scope,last_attempt,source,complete,error_class,next_retry) VALUES(?,?,?,?,?,?) ON CONFLICT(scope) DO UPDATE SET last_attempt=excluded.last_attempt,source=excluded.source,complete=0,error_class=excluded.error_class,next_retry=excluded.next_retry`, scope, now.Format(time.RFC3339Nano), source, false, errorClass, retry)
-		return err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
 	if err := leaseCurrentTx(ctx, tx, *lease, now); err != nil {
 		return err
 	}
@@ -1229,9 +1262,8 @@ func (s *Store) RecordSnapshotFailureWithLease(ctx context.Context, lease ScopeS
 
 // ReconcileAuthoritativeSnapshot changes cache state only for one complete,
 // pinned-authority snapshot. Caller must cryptographically verify every record
-// before this method starts its transaction. SQLite may return SQLITE_BUSY when
-// concurrent writers upgrade transactions; retry whole transaction so callers
-// never observe an in-memory-only reconciliation success.
+// before this method starts its transaction. Store write transactions reserve
+// SQLite writer ownership at begin, before reads control cache mutation.
 func (s *Store) ReconcileAuthoritativeSnapshot(ctx context.Context, scope string, snapshot AuthoritativeSnapshot) error {
 	return s.reconcileAuthoritativeSnapshot(ctx, scope, snapshot, nil)
 }
@@ -1243,27 +1275,13 @@ func (s *Store) ReconcileAuthoritativeSnapshotWithLease(ctx context.Context, lea
 }
 
 func (s *Store) reconcileAuthoritativeSnapshot(ctx context.Context, scope string, snapshot AuthoritativeSnapshot, lease *ScopeSyncLease) error {
-	for attempt := 0; ; attempt++ {
-		err := s.reconcileAuthoritativeSnapshotOnce(ctx, scope, snapshot, lease)
-		if err == nil || (!strings.Contains(err.Error(), "database is locked") && !strings.Contains(err.Error(), "SQLITE_BUSY")) {
-			return err
-		}
-		if attempt == 9 {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt+1) * 5 * time.Millisecond):
-		}
-	}
+	return s.reconcileAuthoritativeSnapshotOnce(ctx, scope, snapshot, lease)
 }
 
 func (s *Store) reconcileAuthoritativeSnapshotOnce(ctx context.Context, scope string, snapshot AuthoritativeSnapshot, lease *ScopeSyncLease) error {
 	if snapshot.Source != SnapshotSourcePinnedAuthority || !snapshot.Complete || snapshot.Generation == 0 || snapshot.HighWater == 0 || len(snapshot.Digest) != 64 || len(snapshot.Records) > MaxSnapshotRecords {
 		return errors.New("invalid authoritative snapshot metadata")
 	}
-	now := time.Now().UTC()
 	seen := make(map[string]struct{}, len(snapshot.Records))
 	for _, record := range snapshot.Records {
 		if record.Scope != scope {
@@ -1273,15 +1291,18 @@ func (s *Store) reconcileAuthoritativeSnapshotOnce(ctx context.Context, scope st
 			return errors.New("duplicate record in authoritative snapshot")
 		}
 		seen[record.PipeID] = struct{}{}
-		if err := validateStoredRecord(record, now); err != nil {
-			return err
-		}
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	now := time.Now().UTC()
+	for _, record := range snapshot.Records {
+		if err := validateStoredRecord(record, now); err != nil {
+			return err
+		}
+	}
 	if lease != nil {
 		if err := leaseCurrentTx(ctx, tx, *lease, now); err != nil {
 			return err
@@ -1294,10 +1315,10 @@ func (s *Store) reconcileAuthoritativeSnapshotOnce(ctx context.Context, scope st
 		return err
 	}
 	if err == nil && (snapshot.Generation < currentGeneration || snapshot.HighWater < currentHighWater) {
-		return errors.New("rollback authoritative snapshot generation")
+		return errAuthoritativeSnapshotRollback
 	}
 	if err == nil && snapshot.Generation == currentGeneration && currentDigest != "" && (snapshot.Digest != currentDigest || snapshot.HighWater != currentHighWater) {
-		return errors.New("ambiguous authoritative snapshot generation")
+		return errAuthoritativeSnapshotAmbiguous
 	}
 	for _, record := range snapshot.Records {
 		if err := putDiscoveredRecordTx(ctx, tx, record, now); err != nil {
@@ -1541,7 +1562,7 @@ func (s *Store) DeleteSupervisor(ctx context.Context, ref string) error {
 }
 
 func (s *Store) PutRuntimeTelemetry(ctx context.Context, stats RuntimeStats, peers []RuntimePeer) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}
@@ -1616,7 +1637,7 @@ func (s *Store) Revoke(ctx context.Context, scope, subjectType, subjectJTI strin
 	if epoch == 0 {
 		return errors.New("invalid revocation epoch")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginWriteTx(ctx)
 	if err != nil {
 		return err
 	}

@@ -56,7 +56,7 @@ Collaborative discovery uses a random namespace secret for topic derivation and 
 
 Relays may observe timing, size, peer connections, and opaque topic activity. Discovery does not provide anonymity or traffic-flow secrecy.
 
-Relays without namespace context may store opaque records under fixed capacity and response limits. Consumers remain verification boundary. Relay, cache, query, peer, and authority-2.0 responses never authorize local record deletion; only a complete pinned authority-2.1 snapshot with trusted ordering metadata can do so. Periodic local sync leases only elect one scheduler; they never grant authority. Fenced final writes require an unexpired opaque lease token, so delayed/expired owners cannot overwrite a successor. Cache inventory and scope-sync status expose only holder refs, lease expiry, and stable freshness/error fields; they never expose lease tokens, process identity, membership tokens, keys, service targets, addresses, or private routes. Local authorities do not self-sync or mint membership tokens.
+Relays without namespace context may store opaque records under fixed capacity and response limits. Consumers remain verification boundary. Relay, cache, query, peer, and authority-2.0 responses never authorize local record deletion; only a complete pinned authority-2.1 snapshot with trusted ordering metadata can do so. Periodic local sync leases only elect one scheduler; they never grant authority. Fenced final writes require an unexpired opaque lease token checked after SQLite writer reservation, so delayed/expired owners cannot overwrite a successor. Cache inventory and scope-sync status expose only holder refs, lease expiry, and stable freshness/error fields; they never expose lease tokens, process identity, membership tokens, keys, service targets, addresses, or private routes. Local authorities do not self-sync or mint membership tokens.
 
 ## Public/default behavior
 
@@ -97,7 +97,7 @@ A swarm PSK provides transport isolation but is a shared secret, not identity or
 - bound all outer and nested fields before allocation;
 - cap records per publisher and globally on shared relay caches;
 - rate-limit same-key refresh and authority requests;
-- verify every bounded record before one complete pinned-authority 2.1 snapshot transaction; require nonzero authority-global generation, reject generation/high-water rollback and same-generation/different-digest snapshots, and retain valid cache on malformed, mixed-scope, bad-signature, expired, partial, peer/cache, or 2.0 responses;
+- verify every bounded record before one complete pinned-authority 2.1 snapshot transaction; reserve SQLite writer ownership before mutation-controlling reads, sample record/lease expiry afterward, require nonzero authority-global generation, reject generation/high-water rollback and same-generation/different-digest snapshots, and retain valid cache on malformed, mixed-scope, bad-signature, expired, partial, peer/cache, lease-lost, canceled, or 2.0 responses;
 - enforce setup deadlines before target dial;
 - do not dial a service target before authorization succeeds;
 - fuzz tunnel, record, authority, token, and state decoders;

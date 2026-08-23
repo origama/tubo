@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 func TestServiceCreateReuseConflictAndPersistence(t *testing.T) {
@@ -266,6 +269,281 @@ func TestSnapshotRejectsRollbackAndPreservesNewerConcurrentRecord(t *testing.T) 
 	}
 }
 
+const controlledBeginDriverName = "tubo-controlled-begin-test"
+
+var (
+	controlledBeginDriver   = &beginHookDriver{base: &sqlite.Driver{}}
+	registerBeginDriverOnce sync.Once
+)
+
+type beginHookDriver struct {
+	base driver.Driver
+	mu   sync.Mutex
+	hook func()
+}
+
+func (d *beginHookDriver) Open(name string) (driver.Conn, error) {
+	conn, err := d.base.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	return &beginHookConn{Conn: conn, driver: d}, nil
+}
+
+func (d *beginHookDriver) setHook(hook func()) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.hook = hook
+}
+
+type beginHookConn struct {
+	driver.Conn
+	driver *beginHookDriver
+}
+
+func (c *beginHookConn) BeginTx(ctx context.Context, options driver.TxOptions) (driver.Tx, error) {
+	c.driver.mu.Lock()
+	hook := c.driver.hook
+	c.driver.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return c.Conn.(driver.ConnBeginTx).BeginTx(ctx, options)
+}
+
+func replaceStoreDBWithBeginHook(t *testing.T, state *Store, hook func()) {
+	t.Helper()
+	if err := state.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	registerBeginDriverOnce.Do(func() { sql.Register(controlledBeginDriverName, controlledBeginDriver) })
+	controlledBeginDriver.setHook(hook)
+	t.Cleanup(func() { controlledBeginDriver.setHook(nil) })
+	var err error
+	state.db, err = sql.Open(controlledBeginDriverName, "file:"+filepath.Join(state.home, "state.db")+"?_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.db.SetMaxOpenConns(8)
+}
+
+func requireSQLiteBusy(t *testing.T, err error) {
+	t.Helper()
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		t.Fatalf("expected typed SQLite error, got %T: %v", err, err)
+	}
+	if sqliteErr.Code()&0xff != sqlite3.SQLITE_BUSY {
+		t.Fatalf("SQLite error code=%d, want SQLITE_BUSY (%d)", sqliteErr.Code(), sqlite3.SQLITE_BUSY)
+	}
+}
+
+func requireCanceledOpenFailure(t *testing.T, err error) {
+	t.Helper()
+	if errors.Is(err, context.Canceled) {
+		return
+	}
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) && sqliteErr.Code()&0xff == sqlite3.SQLITE_INTERRUPT {
+		return
+	}
+	t.Fatalf("canceled Open returned %T: %v, want context cancellation or SQLITE_INTERRUPT", err, err)
+}
+
+// TestStoreWriteTransactionReservesWriterBeforeRead proves Store's production
+// write transaction policy owns SQLite's writer before a caller can inspect
+// state and choose a mutation. A deferred transaction lets contender succeed.
+func TestStoreWriteTransactionReservesWriterBeforeRead(t *testing.T) {
+	t.Setenv("TUBO_HOME", t.TempDir())
+	state, err := Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+
+	tx, err := state.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+
+	contender, err := sql.Open("sqlite", "file:"+filepath.Join(state.home, "state.db")+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(0)&_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer contender.Close()
+	_, err = contender.ExecContext(context.Background(), "BEGIN IMMEDIATE")
+	if err == nil {
+		_, _ = contender.ExecContext(context.Background(), "ROLLBACK")
+		t.Fatal("independent BEGIN IMMEDIATE acquired writer before Store transaction read")
+	}
+	requireSQLiteBusy(t, err)
+}
+
+// TestDeferredReadToWriteUpgradeReturnsBusy characterizes exact SQLite failure
+// fixed by Store's immediate writer reservation. It intentionally uses deferred
+// raw transactions, then holds one upgraded writer before releasing peers.
+func TestDeferredReadToWriteUpgradeReturnsBusy(t *testing.T) {
+	home := t.TempDir()
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(home, "state.db")+"?_txlock=deferred&_pragma=journal_mode(WAL)&_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const workers = 8
+	db.SetMaxOpenConns(workers)
+	if _, err := db.Exec(`CREATE TABLE snapshot_probe(id INTEGER PRIMARY KEY, value INTEGER NOT NULL); INSERT INTO snapshot_probe(id,value) VALUES(1,0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	readsReady := make(chan struct{}, workers)
+	winnerUpdated := make(chan struct{})
+	releaseWinner := make(chan struct{})
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for worker := 0; worker < workers; worker++ {
+		worker := worker
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tx, err := db.BeginTx(context.Background(), nil)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer tx.Rollback()
+			var value int
+			if err := tx.QueryRow(`SELECT value FROM snapshot_probe WHERE id=1`).Scan(&value); err != nil {
+				errs <- err
+				return
+			}
+			readsReady <- struct{}{}
+			if worker == 0 {
+				_, err = tx.ExecContext(context.Background(), `UPDATE snapshot_probe SET value=value+1 WHERE id=1`)
+				if err == nil {
+					close(winnerUpdated)
+					<-releaseWinner
+				}
+				errs <- err
+				return
+			}
+			<-winnerUpdated
+			_, err = tx.ExecContext(context.Background(), `UPDATE snapshot_probe SET value=value+1 WHERE id=1`)
+			errs <- err
+		}()
+	}
+	for range workers {
+		<-readsReady
+	}
+	for range workers - 1 {
+		requireSQLiteBusy(t, <-errs)
+	}
+	close(releaseWinner)
+	wg.Wait()
+	if err := <-errs; err != nil {
+		t.Fatalf("winner upgrade: %v", err)
+	}
+}
+
+// TestOpenCanceledWhileWaitingForWriterDoesNotMigrate proves a canceled Open
+// cannot perform a migration after an immediate writer reservation later wins.
+func TestOpenCanceledWhileWaitingForWriterDoesNotMigrate(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUBO_HOME", home)
+	blocker, err := sql.Open("sqlite", "file:"+filepath.Join(home, "state.db")+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(0)&_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	if _, err := blocker.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Exec(`ROLLBACK`)
+
+	registerBeginDriverOnce.Do(func() { sql.Register(controlledBeginDriverName, controlledBeginDriver) })
+	arrived := make(chan struct{}, 1)
+	controlledBeginDriver.setHook(func() { arrived <- struct{}{} })
+	t.Cleanup(func() { controlledBeginDriver.setHook(nil) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	type result struct {
+		state *Store
+		err   error
+	}
+	opened := make(chan result, 1)
+	go func() {
+		state, err := openWithDriver(ctx, controlledBeginDriverName)
+		opened <- result{state: state, err: err}
+	}()
+	<-arrived
+	cancel()
+	if _, err := blocker.Exec(`COMMIT`); err != nil {
+		t.Fatal(err)
+	}
+	openedResult := <-opened
+	if openedResult.state != nil {
+		_ = openedResult.state.Close()
+		t.Fatal("canceled Open returned a Store")
+	}
+	requireCanceledOpenFailure(t, openedResult.err)
+
+	var tables int
+	if err := blocker.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if tables != 0 {
+		t.Fatalf("canceled Open applied migration tables=%d", tables)
+	}
+}
+
+func TestLeaseExpiredWhileWriterWaitedCannotCommit(t *testing.T) {
+	t.Setenv("TUBO_HOME", t.TempDir())
+	state, err := Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+
+	now := time.Now().UTC()
+	lease, acquired, err := state.AcquireScopeSyncLease(context.Background(), "solar/default", "pipe/owner", "process-owner", now, time.Minute)
+	if err != nil || !acquired {
+		t.Fatalf("acquire lease: acquired=%t err=%v", acquired, err)
+	}
+	blocker, err := sql.Open("sqlite", "file:"+filepath.Join(state.home, "state.db")+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(0)&_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	if _, err := blocker.Exec(`BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Exec(`ROLLBACK`)
+	if _, err := blocker.Exec(`UPDATE scope_sync_leases SET expires_at=? WHERE scope=?`, now.Add(-time.Minute).Format(time.RFC3339Nano), lease.Scope); err != nil {
+		t.Fatal(err)
+	}
+
+	arrived := make(chan struct{}, 1)
+	replaceStoreDBWithBeginHook(t, state, func() { arrived <- struct{}{} })
+	record := Record{Scope: lease.Scope, PipeID: "pip_lease_wait", Name: "lease-wait", Payload: []byte(`1`), ExpiresAt: now.Add(time.Hour), Sequence: 1}
+	errs := make(chan error, 1)
+	go func() {
+		errs <- state.ReconcileAuthoritativeSnapshotWithLease(context.Background(), lease, authoritativeSnapshot(1, 1, []Record{record}))
+	}()
+	<-arrived
+	if _, err := blocker.Exec(`COMMIT`); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errs; !errors.Is(err, ErrScopeSyncLeaseLost) {
+		t.Fatalf("expired waiting lease result: %v", err)
+	}
+	if _, err := state.RecordInScope(context.Background(), record.Scope, record.PipeID); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expired lease committed record: %v", err)
+	}
+	if _, err := state.ScopeFreshness(context.Background(), record.Scope); !errors.Is(err, domain.ErrNotFound) {
+		t.Fatalf("expired lease committed freshness: %v", err)
+	}
+}
+
 func TestConcurrentSnapshotReconciliationsPreserveRecordAndFreshness(t *testing.T) {
 	t.Setenv("TUBO_HOME", t.TempDir())
 	ctx := context.Background()
@@ -274,19 +552,27 @@ func TestConcurrentSnapshotReconciliationsPreserveRecordAndFreshness(t *testing.
 		t.Fatal(err)
 	}
 	defer state.Close()
+	const workers = 8
 	record := Record{Scope: "solar/default", PipeID: "pip_shared", Name: "shared", Payload: []byte(`1`), ExpiresAt: time.Now().Add(time.Hour), Sequence: 1}
+	ready := sync.WaitGroup{}
+	ready.Add(workers)
+	start := make(chan struct{})
+	results := make(chan error, workers)
 	var wg sync.WaitGroup
-	errors := make(chan error, 8)
-	for range 8 {
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errors <- state.ReconcileAuthoritativeSnapshot(ctx, record.Scope, authoritativeSnapshot(1, 1, []Record{record}))
+			ready.Done()
+			<-start
+			results <- state.ReconcileAuthoritativeSnapshot(ctx, record.Scope, authoritativeSnapshot(1, 1, []Record{record}))
 		}()
 	}
+	ready.Wait()
+	close(start)
 	wg.Wait()
-	close(errors)
-	for err := range errors {
+	close(results)
+	for err := range results {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -312,27 +598,104 @@ func TestConcurrentNewerGenerationReconciliationWins(t *testing.T) {
 	first := Record{Scope: "solar/default", PipeID: "pip_shared", Name: "shared", Payload: []byte(`one`), ExpiresAt: now.Add(time.Hour), Sequence: 1, Discovered: true}
 	newer := first
 	newer.Payload, newer.Sequence = []byte(`two`), 2
-	errs := make(chan error, 2)
-	go func() {
-		errs <- state.ReconcileAuthoritativeSnapshot(ctx, first.Scope, authoritativeSnapshot(1, 1, []Record{first}))
-	}()
-	go func() {
-		errs <- state.ReconcileAuthoritativeSnapshot(ctx, first.Scope, authoritativeSnapshot(2, 2, []Record{newer}))
-	}()
-	firstErr, secondErr := <-errs, <-errs
-	if firstErr != nil && !strings.Contains(firstErr.Error(), "rollback authoritative snapshot generation") {
-		t.Fatalf("unexpected older generation result: %v", firstErr)
+	type result struct {
+		generation uint64
+		err        error
 	}
-	if secondErr != nil && !strings.Contains(secondErr.Error(), "rollback authoritative snapshot generation") {
-		t.Fatalf("unexpected newer generation result: %v", secondErr)
+	ready := sync.WaitGroup{}
+	ready.Add(2)
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for generation, snapshot := range map[uint64]AuthoritativeSnapshot{
+		1: authoritativeSnapshot(1, 1, []Record{first}),
+		2: authoritativeSnapshot(2, 2, []Record{newer}),
+	} {
+		go func(generation uint64, snapshot AuthoritativeSnapshot) {
+			ready.Done()
+			<-start
+			results <- result{generation: generation, err: state.ReconcileAuthoritativeSnapshot(ctx, first.Scope, snapshot)}
+		}(generation, snapshot)
+	}
+	ready.Wait()
+	close(start)
+	for range 2 {
+		result := <-results
+		if result.generation == 2 && result.err != nil {
+			t.Fatalf("newer generation result: %v", result.err)
+		}
+		if result.generation == 1 && result.err != nil && !errors.Is(result.err, errAuthoritativeSnapshotRollback) {
+			t.Fatalf("older generation result: %v", result.err)
+		}
 	}
 	stored, err := state.RecordInScope(ctx, first.Scope, first.PipeID)
 	if err != nil || string(stored.Payload) != string(newer.Payload) {
 		t.Fatalf("newer generation did not win: %#v %v", stored, err)
 	}
 	freshness, err := state.ScopeFreshness(ctx, first.Scope)
-	if err != nil || freshness.SnapshotGeneration != 2 {
+	if err != nil || freshness.SnapshotGeneration != 2 || freshness.SnapshotDigest != authoritativeSnapshot(2, 2, []Record{newer}).Digest {
 		t.Fatalf("newer freshness not retained: %#v %v", freshness, err)
+	}
+}
+
+func TestConcurrentSameGenerationSnapshotIsAmbiguousWithoutPartialState(t *testing.T) {
+	t.Setenv("TUBO_HOME", t.TempDir())
+	ctx := context.Background()
+	state, err := Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	now := time.Now().UTC()
+	first := Record{Scope: "solar/default", PipeID: "pip_same", Name: "same", Payload: []byte(`one`), ExpiresAt: now.Add(time.Hour), Sequence: 1}
+	second := first
+	second.Payload, second.Sequence = []byte(`two`), 2
+	firstSnapshot := authoritativeSnapshot(1, 1, []Record{first})
+	secondSnapshot := authoritativeSnapshot(1, 1, []Record{second})
+	secondSnapshot.Digest = fmt.Sprintf("%064x", 2)
+	type result struct {
+		digest string
+		err    error
+	}
+	ready := sync.WaitGroup{}
+	ready.Add(2)
+	start := make(chan struct{})
+	results := make(chan result, 2)
+	for _, snapshot := range []AuthoritativeSnapshot{firstSnapshot, secondSnapshot} {
+		go func(snapshot AuthoritativeSnapshot) {
+			ready.Done()
+			<-start
+			results <- result{digest: snapshot.Digest, err: state.ReconcileAuthoritativeSnapshot(ctx, first.Scope, snapshot)}
+		}(snapshot)
+	}
+	ready.Wait()
+	close(start)
+	successDigest := ""
+	for range 2 {
+		result := <-results
+		if result.err == nil {
+			if successDigest != "" {
+				t.Fatal("both ambiguous snapshots committed")
+			}
+			successDigest = result.digest
+			continue
+		}
+		if !errors.Is(result.err, errAuthoritativeSnapshotAmbiguous) {
+			t.Fatalf("same-generation result: %v", result.err)
+		}
+	}
+	if successDigest == "" {
+		t.Fatal("no same-generation snapshot committed")
+	}
+	stored, err := state.RecordInScope(ctx, first.Scope, first.PipeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if (successDigest == firstSnapshot.Digest && string(stored.Payload) != string(first.Payload)) || (successDigest == secondSnapshot.Digest && string(stored.Payload) != string(second.Payload)) {
+		t.Fatalf("same-generation snapshots blended record: %#v", stored)
+	}
+	freshness, err := state.ScopeFreshness(ctx, first.Scope)
+	if err != nil || freshness.SnapshotGeneration != 1 || freshness.SnapshotDigest != successDigest {
+		t.Fatalf("same-generation snapshots blended freshness: %#v %v", freshness, err)
 	}
 }
 

@@ -24,6 +24,10 @@ No E2E pass can waive architecture dependency evidence.
 
 This is not shared-host routing evidence. `StreamRoleDeclaration` remains SessionID-only, is consumed once before owner-bound dispatch, and no PipeID wire field or node-level Carrier/Reachability routing is added. This slice does not decide host sharing, encode per-Pipe host ownership, or complete Carrier, persistence, authorization, Scope-independent connectivity, CLI, Journey A, or distributed behavior.
 
+## Implemented persistence evidence: issue #25
+
+`internal/store` uses WAL plus SQLite-native immediate writer arbitration for Store write transactions. Deterministic tests prove writer reservation before mutation-controlling reads, characterize deferred read-to-write `SQLITE_BUSY`, retain atomic snapshot/freshness rollback and lease fencing, and prove cancellation released after a blocked `Store.Open` writer acquisition performs no migration/state mutation. Existing five-second SQLite busy policy bounds writer wait; prompt interruption of that driver busy wait is not claimed. This evidence fixes snapshot reconciliation contention only. It does **not** characterize or claim resolution of original private-HTTP `Store.Open`/migration `SQLITE_BUSY` run `32638512295` / job `97191929136`; exact command, home, lock holder, and statement remain unobserved.
+
 ## Journey A — zero-config exact share (A0)
 
 Clean machine A runs `tubo attach http://127.0.0.1:8080` and receives exact invite. Clean machine B runs `tubo connect --token <invite>`. Real traffic succeeds.

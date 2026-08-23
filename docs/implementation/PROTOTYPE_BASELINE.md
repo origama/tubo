@@ -26,7 +26,7 @@ Learned hard problems include bounded framing, lease expiry, revocation, record 
 
 Future A0–A4 code need not preserve prototype internal APIs, package graph, concrete Store contracts, runtime registry behavior, CLI behavior, state schema, wire format, protocol IDs, or migration paths. Do not add adapters merely to retain prototype shape.
 
-Known prototype coupling is deliberate reference for work to avoid: Session directly knows libp2p host/stream and concrete Store; runtime Pipe mixes reachability, discovery, authorization, persistence, execution, Session creation, and service dialing; CLI orchestrates persistence/runtime/control-plane work; Scope is coupled to ingress/token behavior; A2A/MCP appear as Service kinds; Session dispatch uses global mutable registry.
+Known prototype coupling is deliberate reference for work to avoid: Session directly knows libp2p host/stream and concrete Store; runtime Pipe mixes reachability, discovery, authorization, persistence, execution, Session creation, and service dialing; CLI orchestrates persistence/runtime/control-plane work; Scope is coupled to ingress/token behavior; A2A/MCP appear as Service kinds; Session dispatch uses global mutable registry. Prototype-derived snapshot reconciliation also used generic error-string matching and sleep retries for SQLite busy upgrades; main removes that failure mode through native writer reservation, not retry.
 
 ## Preservation policy
 

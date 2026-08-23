@@ -132,7 +132,7 @@ func TestRedeemInviteControlledConcurrentRedemption(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() { controlledRedeemDriver.setHook(nil) })
-	state.db, err = sql.Open(controlledRedeemDriverName, "file:"+filepath.Join(state.home, "state.db")+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	state.db, err = sql.Open(controlledRedeemDriverName, "file:"+filepath.Join(state.home, "state.db")+"?_txlock=immediate&_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
 	if err != nil {
 		t.Fatal(err)
 	}
