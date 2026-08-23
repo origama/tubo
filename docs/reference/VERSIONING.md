@@ -1,5 +1,7 @@
 # Versioning
 
+**Prototype reference policy:** Versions and migration decisions below describe `prototype-v2-final`. A0–A4 do not automatically preserve these wire/state/internal contracts; future external compatibility decisions require explicit new versioning decision under [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md).
+
 Tubo Rebuilt versions three surfaces independently.
 
 ## Product version

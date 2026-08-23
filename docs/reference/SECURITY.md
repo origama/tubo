@@ -1,6 +1,18 @@
 # Security model
 
-## Core statement
+**Status:** Future security architecture is governed by [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md), especially universal Access Lease enforcement and Scope-independent connectivity. Detailed token, Scope, protocol, and state behavior below documents preserved prototype reference implementation; retain its threat lessons without treating format/topology as compatibility contract.
+
+## Future core statement
+
+```text
+Every remote Pipe open requires a short-lived, cryptographically verifiable Access Lease.
+Reachability != discovery != authorization.
+Public infrastructure provides reachability, never ambient authorization.
+```
+
+Exact Pipe Authority and Scope Authority converge on same exact-Pipe lease. L2 receiving boundary invokes consumer-side/neutral open-authorization contract and fails closed on unsuccessful result; it opens no local target. L3 owns concrete signature/lease validation, issuer trust, revocation, stale-epoch, policy, and refresh implementation. L2 must not import concrete L3 authority/revocation implementations.
+
+## Prototype reference statement
 
 ```text
 Transport reachability != discovery visibility != connect authorization

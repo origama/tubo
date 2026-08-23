@@ -1,95 +1,45 @@
 # Ontology
 
+**Normative status:** [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) defines future Tubo ontology. Prototype-specific terms below are retained only where explicitly labeled.
+
 ## Service
 
-A service is a local terminal known only to its owner machine.
+A Service is a local application endpoint known only to owner machine. Examples: HTTP, TCP, Unix socket. It is declarative, inert, local-only, and never automatically advertised or discoverable. Local target is secret operational metadata.
 
-Examples:
-
-```text
-service/lmstudio  -> http://127.0.0.1:1234
-service/postgres  -> tcp://127.0.0.1:5432
-service/reviewer  -> A2A endpoint
-```
-
-A service is declarative, persistent, and inert. It is never advertised and does not become a runtime merely because it exists. Its local target is secret operational metadata.
+A2A and MCP are product/application capabilities, not Service transport kinds.
 
 ## Pipe
 
-A pipe is a persistent, directed connectivity resource:
+A Pipe is stable directed connectivity resource:
 
 ```text
 Ingress -> Pipe -> Target
 ```
 
-Every pipe has exactly one target, either `service/...` or `pipe/...`.
+Every Pipe has exactly one Target: `service/...` or `pipe/...`. Pipe-to-Pipe composition is fundamental. Pipe owns stable network identity and intended connectivity policy; a Service never gains network identity merely by existing.
 
-Ingress kinds:
-
-- `local`: local TCP/HTTP listener;
-- `tubo`: authenticated libp2p listener, optionally advertised;
-- `http-route`: a gateway host/path route.
-
-A pipe owns network identity, publication, access policy, lifecycle, aggregate status, and statistics.
-
-Examples:
-
-```text
-Tubo ingress -> pipe/lmstudio-team -> service/lmstudio
-local :51234 -> pipe/lmstudio-local -> remote pipe/pip_123
-Tubo ingress -> pipe/reexport -> remote pipe/pip_123
-```
-
-## Run
-
-A run is the execution of one primary resource. It contains PID, readiness, status, log, control endpoint, and aggregate counters. It does not own durable pipe identity or policy.
-
-`attach` and `connect` may create runs, but they are not run kinds. The primary reference remains `pipe/...`.
+Ingress is local, gateway, or Tubo/libp2p. `attach` and `connect` are use-case presets that compose resources; they are not runtime kinds.
 
 ## Session
 
-A session is one concrete traversal of a pipe graph. It carries:
+A Session is concrete active traversal of one or more Pipes. It owns live byte flow and continuity semantics. It records distinct logical, authorization, and transport paths without treating any one as proof of another. Each remote hop independently requires Access Lease authorization.
 
-- session ID;
-- immediate caller and next hop;
-- logical hop list;
-- per-hop authorization result;
-- per-hop transport route (`direct`, `relayed`, upgraded);
-- timestamps and byte counters;
-- terminal/refresh status.
+## Identity
 
-One running pipe can have zero or many sessions, each with a different transport route.
+Identity is stable cryptographic participant/resource-owner identity. `pipe_id` is secure Pipe identity and authorization audience; display names are non-unique labels; peer ID is runtime reachability identity; session ID identifies one traversal.
 
-## Pipe record
+## Scope
 
-A pipe record is a signed, scoped, expiring advertisement of a published pipe. It contains enough information to resolve and authorize the pipe without exposing its local target.
+Scope is optional collaboration, coordination, and security domain. It can govern membership, scoped policy, publishing, discovery, and revocation. It is not definition or prerequisite of connectivity. Current prototype represents Scope as `cluster + namespace`; that storage/model detail is reference, not future constraint.
 
-A cache stores records. A query returns records. A relay may forward encrypted/opaque records. None becomes an authority by doing so.
+## Invite and Access Lease
 
-## Scope and overlay
+Invite is exact bootstrap/redemption credential. Access Lease is short-lived cryptographic authorization to open exact remote Pipe. Invite, record, route, Pipe ID, and membership alone do not authorize remote open.
 
-Scope is always:
+## PipeRecord and Descriptor
 
-```text
-cluster + namespace
-```
+PipeRecord is signed bounded network advertisement for a Pipe. It carries network/routing/connectivity metadata and never local Service target or arbitrary application metadata. Descriptor is higher-level discoverable metadata, for example AgentDescriptor, referencing connectivity resources such as Pipes.
 
-An overlay is the transport context: swarm isolation, bootstrap peers, and relay peers. Overlay reachability does not imply scope membership, discovery visibility, or connect authorization.
+## Prototype reference: Run
 
-## Identity vocabulary
-
-- `pipe_id`: stable cryptographic identity and authorization audience;
-- `peer_id`: current libp2p runtime identity hosting a pipe;
-- `display_name`: non-unique user-facing label;
-- `service/...`: local reference with no network authority;
-- `session_id`: one connection, not a resource identity.
-
-## Path vocabulary
-
-Three path types are distinct:
-
-1. logical: `pipe/client -> pipe/proxy -> pipe/origin -> service/local`;
-2. authorization: grants and policy decisions at each hop;
-3. transport: direct or relay path used for each network hop.
-
-A command must not report one as though it proves another.
+Prototype uses **Run** for execution of a primary resource, with PID/readiness/status/log/control/counters. Future A0 may retain or replace this concept only after explicit runtime-ownership design; it is not canonical connectivity identity.

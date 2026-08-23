@@ -1,5 +1,7 @@
 # Three-machine E2E runbook
 
+**Prototype reference runbook:** This harness and its evidence document `prototype-v2-final` behavior. Its isolated-state safety rules remain mandatory. Future A0–A4 architecture journeys are [`../testing/ARCHITECTURE_ACCEPTANCE.md`](../testing/ARCHITECTURE_ACCEPTANCE.md); do not treat prototype topology/CLI/protocol as future compatibility contract.
+
 This is the canonical behavioral gate because Docker cannot prove real NAT, public relay reservation, routing changes, or cross-machine process behavior.
 
 ## Topology

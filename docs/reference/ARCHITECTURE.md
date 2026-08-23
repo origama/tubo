@@ -1,124 +1,83 @@
 # Architecture
 
-## Goal
+**Normative role:** [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) defines Tubo product and layer invariants. This document defines implementation-boundary rules for A0 onward. It does not claim current prototype packages are target boundaries.
 
-Tubo is a daemonless-by-default libp2p connectivity substrate. Commands compile resource intent into a runtime plan built from shared modules.
+## Status
 
-```text
-CLI -> use case -> RuntimePlan -> Node Kernel -> modules
-```
+`prototype-v2-final` permanently preserves pre-A0 reference baseline (`637c3859051103c844a042dac04c40b7ce0627e1`). Main progressively diverges during A0 and later phases, combining architecture-driven code with remaining prototype-derived code while migration proceeds. Tag package graph documents learned behavior, not future dependency authority. See [`../implementation/PROTOTYPE_BASELINE.md`](../implementation/PROTOTYPE_BASELINE.md).
 
-There are no independent service, bridge, or connect applications.
-
-## Layers
+## Boundary model
 
 ```text
-cmd/tubo
-  |
-internal/cli             parsing, output, command use cases
-  |
-internal/runtime         plan execution, readiness, registry, stats
-  |          |           |             |
-internal/pipe   internal/discovery   internal/authority
-  |          |           |             |
-internal/node -------- internal/transport
-  |
-libp2p
-
-internal/store <------- use cases and runtimes
-internal/domain <------ imported by all inner layers
+L5 Product Capabilities
+  -> L4 Application Use Cases
+  -> L3 Coordination and Security
+  -> L2 Secure Connectivity
+  -> L1 Reachability
+  -> L0 Core
 ```
 
-`internal/domain` is pure and imports no libp2p, storage, CLI, or OS lifecycle package.
+Dependencies point downward only. A layer must not reach sideways/upward to complete feature-specific work. Detailed package topology evolves during A0; package names are not fixed before boundaries are proven. In particular, `internal/pipe` and `internal/transport` are intended concepts, not current established package boundaries.
 
-## Node Kernel
+## Implementation responsibilities
 
-One kernel owns:
-
-- libp2p identity and host construction;
-- private swarm PSK and connection gating;
-- bootstrap connectivity;
-- static relay reservations and renewal;
-- hole punching and reachability transitions;
-- protocol registration;
-- lifecycle and graceful shutdown;
-- health, status, and stats endpoints.
-
-Modules register capabilities against a kernel. Capability does not imply authority.
-
-## Pipe Engine
-
-The pipe engine composes ingress and target adapters.
-
-Ingress adapters:
-
-```text
-LocalTCP
-LocalHTTP
-GatewayRoute
-TuboStream
-```
-
-Target adapters:
-
-```text
-HTTPService
-TCPService
-UnixService
-LocalPipe
-RemotePipe
-```
-
-Canonical plans:
-
-| Intent | Ingress | Target |
+| Layer | Owns | Must not own |
 |---|---|---|
-| attach HTTP | TuboStream | HTTPService |
-| attach TCP | TuboStream | TCPService |
-| connect | LocalTCP | RemotePipe |
-| gateway route | GatewayRoute | RemotePipe |
-| re-export | TuboStream | RemotePipe |
+| L0 Core | identity, refs, immutable domain values, crypto primitives, clocks, errors, small contracts | network, persistence, CLI, OS lifecycle |
+| L1 Reachability | node/host integration, direct/relay carriers, hole punching, bootstrap, provider adapters | remote Pipe authorization, Scope policy |
+| L2 Secure Connectivity | Carrier, endpoint adapters, Pipe Engine, Session, forwarding, raw byte flow, recovery, receiving-boundary open enforcement | concrete authority/revocation implementation, discovery policy, Scope membership, product protocols |
+| L3 Coordination/Security | Exact Pipe/Scope authority implementations, lease decode/crypto validation, issuer trust, revocation/epochs, membership/policy, refresh, records, discovery | Session transport implementation |
+| L4 Use cases | attach/connect/share/publish/join/lifecycle orchestration | concrete protocol/runtime/store assembly in CLI |
+| L5 Product | gateway, catalogs, MCP, A2A, agent capabilities | lower-layer shortcuts |
 
-All transfer logic converges on a full-duplex byte copier after a common authenticated handshake.
+## Open authorization boundary
 
-## Discovery
+L2 owns receiving-boundary enforcement, consumer-side open-authorization contract, and minimal authorization result needed by connectivity. A conceptual contract may resemble:
 
-A publisher signs one `PipeRecord`. The same envelope is used for:
+```go
+type OpenAuthorizer interface {
+    AuthorizeOpen(ctx context.Context, req OpenRequest) (Authorization, error)
+}
+```
 
-- namespace-secret-backed GossipSub;
-- direct announcement/query;
-- cache storage;
-- peer sync;
-- opaque relay forwarding.
+Contract is owned beside L2 consumer need or in lower neutral contract location; no package topology follows from example. L3 may implement it. L2 must not import concrete L3 authority/revocation implementations. L3 owns lease decode and cryptographic validation, issuer trust, revocation, epochs, membership/policy, refresh, and issuer behavior. “Authorization is enforced at receiving boundary” means L2 invokes contract and opens local target only after success; it does not move authority implementation into L2. No successful authorization result means no local target open. Reachability returns carrier, not permission.
 
-Consumers decrypt when required and verify the authority, pipe owner, scope, grant, expiry, and replay state before cache insertion. Membership-backed published/local pipe runtimes may contend for one persisted fenced per-scope scheduler lease and use shared authority-2.1 reconciliation; this is local cache scheduling, not authority. Local authority runtimes do not self-sync. CLI views are projections, not alternate data models.
+## Runtime ownership
 
-## Authority
+```text
+NodeRuntime -> PipeRuntime(s) -> SessionRegistry -> Session(s)
+```
 
-One logical authority per scope owns policy and mutable issuer state. It issues:
+Each Session registry belongs to explicit runtime owner. Stream dispatch receives/inherits this owner. No package-global mutable runtime registry, process-global session dispatch map, or ambient mutable runtime state.
 
-- membership grants;
-- pipe publish grants;
-- forwarding grants;
-- one-time share invites;
-- short access leases;
-- longer refresh leases.
+## Persistence boundary
 
-Connect lease issuance is not delegated to published pipe runtimes. This keeps one issuer class and one refresh route.
+SQLite may implement transactional state. Consumer-owned narrow ports live beside consumer, such as PipeRepository or RevocationRepository. Do not use one generic ports package or spread concrete `*store.Store` through L0/L2 contracts. Persistence failures must prevent claimed mutation success.
 
-## Store
+## Discovery boundary
 
-The preferred implementation is an embedded transactional database in WAL mode for mutable metadata. Static config and secrets stay separate. Storage APIs expose domain transactions rather than generic tables to callers.
+Discovery finds Pipe; reachability reaches identified peer; authorization permits open. PipeRecord is network metadata only. Descriptor/catalog discovery belongs above it. Exact invites bypass discovery.
 
-## Daemonless runtime
+## Public infrastructure
 
-Foreground is the default. `-d` starts a child and commits run metadata only after readiness. OS supervisors are optional. There is no required `tubod`.
+Public bootstrap/relay is L1 reachability. A0 includes minimal real zero-config public foundation: signed public bootstrap bundle contract; embedded/preinstalled bundle verification; public relay/bootstrap identity and addresses; version, validity, and signature checks that fail closed; initial `relay.tubo.click` provider; and zero-config reachability resolution. Journey A must not complete through a final hardcoded or temporary-provider shortcut.
 
-## Failure boundaries
+This foundation is separate from encrypted gossip, peer sync, and discovery-key rotation. A2 generalizes it with operator/private providers, public/private/hybrid composition, richer substitution, trust-root and bundle/key rotation lifecycle, private bootstrap, and justified operational/provider policy. Bundle never conveys Scope membership or authorization.
 
-- Stream/parser failures affect one session.
-- Pipe authorization failure degrades or blocks one pipe, not all local resources.
-- Discovery query/cache failure does not create trust.
-- Relay failure may degrade sessions but does not alter authority state.
-- Store failure prevents mutation success.
-- A runtime may continue with already committed, still-valid credentials but may not invent or silently persist replacements.
+## A0 implementation sequence
+
+A0 establishes contracts before moving feature behavior: pure L0 values, explicit runtime ownership, Carrier/Session seam, real Reachability seam, Pipe Engine, receiving-boundary open-authorization contract, minimal real public bootstrap foundation, narrow persistence capabilities, and L4 use-case composition. It also establishes durable Service/Pipe definition distinct from transient runtime/Session state. First functional proof is zero-config exact share, but A0 also requires dependency and ownership evidence.
+
+## Enforcement plan
+
+After real A0 boundaries exist, add lightweight deterministic architecture check using `go list -deps` and explicit allowed/forbidden internal edges. Keep rule source small and reviewed. Do not introduce heavyweight architecture framework or brittle package-layout check in preparation phase.
+
+## Review checklist
+
+- Does dependency point downward?
+- Is remote open impossible without verified Access Lease?
+- Is Scope absent from direct connectivity requirement?
+- Does handler have explicit runtime ownership?
+- Is persistence consumed through narrow need-specific capability?
+- Did feature add independently justified primitive rather than shortcut?
+- Do unit/integration/E2E evidence and dependency checks cover change?

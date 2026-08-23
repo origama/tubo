@@ -1,133 +1,140 @@
-# AGENTS.md — Tubo Rebuilt coding-agent contract
+# AGENTS.md — Tubo architecture-driven coding-agent contract
 
-This is the required entry point for coding agents.
+## Role and durable memory
 
-## Mission
+- Architecture Guardian / Orchestrator: GPT-5.6 Sol.
+- Worker / Builder: GPT-5.6 Terra.
+- Repository and GitHub are durable memory. Do not rely on conversational memory.
+- Before changing code, inspect current repository reality, assigned issue, linked issues, current main, and relevant prototype code/tests.
 
-Implement Tubo as a private libp2p connectivity substrate for local HTTP, WebSocket, raw TCP/TLS, and future agent endpoints.
+## Product definition
 
-This repository is a greenfield implementation. It intentionally provides no CLI, state, or wire compatibility with the previous Tubo repository. Reuse old code only after proving that it fits this architecture without compatibility adapters or legacy concepts.
+Tubo is a secure peer-to-peer connectivity and collaboration platform.
 
-## Product model
-
-The canonical ontology is:
-
-```text
-Service = local terminal, never a network advertisement
-Pipe    = persistent directed connectivity resource
-Run     = execution of a primary resource
-Session = concrete traversal of one or more pipes
-Record  = signed network advertisement for a pipe
-```
-
-A pipe always has the form:
+At its smallest:
 
 ```text
-Ingress -> Pipe -> Target
+local service -> Tubo attach -> exact invite -> clean Tubo installation
+              -> short-lived Access Lease -> authorized encrypted connectivity
 ```
 
-The target is exactly one `service/...` or `pipe/...`. The ingress is local, gateway, or Tubo/libp2p.
+Same primitives grow into scoped collaboration, signed Pipe discovery, private infrastructure, persistent connectivity, gateways, catalogs, MCP, A2A, agent discovery, capability search, and future integrations.
 
-`attach` and `connect` are UX presets, not runtime kinds:
+Tubo is not primarily a VPN, reverse proxy, service mesh, or centralized tunnel broker.
 
-```text
-attach  = define local service + define/start published pipe
-connect = resolve remote pipe + define/start local pipe
-```
+## Implementation reset and prototype
 
-Never reintroduce separate service/bridge/client runtimes.
+`prototype-v2-final` permanently records pre-A0 implementation baseline `637c3859051103c844a042dac04c40b7ce0627e1`. Code, tests, and documentation reachable from that tag are prototype reference baseline. Main progressively diverges during A0 and later phases; it may contain architecture-driven code alongside remaining prototype-derived code.
 
-## Core invariants
+- Consult prototype implementation/tests at tag for hard-won failure and security knowledge.
+- Do not copy prototype coupling blindly.
+- Current internal APIs, wire formats, state formats, CLI behavior, and package layout are not internal compatibility constraints.
+- Retain learned security/failure invariants unless explicitly superseded.
+- New feature development against prototype architecture stops. Explicitly required security fixes remain allowed.
+- Do not implement A0 work before its Architecture Guardian decomposition is accepted.
 
-Before implementation, read `docs/reference/INVARIANTS.md`. In particular:
-
-- only pipes are advertised and remotely addressable;
-- `pipe_id` is the secure network identity; names are non-unique labels;
-- local service targets never appear in discovery records, invites, logs, or remote traces;
-- caches, query peers, relays, and sync peers are not authorities;
-- one active authority is allowed per scope;
-- each network hop authorizes independently;
-- re-export requires explicit `pipe.forward` authority;
-- session setup rejects loops and enforces a hop limit;
-- logical, authorization, and transport paths are separate concepts;
-- stdout/stderr and JSON output contracts are binding;
-- configuration is not a mutable database.
+See [`docs/implementation/PROTOTYPE_BASELINE.md`](docs/implementation/PROTOTYPE_BASELINE.md).
 
 ## Required reading
 
-1. assigned GitHub Issue and linked issues, once a remote exists;
-2. `docs/README.md`;
-3. `docs/reference/ARCHITECTURE.md`;
-4. `docs/reference/ONTOLOGY.md`;
-5. `docs/reference/INVARIANTS.md`;
-6. `docs/reference/SECURITY.md`;
-7. `docs/reference/PROTOCOL.md` for wire work;
-8. `docs/reference/STATE.md` for persistence work;
-9. `docs/reference/CLI.md` for commands/output;
-10. `docs/testing/ACCEPTANCE_MATRIX.md`;
-11. `docs/runbooks/THREE_MACHINE_E2E.md` for distributed behavior;
-12. `CHANGELOG.md` and `docs/reference/VERSIONING.md`.
+1. assigned GitHub Issue and linked issues;
+2. [`docs/README.md`](docs/README.md);
+3. [`docs/reference/HIGH_LEVEL_DESIGN.md`](docs/reference/HIGH_LEVEL_DESIGN.md);
+4. [`docs/reference/ARCHITECTURE.md`](docs/reference/ARCHITECTURE.md);
+5. [`docs/reference/ONTOLOGY.md`](docs/reference/ONTOLOGY.md), [`INVARIANTS.md`](docs/reference/INVARIANTS.md), [`SECURITY.md`](docs/reference/SECURITY.md);
+6. [`docs/implementation/ROADMAP.md`](docs/implementation/ROADMAP.md) and [`PROTOTYPE_BASELINE.md`](docs/implementation/PROTOTYPE_BASELINE.md);
+7. [`docs/testing/ARCHITECTURE_ACCEPTANCE.md`](docs/testing/ARCHITECTURE_ACCEPTANCE.md) and [`ACCEPTANCE_MATRIX.md`](docs/testing/ACCEPTANCE_MATRIX.md);
+8. [`docs/reference/PROTOCOL.md`](docs/reference/PROTOCOL.md) for wire work, [`STATE.md`](docs/reference/STATE.md) for persistence work, [`CLI.md`](docs/reference/CLI.md) for CLI work;
+9. [`docs/runbooks/THREE_MACHINE_E2E.md`](docs/runbooks/THREE_MACHINE_E2E.md), [`CHANGELOG.md`](CHANGELOG.md), and [`VERSIONING.md`](docs/reference/VERSIONING.md).
 
-## Architecture boundaries
+HLD is normative for future architecture. Prototype-specific reference documents must say when they describe existing code.
 
-Prefer these packages:
+## Canonical model
 
 ```text
-cmd/tubo/             thin executable
-internal/cli/         parsing and presentation
-internal/domain/      pure service/pipe/session/grant model
-internal/store/       config, transactional state, secrets
-internal/node/        libp2p host kernel and module lifecycle
-internal/transport/   bootstrap, relay, NAT, reachability
-internal/pipe/        pipe plans, adapters, sessions, forwarding
-internal/discovery/   signed pipe records, cache, gossip/query/sync
-internal/authority/   policies, grants, leases, revocations
-internal/runtime/     executor, readiness, registry, stats
+Service    = local application endpoint; HTTP, TCP, Unix socket
+Pipe       = stable directed connectivity resource: Ingress -> Pipe -> Target
+Session    = concrete active traversal; owns byte flow and continuity
+Identity   = stable cryptographic participant/resource-owner identity
+Scope      = optional collaboration/coordination/security domain
+Invite     = exact bootstrap/redemption credential
+Access Lease = short-lived authorization to open exact remote Pipe
+Descriptor = higher-level discoverable metadata referencing Pipes
 ```
 
-Dependencies should point inward toward `internal/domain`. Domain code must not import libp2p, CLI, storage, or operating-system process code.
+A Pipe target is exactly one Service or Pipe. Pipe-to-Pipe composition is fundamental. Service is local, never automatically public or discoverable. `attach` and `connect` are use-case presets, never runtime kinds. A2A and MCP are product/application capabilities, not fundamental Service transport kinds.
 
-Do not create packages merely to match this map; create them only when a real boundary exists.
+## Non-negotiable security rules
 
-## Engineering rules
+**Every remote Pipe open requires a short-lived, cryptographically verifiable Access Lease.** No Access Lease means no remote Pipe open.
 
-- Keep each change small and independently verifiable.
-- Add characterization/negative tests before security-sensitive or concurrent behavior.
-- Use standard library facilities before custom protocol machinery.
-- Use one authenticated tunnel handshake followed by raw duplex bytes.
-- Keep protocol decoders bounded before allocation.
-- Use an embedded transactional store for mutable metadata; keep secrets separate.
-- Make writes and detached startup fail closed.
-- Never hide persistence failures with in-memory success.
-- Do not add a mandatory central daemon.
-- Do not build a custom network layer above libp2p.
-- Do not add DHT/rendezvous until a concrete issue and threat analysis require it.
-- Avoid global mutable state and package-level runtime registries.
-- No hidden TODOs: open an issue or implement the behavior.
+Pipe ID, endpoint, record, relay route, invite, or membership token alone are insufficient. Receiving/server boundary enforces authorization and fails closed on invalid signature, wrong subject, wrong Pipe audience, expiry, revocation, stale authorization epoch, or unavailable required revocation state.
 
-## Testing contract
+Connectivity depends on authorization. Connectivity must not depend directly on Scope topology.
 
-Local gate:
+Two issuer topologies produce same lease contract:
 
-```bash
-make verify-local
+1. Exact Pipe Authority: exact invite, recipient redemption plus identity proof, lease bound to exact Pipe.
+2. Scope Authority: membership/policy, lease bound to exact Pipe.
+
+Tunnel/Session code must not branch on `public_mode` versus `scope_mode`. Invite is never Access Lease.
+
+### Authorization implementation boundary
+
+L2 owns receiving-boundary enforcement, consumer-side open-authorization contract, and minimal successful authorization result required before local target open. L3 owns authority implementations, lease decoding and cryptographic validation, issuer trust, revocation, authorization epochs, membership/policy evaluation, and refresh semantics.
+
+L3 may implement contract consumed by L2. Contract belongs with consumer need or lower neutral contract location; L2 must not import concrete L3 authority/revocation implementations. “Enforced at receiving boundary” does not place authority implementation inside L2. No successful authorization result means no local target open.
+
+Relays, bootstrap providers, caches, query peers, and sync peers provide reachability or copies; none are ambient authorization or authority.
+
+## Layer dependency model
+
+```text
+L5 Product Capabilities
+L4 Application Use Cases
+L3 Coordination and Security
+L2 Secure Connectivity
+L1 Reachability
+L0 Core
 ```
 
-Distributed behavioral gate, using isolated state on `tuborelay`, `oripi`, and `macb`:
+Dependencies point downward only. Layers are semantic boundaries, not package mandate.
 
-```bash
-make e2e-three-machine-preflight
-TUBO_E2E_CONFIRM=three-machine make e2e-three-machine E2E_SCENARIO=private-http
-```
+- L0: identity, references, immutable domain values, crypto primitives, clocks, errors, small contracts. No network/persistence I/O.
+- L1: host integration, direct/relay connection establishment, hole punching, bootstrap, signed public bundle, infrastructure adapters. Obtains carrier; never authorizes Pipe open.
+- L2: endpoint adapters, Pipe Engine/graph, Session, Carrier, forwarding, byte flow, recovery, exact endpoint resolution, handshake integration, receiving-boundary enforcement through injected/neutral open-authorization contract. No concrete L3 authority/revocation implementation, Scope policy, discovery policy, or application semantics.
+- L3: Exact Pipe Authority, Scope Authority, membership, access/publish leases, refresh, revocation, discovery, record validation, scoped views.
+- L4: attach, connect, share, publish, join, start, stop, inspect. CLI/API/UI automate use cases; they do not orchestrate storage/runtime internals.
+- L5: gateway, catalog, MCP, A2A, agent discovery, capability search, integrations.
 
-The distributed harness must never overwrite `/usr/local/bin/tubo`, existing Tubo configuration, systemd units, or another repository's state. It uses run-specific directories under `/tmp` and `generated/`.
+## Boundary rules
 
-When changing behavior represented in `docs/testing/ACCEPTANCE_MATRIX.md`, update the corresponding local, integration, and three-machine evidence.
+- Discovery: find resource. Connectivity: reach identified resource. Authorization: decide caller may open it. Keep separate.
+- Exact invite bypasses discovery. PipeRecord contains only network/routing/connectivity metadata. Descriptors carry application metadata.
+- Public infrastructure provides reachability, never ambient authorization. A0 zero-config sharing uses verified embedded/preinstalled minimal signed public bundle and `relay.tubo.click`, never final hardcoded/temporary provider path; it requires no Scope, namespace, discovery, membership, or user-configured authority.
+- Explicit ownership: `NodeRuntime -> PipeRuntime(s) -> SessionRegistry -> Session(s)`. No package-global mutable registry, process-global session dispatch, or hidden ownership. Stream handlers inherit explicit runtime ownership.
+- SQLite may remain one transactional database. Define narrow interfaces beside consumers; persistence is adapter, not domain. Do not inject `*store.Store` throughout core/runtime contracts.
+- Use authenticated handshake then raw duplex bytes. Bound decoders before allocation. Fail writes and detached startup closed. Never report uncommitted persistence as success.
 
-## Documentation and release rules
+## Feature-growth rules
 
-Any CLI, state, security, wire, operational, or test behavior change must update its canonical document in the same PR.
+> Do not optimize for shortest path to a feature. Optimize for smallest coherent primitive that lets feature be expressed as composition.
 
-This repository starts at protocol `2.0`. There is no legacy fallback. Protocol changes still follow `docs/reference/VERSIONING.md`.
+> Passing end-to-end test is necessary, not sufficient. Change violating layer dependency model is incomplete.
 
-Never commit secrets, swarm keys, authority keys, pipe-owner keys, access/refresh leases, invite tokens, local state databases, process state, logs, or user-specific paths.
+> Higher layers consume stable lower-layer capabilities. Lower-layer change needs independently justified primitive/contract, not feature-specific shortcut.
+
+Generalize only after second real consumer. Avoid speculative generic resource frameworks, universal plugin systems, `map[string]any` capability models, god ports packages, and abstraction for abstraction's sake.
+
+## Engineering and delivery
+
+- Prefer standard library before custom machinery. No mandatory central daemon, custom network layer above libp2p, DHT/rendezvous without concrete issue and threat analysis, hidden TODOs, or global mutable runtime state.
+- Keep PRs small, coherent, independently verifiable. Add characterization/negative tests before security-sensitive or concurrent changes.
+- A0 uses HLD; no prototype backward-compatibility layer required. Do not preserve bad abstractions to minimize diff.
+- Future A0 dependency checks use `go list -deps` plus small deterministic allowed/forbidden-edge script. No heavyweight framework or fake checks before boundaries exist.
+
+## Testing and documentation
+
+Run `make verify-local` for local changes. Run distributed scenarios only when behavior requires them and preserve isolated-state safety. A passing functional test does not waive architecture dependency checks.
+
+Any CLI, state, security, wire, operational, test, or architecture change updates canonical document in same PR. Update architecture acceptance and prototype behavior evidence where relevant. Never commit secrets, keys, leases, invite tokens, databases, process state, logs, generated artifacts, or user paths.

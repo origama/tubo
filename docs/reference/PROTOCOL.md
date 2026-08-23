@@ -1,5 +1,7 @@
 # Protocol 2.1
 
+**Prototype reference contract:** This document describes wire behavior at `prototype-v2-final`. [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) is normative for future architecture. No current protocol ID, encoding, Scope coupling, or state/wire compatibility is automatically required for A0–A4. Retain bounded-decoder and authorization lessons unless explicitly superseded.
+
 Status: protocol 2.1 adds negotiated authority snapshot ordering for destructive `records.list` reconciliation. Protocol 2.0 implements authority-backed remote publication grants, record announcement/listing compatibility surface, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, and further negotiated extensions are pending. Authority 2.0 now supports bounded access/refresh lease exchange, revocation query, and one-time share invite issue/redemption.
 
 There is intentionally no negotiation or fallback to previous Tubo protocols.

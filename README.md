@@ -1,89 +1,47 @@
-# Tubo Rebuilt
+# Tubo
 
-Greenfield implementation of Tubo around a service/pipe graph.
-
-> Status: first usable private-HTTP slice implemented. SQLite state, private libp2p relay transport, scoped signed membership, remote publication, verified pipe discovery, authenticated HTTP/WebSocket/raw-TCP tunnels, HTTPS upstreams, detached lifecycle, logs, inventory, and local diagnostics are available. Forwarding, gossip sync, gateway, access refresh/revocation, and direct-path upgrade remain future work.
-
-## Product model
+Tubo is a secure peer-to-peer connectivity and collaboration platform.
 
 ```text
-Service = local endpoint
-Pipe    = connectivity resource
-Session = active traversal
+local service -> Tubo attach -> exact invite -> clean Tubo installation
+              -> short-lived Access Lease -> authorized encrypted connectivity
 ```
 
-A pipe connects one ingress to exactly one target:
+Tubo grows from exact sharing into scoped collaboration, private/hybrid infrastructure, persistent service connectivity, signed Pipe discovery, gateways, catalogs, MCP, A2A, agent discovery, and capability search. It is not primarily a VPN, reverse proxy, service mesh, or centralized tunnel broker.
 
-```text
-Ingress -> Pipe -> Service
-Ingress -> Pipe -> Pipe
-```
+## Model
 
-Example:
+- **Service:** local HTTP, TCP, or Unix endpoint. Never automatically discoverable.
+- **Pipe:** stable directed resource, `Ingress -> Pipe -> Target`; target is Service or Pipe.
+- **Session:** live traversal with byte-flow and continuity semantics.
+- **Invite:** exact bootstrap/redemption credential.
+- **Access Lease:** short-lived cryptographic authorization for one remote Pipe open.
+- **Scope:** optional collaboration/security domain, not prerequisite for connectivity.
+- **Descriptor:** higher-level metadata, such as AgentDescriptor, referencing a Pipe.
 
-```text
-curl
-  -> pipe/lmstudio-local
-  -> pipe/lmstudio-team
-  -> service/lmstudio
-  -> http://127.0.0.1:1234
-```
+Every remote Pipe open requires verified short-lived Access Lease. Pipe ID, route, record, invite, or membership alone never authorize. Public bootstrap/relay provides reachability, never ambient authorization.
 
-Only the published pipe is discovered and authorized. The origin service stays local and private.
+## Development status
 
-## Intended UX
+Pre-A0 implementation is permanently preserved as **prototype reference baseline**: [`prototype-v2-final`](docs/implementation/PROTOTYPE_BASELINE.md), commit `637c3859051103c844a042dac04c40b7ce0627e1`. Code, tests, and docs at tag preserve prototype behavior, security learning, and failure modes. Main progressively diverges during A0 and later phases; prototype internals are not target architecture or compatibility constraint.
 
-```bash
-# Ergonomic presets
-tubo attach http://127.0.0.1:1234 --name lmstudio -d
-tubo connect lmstudio --local 127.0.0.1:51234 -d
+Project now enters architecture-driven **A0 — Layered Architecture Foundation**. No A0 implementation is in this preparation change.
 
-# Explicit resource form
-tubo service create lmstudio --target http://127.0.0.1:1234
-tubo pipe create lmstudio-team \
-  --ingress tubo \
-  --target service/lmstudio \
-  --visibility discoverable \
-  --access members
-tubo start pipe/lmstudio-team -d
-```
+## Start here
 
-`attach` and `connect` compile to pipe definitions. They are never runtime kinds.
-
-## Local verification
-
-```bash
-make verify-local
-./bin/tubo version --json   # after `mkdir -p bin && go build -o bin/tubo ./cmd/tubo`
-```
-
-`verify-local` includes an isolated loopback relay/publisher/member/viewer integration scenario. Distributed gate uses isolated three-machine scenario:
-
-```bash
-make e2e-three-machine-preflight
-TUBO_E2E_CONFIRM=three-machine make e2e-three-machine E2E_SCENARIO=private-http
-```
-
-See `docs/runbooks/THREE_MACHINE_E2E.md` before running it.
-
-## Canonical documentation
-
-- [Architecture](docs/reference/ARCHITECTURE.md)
-- [Ontology](docs/reference/ONTOLOGY.md)
-- [Invariants](docs/reference/INVARIANTS.md)
-- [CLI contract](docs/reference/CLI.md)
-- [Protocol](docs/reference/PROTOCOL.md)
-- [Security](docs/reference/SECURITY.md)
-- [State model](docs/reference/STATE.md)
-- [Acceptance matrix](docs/testing/ACCEPTANCE_MATRIX.md)
-- [Three-machine E2E runbook](docs/runbooks/THREE_MACHINE_E2E.md)
 - [Coding-agent contract](AGENTS.md)
+- [High-level design](docs/reference/HIGH_LEVEL_DESIGN.md)
+- [Implementation boundaries](docs/reference/ARCHITECTURE.md)
+- [A0–A4 roadmap](docs/implementation/ROADMAP.md)
+- [Prototype baseline](docs/implementation/PROTOTYPE_BASELINE.md)
+- [Architecture acceptance](docs/testing/ARCHITECTURE_ACCEPTANCE.md)
+- [Documentation map](docs/README.md)
 
-## Non-goals
+## Verification
 
-- compatibility with the previous Tubo implementation;
-- a mandatory daemon;
-- service records in network discovery;
-- separate attach/connect runtime stacks;
-- treating relays or discovery caches as trust roots;
-- a custom network layer above libp2p.
+```bash
+go test ./...
+make verify-local
+```
+
+Distributed tests require isolated state and explicit confirmation. Read [three-machine E2E runbook](docs/runbooks/THREE_MACHINE_E2E.md) before running them.

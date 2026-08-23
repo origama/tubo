@@ -1,5 +1,7 @@
 # State and persistence
 
+**Prototype reference contract:** This document describes `prototype-v2-final` persistence. Future code follows [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md): persistence is adapter behind narrow consumer-defined capabilities, while one embedded transactional SQLite database may remain implementation. Current schema/tables/migrations are not automatic A0–A4 compatibility constraints.
+
 Implementation status: schema version 8 uses pure-Go SQLite in WAL mode. Current tables cover services, pipes, scopes, memberships, verified records, per-scope discovery freshness, authority snapshots, per-scope sync leases, runs, supervisor registrations, sessions, peer aliases, per-run network statistics, observed runtime peers, and migrations. Grant/revocation/redemption tables are added with corresponding features, not as inert placeholders.
 
 ## Separation

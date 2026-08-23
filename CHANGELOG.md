@@ -1,5 +1,7 @@
 # Changelog
 
+**Historical prototype changelog:** Entries below describe preserved `prototype-v2-final` implementation cycle. Future A0–A4 direction is [`docs/implementation/ROADMAP.md`](docs/implementation/ROADMAP.md); do not read historical feature status as target architecture or compatibility promise.
+
 ## [Unreleased]
 
 ### Added

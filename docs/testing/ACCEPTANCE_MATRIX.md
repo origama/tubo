@@ -1,6 +1,8 @@
-# Behavioral acceptance matrix
+# Prototype behavioral acceptance matrix
 
-This matrix defines required evidence. Implementation status is tracked in GitHub Issues, not here.
+**Prototype reference evidence:** This matrix records behavioral/security knowledge for `prototype-v2-final`. It is not canonical A0–A4 architecture roadmap or promise of internal compatibility. Future architecture acceptance is [`ARCHITECTURE_ACCEPTANCE.md`](ARCHITECTURE_ACCEPTANCE.md); retain relevant negative/failure scenarios unless explicitly superseded.
+
+Implementation status is tracked in GitHub Issues, not here.
 
 Legend for evidence classes:
 

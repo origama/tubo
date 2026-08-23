@@ -1,6 +1,22 @@
 # Binding invariants
 
-These invariants are acceptance criteria, not aspirations.
+**Normative precedence:** [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) defines future architecture. This file preserves prototype acceptance/security knowledge unless an entry is explicitly generalized below. Prototype-specific Scope/token/protocol details do not require future compatibility.
+
+## Architecture-foundation invariants
+
+1. Every remote Pipe open requires successful short-lived, cryptographically verifiable Access Lease authorization at receiving boundary. Pipe ID, endpoint, record, route, invite, or membership alone is insufficient; no successful authorization result means no local target open.
+2. Exact Pipe Authority and Scope Authority issue same exact-Pipe lease contract. Session/tunnel code does not branch by issuer topology.
+3. Discovery finds, Reachability connects, Authorization permits. No concern is evidence for another.
+4. Scope is optional coordination/security domain, never prerequisite for connectivity.
+5. Public infrastructure provides reachability only, never ambient authorization.
+6. Runtime ownership is explicit: `NodeRuntime -> PipeRuntime(s) -> SessionRegistry -> Session(s)`. No package-global mutable runtime registry or process-global dispatch state.
+7. Core/use-case consumers depend on narrow persistence capabilities; persistence is adapter, not domain model.
+8. L2 owns enforcement and consumer-side/neutral open-authorization contract; L3 owns concrete lease validation, trust, revocation/epochs, policy, and refresh implementation. L2 must not import concrete L3 authority/revocation implementations.
+9. Layer dependencies point downward under L0–L5. End-to-end success cannot waive this rule.
+
+## Prototype reference invariants
+
+These invariants are acceptance criteria and learned behavior for preserved prototype code.
 
 ## Domain
 

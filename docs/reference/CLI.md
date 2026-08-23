@@ -1,5 +1,7 @@
 # CLI contract
 
+**Prototype reference contract:** This command surface documents `prototype-v2-final`. Future L4 use cases make CLI a parsing/presentation adapter; this surface is not automatic compatibility target. See [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) and [`../implementation/ROADMAP.md`](../implementation/ROADMAP.md).
+
 Implementation status: private-HTTP/WebSocket/raw-TCP vertical slice supports `keygen swarm`, `join overlay`, scope create/invite/join/use, remote publisher grants and announcements, foreground relay/authority/published pipes, service/pipe create, `attach`, detached `connect`, one-time share invites, revocation, local inventory/inspection, peer aliases, masked config validation/printing, `doctor`, `logs`, detached pipe restart/removal/stale cleanup, `ps`, `top`, and identity-safe `stop`.
 
 ## Output
