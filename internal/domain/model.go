@@ -31,8 +31,6 @@ const (
 	ServiceHTTP ServiceKind = "http"
 	ServiceTCP  ServiceKind = "tcp"
 	ServiceUnix ServiceKind = "unix"
-	ServiceA2A  ServiceKind = "a2a"
-	ServiceMCP  ServiceKind = "mcp"
 )
 
 type ServiceSpec struct {
@@ -52,7 +50,7 @@ func (s ServiceSpec) Validate() error {
 		return fmt.Errorf("service %s target is required", s.Ref)
 	}
 	switch s.Kind {
-	case ServiceHTTP, ServiceA2A, ServiceMCP:
+	case ServiceHTTP:
 		u, err := url.Parse(target)
 		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 			return fmt.Errorf("service %s requires an http:// or https:// target", s.Ref)
@@ -133,18 +131,17 @@ func (p PipeSpec) Validate() error {
 	if p.Target == p.Ref {
 		return fmt.Errorf("pipe %s cannot target itself", p.Ref)
 	}
+	if p.Scope != nil {
+		if err := p.Scope.Validate(); err != nil {
+			return fmt.Errorf("pipe %s scope: %w", p.Ref, err)
+		}
+	}
 	switch p.Ingress.Kind {
 	case IngressLocal:
 		if strings.TrimSpace(p.Ingress.Listen) == "" {
 			return fmt.Errorf("pipe %s local ingress requires listen", p.Ref)
 		}
 	case IngressTubo:
-		if p.Scope == nil {
-			return fmt.Errorf("pipe %s Tubo ingress requires scope", p.Ref)
-		}
-		if err := p.Scope.Validate(); err != nil {
-			return fmt.Errorf("pipe %s scope: %w", p.Ref, err)
-		}
 	case IngressHTTPRoute:
 		if strings.TrimSpace(p.Ingress.Host) == "" {
 			return fmt.Errorf("pipe %s HTTP route ingress requires host", p.Ref)

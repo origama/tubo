@@ -48,6 +48,9 @@ func RunPipe(ctx context.Context, state *store.Store, identifier string) error {
 }
 
 func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec, ownerKeyFile, publishGrant string) error {
+	if spec.Scope == nil {
+		return errors.New("invalid_input: Scope-less Tubo ingress is not supported by prototype runtime")
+	}
 	if spec.Target.Kind != domain.KindService {
 		return errors.New("forwarding pipe runtime requires pipe.forward and is not implemented")
 	}
@@ -869,7 +872,7 @@ func dialServiceTLS(service domain.ServiceSpec, base *tls.Config) (net.Conn, err
 	if err != nil {
 		return nil, err
 	}
-	if service.Kind == domain.ServiceHTTP || service.Kind == domain.ServiceA2A || service.Kind == domain.ServiceMCP {
+	if service.Kind == domain.ServiceHTTP {
 		if u.Scheme == "https" {
 			config := &tls.Config{MinVersion: tls.VersionTLS12}
 			if base != nil {

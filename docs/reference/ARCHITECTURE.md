@@ -6,6 +6,10 @@
 
 `prototype-v2-final` permanently preserves pre-A0 reference baseline (`637c3859051103c844a042dac04c40b7ce0627e1`). Main progressively diverges during A0 and later phases, combining architecture-driven code with remaining prototype-derived code while migration proceeds. Tag package graph documents learned behavior, not future dependency authority. See [`../implementation/PROTOTYPE_BASELINE.md`](../implementation/PROTOTYPE_BASELINE.md).
 
+## Implemented A0 slice: L0 domain boundary
+
+Issue #21 establishes `internal/domain` as first checked semantic L0 boundary. Unused prototype grant/envelope types with L3 authority semantics are removed rather than preserved. Service validation accepts HTTP(S), TCP, and Unix local endpoints and rejects A2A/MCP product capabilities. Pipe validation requires one Service or Pipe target, rejects self-targeting, and treats transitional Scope data as optional but validated when present. This domain change does **not** make prototype runtime paths Scope-less: its published-Pipe entrypoint rejects a Scope-less Tubo definition before dereference. `tests/verify-architecture.sh` invokes `go list -deps` and fails if this selected L0 package has non-stdlib dependencies. Later A0 slices remain responsible for runtime ownership, Scope-independent runtime connectivity, Carrier/Session, authorization, persistence, and use-case boundaries.
+
 ## Boundary model
 
 ```text

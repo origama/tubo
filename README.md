@@ -25,7 +25,7 @@ Every remote Pipe open requires verified short-lived Access Lease. Pipe ID, rout
 
 Pre-A0 implementation is permanently preserved as **prototype reference baseline**: [`prototype-v2-final`](docs/implementation/PROTOTYPE_BASELINE.md), commit `637c3859051103c844a042dac04c40b7ce0627e1`. Code, tests, and docs at tag preserve prototype behavior, security learning, and failure modes. Main progressively diverges during A0 and later phases; prototype internals are not target architecture or compatibility constraint.
 
-Project now enters architecture-driven **A0 — Layered Architecture Foundation**. No A0 implementation is in this preparation change.
+Architecture-driven **A0 — Layered Architecture Foundation** has begun. First implemented slice establishes pure L0 Service/Pipe validation and dependency guard; remaining A0 runtime, authorization, reachability, persistence, and use-case work is tracked in GitHub issues.
 
 ## Start here
 

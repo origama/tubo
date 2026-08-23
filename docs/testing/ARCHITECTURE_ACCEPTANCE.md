@@ -14,6 +14,10 @@ These criteria complement prototype [`ACCEPTANCE_MATRIX.md`](ACCEPTANCE_MATRIX.m
 
 No E2E pass can waive architecture dependency evidence.
 
+## Implemented evidence: A0 issue #21
+
+`go test ./internal/domain` covers canonical HTTP(S)/TCP/Unix Services, rejected A2A/MCP product capabilities, Scope-less Tubo Pipe definition, malformed optional Scope, and invalid/self Pipe targets. Unused prototype grant/envelope types with L3 authority semantics have no L0 consumer and are removed. `go test ./internal/runtime` proves prototype published-Pipe runtime rejects a Scope-less Tubo definition before dereference. `make architecture` runs deterministic `go list -deps` validation that permits only standard-library dependencies for `internal/domain`. This is L0-only evidence: prototype runtime remains Scope-centric, and Journey A, runtime ownership, Carrier/Session, authorization, persistence, and use-case acceptance remain later A0 work.
+
 ## Journey A — zero-config exact share (A0)
 
 Clean machine A runs `tubo attach http://127.0.0.1:8080` and receives exact invite. Clean machine B runs `tubo connect --token <invite>`. Real traffic succeeds.

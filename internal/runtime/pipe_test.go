@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,32 @@ import (
 
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
+
+func TestRunPublishedPipeRejectsScopeLessTuboIngress(t *testing.T) {
+	ref, err := domain.ParseRef("pipe/scope-less")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runPublishedPipe(context.Background(), nil, domain.PipeSpec{
+		Ref:        ref,
+		Ingress:    domain.PipeIngress{Kind: domain.IngressTubo},
+		Target:     mustServiceRef(t, "service/origin"),
+		Visibility: domain.VisibilityUnlisted,
+		Access:     domain.AccessInviteOnly,
+	}, "", "")
+	if err == nil || err.Error() != "invalid_input: Scope-less Tubo ingress is not supported by prototype runtime" {
+		t.Fatalf("expected deterministic Scope-less runtime rejection, got %v", err)
+	}
+}
+
+func mustServiceRef(t *testing.T, raw string) domain.Ref {
+	t.Helper()
+	ref, err := domain.ParseRef(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ref
+}
 
 func TestDialServiceHTTPSVerifiesTLSAndCarriesHTTP(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("secure")) }))
