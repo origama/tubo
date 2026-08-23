@@ -13,4 +13,10 @@ if [[ -n "$non_stdlib_deps" ]]; then
   exit 1
 fi
 
-echo "[architecture] PASS: $l0_package depends only on standard library"
+forbidden_runtime_symbols='instanceRegistry|SetInstanceRegistry|HandleResumeStreamID'
+if grep -R -n -E "$forbidden_runtime_symbols" internal/runtime --include='*.go'; then
+  echo "[architecture] forbidden package-global Session dispatch symbol found" >&2
+  exit 1
+fi
+
+echo "[architecture] PASS: $l0_package depends only on standard library; runtime dispatch has no forbidden global symbols"

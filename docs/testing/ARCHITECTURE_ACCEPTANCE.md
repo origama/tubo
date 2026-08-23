@@ -18,6 +18,12 @@ No E2E pass can waive architecture dependency evidence.
 
 `go test ./internal/domain` covers canonical HTTP(S)/TCP/Unix Services, rejected A2A/MCP product capabilities, Scope-less Tubo Pipe definition, malformed optional Scope, and invalid/self Pipe targets. Unused prototype grant/envelope types with L3 authority semantics have no L0 consumer and are removed. `go test ./internal/runtime` proves prototype published-Pipe runtime rejects a Scope-less Tubo definition before dereference. `make architecture` runs deterministic `go list -deps` validation that permits only standard-library dependencies for `internal/domain`. This is L0-only evidence: prototype runtime remains Scope-centric, and Journey A, runtime ownership, Carrier/Session, authorization, persistence, and use-case acceptance remain later A0 work.
 
+## Implemented evidence: A0 issue #26 runtime ownership
+
+`go test ./internal/runtime` and `go test -race ./internal/runtime` cover owner-bound `NodeRuntime -> PipeRuntime -> SessionRegistry -> Session` lifecycle: duplicate IDs reject within one PipeRuntime; same synthetic SessionID under two sibling PipeRuntimes remains isolated by separately bound in-process dispatch; unknown, wrong-owner, closed, malformed, complete oversized (over 4 KiB), and unsupported role declarations reset/fail closed; parent cancellation closes owned Sessions and prevents accepted resume activation or registry resurrection; concurrent Session/Pipe/Node close waits for admitted dispatch, outbound open, activation, pump, ACK, and local cleanup work before reporting completion; terminal close ownership remains fenced even when a pump has a local non-EOF failure. Existing runtime tests retain resume proof, bounds, epoch fencing, half-close, no-replay, and remote-open authorization evidence.
+
+This is not shared-host routing evidence. `StreamRoleDeclaration` remains SessionID-only, is consumed once before owner-bound dispatch, and no PipeID wire field or node-level Carrier/Reachability routing is added. This slice does not decide host sharing, encode per-Pipe host ownership, or complete Carrier, persistence, authorization, Scope-independent connectivity, CLI, Journey A, or distributed behavior.
+
 ## Journey A — zero-config exact share (A0)
 
 Clean machine A runs `tubo attach http://127.0.0.1:8080` and receives exact invite. Clean machine B runs `tubo connect --token <invite>`. Real traffic succeeds.

@@ -202,6 +202,13 @@ type sessionPump struct {
 	carrierCtx    context.Context
 	carrierCancel context.CancelFunc
 	detachedTimer *time.Timer
+	stopDone      chan struct{}
+	stopping      bool
+	workDone      chan struct{}
+	workCount     int
+	workClosed    bool
+	inbound       map[core.Stream]struct{}
+	outbound      map[core.Stream]struct{}
 
 	// ACK ticker
 	ackTicker *time.Ticker
@@ -218,9 +225,10 @@ type sessionPump struct {
 	isClient bool
 }
 
-// sessionRegistry is a map of sessionID -> *sessionPump for resume dispatch.
+// sessionRegistry is an isolated, PipeRuntime-owned session map.
 type sessionRegistry struct {
 	mu       sync.Mutex
+	closed   bool
 	sessions map[string]*sessionPump
 }
 
@@ -231,28 +239,49 @@ func newSessionRegistry() *sessionRegistry {
 func (r *sessionRegistry) get(id string) *sessionPump {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
 	return r.sessions[id]
 }
 
-func (r *sessionRegistry) put(id string, p *sessionPump) {
+func (r *sessionRegistry) register(id string, p *sessionPump) error {
+	if id == "" {
+		return errInvalidSessionID
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return errRuntimeClosed
+	}
+	if _, exists := r.sessions[id]; exists {
+		return errDuplicateSessionID
+	}
 	r.sessions[id] = p
+	return nil
 }
 
-func (r *sessionRegistry) remove(id string) {
+func (r *sessionRegistry) remove(id string, p *sessionPump) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.sessions, id)
+	if r.sessions[id] == p {
+		delete(r.sessions, id)
+	}
 }
 
-// instanceRegistry holds the per-pipe-runtime registry for resume dispatch.
-// Set by the pipe runtime before handling resume streams.
-var instanceRegistry = newSessionRegistry()
-
-// SetInstanceRegistry sets the global instance registry for resume dispatch.
-func SetInstanceRegistry(reg *sessionRegistry) {
-	instanceRegistry = reg
+func (r *sessionRegistry) close() []*sessionPump {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil
+	}
+	r.closed = true
+	sessions := make([]*sessionPump, 0, len(r.sessions))
+	for _, p := range r.sessions {
+		sessions = append(sessions, p)
+	}
+	clear(r.sessions)
+	return sessions
 }
 
 // sessionConfig holds configuration for a new session pump.
@@ -272,8 +301,8 @@ type sessionConfig struct {
 	ResumeSecret      []byte
 }
 
-func newSessionPump(cfg sessionConfig) *sessionPump {
-	ctx, cancel := context.WithCancel(context.Background())
+func newSessionPump(parent context.Context, registry *sessionRegistry, cfg sessionConfig) (*sessionPump, error) {
+	ctx, cancel := context.WithCancel(parent)
 	if cfg.MaxInflightPerDir <= 0 {
 		cfg.MaxInflightPerDir = DefaultMaxInflightPerDir
 	}
@@ -306,54 +335,261 @@ func newSessionPump(cfg sessionConfig) *sessionPump {
 		cancel:            cancel,
 		carrierCtx:        carrierCtx,
 		carrierCancel:     carrierCancel,
+		stopDone:          make(chan struct{}),
+		workDone:          make(chan struct{}),
+		inbound:           make(map[core.Stream]struct{}),
+		outbound:          make(map[core.Stream]struct{}),
 		ackTicker:         time.NewTicker(DefaultAckInterval),
 		isClient:          cfg.Host != nil, // client has a host for outbound streams
 	}
 	sp.c2s.retained = &bytes.Buffer{}
 	sp.s2c.retained = &bytes.Buffer{}
-	sp.registry = instanceRegistry
-	sp.registry.put(cfg.SessionID, sp)
-	return sp
-}
-
-// SetActiveCarrier sets the raw duplex carrier stream for this session.
-func (sp *sessionPump) SetActiveCarrier(stream core.Stream) {
-	sp.mu.Lock()
-	defer sp.mu.Unlock()
-	sp.activeCarrier = stream
-}
-
-// SetControlStream sets the control stream for ACKs/barriers.
-func (sp *sessionPump) SetControlStream(stream core.Stream) {
-	sp.mu.Lock()
-	defer sp.mu.Unlock()
-	sp.controlStream = stream
-}
-
-// Stop terminates the session pump and releases resources.
-func (sp *sessionPump) Stop() {
-	sp.mu.Lock()
-	if sp.state == StateClosed {
-		sp.mu.Unlock()
-		return
+	sp.registry = registry
+	if err := sp.registry.register(cfg.SessionID, sp); err != nil {
+		sp.ackTicker.Stop()
+		sp.carrierCancel()
+		sp.cancel()
+		return nil, err
 	}
-	sp.state = StateClosed
-	sp.mu.Unlock()
+	return sp, nil
+}
 
-	sp.cancel()
-	sp.ackTicker.Stop()
-
+// SetActiveCarrier sets raw duplex carrier only while session remains owned.
+func (sp *sessionPump) SetActiveCarrier(stream core.Stream) bool {
 	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.stopping || sp.ctx.Err() != nil {
+		return false
+	}
+	sp.activeCarrier = stream
+	return true
+}
+
+// setControlStream installs control stream only while session remains owned.
+func (sp *sessionPump) setControlStream(stream core.Stream) bool {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.stopping || sp.ctx.Err() != nil {
+		return false
+	}
+	sp.controlStream = stream
+	return true
+}
+
+func (sp *sessionPump) acceptDispatch() bool {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	return !sp.stopping && sp.ctx.Err() == nil
+}
+
+// admitWork is the Session lifecycle admission fence. Close changes state to
+// closed before waiting, so no later work can be admitted.
+func (sp *sessionPump) admitWork() bool {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.stopping || sp.ctx.Err() != nil {
+		return false
+	}
+	sp.workCount++
+	return true
+}
+
+func (sp *sessionPump) finishWork() {
+	sp.mu.Lock()
+	sp.workCount--
+	if sp.workCount < 0 {
+		sp.mu.Unlock()
+		panic("session lifecycle work underflow")
+	}
+	sp.closeWorkDoneLocked()
+	sp.mu.Unlock()
+}
+
+func (sp *sessionPump) closeWorkDoneLocked() {
+	if sp.stopping && sp.workCount == 0 && !sp.workClosed {
+		sp.workClosed = true
+		close(sp.workDone)
+	}
+}
+
+func (sp *sessionPump) startPump() bool {
+	if !sp.admitWork() {
+		return false
+	}
+	go func() {
+		defer sp.finishWork()
+		sp.pumpCarrier()
+	}()
+	return true
+}
+
+func (sp *sessionPump) startAcks() bool {
+	if !sp.admitWork() {
+		return false
+	}
+	go func() {
+		defer sp.finishWork()
+		sp.sendAcks()
+	}()
+	return true
+}
+
+// beginOutbound admits a blocking outbound operation under Session ownership.
+// Its context is canceled by either caller or Session close.
+func (sp *sessionPump) beginOutbound(caller context.Context) (context.Context, func(), error) {
+	if caller == nil {
+		caller = context.Background()
+	}
+	if !sp.admitWork() {
+		return nil, nil, errors.New("session closed")
+	}
+	ctx, cancel := context.WithCancel(sp.ctx)
+	stopCaller := context.AfterFunc(caller, cancel)
+	return ctx, func() {
+		stopCaller()
+		cancel()
+		sp.finishWork()
+	}, nil
+}
+
+func (sp *sessionPump) trackOutbound(stream core.Stream) bool {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.stopping || sp.ctx.Err() != nil {
+		return false
+	}
+	sp.outbound[stream] = struct{}{}
+	return true
+}
+
+func (sp *sessionPump) untrackOutbound(stream core.Stream) {
+	sp.mu.Lock()
+	delete(sp.outbound, stream)
+	sp.mu.Unlock()
+}
+
+// beginDispatch records an accepted inbound stream so Stop can force it out of
+// blocking reads before later candidate attachment or activation.
+func (sp *sessionPump) beginDispatch(stream core.Stream) bool {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.stopping || sp.ctx.Err() != nil {
+		return false
+	}
+	sp.workCount++
+	sp.inbound[stream] = struct{}{}
+	return true
+}
+
+func (sp *sessionPump) endDispatch(stream core.Stream) {
+	sp.mu.Lock()
+	delete(sp.inbound, stream)
+	sp.workCount--
+	if sp.workCount < 0 {
+		sp.mu.Unlock()
+		panic("session lifecycle work underflow")
+	}
+	sp.closeWorkDoneLocked()
+	sp.mu.Unlock()
+}
+
+func (sp *sessionPump) setCandidate(stream core.Stream, epoch uint64, clientNonce, serverNonce string) bool {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.stopping || sp.ctx.Err() != nil {
+		return false
+	}
+	sp.candidateStream = stream
+	sp.candidateEpoch = epoch
+	sp.candidateNonce = clientNonce
+	sp.candidateServer = serverNonce
+	return true
+}
+
+type sessionStopResources struct {
+	active, control, candidate core.Stream
+	target                     io.ReadWriteCloser
+	inbound, outbound          []core.Stream
+	workDone                   <-chan struct{}
+}
+
+// beginStop is lifecycle state independent of protocol state transitions.
+// Exactly one caller becomes closer; all other callers wait stopDone.
+func (sp *sessionPump) beginStop() (sessionStopResources, bool) {
+	sp.mu.Lock()
+	defer sp.mu.Unlock()
+	if sp.stopping {
+		return sessionStopResources{}, false
+	}
+	sp.stopping = true
+	sp.state = StateClosed
+	resources := sessionStopResources{
+		active: sp.activeCarrier, control: sp.controlStream, candidate: sp.candidateStream,
+		target: sp.targetConn, workDone: sp.workDone,
+		inbound:  make([]core.Stream, 0, len(sp.inbound)),
+		outbound: make([]core.Stream, 0, len(sp.outbound)),
+	}
+	sp.activeCarrier = nil
+	sp.controlStream = nil
+	sp.candidateStream = nil
+	for stream := range sp.inbound {
+		resources.inbound = append(resources.inbound, stream)
+	}
+	for stream := range sp.outbound {
+		resources.outbound = append(resources.outbound, stream)
+	}
 	if sp.detachedTimer != nil {
 		sp.detachedTimer.Stop()
 		sp.detachedTimer = nil
 	}
-	if sp.carrierCancel != nil {
-		sp.carrierCancel()
-	}
-	sp.mu.Unlock()
+	sp.closeWorkDoneLocked()
+	return resources, true
+}
 
-	sp.registry.remove(sp.SessionID)
+func (sp *sessionPump) completeStop(resources sessionStopResources) {
+	sp.cancel()
+	sp.ackTicker.Stop()
+	sp.carrierCancel()
+	for _, stream := range resources.inbound {
+		_ = stream.Reset()
+	}
+	for _, stream := range resources.outbound {
+		_ = stream.Reset()
+	}
+	if resources.active != nil {
+		_ = resources.active.Close()
+	}
+	if resources.control != nil && resources.control != resources.active {
+		_ = resources.control.Close()
+	}
+	if resources.candidate != nil && resources.candidate != resources.active && resources.candidate != resources.control {
+		_ = resources.candidate.Close()
+	}
+	if resources.target != nil {
+		_ = resources.target.Close()
+	}
+	<-resources.workDone
+	sp.registry.remove(sp.SessionID, sp)
+	close(sp.stopDone)
+}
+
+// Stop terminates Session-owned work and waits exact one closer completion.
+func (sp *sessionPump) Stop() {
+	resources, closer := sp.beginStop()
+	if !closer {
+		<-sp.stopDone
+		return
+	}
+	sp.completeStop(resources)
+}
+
+// requestStop is used from tracked pump work. It first fences lifecycle state,
+// then completes close outside that work to avoid self-wait deadlock.
+func (sp *sessionPump) requestStop() {
+	resources, closer := sp.beginStop()
+	if closer {
+		go sp.completeStop(resources)
+	}
 }
 
 // generateResumeSecret creates a random 32-byte resume secret.
@@ -512,17 +748,25 @@ func (sp *sessionPump) pumpCarrier() {
 
 // runServerSession starts the session pump for the server side.
 func (sp *sessionPump) runServerSession() {
+	if !sp.admitWork() {
+		return
+	}
 	defer sp.Stop()
+	defer sp.finishWork()
 
-	go sp.sendAcks()
+	sp.startAcks()
 	sp.pumpCarrier()
 }
 
 // runClientSession starts the session pump for the client side.
 func (sp *sessionPump) runClientSession() {
+	if !sp.admitWork() {
+		return
+	}
 	defer sp.Stop()
+	defer sp.finishWork()
 
-	go sp.sendAcks()
+	sp.startAcks()
 
 	sp.mu.Lock()
 	carrier := sp.activeCarrier
@@ -581,10 +825,7 @@ func (sp *sessionPump) readFromCarrier(carrier io.Reader, local io.Writer, dir *
 				w, werr := local.Write(buf[written:n])
 				written += w
 				if werr != nil && written < n {
-					sp.mu.Lock()
-					sp.state = StateClosing
-					sp.mu.Unlock()
-					sp.Stop()
+					sp.requestStop()
 					return
 				}
 				if werr != nil {
@@ -625,11 +866,11 @@ func (sp *sessionPump) readFromSource(source io.Reader, carrier io.Writer, dir *
 		}
 
 		sp.mu.Lock()
-		if sp.state == StateClosed || sp.state == StateClosing {
-			sp.mu.Unlock()
+		stopping := sp.stopping
+		sp.mu.Unlock()
+		if stopping {
 			return
 		}
-		sp.mu.Unlock()
 
 		dir.mu.Lock()
 		if dir.currentTransferComplete {
@@ -680,10 +921,7 @@ func (sp *sessionPump) readFromSource(source io.Reader, carrier io.Writer, dir *
 				}
 				return
 			}
-			sp.mu.Lock()
-			sp.state = StateClosing
-			sp.mu.Unlock()
-			sp.Stop()
+			sp.requestStop()
 			return
 		}
 	}
@@ -771,7 +1009,7 @@ func (sp *sessionPump) handleCarrierFailure() {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 
-	if sp.state == StateClosed || sp.state == StateClosing {
+	if sp.stopping || sp.state == StateClosing {
 		return
 	}
 
@@ -783,12 +1021,10 @@ func (sp *sessionPump) handleCarrierFailure() {
 	}
 	sp.detachedTimer = time.AfterFunc(DefaultDetachedGrace, func() {
 		sp.mu.Lock()
-		if sp.state == StateDetached {
-			sp.state = StateClosing
-			sp.mu.Unlock()
-			sp.Stop()
-		} else {
-			sp.mu.Unlock()
+		detached := !sp.stopping && sp.state == StateDetached
+		sp.mu.Unlock()
+		if detached {
+			sp.requestStop()
 		}
 	})
 }
@@ -810,9 +1046,10 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 	sp.mu.Lock()
 	expectedEpoch := sp.epoch + 1
 	state := sp.state
+	closed := sp.ctx.Err() != nil
 	sp.mu.Unlock()
 
-	if hello.NextEpoch != expectedEpoch {
+	if closed || hello.NextEpoch != expectedEpoch {
 		return
 	}
 	if state != StateDetached && state != StateActive && state != StateProbing {
@@ -845,12 +1082,9 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 		return
 	}
 
-	sp.mu.Lock()
-	sp.candidateStream = stream
-	sp.candidateEpoch = hello.NextEpoch
-	sp.candidateNonce = hello.Nonce
-	sp.candidateServer = serverNonce
-	sp.mu.Unlock()
+	if !sp.setCandidate(stream, hello.NextEpoch, hello.Nonce, serverNonce) {
+		return
+	}
 
 	// Verify commit proof
 	sp.c2s.mu.Lock()
@@ -903,6 +1137,10 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 	s2cFinSeen := sp.s2c.finSeen
 	sp.s2c.mu.Unlock()
 
+	if !sp.acceptDispatch() {
+		return
+	}
+
 	result := wire.ResumeResult{
 		OK:              true,
 		SessionID:       sp.SessionID,
@@ -930,6 +1168,10 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 		return
 	}
 
+	if !sp.acceptDispatch() {
+		return
+	}
+
 	activated := wire.ResumeActivated{
 		SessionID: sp.SessionID,
 		Epoch:     hello.NextEpoch,
@@ -939,15 +1181,26 @@ func (sp *sessionPump) handleResumeStream(stream core.Stream) {
 		return
 	}
 
-	// Activate: switch to new carrier
-	sp.activateResume(stream, hello.NextEpoch, hello.Nonce, serverNonce, c2sDelivered, commit.S2CDelivered)
+	// Activate only while this Session remains owned and live.
+	_ = sp.activateResume(stream, hello.NextEpoch, hello.Nonce, serverNonce, c2sDelivered, commit.S2CDelivered)
 }
 
 // activateResume installs the new carrier, replays retained bytes, and spawns
 // fresh pump goroutines for the new carrier.
-func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clientNonce, serverNonce string, c2sResumeAt, s2cResumeAt uint64) {
-	// Cancel old carrier goroutines
+func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clientNonce, serverNonce string, c2sResumeAt, s2cResumeAt uint64) bool {
+	if !sp.admitWork() {
+		_ = stream.Reset()
+		return false
+	}
+	defer sp.finishWork()
+
+	// Cancel old carrier goroutines only while this Session remains live.
 	sp.mu.Lock()
+	if sp.stopping || sp.ctx.Err() != nil {
+		sp.mu.Unlock()
+		_ = stream.Reset()
+		return false
+	}
 	if sp.carrierCancel != nil {
 		sp.carrierCancel()
 	}
@@ -955,13 +1208,17 @@ func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clien
 	sp.activeCarrier = stream
 	sp.epoch = newEpoch
 	sp.state = StateActive
-	// Create new carrier context for the new goroutines
+	// Create new carrier context for the new goroutines.
 	sp.carrierCtx, sp.carrierCancel = context.WithCancel(sp.ctx)
 	sp.mu.Unlock()
 
 	// Close old carrier without propagating FIN
 	if oldStream != nil {
 		_ = oldStream.Close()
+	}
+
+	if !sp.acceptDispatch() {
+		return false
 	}
 
 	// Replay retained bytes in c2s direction
@@ -977,8 +1234,19 @@ func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clien
 	}
 	sp.c2s.mu.Unlock()
 
-	// Spawn fresh pump goroutines for the new carrier
-	go sp.pumpCarrier()
+	// Stop may have raced during replay. It fences state and cancels this
+	// carrier context; do not create post-close work or persistence writes.
+	if !sp.acceptDispatch() {
+		return false
+	}
+
+	// Spawn fresh pump goroutines only through lifecycle admission.
+	if !sp.startPump() {
+		return false
+	}
+	if !sp.acceptDispatch() {
+		return false
+	}
 
 	// Record path event
 	event := store.PathEvent{
@@ -991,14 +1259,21 @@ func (sp *sessionPump) activateResume(stream core.Stream, newEpoch uint64, clien
 		S2CCommitted: s2cResumeAt,
 		CommittedAt:  time.Now().UTC(),
 	}
-	_ = sp.State.PutPathEvent(context.Background(), event)
+	if !sp.acceptDispatch() {
+		return false
+	}
+	_ = sp.State.PutPathEvent(sp.ctx, event)
 
-	_ = sp.State.PutSession(context.Background(), store.Session{
+	if !sp.acceptDispatch() {
+		return false
+	}
+	_ = sp.State.PutSession(sp.ctx, store.Session{
 		ID:                   sp.SessionID,
 		CurrentTransportPath: sp.toPath,
 	})
 
 	runtimeInfof("session resumed epoch=%d session=%s path=%s", newEpoch, sp.SessionID, sp.toPath)
+	return true
 }
 
 // readControlFrame reads a framed control message and decodes it into the
@@ -1050,14 +1325,6 @@ func controlFrameType(r io.Reader) (string, []byte, error) {
 // handleControlStream processes incoming control messages.
 func (sp *sessionPump) handleControlStream(stream core.Stream) {
 	defer stream.Close()
-
-	var roleDecl wire.StreamRoleDeclaration
-	if err := wire.ReadFrame(stream, &roleDecl); err != nil {
-		return
-	}
-	if roleDecl.Role != wire.StreamRoleControl || roleDecl.SessionID != sp.SessionID {
-		return
-	}
 
 	for {
 		msgType, rawData, err := controlFrameType(stream)
@@ -1198,31 +1465,6 @@ func (sp *sessionPump) handleSwitchAbort(abort wire.SwitchAbort) {
 	sp.mu.Unlock()
 }
 
-// HandleResumeStreamID is the stream handler for incoming resume streams.
-func HandleResumeStreamID(stream core.Stream) {
-	var roleDecl wire.StreamRoleDeclaration
-	if err := wire.ReadFrame(stream, &roleDecl); err != nil {
-		_ = stream.Reset()
-		return
-	}
-
-	pump := instanceRegistry.get(roleDecl.SessionID)
-	if pump == nil {
-		_ = stream.Reset()
-		return
-	}
-
-	switch roleDecl.Role {
-	case wire.StreamRoleControl:
-		pump.SetControlStream(stream)
-		pump.handleControlStream(stream)
-	case wire.StreamRoleResume:
-		pump.handleResumeStream(stream)
-	default:
-		_ = stream.Reset()
-	}
-}
-
 // verifyConnPath checks that the actual libp2p connection matches the expected
 // path type. It uses Conn.Stat().Limited to detect relayed connections.
 // Returns true if the path matches, false if there's a mismatch.
@@ -1249,7 +1491,17 @@ func verifyConnPath(stream core.Stream, expectedPath string) bool {
 // StartResumeHandshake initiates a resume handshake as the client.
 // It opens a new stream, authenticates, and negotiates offsets.
 func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID, newPath string) error {
+	opCtx, finish, err := sp.beginOutbound(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+
 	sp.mu.Lock()
+	if sp.stopping {
+		sp.mu.Unlock()
+		return errors.New("session closed")
+	}
 	sp.state = StateProbing
 	sp.fromPath = sp.toPath
 	sp.toPath = newPath
@@ -1257,13 +1509,18 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 	sp.mu.Unlock()
 
 	stream, err := sp.Host.NewStream(
-		core.WithAllowLimitedConn(ctx, "tubo resume via relay"),
+		core.WithAllowLimitedConn(opCtx, "tubo resume via relay"),
 		peerID,
 		protocol.ID(wire.TunnelResumeID),
 	)
 	if err != nil {
 		return fmt.Errorf("open resume stream: %w", err)
 	}
+	if !sp.trackOutbound(stream) {
+		_ = stream.Reset()
+		return errors.New("session closed")
+	}
+	defer sp.untrackOutbound(stream)
 
 	// Verify the actual connection path matches expectations
 	if !verifyConnPath(stream, newPath) {
@@ -1277,6 +1534,10 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 	roleDecl := wire.StreamRoleDeclaration{
 		Role:      wire.StreamRoleResume,
 		SessionID: sp.SessionID,
+	}
+	if !sp.acceptDispatch() {
+		_ = stream.Reset()
+		return errors.New("session closed")
 	}
 	if err := writeResumeFrame(stream, roleDecl); err != nil {
 		stream.Close()
@@ -1295,6 +1556,10 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 		NextEpoch: newEpoch,
 		Nonce:     clientNonce,
 		Proof:     sp.proofForHello(newEpoch, clientNonce),
+	}
+	if !sp.acceptDispatch() {
+		_ = stream.Reset()
+		return errors.New("session closed")
 	}
 	if err := writeResumeFrame(stream, hello); err != nil {
 		return fmt.Errorf("write hello: %w", err)
@@ -1327,6 +1592,10 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 		S2CFinDelivered: s2cFinDelivered,
 		Proof:           sp.proofForCommit(newEpoch, clientNonce, serverNonce, c2sSent, s2cDelivered, sp.c2s.finSeen, s2cFinDelivered),
 	}
+	if !sp.acceptDispatch() {
+		_ = stream.Reset()
+		return errors.New("session closed")
+	}
 	if err := writeResumeFrame(stream, commit); err != nil {
 		return fmt.Errorf("write commit: %w", err)
 	}
@@ -1347,6 +1616,10 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 		TranscriptDigest: transcriptDigest,
 		Proof:            sp.proofForActivate(result.Epoch, clientNonce, serverNonce, transcriptDigest),
 	}
+	if !sp.acceptDispatch() {
+		_ = stream.Reset()
+		return errors.New("session closed")
+	}
 	if err := writeResumeFrame(stream, activate); err != nil {
 		return fmt.Errorf("write activate: %w", err)
 	}
@@ -1356,40 +1629,66 @@ func (sp *sessionPump) StartResumeHandshake(ctx context.Context, peerID peer.ID,
 		return fmt.Errorf("read activated: %w", err)
 	}
 
-	// Activate: switch to new carrier
-	sp.activateResume(stream, result.Epoch, clientNonce, serverNonce, result.C2SResumeAt, result.S2CResumeAt)
+	// Activate: switch to new carrier.
+	if !sp.activateResume(stream, result.Epoch, clientNonce, serverNonce, result.C2SResumeAt, result.S2CResumeAt) {
+		return errors.New("session closed")
+	}
 
 	return nil
 }
 
 // OpenControlStream opens a control stream for the session.
 func (sp *sessionPump) OpenControlStream(ctx context.Context, peerID peer.ID) error {
+	opCtx, finish, err := sp.beginOutbound(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+
 	stream, err := sp.Host.NewStream(
-		core.WithAllowLimitedConn(ctx, "tubo control stream"),
+		core.WithAllowLimitedConn(opCtx, "tubo control stream"),
 		peerID,
 		protocol.ID(wire.TunnelResumeID),
 	)
 	if err != nil {
 		return fmt.Errorf("open control stream: %w", err)
 	}
+	if !sp.trackOutbound(stream) {
+		_ = stream.Reset()
+		return errors.New("session closed")
+	}
+	defer sp.untrackOutbound(stream)
 
 	roleDecl := wire.StreamRoleDeclaration{
 		Role:      wire.StreamRoleControl,
 		SessionID: sp.SessionID,
 	}
+	if !sp.acceptDispatch() {
+		_ = stream.Reset()
+		return errors.New("session closed")
+	}
 	if err := writeResumeFrame(stream, roleDecl); err != nil {
-		stream.Close()
+		_ = stream.Reset()
 		return fmt.Errorf("write role decl: %w", err)
 	}
 
-	sp.SetControlStream(stream)
+	if !sp.setControlStream(stream) {
+		_ = stream.Reset()
+		return errors.New("session closed")
+	}
 	return nil
 }
 
 // TryPlannedSwitch attempts a planned relay->direct switch.
 func (sp *sessionPump) TryPlannedSwitch(ctx context.Context, peerID peer.ID, newPath string) error {
+	opCtx, finish, err := sp.beginOutbound(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+
 	sp.mu.Lock()
-	if sp.state != StateActive {
+	if sp.stopping || sp.state != StateActive {
 		sp.mu.Unlock()
 		return errors.New("session not active")
 	}
@@ -1428,6 +1727,9 @@ func (sp *sessionPump) TryPlannedSwitch(ctx context.Context, peerID peer.ID, new
 			Proof:          sp.computeAckProof(newEpoch, "switch", 0, false),
 		},
 	}
+	if !sp.acceptDispatch() {
+		return errors.New("session closed")
+	}
 	if err := writeResumeFrame(cs, prep); err != nil {
 		return err
 	}
@@ -1448,6 +1750,9 @@ func (sp *sessionPump) TryPlannedSwitch(ctx context.Context, peerID peer.ID, new
 			Proof:     sp.computeAckProof(newEpoch, "barrier_c2s", sp.c2s.carrierSent, sp.c2s.finSeen),
 		},
 	}
+	if !sp.acceptDispatch() {
+		return errors.New("session closed")
+	}
 	if err := writeResumeFrame(cs, bar); err != nil {
 		return err
 	}
@@ -1464,18 +1769,21 @@ func (sp *sessionPump) TryPlannedSwitch(ctx context.Context, peerID peer.ID, new
 			Proof:     sp.computeAckProof(newEpoch, "barrier_s2c", sp.s2c.carrierSent, sp.s2c.finSeen),
 		},
 	}
+	if !sp.acceptDispatch() {
+		return errors.New("session closed")
+	}
 	if err := writeResumeFrame(cs, bar2); err != nil {
 		return err
 	}
 
 	// Now open the direct candidate stream and perform resume handshake
-	return sp.StartResumeHandshake(ctx, peerID, newPath)
+	return sp.StartResumeHandshake(opCtx, peerID, newPath)
 }
 
 // InitiateResumeRecovery handles abrupt carrier failure by initiating a relay resume.
 func (sp *sessionPump) InitiateResumeRecovery(ctx context.Context, peerID peer.ID) error {
 	sp.mu.Lock()
-	if sp.state != StateDetached {
+	if sp.stopping || sp.state != StateDetached {
 		sp.mu.Unlock()
 		return errors.New("session not detached")
 	}
@@ -1483,6 +1791,10 @@ func (sp *sessionPump) InitiateResumeRecovery(ctx context.Context, peerID peer.I
 
 	// Stop detached timer
 	sp.mu.Lock()
+	if sp.stopping {
+		sp.mu.Unlock()
+		return errors.New("session closed")
+	}
 	if sp.detachedTimer != nil {
 		sp.detachedTimer.Stop()
 		sp.detachedTimer = nil

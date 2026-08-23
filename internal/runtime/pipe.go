@@ -48,6 +48,12 @@ func RunPipe(ctx context.Context, state *store.Store, identifier string) error {
 }
 
 func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec, ownerKeyFile, publishGrant string) error {
+	nodeRuntime := NewNodeRuntime(ctx)
+	defer nodeRuntime.Close()
+	pipeRuntime, err := nodeRuntime.NewPipeRuntime()
+	if err != nil {
+		return err
+	}
 	if spec.Scope == nil {
 		return errors.New("invalid_input: Scope-less Tubo ingress is not supported by prototype runtime")
 	}
@@ -186,9 +192,9 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	if err := publish(time.Now().UTC()); err != nil {
 		return err
 	}
-	handler := &tunnelServer{state: state, spec: spec, service: service, authorityPublic: authorityPublic}
+	handler := &tunnelServer{state: state, spec: spec, service: service, authorityPublic: authorityPublic, runtime: pipeRuntime}
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
-	h.SetStreamHandler(protocol.ID(wire.TunnelResumeID), HandleResumeStreamID)
+	h.SetStreamHandler(protocol.ID(wire.TunnelResumeID), pipeRuntime.HandleResumeStream)
 	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: address, StartedAt: time.Now().UTC()}
 	if err := state.PutRun(ctx, run); err != nil {
 		return err
@@ -246,6 +252,7 @@ type tunnelServer struct {
 	spec            domain.PipeSpec
 	service         domain.ServiceSpec
 	authorityPublic ed25519.PublicKey
+	runtime         *PipeRuntime
 }
 
 func (s *tunnelServer) handle(stream core.Stream) {
@@ -373,7 +380,7 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	runtimeInfof("session opened pipe=%s session=%s path=relayed resume=%v", s.spec.Ref, sessionID, resumeNegotiated)
 
 	if resumeNegotiated && resumeSecret != nil {
-		sp := newSessionPump(sessionConfig{
+		sp, err := s.runtime.NewSession(sessionConfig{
 			SessionID:         sessionID,
 			PipeID:            s.spec.PipeID,
 			Scope:             s.spec.Scope.String(),
@@ -388,7 +395,12 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 			ToPath:            "relayed",
 			ResumeSecret:      resumeSecret,
 		})
-		sp.SetActiveCarrier(stream)
+		if err != nil {
+			return err
+		}
+		if !sp.SetActiveCarrier(stream) {
+			return errRuntimeClosed
+		}
 
 		_ = s.state.PutPathEvent(context.Background(), store.PathEvent{
 			SessionID:    sessionID,
@@ -417,6 +429,12 @@ func (s *tunnelServer) openError(stream core.Stream, code, message string) error
 }
 
 func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec) error {
+	nodeRuntime := NewNodeRuntime(ctx)
+	defer nodeRuntime.Close()
+	pipeRuntime, err := nodeRuntime.NewPipeRuntime()
+	if err != nil {
+		return err
+	}
 	if spec.Target.Kind != domain.KindPipe {
 		return errors.New("local pipe target must be remote pipe")
 	}
@@ -488,7 +506,7 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 			}
 			return err
 		}
-		go serveLocalConnection(ctx, state, h, spec, resolver, leases, connection)
+		go serveLocalConnection(ctx, state, h, pipeRuntime, spec, resolver, leases, connection)
 	}
 }
 
@@ -663,9 +681,9 @@ func (c *localLeaseCache) startRefresh(ctx context.Context, state *store.Store, 
 	}()
 }
 
-func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, resolver *localPipeRecordResolver, leases *localLeaseCache, local net.Conn) {
+func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, runtime *PipeRuntime, spec domain.PipeSpec, resolver *localPipeRecordResolver, leases *localLeaseCache, local net.Conn) {
 	serveLocalConnectionWithOpener(ctx, state, spec, resolver, local, func(record discovery.PipeRecord) localConnectionResult {
-		return openLocalConnection(ctx, state, h, spec, record, leases, local)
+		return openLocalConnection(ctx, state, h, runtime, spec, record, leases, local)
 	})
 }
 
@@ -710,7 +728,7 @@ type localConnectionResult struct {
 	reason    string
 }
 
-func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, record discovery.PipeRecord, leases *localLeaseCache, local net.Conn) localConnectionResult {
+func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, runtime *PipeRuntime, spec domain.PipeSpec, record discovery.PipeRecord, leases *localLeaseCache, local net.Conn) localConnectionResult {
 	result := localConnectionResult{reason: "authority_unreachable"}
 	setup, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -822,7 +840,7 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, s
 			return result
 		}
 
-		sp := newSessionPump(sessionConfig{
+		sp, sessionErr := runtime.NewSession(sessionConfig{
 			SessionID:         sessionID,
 			PipeID:            record.PipeID,
 			Scope:             record.Scope.String(),
@@ -837,7 +855,14 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, s
 			ToPath:            "relayed",
 			ResumeSecret:      secretBytes,
 		})
-		sp.SetActiveCarrier(stream)
+		if sessionErr != nil {
+			result.opened = false
+			return result
+		}
+		if !sp.SetActiveCarrier(stream) {
+			result.opened = false
+			return result
+		}
 
 		if err := sp.OpenControlStream(ctx, remotePeerID); err != nil {
 			runtimeWarnf("open control stream: %v", err)

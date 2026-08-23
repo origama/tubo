@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"testing"
 
@@ -17,6 +18,21 @@ type testBufferConn struct {
 func (c *testBufferConn) Close() error      { c.closed = true; return nil }
 func (c *testBufferConn) CloseWrite() error { c.closed = true; return nil }
 func newTestConn() *testBufferConn          { return &testBufferConn{} }
+
+func newTestSession(t testing.TB, cfg sessionConfig) *sessionPump {
+	t.Helper()
+	node := NewNodeRuntime(context.Background())
+	t.Cleanup(node.Close)
+	pipeRuntime, err := node.NewPipeRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := pipeRuntime.NewSession(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session
+}
 
 // TestProofComputation verifies HMAC-SHA256 proof calculation.
 func TestProofComputation(t *testing.T) {
@@ -156,7 +172,7 @@ func TestCarrierWriterCloseFlag(t *testing.T) {
 // TestSessionPumpNew verifies session pump creation.
 func TestSessionPumpNew(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-session",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -178,7 +194,7 @@ func TestSessionPumpNew(t *testing.T) {
 // TestHandleAckC2S verifies ACK handling for c2s direction.
 func TestHandleAckC2S(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-ack",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -214,7 +230,7 @@ func TestHandleAckC2S(t *testing.T) {
 // TestHandleAckS2C verifies ACK handling for s2c direction.
 func TestHandleAckS2C(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-acks2c",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -249,7 +265,7 @@ func TestHandleAckS2C(t *testing.T) {
 // TestHandleSwitchPrepare verifies switch prepare handling.
 func TestHandleSwitchPrepare(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-switch",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -278,7 +294,7 @@ func TestHandleSwitchPrepare(t *testing.T) {
 // TestHandleBarrier verifies barrier handling.
 func TestHandleBarrier(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-barrier",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -313,7 +329,7 @@ func TestHandleBarrier(t *testing.T) {
 // TestHandleSwitchAbort verifies switch abort.
 func TestHandleSwitchAbort(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-abort",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -348,7 +364,7 @@ func TestHandleSwitchAbort(t *testing.T) {
 // TestHandleBarrierAck verifies barrier ACK handling.
 func TestHandleBarrierAck(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-barierack",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -423,12 +439,14 @@ func TestSessionRegistry(t *testing.T) {
 	reg := newSessionRegistry()
 	pump := &sessionPump{SessionID: "test-reg"}
 
-	reg.put("test-reg", pump)
+	if err := reg.register("test-reg", pump); err != nil {
+		t.Fatal(err)
+	}
 	if got := reg.get("test-reg"); got == nil || got.SessionID != "test-reg" {
 		t.Fatal("registry get/put failed")
 	}
 
-	reg.remove("test-reg")
+	reg.remove("test-reg", pump)
 	if got := reg.get("test-reg"); got != nil {
 		t.Fatal("expected nil after remove")
 	}
@@ -437,7 +455,7 @@ func TestSessionRegistry(t *testing.T) {
 // TestHandleCarrierFailure verifies carrier failure handling.
 func TestHandleCarrierFailure(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-fail",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -461,7 +479,7 @@ func TestHandleCarrierFailure(t *testing.T) {
 // TestBufferLimit verifies backpressure at buffer limit.
 func TestBufferLimit(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:         "test-buf",
 		PipeID:            "test-pipe",
 		Scope:             "test/test",
@@ -485,7 +503,7 @@ func TestBufferLimit(t *testing.T) {
 // TestHalfCloseSequencing verifies FIN after all bytes.
 func TestHalfCloseSequencing(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-halfclose",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",
@@ -537,7 +555,7 @@ func TestNegativeWrongEpochProof(t *testing.T) {
 // TestAggregateCapEnforcement verifies aggregate memory cap check.
 func TestAggregateCapEnforcement(t *testing.T) {
 	secret, _ := generateResumeSecret()
-	sp := newSessionPump(sessionConfig{
+	sp := newTestSession(t, sessionConfig{
 		SessionID:    "test-aggr",
 		PipeID:       "test-pipe",
 		Scope:        "test/test",

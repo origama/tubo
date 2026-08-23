@@ -52,7 +52,9 @@ Contract is owned beside L2 consumer need or in lower neutral contract location;
 NodeRuntime -> PipeRuntime(s) -> SessionRegistry -> Session(s)
 ```
 
-Each Session registry belongs to explicit runtime owner. Stream dispatch receives/inherits this owner. No package-global mutable runtime registry, process-global session dispatch map, or ambient mutable runtime state.
+Issue #26 implements this in-process ownership/lifecycle primitive in `internal/runtime`: each `PipeRuntime` owns an isolated Session registry; Session creation, cancellation, removal, and resume/control dispatch are owner-bound; Node cancellation closes descendant PipeRuntimes and Sessions before close completion. Registration rejects duplicate IDs within one owner and closed owners reject registration and dispatch. `StreamRoleDeclaration` is consumed once through a strict 4 KiB bound at owner-bound dispatch before control/resume handling; accepted inbound and outbound streams are reset during Session close so they cannot attach or activate a later carrier; close completion waits all admitted dispatch, outbound operation, activation, pump, and ACK work. Lifecycle close ownership is separate from mutable transport protocol state.
+
+This slice does **not** decide whether PipeRuntimes share a libp2p host. Its same-SessionID isolation is only separate in-process owner/registry dispatch; current role declaration remains SessionID-only and does not make duplicate IDs wire-routable on one shared host. It adds no PipeID field, node-level Carrier/Reachability routing, permanent host topology assumption, Carrier redesign, Store boundary, or Session-state redesign. No package-global mutable runtime registry, process-global session dispatch map, or ambient mutable runtime state remains on this path.
 
 ## Persistence boundary
 

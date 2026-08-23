@@ -410,9 +410,15 @@ func TestLocalPipeRecoveryFetchesNewAuthoritySnapshotAfterPublisherRestart(t *te
 	localSpec := domain.PipeSpec{Ref: localRef, PipeID: "pip_client", Ingress: domain.PipeIngress{Kind: domain.IngressLocal, Listen: "127.0.0.1:0"}, Target: domain.Ref{Kind: domain.KindPipe, Name: pipeID}, Visibility: domain.VisibilityPrivate, Access: domain.AccessMembers}
 	server, app := net.Pipe()
 	defer app.Close()
+	nodeRuntime := NewNodeRuntime(ctx)
+	defer nodeRuntime.Close()
+	pipeRuntime, err := nodeRuntime.NewPipeRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
 	done := make(chan struct{})
 	go func() {
-		serveLocalConnection(ctx, consumerState, consumerHost, localSpec, resolver, &localLeaseCache{}, server)
+		serveLocalConnection(ctx, consumerState, consumerHost, pipeRuntime, localSpec, resolver, &localLeaseCache{}, server)
 		close(done)
 	}()
 	payload := []byte("publisher-restarted-with-new-runtime-address")
