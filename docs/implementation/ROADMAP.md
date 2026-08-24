@@ -7,6 +7,10 @@
 - Freeze prototype baseline as historical/reference evidence.
 - Land architecture preparation before A0 implementation.
 - Stop new feature development against prototype architecture; allow explicitly required security fixes.
+- Optional capabilities and prototype-parity work are not silent critical-path items. A capability may be disabled/removed fail-closed, which files explicit deferred debt, continues the phase, and permits later reintroduction behind a named real consumer. Capability negotiation is optional-intersection wire: removing a capability on both sides degrades deterministically to the ordinary supported path.
+- Required security fixes and corrections to the current supported path are explicit exceptions and may proceed outside the accepted phase scope.
+- After two independent review cycles reach the same phase-blocking conclusion, choose FIX/REDESIGN, DISABLE/DEFER, or DECOMPOSE rather than opening further serialized blocked/split/ordering review rounds.
+- Deferred debt records: capability/behavior deferred; current path reachability; consequence; mitigation (quarantine/removal); reconsideration prerequisite (a real consumer, plus the seam and the contract the reintroduction needs) and phase; and retained evidence references.
 - No internal backward compatibility with prototype packages required.
 - Do not preserve bad abstractions to minimize diff.
 - Prefer small coherent A0 PRs. Architecture Guardian decomposes A0 after preparation is accepted.
@@ -29,9 +33,24 @@
 - Introduce L4 use cases so CLI becomes parsing/presentation adapter.
 - Define initial lightweight dependency-edge harness only after edges exist.
 
-**Functional proof:** Journey A, zero-config public exact share: clean A attaches HTTP and emits exact invite; clean B connects; traffic succeeds over verified signed-bundle-resolved `relay.tubo.click` reachability with direct path when available and relay fallback otherwise; no Scope, namespace, discovery, membership, user-configured authority, or final hardcoded/temporary provider path; receiver gets successful authorization result before local target open.
+**Functional proof:** Journey A, zero-config public exact share: clean A attaches HTTP and emits exact invite; clean B connects; traffic succeeds over verified signed-bundle-resolved `relay.tubo.click` reachability with direct path when available and relay fallback otherwise; no Scope, namespace, discovery, membership, user-configured authority, or final hardcoded/temporary provider path; receiver gets successful authorization result before local target open. Journey A requires no resume and no mid-session carrier/Pipe migration: direct-versus-relay is initial path selection only; the direct-when-available policy returns only with the L1 Reachability slice (deferred A0-enabling debt).
 
-**Non-goals:** Scoped collaboration, catalog, A2A/MCP semantics, broad migration/compatibility layer, package-per-layer tree, advanced gossip, peer sync, discovery-key rotation, operator/private provider substitution, trust-root or bundle/key rotation lifecycle, full prototype feature parity.
+**A0 vertical critical path**
+
+1. L0 domain boundary (done: #21/#22, `f2ce40a`).
+2. Explicit runtime ownership `NodeRuntime -> PipeRuntime -> SessionRegistry -> Session` (done: #26/#27, `7b6c06f`).
+3. Fail-closed session-resume quarantine (issue #39, **pending** — not implemented) — disables the defective prototype resume surface, removes a live attack surface, and unblocks the vertical path. The quarantine is wire-safe because capability negotiation is optional-intersection.
+4. Neutral Carrier seam minimal (rescoped #28; supersedes closed PR #29) — Session consumes a Carrier contract, not libp2p stream/host/*store.Store concrete types — exit criterion 4, basis for 6/7.
+5. Reachability as L1 boundary returning carriers (no policy) + minimal signed public-bootstrap-bundle contract (version/validity/signature fail closed) — exit criteria 3, 6.
+6. Consumer-side/neutral open-authorization contract at the receiving boundary + Exact Pipe Authority invite redemption → short-lived exact-Pipe Access Lease; L2 imports no concrete L3 — exit criteria 1, 2.
+7. Pipe Engine (`Ingress → Pipe → Target`) composition, Pipe-to-Pipe, loop/hop rules — exit criterion 7.
+8. Durable Service/Pipe definition distinct from PipeRuntime/Session + narrow persistence ports + L4 use cases + thin CLI — exit criteria 8, 9, 10.
+9. Real `go list -deps` L0-L5 dependency-edge harness — exit criterion 11.
+10. Journey A distributed zero-config exact-share proof + acceptance-matrix reconciliation — exit criterion 12 + epic #18 DoD.
+
+Resume/carrier-replacement correctness, epoch, and no-replay hardening are deferred post-A0 resilient-Session debt (#32, children #34-#37), not on the A0 path.
+
+**Non-goals:** no mid-session resume or carrier/Pipe migration in Journey A; otherwise Scoped collaboration, catalog, A2A/MCP semantics, broad migration/compatibility layer, package-per-layer tree, advanced gossip, peer sync, discovery-key rotation, operator/private provider substitution, trust-root or bundle/key rotation lifecycle, full prototype feature parity.
 
 **Dependencies:** approved HLD/architecture prep; embedded/preinstalled public trust material for minimal signed bundle. Public infrastructure remains reachability-only.
 

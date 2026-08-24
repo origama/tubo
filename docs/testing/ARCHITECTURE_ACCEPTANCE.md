@@ -20,7 +20,7 @@ No E2E pass can waive architecture dependency evidence.
 
 ## Implemented evidence: A0 issue #26 runtime ownership
 
-`go test ./internal/runtime` and `go test -race ./internal/runtime` cover owner-bound `NodeRuntime -> PipeRuntime -> SessionRegistry -> Session` lifecycle: duplicate IDs reject within one PipeRuntime; same synthetic SessionID under two sibling PipeRuntimes remains isolated by separately bound in-process dispatch; unknown, wrong-owner, closed, malformed, complete oversized (over 4 KiB), and unsupported role declarations reset/fail closed; parent cancellation closes owned Sessions and prevents accepted resume activation or registry resurrection; concurrent Session/Pipe/Node close waits for admitted dispatch, outbound open, activation, pump, ACK, and local cleanup work before reporting completion; terminal close ownership remains fenced even when a pump has a local non-EOF failure. Existing runtime tests retain resume proof, bounds, epoch fencing, half-close, no-replay, and remote-open authorization evidence.
+`go test ./internal/runtime` and `go test -race ./internal/runtime` cover owner-bound `NodeRuntime -> PipeRuntime -> SessionRegistry -> Session` lifecycle: duplicate IDs reject within one PipeRuntime; same synthetic SessionID under two sibling PipeRuntimes remains isolated by separately bound in-process dispatch; unknown, wrong-owner, closed, malformed, complete oversized (over 4 KiB), and unsupported role declarations reset/fail closed; parent cancellation closes owned Sessions and prevents accepted resume activation or registry resurrection; concurrent Session/Pipe/Node close waits for admitted dispatch, outbound open, activation, pump, ACK, and local cleanup work before reporting completion; terminal close ownership remains fenced even when a pump has a local non-EOF failure. Existing runtime tests retain bounds, non-resume half-close (FIN once, after the final byte), ownership/cancellation, and remote-open authorization evidence. The same tests currently also exercise resume-specific proof, epoch-fencing, and no-replay machinery, but that work is deferred post-A0 resilient-Session debt (governance record issue #18; decomposition #32), and the fail-closed session-resume quarantine (issue #39, **pending** — not implemented) targets removal of that machinery from the A0 path. Resume proof, epoch fencing, and no-replay are not current positive A0-path evidence claims.
 
 This is not shared-host routing evidence. `StreamRoleDeclaration` remains SessionID-only, is consumed once before owner-bound dispatch, and no PipeID wire field or node-level Carrier/Reachability routing is added. This slice does not decide host sharing, encode per-Pipe host ownership, or complete Carrier, persistence, authorization, Scope-independent connectivity, CLI, Journey A, or distributed behavior.
 
@@ -42,6 +42,7 @@ Required properties:
 - L3 owns concrete lease/crypto/trust/revocation/policy/refresh implementation; L2 imports none of it;
 - local Service target never leaves owner;
 - Carrier/Session and runtime ownership are explicit; architecture edges pass.
+- no mid-session resume or carrier/Pipe migration; direct-versus-relay is initial path selection only (direct-when-available returns with the L1 Reachability slice); no live path migration on the A0 path.
 
 ## Journey B — scoped collaboration on public infrastructure (A1)
 
@@ -81,6 +82,22 @@ Required properties: descriptor metadata remains outside PipeRecord; exact Pipe 
 | A2 | Journey C with operator/private/public/hybrid provider substitution, private bootstrap, and rotation-lifecycle evidence |
 | A3 | Descriptor/catalog component and integration proof; no PipeRecord application metadata |
 | A4 | Journey E, capability/skill discovery and A2A integration with unchanged L2 semantics |
+
+### Phase advancement review
+
+A slice or alleged phase blocker advances the current phase only when it is current-phase critical. Every advancement argument answers the five-question critical-path test, separately per block:
+
+1. Which exact current-phase exit criterion does this block or advance?
+2. Is a critical current-phase-enabling issue actually open and blocked behind it?
+3. Is disable/remove/defer genuinely impossible, or is the capability optional-intersection / removable fail-closed?
+4. Is this a required current-phase primitive, or prototype-parity / optional capability?
+5. Does deferral make the current-phase path wrong or insecure?
+
+Optional capabilities and prototype-parity work may be disabled or removed fail-closed. Removal files explicit deferred debt with required fields (capability; current path reachability; consequence; mitigation; reconsideration prerequisite — a real consumer plus the seam and contract the reintroduction needs — and phase; retained evidence references), continues the phase, and permits later reintroduction behind a named real consumer. Required security fixes and corrections to the current supported path are explicit exceptions.
+
+After two independent review cycles reach the same phase-blocking conclusion, choose one terminal outcome — FIX/REDESIGN, DISABLE/DEFER, or DECOMPOSE — rather than opening further serialized blocked/split/ordering review rounds. Every review returns two separate answers: scope correctness of the slice, and current-phase critical-path necessity. A scope pass does not place a slice on the critical path.
+
+Phase-advancement items carry a required Phase Advancement (or explicit current-phase-mandatory exemption) section naming exact exit criteria advanced, predecessor commits/slices, successor slices, deferred debt, and the governance record (epic issue #18). Example: the fail-closed session-resume quarantine (issue #39, **pending** — not implemented) is the enabling predecessor for A0 exit criterion 4; it removes the defective prototype resume surface from the A0 path. None of the A0 exit criteria 1-12 require resume, epoch, or no-replay evidence, so those remain deferred post-A0 debt (#32) — evidentiary docs must not claim them as supported A0 evidence.
 
 ## Dependency-check plan
 

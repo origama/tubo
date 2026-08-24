@@ -41,6 +41,7 @@ The third slice adds the real relay machine and authority.
 A slice includes:
 
 - issue acceptance criteria;
+- phase advancement answer (five-question critical-path test: exact exit criteria advanced, critical-issue dependency, disable/remove/defer impossibility, required-primitive vs prototype-parity, deferral-wrong-or-insecure) and any deferred-debt record;
 - domain/API changes;
 - positive and negative tests;
 - race/concurrency evidence where relevant;

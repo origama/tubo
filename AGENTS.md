@@ -126,6 +126,30 @@ Dependencies point downward only. Layers are semantic boundaries, not package ma
 
 Generalize only after second real consumer. Avoid speculative generic resource frameworks, universal plugin systems, `map[string]any` capability models, god ports packages, and abstraction for abstraction's sake.
 
+## Phase advancement and deferred-capability policy (governance record)
+
+A slice or alleged blocker advances the current phase only when it is current-phase critical. Every advancement argument answers the five-question critical-path test, separately per item:
+
+1. Which exact current-phase exit criterion does this block or advance?
+2. Is a critical current-phase-enabling issue actually open and blocked behind it?
+3. Is disable/remove/defer genuinely impossible, or is the capability optional-intersection / removable fail-closed?
+4. Is this a required primitive of this phase, or prototype-parity / optional capability?
+5. Does deferral make the current-phase path wrong or insecure?
+
+Optional capabilities and prototype-parity work may be disabled or removed fail-closed. Removal files explicit deferred debt, continues the phase, and permits later reintroduction behind a named real consumer — it is not a discarded feature and not silent scope reduction. Capability negotiation is optional-intersection wire: removing a capability on both sides degrades deterministically to the ordinary supported path.
+
+**Exceptions:** required security fixes and corrections to the current supported path may proceed outside the accepted phase scope. These are explicit exceptions, not a blank carve-out.
+
+After two independent review cycles reach the same phase-blocking conclusion, choose one terminal outcome — FIX/REDESIGN, DISABLE/DEFER, or DECOMPOSE — rather than opening another serialized blocked/split/ordering review round.
+
+Deferred debt must record, at minimum: the capability/behavior deferred; current path reachability; consequence of the deferral; mitigation (quarantine/removal) taken; reconsideration prerequisite (a real consumer, plus the seam and the contract the reintroduction needs) and phase; and retained evidence references (commits, branches, closed PRs, checkpoints).
+
+Every review returns two separate answers: (a) scope correctness of the slice, and (b) whether the slice is on the current-phase critical path. A scope pass does not place a slice on the critical path, and vice versa.
+
+Phase advancement items carry a required Phase Advancement section — or an explicit current-phase-mandatory exemption justification — naming the exact exit criteria advanced, predecessor commits/slices, successor slices, and any deferred debt. See the governance record on epic #18.
+
+The revised A0 vertical critical path is in `docs/implementation/ROADMAP.md`. Journey A requires no resume and no mid-session carrier/Pipe migration: direct-versus-relay is initial path selection only; migration behavior returns only with the L1 Reachability slice as deferred A0-enabling debt.
+
 ## Engineering and delivery
 
 - Prefer standard library before custom machinery. No mandatory central daemon, custom network layer above libp2p, DHT/rendezvous without concrete issue and threat analysis, hidden TODOs, or global mutable runtime state.
