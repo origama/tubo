@@ -39,7 +39,7 @@
 
 1. L0 domain boundary (done: #21/#22, `f2ce40a`).
 2. Explicit runtime ownership `NodeRuntime -> PipeRuntime -> SessionRegistry -> Session` (done: #26/#27, `7b6c06f`).
-3. Fail-closed session-resume quarantine (issue #39, **pending** — not implemented) — disables the defective prototype resume surface, removes a live attack surface, and unblocks the vertical path. The quarantine is wire-safe because capability negotiation is optional-intersection.
+3. Executed fail-closed session-resume quarantine (issue #39) — disables the defective prototype resume surface, removes a live attack surface, and unblocks the vertical path. The quarantine is wire-safe because capability negotiation is optional-intersection and because the post-quarantine binary simply does not advertise/offer/accept resume; mixed peers degrade to the ordinary authorized non-resume `/tubo/tunnel/2.0` tunnel.
 4. Neutral Carrier seam minimal (rescoped #28; supersedes closed PR #29) — Session consumes a Carrier contract, not libp2p stream/host/*store.Store concrete types — exit criterion 4, basis for 6/7.
 5. Reachability as L1 boundary returning carriers (no policy) + minimal signed public-bootstrap-bundle contract (version/validity/signature fail closed) — exit criteria 3, 6.
 6. Consumer-side/neutral open-authorization contract at the receiving boundary + Exact Pipe Authority invite redemption → short-lived exact-Pipe Access Lease; L2 imports no concrete L3 — exit criteria 1, 2.

@@ -68,25 +68,13 @@ Public sharing is unlisted and invite-only by default. A self-contained invite m
 - refresh leases are longer and checked by the authority;
 - invite JTI, session ID, pipe-access epoch, and pipe-publish state are revocable;
 - already-issued offline access remains valid until lease expiry unless pipe checks its local authoritative revocation state before OpenOK; gossip propagation is future work.
-- access leases expire after 10 minutes; refresh leases expire after 48 hours and require authority online check. Refresh affects later sessions only. Live tunnel renewal requires future tunnel resume/switch protocol.
+- access leases expire after 10 minutes; refresh leases expire after 48 hours and require authority online check. Refresh affects later sessions only. There is no live in-session renewal on the A0 path: on carrier/authorization failure the session terminates and a new authorized connection is required.
 
 Do not claim immediate revocation without such a check.
 
 ### Session resume security
 
-Session resume uses a memory-only `resume_secret` (32 random bytes) negotiated during `OpenOK`. It is never persisted, logged, or included in any output. The resume handshake uses HMAC-SHA256 proof bound to:
-
-- domain label (`tubo-resume-v1`)
-- `pipe_id`
-- `session_id`
-- epoch
-- client and server peer IDs
-- client and server nonces (each 32 random bytes)
-- canonical counters and transcript digest
-
-Proofs are verified on every message. A mismatched proof, nonce, or epoch closes the candidate stream. The candidate stream must reach the same authenticated peer; claimed direct/relay labels are verified locally from the libp2p connection state, never trusted from peer-supplied fields.
-
-One candidate carrier per session is enforced. The resume secret never leaves the session's memory.
+Removed from the A0 path (issue #39). The session-resume machinery (`/tubo/tunnel-resume/2.1`, `session-resume-v1`, `ResumeOffer`, memory-only `resume_secret`) was a prototype surface with documented defects and a live attack surface; the fail-closed quarantine removes it from the A0 data plane. No production code generates, persists, logs, or negotiates a resume secret or proof on the A0 path; an unsolicited resume stream has no handler and is reset. Session-resume/carrier-replacement correctness is deferred post-A0 debt (#32).
 
 ## Private overlay
 

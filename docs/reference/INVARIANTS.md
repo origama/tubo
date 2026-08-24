@@ -54,6 +54,8 @@ These invariants are acceptance criteria and learned behavior for preserved prot
 
 ## Data plane
 
+Invariants 1-6 below are current on the A0 path. Invariants 7-15 describe the session-resume/planned-switch/carrier-recovery machinery that was **prototype machinery removed from the A0 path** by the fail-closed session-resume quarantine (issue #39). That machinery (resume/control streams, retention/replay window, epoch fencing, resume handshake/proofs, planned-switch barrier, detached grace) does not exist on the A0 data plane; it is deferred post-A0 resilient-Session debt (#32). The authorization-reporting invariants in the Authority section remain current: the authorization/lifetime timer closes target+stream at lease expiry, and no successful authorization result means no local target open.
+
 1. Protocol 2.0 performs a bounded handshake before any target is dialed.
 2. After `OpenOK`, traffic is raw full-duplex bytes for HTTP, WebSocket, TCP, and TLS passthrough.
 3. No application payload is buffered in full by Tubo.

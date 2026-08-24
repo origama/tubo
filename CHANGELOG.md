@@ -4,7 +4,15 @@
 
 ## [Unreleased]
 
+### Removed (A0)
+
+- Session-resume surface removed from the A0 path (issue #39): `/tubo/tunnel-resume/2.1`, the `session-resume-v1` capability, resume/control stream roles, continuous ACK/retention/replay window, planned-switch barrier, abrupt carrier recovery with detached grace, `ResumeOffer`, and the memory-only `resume_secret`. A0 sessions are raw full-duplex authorized `/tubo/tunnel/2.0`; carrier failure terminates the session and a new authorized connection is required.
+- Supersedes prototype resume work previously carried in PRs #38/#29/#33 (closed unmerged; retained only as evidence branches `issue-34-session-resume-data-plane` and `issue-28-neutral-carrier`). Session-resume/carrier-replacement correctness remains deferred post-A0 resilient-Session debt (#32).
+
 ### Added
+
+Resume-related entries immediately below are historical prototype records superseded by the quarantine above; they are not current A0 features.
+
 - Session resume protocol `/tubo/tunnel-resume/2.1` with control and resume stream roles, authenticated via HMAC-SHA256 proof over memory-only resume secret.
 - `sessionPump`: bounded, epoch-fenced, receiver-committed byte transport replacing uncoordinated `copyDuplex` for resume-capable sessions.
 - Continuous ACK sender (every 64 KiB or 25 ms) with retained replay window (1 MiB per direction, 64 MiB aggregate).

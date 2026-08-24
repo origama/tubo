@@ -1,25 +1,14 @@
 package runtime
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"sync"
-
-	core "github.com/libp2p/go-libp2p/core/network"
-
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 )
 
 var (
 	errRuntimeClosed      = errors.New("runtime closed")
 	errDuplicateSessionID = errors.New("duplicate session ID")
-	errUnknownSession     = errors.New("unknown session")
-	errUnsupportedRole    = errors.New("unsupported stream role")
 	errInvalidSessionID   = errors.New("invalid session ID")
 )
 
@@ -110,8 +99,8 @@ func (p *PipeRuntime) NewSession(cfg sessionConfig) (*sessionPump, error) {
 	return newSessionPump(p.ctx, p.registry, cfg)
 }
 
-// Close cancels owned sessions and rejects future registration and dispatch.
-// It does not decide host or carrier ownership.
+// Close cancels owned sessions and rejects future registration. It does not
+// decide host or carrier ownership.
 func (p *PipeRuntime) Close() {
 	p.mu.Lock()
 	if p.closed {
@@ -129,77 +118,4 @@ func (p *PipeRuntime) Close() {
 	}
 	p.node.removePipe(p)
 	close(p.done)
-}
-
-func (p *PipeRuntime) sessionForRole(decl wire.StreamRoleDeclaration) (*sessionPump, error) {
-	if decl.SessionID == "" {
-		return nil, errInvalidSessionID
-	}
-	if decl.Role != wire.StreamRoleControl && decl.Role != wire.StreamRoleResume {
-		return nil, errUnsupportedRole
-	}
-	p.mu.Lock()
-	closed := p.closed || p.ctx.Err() != nil
-	p.mu.Unlock()
-	if closed {
-		return nil, errRuntimeClosed
-	}
-	session := p.registry.get(decl.SessionID)
-	if session == nil || !session.acceptDispatch() {
-		return nil, errUnknownSession
-	}
-	return session, nil
-}
-
-// readRoleDeclaration reads one strict, allocation-bounded initial role frame.
-func readRoleDeclaration(r io.Reader, value *wire.StreamRoleDeclaration) error {
-	var size [4]byte
-	if _, err := io.ReadFull(r, size[:]); err != nil {
-		return err
-	}
-	n := binary.BigEndian.Uint32(size[:])
-	if n == 0 || n > wire.MaxResumeFrame {
-		return fmt.Errorf("invalid resume role frame size %d", n)
-	}
-	data := make([]byte, int(n))
-	if _, err := io.ReadFull(r, data); err != nil {
-		return err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(value); err != nil {
-		return err
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return errors.New("trailing resume role frame payload")
-	}
-	return nil
-}
-
-// HandleResumeStream consumes one bounded role declaration then dispatches it
-// only within this PipeRuntime. Shared-host routing remains intentionally open.
-func (p *PipeRuntime) HandleResumeStream(stream core.Stream) {
-	var decl wire.StreamRoleDeclaration
-	if err := readRoleDeclaration(stream, &decl); err != nil {
-		_ = stream.Reset()
-		return
-	}
-	session, err := p.sessionForRole(decl)
-	if err != nil || !session.beginDispatch(stream) {
-		_ = stream.Reset()
-		return
-	}
-	defer session.endDispatch(stream)
-	switch decl.Role {
-	case wire.StreamRoleControl:
-		if !session.setControlStream(stream) {
-			_ = stream.Reset()
-			return
-		}
-		session.handleControlStream(stream)
-	case wire.StreamRoleResume:
-		session.handleResumeStream(stream)
-	default:
-		_ = stream.Reset()
-	}
 }

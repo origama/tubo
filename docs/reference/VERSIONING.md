@@ -103,3 +103,15 @@ Before merging a wire/state change, state explicitly:
 - rollout: stop affected local runtimes, back up state, deploy schema 10 binary, then restart. Resume sessions only work when both peers are upgraded;
 - rollback: stop schema 10 binaries and restore pre-schema 10 backup; no downgrade migration exists;
 - evidence: local unit/in-process and race coverage; no three-machine campaign run.
+
+## Current migration decision: session resume capability removal (A0)
+
+The A0 fail-closed session-resume quarantine (issue #39) removes the session-resume surface from the A0 binary:
+
+- product bump: unchanged (`0.1.0-dev`);
+- protocol bump: the resume surface (`/tubo/tunnel-resume/2.1`, `session-resume-v1` capability, resume/control stream roles, `ResumeOffer`, and the resume handshake/control message set) is removed; `/tubo/tunnel/2.0` remains the current authorized tunnel protocol;
+- state bump: none. The schema-10 `sessions.current_transport_path` and `path_events` tables remain, unused by resume on the A0 path;
+- mixed-version behavior: a post-quarantine peer does not advertise, offer, or accept resume, so a pre-quarantine peer's resume attempt deterministically degrades to the ordinary authorized non-resume `/tubo/tunnel/2.0` tunnel (the safe state #32's mixed-version policy prescribes);
+- rollback: binary-only. A pre-quarantine binary may resume against a live post-quarantine target only over the ordinary tunnel; no state downgrade migration exists or is needed;
+- evidence: deterministic unit/in-process and race coverage plus the quarantine source-scan tests (no resume prod surface);
+- deferred debt: session-resume/carrier-replacement correctness and a future `session-resume-v2`/`tunnel-resume` cutover are post-A0 resilient-Session debt under issue #32 (children #34-#37 relabeled deferred), re-derived against the post-Carrier (`#28`) architecture behind a real consumer. Prototype evidence remains in Git history and retained branches (`issue-34-session-resume-data-plane` `ddea9a1`, `issue-28-neutral-carrier` `f5b473f`, closed PR #33, checkpoint `db2724e`); PRs #38/#29/#33 are closed unmerged, superseded by this quarantine.
