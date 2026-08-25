@@ -50,6 +50,17 @@ Architecture effect: `internal/reachability` imports only the L1 host adapter (`
 
 **Criteria status (binding):** criterion 6 (Reachability testable as carrier provider without policy decision) is implemented. Criterion 3 (zero-config Journey A resolves `relay.tubo.click` via verified bundle) is **structural only**: the contract, verifier, and fail-closed zero-config behavior are implemented, but production trust material (relay peer ID/stability, multiaddrs/DNS, a dedicated bootstrap signing root distinct from any authority key, bundle version, validity policy) is deliberately absent and tracked as a blocker (issue #45). Journey A production reachability and any distributed real-relay proof are **not claimed** (ROADMAP steps 10).
 
+## Implemented evidence: A0 issue #48 (neutral receiving-boundary OpenAuthorizer seam, 6A)
+
+`go test ./internal/runtime -run 'TestAuthorizeOpen|TestScopeTokenOpen'`, full `go test ./internal/runtime ./internal/openauth`, and the deterministic architecture guard (`tests/verify-architecture.sh`) prove the 6A seam-only step:
+
+- Neutral `internal/openauth` contract (`OpenRequest`/`Authorization`/`OpenAuthorizer`, stdlib-only) carries no Scope, discovery, target, PipeRecord, reachability, trust store, membership/policy, or arbitrary-metadata map.
+- The receiving L2 serve path (`internal/runtime/serve.go`) builds the neutral request, invokes the injected `OpenAuthorizer`, and independently binds result PipeID/Subject/non-zero future ExpiresAt before dialing the local target. It imports no concrete `internal/authority` or `internal/store` for remote-open validation.
+- Deterministic fake-authorizer tests prove: authorizer denial, wrong PipeID in result, wrong Subject, zero/expired ExpiresAt, and missing injected authorizer never dial the target (dial count 0); a valid result dials the target exactly once.
+- Transitional `scopeTokenOpenAuthorizer` preserves the existing prototype Scope-token decode/verify/revocation/epoch/proof validation fail-closed; tests prove missing/malformed/other-type/wrong-key/wrong-scope/wrong-audience/tampered/expired leases deny, and a revoked already-valid credential denies.
+
+This is **seam-only transitional** evidence: the canonical Scope-independent exact-Pipe Access Lease + Exact Pipe Authority remain issue #49 (6B). No prototype `authority.Token` is renamed/wrapped as the target lease; issue #49 removes the transitional remote-open path. `tests/verify-architecture.sh` fails if `serve.go` imports concrete authority/store or if the openauth contract carries a Scope/metadata map.
+
 ## Implemented persistence evidence: issue #25
 
 `internal/store` uses WAL plus SQLite-native immediate writer arbitration for Store write transactions. Deterministic tests prove writer reservation before mutation-controlling reads, characterize deferred read-to-write `SQLITE_BUSY`, retain atomic snapshot/freshness rollback and lease fencing, and prove cancellation released after a blocked `Store.Open` writer acquisition performs no migration/state mutation. Existing five-second SQLite busy policy bounds writer wait; prompt interruption of that driver busy wait is not claimed. This evidence fixes snapshot reconciliation contention only. It does **not** characterize or claim resolution of original private-HTTP `Store.Open`/migration `SQLITE_BUSY` run `32638512295` / job `97191929136`; exact command, home, lock holder, and statement remain unobserved.

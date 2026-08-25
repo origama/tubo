@@ -68,4 +68,38 @@ if [[ -n "$bundle_forbidden" ]]; then
   exit 1
 fi
 
-echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies"
+# Issue #48: receiving-boundary OpenAuthorizer seam. The L2 receiving boundary
+# must consume only the neutral openauth contract; it must not import concrete
+# L3 authority/revocation or persistence for remote-open validation. The
+# transitional Scope-token adapter lives in a separate file
+# (scope_token_authorizer.go), which issue #49 replaces with the canonical
+# exact-Pipe Access Lease + Exact Pipe Authority.
+# shellcheck disable=SC2207
+receive_boundary_files='internal/runtime/serve.go'
+for f in $receive_boundary_files; do
+  if grep -E '"github.com/origama/tubo-rebuilt/internal/(authority|store)"' "$f"; then
+    echo "[architecture] $f imports forbidden concrete authority/store for remote-open validation" >&2
+    exit 1
+  fi
+  if grep -E '"github.com/origama/tubo-rebuilt/internal/discovery"' "$f"; then
+    echo "[architecture] $f imports forbidden discovery material on receiving boundary" >&2
+    exit 1
+  fi
+done
+
+# The neutral openauth contract must carry no Scope topology and no arbitrary
+# metadata map, and must depend only on the standard library so L2 and L3
+# converge on the same contract.
+openauth_pkg="$(go list -f '{{.ImportPath}}' ./internal/openauth)"
+openauth_non_stdlib="$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/origama/tubo-rebuilt/internal/openauth")}}{{.ImportPath}}{{end}}' "$openauth_pkg" | grep '^github.com/origama/tubo-rebuilt/' || true)"
+if [[ -n "$openauth_non_stdlib" ]]; then
+  echo "[architecture] openauth must not depend on concrete repo packages:" >&2
+  printf '%s\n' "$openauth_non_stdlib" >&2
+  exit 1
+fi
+if grep -R -n -E 'Scope.*json:"scope|map\[string\]any' internal/openauth --include='*.go'; then
+  echo "[architecture] openauth contract must not carry Scope or arbitrary metadata (map[string]any)" >&2
+  exit 1
+fi
+
+echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map"

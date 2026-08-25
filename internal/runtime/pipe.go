@@ -26,6 +26,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/discovery"
 	"github.com/origama/tubo-rebuilt/internal/domain"
 	"github.com/origama/tubo-rebuilt/internal/node"
+	"github.com/origama/tubo-rebuilt/internal/openauth"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 	"github.com/origama/tubo-rebuilt/internal/store"
 )
@@ -204,7 +205,7 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	if err := publish(time.Now().UTC()); err != nil {
 		return err
 	}
-	handler := &tunnelServer{state: state, spec: spec, service: service, authorityPublic: authorityPublic, runtime: pipeRuntime}
+	handler := &tunnelServer{state: state, spec: spec, service: service, authorizer: newScopeTokenOpenAuthorizer(state, spec.Scope.String(), authorityPublic), runtime: pipeRuntime}
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
 	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: address, StartedAt: time.Now().UTC()}
 	if err := state.PutRun(ctx, run); err != nil {
@@ -274,156 +275,12 @@ func transferSessionAuthorizationTimer(timer *time.Timer, expiresAt time.Time, s
 }
 
 type tunnelServer struct {
-	state           *store.Store
-	spec            domain.PipeSpec
-	service         domain.ServiceSpec
-	authorityPublic ed25519.PublicKey
-	runtime         *PipeRuntime
-}
-
-func (s *tunnelServer) handle(stream core.Stream) {
-	if err := s.serve(stream); err != nil {
-		if errors.Is(err, errInitialCarrierTransferred) {
-			return
-		}
-		_ = stream.Reset()
-	} else {
-		_ = stream.Close()
-	}
-}
-
-func (s *tunnelServer) serve(stream core.Stream) error {
-	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
-	var hello wire.ClientHello
-	if err := wire.ReadFrame(stream, &hello); err != nil {
-		return err
-	}
-	if hello.Version != "2.0" || len(hello.Capabilities) > 64 || !boundedStrings(8192, append([]string{hello.ClientPublic}, hello.Capabilities...)...) {
-		return errors.New("protocol mismatch or field exceeds limit")
-	}
-	clientPublic, err := authority.PublicFromString(hello.ClientPublic)
-	if err != nil {
-		return err
-	}
-	challenge := randomNonce()
-	if err := wire.WriteFrame(stream, wire.ServerHello{Version: "2.0", PipeID: s.spec.PipeID, Challenge: challenge, Capabilities: baseSessionCapabilities()}); err != nil {
-		return err
-	}
-	var open wire.OpenPipe
-	if err := wire.ReadFrame(stream, &open); err != nil {
-		return err
-	}
-	if !boundedStrings(8192, append([]string{open.PipeID, open.ChallengeProof}, open.VisitedPipeIDs...)...) || len(open.AccessLease) > authority.MaxTokenSize {
-		return s.openError(stream, "invalid_input", "open field exceeds limit")
-	}
-	if open.PipeID != s.spec.PipeID {
-		return s.openError(stream, "not_found", "pipe_id mismatch")
-	}
-	if open.HopLimit <= 0 || open.HopLimit > domain.DefaultMaxPipeHops || len(open.VisitedPipeIDs) >= open.HopLimit {
-		return s.openError(stream, "hop_limit_exceeded", "logical hop limit exceeded")
-	}
-	seen := map[string]bool{}
-	for _, id := range open.VisitedPipeIDs {
-		if seen[id] || id == s.spec.PipeID {
-			return s.openError(stream, "loop_detected", "repeated pipe_id")
-		}
-		seen[id] = true
-	}
-	lease, err := authority.Decode(open.AccessLease)
-	if err != nil {
-		return s.openError(stream, "authorization_denied", "invalid access lease")
-	}
-	if err := lease.Verify(s.authorityPublic, time.Now().UTC()); err != nil {
-		return s.openError(stream, "authorization_denied", "invalid access lease")
-	}
-	if lease.Type != "connect.access" || lease.Audience != s.spec.PipeID || lease.Subject != hello.ClientPublic || lease.Scope != *s.spec.Scope {
-		return s.openError(stream, "authorization_denied", "access lease binding mismatch")
-	}
-	revoked, revokeErr := s.state.IsRevoked(context.Background(), s.spec.Scope.String(), "connect.access", lease.JTI)
-	if revokeErr != nil {
-		return s.openError(stream, "authorization_denied", "revocation state unavailable")
-	}
-	if revoked {
-		return s.openError(stream, "authorization_denied", "access revoked")
-	}
-	accessEpoch, revokeErr := s.state.RevocationEpoch(context.Background(), s.spec.Scope.String(), "pipe-access", s.spec.PipeID)
-	if revokeErr != nil {
-		return s.openError(stream, "authorization_denied", "revocation state unavailable")
-	}
-	if lease.AccessEpoch < accessEpoch {
-		return s.openError(stream, "authorization_denied", "access epoch revoked")
-	}
-	if !authority.VerifyProof(clientPublic, open.ChallengeProof, "tubo-open-v2", challenge, s.spec.PipeID) {
-		return s.openError(stream, "authorization_denied", "invalid challenge proof")
-	}
-	target, err := dialService(s.service)
-	if err != nil {
-		return s.openError(stream, "target_unreachable", "local target unavailable")
-	}
-	targetOwned := false
-	defer func() {
-		if !targetOwned {
-			_ = target.Close()
-		}
-	}()
-	authorizationTimer := time.AfterFunc(time.Until(lease.ExpiresAt), func() { _ = target.Close() })
-	defer func() { authorizationTimer.Stop() }()
-	sessionID, err := authority.SessionID()
-	if err != nil {
-		return err
-	}
-	revoked, revokeErr = s.state.IsRevoked(context.Background(), s.spec.Scope.String(), "session", sessionID)
-	if revokeErr != nil || revoked {
-		return s.openError(stream, "authorization_denied", "session revoked")
-	}
-
-	if err := wire.WriteFrame(stream, authorizedOpenResult(sessionID)); err != nil {
-		return err
-	}
-	_ = stream.SetDeadline(time.Time{})
-
-	session := store.Session{ID: sessionID, PipeRef: s.spec.Ref.String(), InitialTransportPath: "relayed", CurrentTransportPath: "relayed", StartedAt: time.Now().UTC()}
-	_ = s.state.PutSession(context.Background(), session)
-	runtimeInfof("session opened pipe=%s session=%s path=relayed", s.spec.Ref, sessionID)
-
-	// Re-grounded data plane: an owner-bound Session owns the Carrier and the
-	// local target. SetActiveCarrier fences admission; the authorization timer
-	// is transferred to Session.Stop so lease expiry terminates the Session
-	// (closing carrier and target), never the raw stream twice.
-	carrier := node.WrapStream(stream)
-	sp, err := s.runtime.NewSession(sessionConfig{
-		SessionID:    sessionID,
-		PipeID:       s.spec.PipeID,
-		Scope:        s.spec.Scope.String(),
-		TargetConn:   target,
-		InitialEpoch: 1,
-		IsClient:     false,
-	})
-	if err != nil {
-		return err
-	}
-	if !sp.SetActiveCarrier(carrier) {
-		// Session already terminalized the wrapped Carrier; the handler must
-		// not issue a second raw stream reset.
-		return errInitialCarrierTransferred
-	}
-	targetOwned = true // Session now owns the local target terminal action.
-	// Session carrier lease now exclusively owns stream terminal action.
-	// Replace the raw pre-transfer expiry close with Session lifecycle Stop.
-	authorizationTimer = transferSessionAuthorizationTimer(authorizationTimer, lease.ExpiresAt, sp)
-
-	sp.runServerSession()
-	in, out := sp.ByteCounts()
-	session.BytesIn = in
-	session.BytesOut = out
-	_ = s.state.PutSession(context.Background(), session)
-	runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", s.spec.Ref, sessionID, in, out)
-	// Session exclusively owns terminal action after active installation.
-	return errInitialCarrierTransferred
-}
-func (s *tunnelServer) openError(stream core.Stream, code, message string) error {
-	_ = wire.WriteFrame(stream, wire.OpenResult{OK: false, ErrorCode: code, Message: message, RetryClass: "terminal"})
-	return errors.New(code + ": " + message)
+	state      *store.Store
+	spec       domain.PipeSpec
+	service    domain.ServiceSpec
+	authorizer openauth.OpenAuthorizer
+	dialFunc   func(domain.ServiceSpec) (net.Conn, error)
+	runtime    *PipeRuntime
 }
 
 func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec) error {

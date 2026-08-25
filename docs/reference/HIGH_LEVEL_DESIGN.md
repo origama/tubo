@@ -82,6 +82,8 @@ L2 Pipe receiver -> OpenAuthorizer contract <- L3 implementation
 
 A conceptual contract may resemble `AuthorizeOpen(ctx, OpenRequest) (Authorization, error)`. Contract is owned with L2 consumer need or in lower neutral contract location. L3 may implement it; L2 must not import concrete L3 authority/revocation implementations. Receiving-boundary enforcement means L2 invokes contract and opens local target only after success, not that authority implementation belongs inside Secure Connectivity. No successful authorization result means no local target open.
 
+Step 6A (#48, implemented) introduces the neutral receiving-boundary seam only: L2 serve consumes an injected consumer-side OpenAuthorizer and opens no local target before success; current prototype Scope-token validation is preserved fail-closed behind a TRANSITIONAL adapter that #49 (6B, open) replaces with the canonical Scope-independent exact-Pipe Access Lease + Exact Pipe Authority. No prototype Token is renamed or wrapped as the target Access Lease contract.
+
 Session and tunnel layers consume authorization result only. They must not encode public-versus-scope mode branches. Forwarding still requires independently authorized downstream open and explicit forward authority.
 
 ## 7. Invite and lease flow

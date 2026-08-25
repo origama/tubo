@@ -52,6 +52,8 @@ type OpenAuthorizer interface {
 
 Contract is owned beside L2 consumer need or in lower neutral contract location; no package topology follows from example. L3 may implement it. L2 must not import concrete L3 authority/revocation implementations. L3 owns lease decode and cryptographic validation, issuer trust, revocation, epochs, membership/policy, refresh, and issuer behavior. “Authorization is enforced at receiving boundary” means L2 invokes contract and opens local target only after success; it does not move authority implementation into L2. No successful authorization result means no local target open. Reachability returns carrier, not permission.
 
+Issue #48 implements the 6A transitional seam-only step of this boundary: a neutral consumer contract (internal/openauth - OpenRequest/Authorization/OpenAuthorizer, no Scope/discovery/target/trust-store/metadata feed, stdlib-only) is injected into the receiving L2 serve path, which builds the request, invokes the authorizer, and independently binds PipeID/Subject/non-zero future expiry before dialing the local target. The receiving-boundary file (internal/runtime/serve.go) no longer imports concrete internal/authority or internal/store for remote-open validation. The existing prototype Scope-token decode/verify/revocation/epoch/proof validation is preserved fail-closed behind a TRANSITIONAL concrete adapter (runtime.scopeTokenOpenAuthorizer) in a separate file; that adapter is NOT a target Access Lease contract and issue #49 replaces it with the canonical Scope-independent exact-Pipe Access Lease + Exact Pipe Authority.
+
 ## Runtime ownership
 
 ```text

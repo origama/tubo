@@ -87,7 +87,7 @@ A swarm PSK provides transport isolation but is a shared secret, not identity or
 - rate-limit same-key refresh and authority requests;
 - verify every bounded record before one complete pinned-authority 2.1 snapshot transaction; reserve SQLite writer ownership before mutation-controlling reads, sample record/lease expiry afterward, require nonzero authority-global generation, reject generation/high-water rollback and same-generation/different-digest snapshots, and retain valid cache on malformed, mixed-scope, bad-signature, expired, partial, peer/cache, lease-lost, canceled, or 2.0 responses;
 - enforce setup deadlines before target dial;
-- do not dial a service target before authorization succeeds;
+- do not dial a service target before authorization succeeds (issue #48: receiving L2 serve invokes the injected neutral OpenAuthorizer and opens the local target only after a result whose PipeID/Subject/non-zero future ExpiresAt independent binding succeeds; any denial, mismatched result, or zero/expired expiry yields zero target dial/session/bytes);
 - fuzz tunnel, record, authority, token, and state decoders;
 - reject malformed trailing payload and unknown security-critical operations.
 
