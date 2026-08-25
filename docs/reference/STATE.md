@@ -164,3 +164,7 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 - Schema 9/10 adds `current_transport_path` to sessions and a `path_events` table tracking session transport path transitions with epoch, committed byte offsets, and reason. Older binaries reject schema 10. No downgrade migration exists.
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.
+
+## Owner-local Exact Authority key (step 6B1)
+
+Step 6B1 adds no SQLite schema. The owner-local dedicated Exact Authority key is a single local file at the deterministic path `<dir>/exact-authority/ea-<sha256(ownerPublic)[:16] base32>.key.json` (0600; containing directory 0700). The JSON envelope holds `format=exact_owner_authority_key_v1`, `version=1`, `owner`, `authority_secret` (base64url Ed25519 private), `authority_public`, and an `key`-bound owner proof (owner signature over the owner+authority public bytes under the `tubo://exact-owner-key-proof/v1` domain). `Provision` creates-or-loads this key once; `Load` is read-only and fails closed on missing, corrupt, or owner-mismatched material and creates no filesystem entry. No store/table change is made by 6B1.

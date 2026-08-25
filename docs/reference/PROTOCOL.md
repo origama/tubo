@@ -165,3 +165,13 @@ Request proof binds literal operation `records.list`. Authority reads records pl
 ## Version behavior
 
 A protocol major mismatch is rejected. Authority 2.1 snapshot consumers require that exact protocol ID; unavailable 2.1 is failure, not 2.0 fallback. Minor additions require explicit capability negotiation and bounded optional fields. See `VERSIONING.md`.
+
+## Exact-Pipe Access Lease, Owner Binding, and Exact Invite (contract foundation, step 6B1)
+
+Issue #52 / step 6B1 defines, as pure value contracts only, the canonical exact-Pipe credentials that step 6B2 will later bind into the receiving remote-open path. These are NOT yet served on any protocol ID; neither `/tubo/authority/2.0` nor `/tubo/authority/2.1` emits or accepts them, and this document describes contract bytes, not a served operation.
+
+- `AccessLease`: `version=1`, `type=pipe.open.access`, fields `issuer`, `subject`, `audience_pipe_id`, `jti`, `issued_at`, `not_before`, `expires_at`, `access_epoch`, `signature`. Signature is Ed25519 over the canonical JSON (signature omitted) prefixed by the NUL-delimited domain `tubo://access-lease/v1`. No Scope, endpoint, route, target, discovery, namespace, or arbitrary metadata.
+- `OwnerBinding`: owner-signed, `version=1`, `type=exact.owner.binding`, fields `owner`, `authority_key` (exactly one dedicated Exact Authority key), `pipe_id`, `redemption_peers` (bounded neutral address string), `redemption_protocol`, `epoch`, `signature`. Integer-prefix domain `tubo://exact-owner-binding/v1`.
+- `ExactInvite`: recipient-unbound, `version=1`, `type=pipe.open.invite`, fields `issuer` (the dedicated Exact Authority key), `audience_pipe_id`, `binding` (bounded base64url OwnerBinding reference), `jti`, `issued_at`, `not_before`, `expires_at`, `access_epoch`, `one_time`, `signature`. Integer-prefix domain `tubo://exact-invite/v1`. The invite composes the owner-signed binding so redemption proves the issuer is the exact-Pipe owner's bound Authority.
+
+Decoding is strict and bounded (≤48 KiB, ≤4096-byte string fields, comma-joined redemption peers ≤8 entries / 1024 bytes, protocol ≤128 bytes, pipe id ≤256): unknown/duplicate keys, trailing payload, nested objects/arrays, and overlong or malformed signatures are rejected before typed unmarshal and before any cryptographic verification.
