@@ -1,80 +1,89 @@
-package accesslease_test
+package accesslease
 
 import (
 	"crypto/ed25519"
-	"encoding/json"
+	"crypto/rand"
 	"testing"
 	"time"
-
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
 )
 
-// resignPayload re-signs the canonical payload (signature omitted) under the
-// given domain prefix.
-func resignPayload(t *testing.T, signer ed25519.PrivateKey, domain string, canonical []byte) string {
+func cdFixNow() time.Time { return time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC) }
+
+func cdNewKey(t *testing.T) ed25519.PrivateKey {
 	t.Helper()
-	body := append([]byte(domain), canonical...)
-	return accesslease.PublicString(ed25519.Sign(signer, body))
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return priv
 }
 
-func siglessLease(lease accesslease.AccessLease) []byte {
-	l := lease
-	l.Signature = ""
-	b, _ := json.Marshal(l)
-	return b
+// resignCanonical re-signs a credential's canonical signature-less signing
+// body under a foreign domain prefix and returns the base64url signature. The
+// canonical signing bytes are produced by the same signingBody path the
+// verifier recomputes, so any acceptance would prove the domain prefix is not
+// actually pinning the signature.
+func resignCanonical(t *testing.T, signer ed25519.PrivateKey, foreignDomain string, body []byte) string {
+	t.Helper()
+	canonical := append([]byte(foreignDomain), body...)
+	return PublicString(ed25519.Sign(signer, canonical))
 }
 
-func siglessInvite(i accesslease.ExactInvite) []byte {
-	ii := i
-	ii.Signature = ""
-	b, _ := json.Marshal(ii)
-	return b
-}
-
-// TestCrossDomainSigning enforces the distinct Ed25519 signing domains: a
-// signature produced under another credential's domain prefix must never
-// validate as this credential. Each Verify path pins its own domain, so
-// re-signing under a foreign domain cannot be accepted.
+// TestCrossDomainSigning enforces the distinct NUL-delimited Ed25519 signing// TestCrossDomainSigning enforces the distinct NUL-delimited Ed25519 signing
+// domains: a signature produced under another credential's domain prefix must
+// never validate as this credential. Each Verify path pins its own domain;
+// re-signing the EXACT canonical signature-less bytes under a foreign domain
+// cannot be accepted.
 func TestCrossDomainSigning(t *testing.T) {
-	_, _, pid, auth, binding := makeOwner(t)
-	subject := accesslease.PublicString(auth.Public().(ed25519.PublicKey))
-	lease, err := accesslease.NewAccessLease(auth, subject, pid, fixNow(), time.Minute)
-	mustVerifyOK(t, err)
+	owner := cdNewKey(t)
+	auth := cdNewKey(t)
+	authPub := auth.Public().(ed25519.PublicKey)
+	subject := PublicString(authPub)
+	pid := PipeIDFromOwner(owner.Public().(ed25519.PublicKey))
+	binding, err := NewOwnerBinding(owner, authPub, pid, 7, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := NewAccessLease(auth, subject, pid, cdFixNow(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := NewExactInvite(auth, binding, pid, cdFixNow(), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
 
-	wrongDomains := []string{accesslease.OwnerBindingSigningDomain, accesslease.ExactInviteSigningDomain}
-	for _, d := range wrongDomains {
-		// lease re-signed under a foreign domain must fail lease.Verify
+	for _, falseDomain := range []string{OwnerBindingSigningDomain, ExactInviteSigningDomain, OwnerKeyProofDomain} {
 		l := lease
-		l.Signature = resignPayload(t, auth, d, siglessLease(lease))
-		enc, _ := accesslease.Encode(l)
-		dec, de := accesslease.Decode(enc)
-		mustVerifyOK(t, de)
-		if err := dec.Verify(auth.Public().(ed25519.PublicKey), subject, pid, fixNow()); err == nil {
-			t.Fatalf("lease accepted under foreign domain %q", d)
+		body, lerr := l.signingBody()
+		if lerr != nil {
+			t.Fatal(lerr)
+		}
+		l.Signature = resignCanonical(t, auth, falseDomain, body)
+		if err := l.Verify(authPub, subject, pid, cdFixNow()); err == nil {
+			t.Fatalf("lease accepted under foreign domain %q", falseDomain)
 		}
 	}
 
-	// invite re-signed under the lease domain must fail invite.Verify
-	inv, err := accesslease.NewExactInvite(auth, binding, pid, fixNow(), time.Minute)
-	mustVerifyOK(t, err)
-	enc2, _ := accesslease.EncodeInvite(inv)
-	dec2, de2 := accesslease.DecodeInvite(enc2)
-	mustVerifyOK(t, de2)
-	inv2 := dec2
-	inv2.Signature = resignPayload(t, auth, accesslease.AccessLeaseSigningDomain, siglessInvite(dec2))
-	if err := inv2.Verify(fixNow(), pid); err == nil {
+	// invite signed under the lease domain must fail invite.Verify
+	iv := invite
+	ib, ierr := iv.signingBody()
+	if ierr != nil {
+		t.Fatal(ierr)
+	}
+	iv.Signature = resignCanonical(t, auth, AccessLeaseSigningDomain, ib)
+	if err := iv.Verify(cdFixNow(), pid); err == nil {
 		t.Fatal("invite accepted under lease domain")
 	}
 
 	// binding signed under the lease domain fails the owner-signature check
-	bind2 := binding
-	bind2.Signature = resignPayload(t, auth, accesslease.AccessLeaseSigningDomain, func() []byte {
-		bb := binding
-		bb.Signature = ""
-		b, _ := json.Marshal(bb)
-		return b
-	}())
-	if _, err := bind2.VerifyOwnerAuthority(""); err == nil {
+	bb := binding
+	bbody, berr := bb.signingBody()
+	if berr != nil {
+		t.Fatal(berr)
+	}
+	bb.Signature = resignCanonical(t, owner, AccessLeaseSigningDomain, bbody)
+	if _, err := bb.VerifyOwnerAuthority(""); err == nil {
 		t.Fatal("binding accepted under foreign lease domain")
 	}
 }

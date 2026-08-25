@@ -112,14 +112,12 @@ func TestOwnerBindingStrictDecode(t *testing.T) {
 	mustReject(t, accesslease.DecodeOwnerBinding, mutateOwner(t, enc, func(d map[string]any) { d["service_target"] = map[string]any{"target": "x"} }))
 	mustReject(t, accesslease.DecodeOwnerBinding, base64.RawURLEncoding.EncodeToString([]byte(`{"version":1,"version":2}`)))
 
-	// over-length redemption_peers decodes but verify rejects
+	// over-length redemption_peers is rejected during strict decode (bounded
+	// before typed unmarshal), not only at Verify.
 	tampered := mutateOwner(t, enc, func(d map[string]any) {
 		d["redemption_peers"] = strings.Repeat("a", accesslease.MaxRedemptionAddrLen+1)
 	})
-	dup, err := accesslease.DecodeOwnerBinding(tampered)
-	mustVerifyOK(t, err)
-	_, err = dup.VerifyOwnerAuthority("")
-	mustVerifyDeny(t, err)
+	mustReject(t, accesslease.DecodeOwnerBinding, tampered)
 }
 
 func TestOwnerBindingNoScopeNoMetadata(t *testing.T) {

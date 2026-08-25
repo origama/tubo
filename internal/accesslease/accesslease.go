@@ -43,28 +43,51 @@ type AccessLease struct {
 	Signature      string    `json:"signature"`
 }
 
-func leaseAllowed() map[string]bool {
-	return map[string]bool{
-		"version":          true,
-		"type":             true,
-		"issuer":           true,
-		"subject":          true,
-		"audience_pipe_id": true,
-		"jti":              true,
-		"issued_at":        true,
-		"not_before":       true,
-		"expires_at":       true,
-		"access_epoch":     true,
-		"signature":        true,
+func leaseAllowed() map[string]int {
+	return map[string]int{
+		// audience_pipe_id is the one member with a tighter string bound than
+		// the shared MaxFieldLen default.
+		"audience_pipe_id": MaxPipeIDLen,
+		"version":          MaxFieldLen,
+		"type":             MaxFieldLen,
+		"issuer":           MaxFieldLen,
+		"subject":          MaxFieldLen,
+		"jti":              MaxFieldLen,
+		"issued_at":        MaxFieldLen,
+		"not_before":       MaxFieldLen,
+		"expires_at":       MaxFieldLen,
+		"access_epoch":     MaxFieldLen,
+		"signature":        MaxFieldLen,
 	}
 }
 
+// accessLeaseSigning is the canonical signature-less wire form used for
+// signing and verification. It deliberately declares no Signature member, so
+// the signed bytes are exactly the body the protocol document specifies
+// (signature field omitted) rather than a `"signature":""` placeholder.
+type accessLeaseSigning struct {
+	Version        int       `json:"version"`
+	Type           string    `json:"type"`
+	Issuer         string    `json:"issuer"`
+	Subject        string    `json:"subject"`
+	AudiencePipeID string    `json:"audience_pipe_id"`
+	JTI            string    `json:"jti"`
+	IssuedAt       time.Time `json:"issued_at"`
+	NotBefore      time.Time `json:"not_before"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	AccessEpoch    uint64    `json:"access_epoch"`
+}
+
 // NewAccessLease builds a fresh exact-Pipe Access Lease for subject and
-// pipe the issuer controls. lifetime must be positive and bounded by
-// MaxTTL; Now is forced to UTC.
+// pipe the issuer controls. subject MUST be the canonical base64url Ed25519
+// public key of the recipient; arbitrary strings are rejected. lifetime must
+// be positive and bounded by MaxTTL; Now is forced to UTC.
 func NewAccessLease(private ed25519.PrivateKey, subject, pipeID string, now time.Time, lifetime time.Duration) (AccessLease, error) {
 	if !validString(subject) || !validString(pipeID) || len(pipeID) > MaxPipeIDLen {
 		return AccessLease{}, errors.New("accesslease: invalid subject or pipe")
+	}
+	if _, err := PublicFromString(subject); err != nil {
+		return AccessLease{}, errors.New("accesslease: subject is not a canonical Ed25519 public key")
 	}
 	if lifetime <= 0 || lifetime > MaxTTL {
 		return AccessLease{}, errors.New("accesslease: lifetime outside allowed window")
@@ -82,8 +105,18 @@ func NewAccessLease(private ed25519.PrivateKey, subject, pipeID string, now time
 }
 
 func (l AccessLease) signingBody() ([]byte, error) {
-	body := l
-	body.Signature = ""
+	body := accessLeaseSigning{
+		Version:        l.Version,
+		Type:           l.Type,
+		Issuer:         l.Issuer,
+		Subject:        l.Subject,
+		AudiencePipeID: l.AudiencePipeID,
+		JTI:            l.JTI,
+		IssuedAt:       l.IssuedAt,
+		NotBefore:      l.NotBefore,
+		ExpiresAt:      l.ExpiresAt,
+		AccessEpoch:    l.AccessEpoch,
+	}
 	canonical, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -115,6 +148,11 @@ func (l AccessLease) Verify(public ed25519.PublicKey, subject, pipeID string, no
 	wantIssuer := PublicString(public)
 	if l.Issuer != wantIssuer || !validString(l.Issuer) || !validString(l.Subject) || !validString(l.AudiencePipeID) || !validString(l.JTI) || !strings.HasPrefix(l.JTI, "jti_") {
 		return errors.New("accesslease: invalid identity or metadata")
+	}
+	// Subject must be a canonical Ed25519 public key, matching how it is
+	// minted; arbitrary strings are denied.
+	if _, err := PublicFromString(l.Subject); err != nil {
+		return errors.New("accesslease: subject is not a canonical Ed25519 public key")
 	}
 	if len(l.AudiencePipeID) > MaxPipeIDLen {
 		return errors.New("accesslease: pipe audience too long")

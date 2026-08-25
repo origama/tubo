@@ -38,18 +38,32 @@ type OwnerBinding struct {
 	Signature          string `json:"signature"`
 }
 
-func ownerBindingAllowed() map[string]bool {
-	return map[string]bool{
-		"version":             true,
-		"type":                true,
-		"owner":               true,
-		"authority_key":       true,
-		"pipe_id":             true,
-		"redemption_peers":    true,
-		"redemption_protocol": true,
-		"epoch":               true,
-		"signature":           true,
+func ownerBindingAllowed() map[string]int {
+	return map[string]int{
+		"pipe_id":             MaxPipeIDLen,
+		"redemption_peers":    MaxRedemptionAddrLen,
+		"redemption_protocol": MaxRedemptionProtocolLen,
+		"version":             MaxFieldLen,
+		"type":                MaxFieldLen,
+		"owner":               MaxFieldLen,
+		"authority_key":       MaxFieldLen,
+		"epoch":               MaxFieldLen,
+		"signature":           MaxFieldLen,
 	}
+}
+
+// ownerBindingSigning is the canonical signature-less wire form used for
+// signing and verification: the signature member is omitted entirely rather
+// than emitted as an empty string placeholder.
+type ownerBindingSigning struct {
+	Version            int    `json:"version"`
+	Type               string `json:"type"`
+	Owner              string `json:"owner"`
+	AuthorityKey       string `json:"authority_key"`
+	PipeID             string `json:"pipe_id"`
+	RedemptionPeers    string `json:"redemption_peers,omitempty"`
+	RedemptionProtocol string `json:"redemption_protocol,omitempty"`
+	Epoch              uint64 `json:"epoch"`
 }
 
 // NewOwnerBinding builds a fresh immutable owner-bond signed by the owner's
@@ -93,8 +107,16 @@ func NewOwnerBinding(ownerPrivate ed25519.PrivateKey, authorityKey ed25519.Publi
 }
 
 func (b OwnerBinding) signingBody() ([]byte, error) {
-	body := b
-	body.Signature = ""
+	body := ownerBindingSigning{
+		Version:            b.Version,
+		Type:               b.Type,
+		Owner:              b.Owner,
+		AuthorityKey:       b.AuthorityKey,
+		PipeID:             b.PipeID,
+		RedemptionPeers:    b.RedemptionPeers,
+		RedemptionProtocol: b.RedemptionProtocol,
+		Epoch:              b.Epoch,
+	}
 	canonical, err := json.Marshal(body)
 	if err != nil {
 		return nil, err

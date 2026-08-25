@@ -109,16 +109,16 @@ fi
 # the pure accesslease contract plus the standard library. Neither may carry
 # Scope, arbitrary metadata, or concrete multiaddrs.
 accesslease_pkg="$(go list -f '{{.ImportPath}}' ./internal/accesslease)"
-accesslease_non_stdlib="$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/origama/tubo-rebuilt/internal/accesslease")}}{{.ImportPath}}{{end}}' "$accesslease_pkg" | grep '^github.com/origama/tubo-rebuilt/' || true)"
+accesslease_non_stdlib="$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/origama/tubo-rebuilt/internal/accesslease")}}{{.ImportPath}}{{end}}' "$accesslease_pkg")"
 if [[ -n "$accesslease_non_stdlib" ]]; then
-  echo "[architecture] internal/accesslease must not depend on concrete repo packages:" >&2
+  echo "[architecture] internal/accesslease must be stdlib-only (rejecting ALL non-stdlib deps, including third-party):" >&2
   printf '%s\n' "$accesslease_non_stdlib" >&2
   exit 1
 fi
 exactauthority_pkg="$(go list -f '{{.ImportPath}}' ./internal/exactauthority)"
-exactauthority_forbidden="$(go list -deps -f '{{if and (not .Standard)}}{{.ImportPath}}{{end}}' "$exactauthority_pkg" | grep '^github.com/origama/tubo-rebuilt/' | grep -Ev 'internal/(accesslease|exactauthority)$' || true)"
+exactauthority_forbidden="$(go list -deps -f '{{if and (not .Standard)}}{{.ImportPath}}{{end}}' "$exactauthority_pkg" | grep -Ev '^(github.com/origama/tubo-rebuilt/internal/(accesslease|exactauthority))$' || true)"
 if [[ -n "$exactauthority_forbidden" ]]; then
-  echo "[architecture] internal/exactauthority must depend only on the pure accesslease contract:" >&2
+  echo "[architecture] internal/exactauthority must depend only on stdlib + internal/accesslease (rejecting ALL other non-stdlib deps, including third-party):" >&2
   printf '%s\n' "$exactauthority_forbidden" >&2
   exit 1
 fi

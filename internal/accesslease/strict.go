@@ -17,13 +17,11 @@ import (
 //     flat credential, are rejected);
 //   - every key present is an explicitly allowed member of that credential;
 //   - no key appears more than once (duplicate/ambiguous keys rejected);
+//   - each string member is length- and field-bounded BEFORE typed unmarshal
+//     and before any cryptographic verification;
 //   - nothing follows the closing brace (trailing payload rejected);
 //   - the encoded field is length-bounded before and after the base64 decode.
-//
-// Mandatory-field presence, string length bounds, and value shape are enforced
-// by each credential's typed Verify path; this layer is the structural
-// anti-metadata / anti-ambiguity / anti-allocation gate.
-func decodeStrictJSON(encoded string, allowed map[string]bool) ([]byte, error) {
+func decodeStrictJSON(encoded string, allowed map[string]int) ([]byte, error) {
 	if len(encoded) > MaxBytes {
 		return nil, errors.New("accesslease: encoded field exceeds bound")
 	}
@@ -40,11 +38,22 @@ func decodeStrictJSON(encoded string, allowed map[string]bool) ([]byte, error) {
 	return data, nil
 }
 
+// ScanStrictFlat validates data as a flat JSON object whose members are all
+// explicitly allowed by name (with per-member maximum string length bounds),
+// with no duplicate or unknown keys, no nested object/array value, and no
+// trailing payload. It is the shared structural anti-metadata /
+// anti-ambiguity / anti-allocation gate used both by the credential decoders
+// here and by local exact-authority key-envelope loading. Data must already be
+// subject to the caller's total byte bound.
+func ScanStrictFlat(data []byte, allowed map[string]int) error {
+	return scanFlatObject(data, allowed)
+}
+
 // scanFlatObject token-scans a JSON document demanding a flat object with only
 // allow-listed scalar members, no duplicate keys, no nested value, and no
 // trailing payload. It returns the raw token bytes it consumed so the caller
 // can unmarshal exactly once, without re-reading the stream.
-func scanFlatObject(data []byte, allowed map[string]bool) error {
+func scanFlatObject(data []byte, allowed map[string]int) error {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	first, err := decoder.Token()
 	if err != nil {
@@ -67,7 +76,8 @@ func scanFlatObject(data []byte, allowed map[string]bool) error {
 		if seen[key] {
 			return errors.New("accesslease: duplicate key " + key)
 		}
-		if !allowed[key] {
+		max, ok := allowed[key]
+		if !ok {
 			return errors.New("accesslease: unknown field " + key)
 		}
 		seen[key] = true
@@ -77,6 +87,9 @@ func scanFlatObject(data []byte, allowed map[string]bool) error {
 		}
 		if _, isDelim := valueToken.(json.Delim); isDelim {
 			return errors.New("accesslease: nested value for " + key)
+		}
+		if s, isStr := valueToken.(string); isStr && len(s) > max {
+			return errors.New("accesslease: field " + key + " exceeds bound")
 		}
 	}
 	end, err := decoder.Token()

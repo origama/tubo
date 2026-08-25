@@ -36,21 +36,38 @@ type ExactInvite struct {
 	Signature      string    `json:"signature"`
 }
 
-func inviteAllowed() map[string]bool {
-	return map[string]bool{
-		"version":          true,
-		"type":             true,
-		"issuer":           true,
-		"audience_pipe_id": true,
-		"binding":          true,
-		"jti":              true,
-		"issued_at":        true,
-		"not_before":       true,
-		"expires_at":       true,
-		"access_epoch":     true,
-		"one_time":         true,
-		"signature":        true,
+func inviteAllowed() map[string]int {
+	return map[string]int{
+		"audience_pipe_id": MaxPipeIDLen,
+		"binding":          MaxBytes,
+		"version":          MaxFieldLen,
+		"type":             MaxFieldLen,
+		"issuer":           MaxFieldLen,
+		"jti":              MaxFieldLen,
+		"issued_at":        MaxFieldLen,
+		"not_before":       MaxFieldLen,
+		"expires_at":       MaxFieldLen,
+		"access_epoch":     MaxFieldLen,
+		"one_time":         MaxFieldLen,
+		"signature":        MaxFieldLen,
 	}
+}
+
+// inviteSigning is the canonical signature-less wire form used for signing
+// and verification: the signature member is omitted entirely rather than
+// emitted as an empty string placeholder.
+type inviteSigning struct {
+	Version        int       `json:"version"`
+	Type           string    `json:"type"`
+	Issuer         string    `json:"issuer"`
+	AudiencePipeID string    `json:"audience_pipe_id"`
+	Binding        string    `json:"binding"`
+	JTI            string    `json:"jti"`
+	IssuedAt       time.Time `json:"issued_at"`
+	NotBefore      time.Time `json:"not_before"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	AccessEpoch    uint64    `json:"access_epoch"`
+	OneTime        bool      `json:"one_time"`
 }
 
 // NewExactInvite builds a fresh one-time exact redemption credential for the
@@ -87,8 +104,19 @@ func NewExactInvite(private ed25519.PrivateKey, bindingOwnerBinding OwnerBinding
 }
 
 func (i ExactInvite) signingBody() ([]byte, error) {
-	body := i
-	body.Signature = ""
+	body := inviteSigning{
+		Version:        i.Version,
+		Type:           i.Type,
+		Issuer:         i.Issuer,
+		AudiencePipeID: i.AudiencePipeID,
+		Binding:        i.Binding,
+		JTI:            i.JTI,
+		IssuedAt:       i.IssuedAt,
+		NotBefore:      i.NotBefore,
+		ExpiresAt:      i.ExpiresAt,
+		AccessEpoch:    i.AccessEpoch,
+		OneTime:        i.OneTime,
+	}
 	canonical, err := json.Marshal(body)
 	if err != nil {
 		return nil, err

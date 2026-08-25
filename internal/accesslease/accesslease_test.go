@@ -10,6 +10,50 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 )
 
+// TestLeaseSubjectMustBeCanonicalPubKey proves the AccessLease Subject is
+// constrained to a canonical Ed25519 public key at construction and at
+// verification; arbitrary strings are denied.
+func TestLeaseSubjectMustBeCanonicalPubKey(t *testing.T) {
+	auth := newKey(t)
+	if _, err := accesslease.NewAccessLease(auth, "not-a-public-key", "pip_example_1", fixNow(), time.Minute); err == nil {
+		t.Fatal("construction accepted a non-public-key subject")
+	}
+	// a base64 string of the wrong decoded length is also rejected
+	if _, err := accesslease.NewAccessLease(auth, strings.Repeat("A", 20), "pip_example_1", fixNow(), time.Minute); err == nil {
+		t.Fatal("construction accepted a wrong-length subject")
+	}
+	// Verify likewise rejects a non-canonical subject even when the signature
+	// would otherwise be valid.
+	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	mustVerifyOK(t, err)
+	enc, _ := accesslease.Encode(lease)
+	// replace the subject with an arbitrary (short) string that survives the
+	// structural scan but fails the canonical-key check at Verify.
+	tampered := mutateDoc(t, enc, func(d map[string]any) { d["subject"] = "definitely-not-a-key" })
+	dec, err := accesslease.Decode(tampered)
+	mustVerifyOK(t, err)
+	err = dec.Verify(auth.Public().(ed25519.PublicKey), pubStr(auth), "pip_example_1", fixNow())
+	mustVerifyDeny(t, err)
+}
+
+// TestLeaseStrictDecodePerFieldBounds proves overlong string fields are
+// rejected during strict decode (before typed unmarshal), not only at Verify.
+func TestLeaseStrictDecodePerFieldBounds(t *testing.T) {
+	auth := newKey(t)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	enc, _ := accesslease.Encode(lease)
+	// audience_pipe_id beyond MaxPipeIDLen
+	tampered := mutateDoc(t, enc, func(d map[string]any) {
+		d["audience_pipe_id"] = strings.Repeat("p", accesslease.MaxPipeIDLen+1)
+	})
+	mustReject(t, accesslease.Decode, tampered)
+	// subject beyond MaxFieldLen
+	tol2 := mutateDoc(t, enc, func(d map[string]any) {
+		d["subject"] = strings.Repeat("s", accesslease.MaxFieldLen+1)
+	})
+	mustReject(t, accesslease.Decode, tol2)
+}
+
 func TestLeaseGoldenCanonicalBytesStable(t *testing.T) {
 	auth := newKey(t)
 	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_exact_1", fixNow(), time.Minute)
