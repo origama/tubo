@@ -9,6 +9,10 @@
 - Session-resume surface removed from the A0 path (issue #39): `/tubo/tunnel-resume/2.1`, the `session-resume-v1` capability, resume/control stream roles, continuous ACK/retention/replay window, planned-switch barrier, abrupt carrier recovery with detached grace, `ResumeOffer`, and the memory-only `resume_secret`. A0 sessions are raw full-duplex authorized `/tubo/tunnel/2.0`; carrier failure terminates the session and a new authorized connection is required.
 - Supersedes prototype resume work previously carried in PRs #38/#29/#33 (closed unmerged; retained only as evidence branches `issue-34-session-resume-data-plane` and `issue-28-neutral-carrier`). Session-resume/carrier-replacement correctness remains deferred post-A0 resilient-Session debt (#32).
 
+### Added (A0)
+
+- Neutral Carrier seam (issue #28): Session byte flow, cancellation, owner bound, and inbound exact-owner dispatch now run through a neutral `node.Carrier` contract (raw full-duplex bytes, `Close`/`Reset`/`CloseWrite` half-close, `SetDeadline`) realized at the host/L1 edge, instead of libp2p concrete host/stream/peer and `*store.Store`. The production tunnel data plane (responder `tunnelServer.serve` and initiator `openLocalConnection`) is re-grounded through an owner-bound `Session` + active `Carrier`; the direct `copyDuplex` tunnel path is deleted. Wire frames, lease-validation-before-target-open ordering, `authorizationTimer` lease-expiry close, `store.Session` telemetry, full-duplex and FIN ordering, and quarantine negative tests are preserved. `tests/verify-architecture.sh` now also enforces that the Session boundary imports no libp2p host/network/peer/protocol or store and that the host adapter has no runtime coupling (A0 exit criterion 4).
+
 ### Added
 
 Resume-related entries immediately below are historical prototype records superseded by the quarantine above; they are not current A0 features.

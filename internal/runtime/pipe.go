@@ -60,6 +60,12 @@ func RunPipe(ctx context.Context, state *store.Store, identifier string) error {
 }
 
 func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec, ownerKeyFile, publishGrant string) error {
+	nodeRuntime := NewNodeRuntime(ctx)
+	defer nodeRuntime.Close()
+	pipeRuntime, err := nodeRuntime.NewPipeRuntime()
+	if err != nil {
+		return err
+	}
 	if spec.Scope == nil {
 		return errors.New("invalid_input: Scope-less Tubo ingress is not supported by prototype runtime")
 	}
@@ -198,7 +204,7 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	if err := publish(time.Now().UTC()); err != nil {
 		return err
 	}
-	handler := &tunnelServer{state: state, spec: spec, service: service, authorityPublic: authorityPublic}
+	handler := &tunnelServer{state: state, spec: spec, service: service, authorityPublic: authorityPublic, runtime: pipeRuntime}
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
 	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: address, StartedAt: time.Now().UTC()}
 	if err := state.PutRun(ctx, run); err != nil {
@@ -252,20 +258,40 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	})
 }
 
+// errInitialCarrierTransferred signals that the tunnel data plane transferred
+// terminal carrier action to an owner-bound Session. The stream handler must
+// not issue a second reset/close once a Session owns the carrier.
+var errInitialCarrierTransferred = errors.New("initial carrier ownership transferred to session")
+
+// transferSessionAuthorizationTimer moves lease-expiry handling from the raw
+// pre-transfer target ownership to Session.Stop after Carrier transfer. Session
+// then owns Carrier terminal action and owner close waits all its cleanup.
+func transferSessionAuthorizationTimer(timer *time.Timer, expiresAt time.Time, session *sessionPump) *time.Timer {
+	if timer != nil {
+		timer.Stop()
+	}
+	return time.AfterFunc(time.Until(expiresAt), session.Stop)
+}
+
 type tunnelServer struct {
 	state           *store.Store
 	spec            domain.PipeSpec
 	service         domain.ServiceSpec
 	authorityPublic ed25519.PublicKey
+	runtime         *PipeRuntime
 }
 
 func (s *tunnelServer) handle(stream core.Stream) {
 	if err := s.serve(stream); err != nil {
+		if errors.Is(err, errInitialCarrierTransferred) {
+			return
+		}
 		_ = stream.Reset()
 	} else {
 		_ = stream.Close()
 	}
 }
+
 func (s *tunnelServer) serve(stream core.Stream) error {
 	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 	var hello wire.ClientHello
@@ -334,9 +360,14 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	if err != nil {
 		return s.openError(stream, "target_unreachable", "local target unavailable")
 	}
-	defer target.Close()
-	authorizationTimer := time.AfterFunc(time.Until(lease.ExpiresAt), func() { _ = target.Close(); _ = stream.Close() })
-	defer authorizationTimer.Stop()
+	targetOwned := false
+	defer func() {
+		if !targetOwned {
+			_ = target.Close()
+		}
+	}()
+	authorizationTimer := time.AfterFunc(time.Until(lease.ExpiresAt), func() { _ = target.Close() })
+	defer func() { authorizationTimer.Stop() }()
 	sessionID, err := authority.SessionID()
 	if err != nil {
 		return err
@@ -355,12 +386,40 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	_ = s.state.PutSession(context.Background(), session)
 	runtimeInfof("session opened pipe=%s session=%s path=relayed", s.spec.Ref, sessionID)
 
-	in, out := copyDuplex(target, stream)
+	// Re-grounded data plane: an owner-bound Session owns the Carrier and the
+	// local target. SetActiveCarrier fences admission; the authorization timer
+	// is transferred to Session.Stop so lease expiry terminates the Session
+	// (closing carrier and target), never the raw stream twice.
+	carrier := node.WrapStream(stream)
+	sp, err := s.runtime.NewSession(sessionConfig{
+		SessionID:    sessionID,
+		PipeID:       s.spec.PipeID,
+		Scope:        s.spec.Scope.String(),
+		TargetConn:   target,
+		InitialEpoch: 1,
+		IsClient:     false,
+	})
+	if err != nil {
+		return err
+	}
+	if !sp.SetActiveCarrier(carrier) {
+		// Session already terminalized the wrapped Carrier; the handler must
+		// not issue a second raw stream reset.
+		return errInitialCarrierTransferred
+	}
+	targetOwned = true // Session now owns the local target terminal action.
+	// Session carrier lease now exclusively owns stream terminal action.
+	// Replace the raw pre-transfer expiry close with Session lifecycle Stop.
+	authorizationTimer = transferSessionAuthorizationTimer(authorizationTimer, lease.ExpiresAt, sp)
+
+	sp.runServerSession()
+	in, out := sp.ByteCounts()
 	session.BytesIn = in
 	session.BytesOut = out
 	_ = s.state.PutSession(context.Background(), session)
 	runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", s.spec.Ref, sessionID, in, out)
-	return nil
+	// Session exclusively owns terminal action after active installation.
+	return errInitialCarrierTransferred
 }
 func (s *tunnelServer) openError(stream core.Stream, code, message string) error {
 	_ = wire.WriteFrame(stream, wire.OpenResult{OK: false, ErrorCode: code, Message: message, RetryClass: "terminal"})
@@ -368,6 +427,12 @@ func (s *tunnelServer) openError(stream core.Stream, code, message string) error
 }
 
 func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec) error {
+	nodeRuntime := NewNodeRuntime(ctx)
+	defer nodeRuntime.Close()
+	pipeRuntime, err := nodeRuntime.NewPipeRuntime()
+	if err != nil {
+		return err
+	}
 	if spec.Target.Kind != domain.KindPipe {
 		return errors.New("local pipe target must be remote pipe")
 	}
@@ -439,7 +504,7 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 			}
 			return err
 		}
-		go serveLocalConnection(ctx, state, h, spec, resolver, leases, connection)
+		go serveLocalConnection(ctx, state, h, pipeRuntime, spec, resolver, leases, connection)
 	}
 }
 
@@ -614,9 +679,9 @@ func (c *localLeaseCache) startRefresh(ctx context.Context, state *store.Store, 
 	}()
 }
 
-func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, resolver *localPipeRecordResolver, leases *localLeaseCache, local net.Conn) {
+func serveLocalConnection(ctx context.Context, state *store.Store, h host.Host, runtime *PipeRuntime, spec domain.PipeSpec, resolver *localPipeRecordResolver, leases *localLeaseCache, local net.Conn) {
 	serveLocalConnectionWithOpener(ctx, state, spec, resolver, local, func(record discovery.PipeRecord) localConnectionResult {
-		return openLocalConnection(ctx, state, h, spec, record, leases, local)
+		return openLocalConnection(ctx, state, h, runtime, spec, record, leases, local)
 	})
 }
 
@@ -661,7 +726,7 @@ type localConnectionResult struct {
 	reason    string
 }
 
-func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, spec domain.PipeSpec, record discovery.PipeRecord, leases *localLeaseCache, local net.Conn) localConnectionResult {
+func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, runtime *PipeRuntime, spec domain.PipeSpec, record discovery.PipeRecord, leases *localLeaseCache, local net.Conn) localConnectionResult {
 	result := localConnectionResult{reason: "authority_unreachable"}
 	setup, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -697,7 +762,12 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, s
 		result.transient = true
 		return result
 	}
-	defer stream.Close()
+	streamOwned := false
+	defer func() {
+		if !streamOwned {
+			_ = stream.Close()
+		}
+	}()
 	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 	result.reason = "local_authorization_state"
 	membership, err := state.Membership(setup, record.Scope.String())
@@ -746,10 +816,32 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, s
 	_ = state.PutSession(context.Background(), session)
 	runtimeInfof("session opened pipe=%s session=%s path=relayed", spec.Ref, sessionID)
 
-	// A ResumeOffer from a legacy/prototype peer is deliberately ignored: the
-	// A0 path performs no session resume and installs zero Session state. A
-	// local target is opened only after the authorized OpenOK above.
-	in, out := copyDuplex(local, stream)
+	// Re-grounded client data plane: an owner-bound Session owns the Carrier and
+	// the local application connection. The authorized OpenOK above must precede
+	// any local byte flow; the Session pump preserves raw full-duplex + exact
+	// half-close. On transfer the Session owns stream terminal action, so the
+	// deferred raw close must be suppressed to avoid a second terminal action.
+	carrier := node.WrapStream(stream)
+	sp, sessionErr := runtime.NewSession(sessionConfig{
+		SessionID:    sessionID,
+		PipeID:       record.PipeID,
+		Scope:        record.Scope.String(),
+		TargetConn:   local,
+		InitialEpoch: 1,
+		IsClient:     true,
+	})
+	if sessionErr != nil {
+		result.opened = false
+		return result
+	}
+	if !sp.SetActiveCarrier(carrier) {
+		// Session already terminalized the wrapped Carrier; suppress the raw close.
+		result.opened = false
+		return result
+	}
+	streamOwned = true
+	sp.runClientSession()
+	in, out := sp.ByteCounts()
 	session.BytesIn = in
 	session.BytesOut = out
 	_ = state.PutSession(context.Background(), session)

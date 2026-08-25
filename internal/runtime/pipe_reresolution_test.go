@@ -339,11 +339,18 @@ func TestLocalPipeRecoveryFetchesNewAuthoritySnapshotAfterPublisherRestart(t *te
 	}
 	originRef := mustPipeRef(t, "origin")
 	originSpec := domain.PipeSpec{Ref: originRef, PipeID: pipeID, Scope: &scope, Ingress: domain.PipeIngress{Kind: domain.IngressTubo}, Target: serviceRef, Visibility: domain.VisibilityDiscoverable, Access: domain.AccessMembers}
+	pubNode := NewNodeRuntime(ctx)
+	defer pubNode.Close()
+	pubPipe, err := pubNode.NewPipeRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
 	publisherTwo.SetStreamHandler(protocol.ID(wire.TunnelID), (&tunnelServer{
 		state:           publisherState,
 		spec:            originSpec,
 		service:         domain.ServiceSpec{Ref: serviceRef, Kind: domain.ServiceTCP, Target: "tcp://" + echo.Addr().String()},
 		authorityPublic: authorityPublic,
+		runtime:         pubPipe,
 	}).handle)
 
 	t.Setenv("TUBO_HOME", consumerHome)
@@ -408,11 +415,17 @@ func TestLocalPipeRecoveryFetchesNewAuthoritySnapshotAfterPublisherRestart(t *te
 	}
 	localRef := mustPipeRef(t, "client")
 	localSpec := domain.PipeSpec{Ref: localRef, PipeID: "pip_client", Ingress: domain.PipeIngress{Kind: domain.IngressLocal, Listen: "127.0.0.1:0"}, Target: domain.Ref{Kind: domain.KindPipe, Name: pipeID}, Visibility: domain.VisibilityPrivate, Access: domain.AccessMembers}
+	consumerNode := NewNodeRuntime(ctx)
+	defer consumerNode.Close()
+	consumerPipe, err := consumerNode.NewPipeRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
 	server, app := net.Pipe()
 	defer app.Close()
 	done := make(chan struct{})
 	go func() {
-		serveLocalConnection(ctx, consumerState, consumerHost, localSpec, resolver, &localLeaseCache{}, server)
+		serveLocalConnection(ctx, consumerState, consumerHost, consumerPipe, localSpec, resolver, &localLeaseCache{}, server)
 		close(done)
 	}()
 	payload := []byte("publisher-restarted-with-new-runtime-address")

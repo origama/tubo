@@ -6,11 +6,13 @@ package runtime
 // machinery from the A0 path: resume capability advertisement/offer/secret,
 // negotiation/initiation/control handler and dependency, resume-only state,
 // ACK/replay/candidate, planned switch, and abrupt carrier recovery with
-// detached grace. Production sessions now run the plain raw-duplex data plane
-// (copyDuplex) with no active Session engine wiring. The engine below is the
-// smallest non-resume Session foundation #28 re-grounds behind a Carrier seam:
-// explicit NodeRuntime -> PipeRuntime -> SessionRegistry -> Session ownership,
-// admission/work/close fencing/cancellation, and one active transport. Do not
+// detached grace. Issue #28 (neutral Carrier seam) replaced Session's direct
+// libp2p host/stream/peer and *store.Store coupling with a neutral Carrier
+// contract realized at the host/L1 edge (internal/node). The engine below is
+// the smallest non-resume Session foundation at the center of the production
+// tunnel data plane: explicit NodeRuntime -> PipeRuntime -> SessionRegistry ->
+// Session ownership, admission/work/close fencing/cancellation, and one active
+// Carrier carrying raw full-duplex bytes with exact half-close. Do not
 // reintroduce resume, control-stream, candidate, proof, retention, or detached
 // recovery machinery without a real consumer and an architecture decision.
 
@@ -19,12 +21,9 @@ import (
 	"errors"
 	"io"
 	"sync"
+	"sync/atomic"
 
-	"github.com/libp2p/go-libp2p/core/host"
-	core "github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo-rebuilt/internal/node"
 )
 
 const (
@@ -60,22 +59,18 @@ func (s SessionState) String() string {
 // no retention window, and no replay on this path.
 type sessionPump struct {
 	// Immutable identity
-	SessionID    string
-	PipeID       string
-	Scope        string
-	ClientPeerID peer.ID
-	ServerPeerID peer.ID
-	Host         host.Host
-	State        *store.Store
+	SessionID string
+	PipeID    string
+	Scope     string
 
-	// Epoch label retained for the #28 Carrier seam. Non-resume sessions keep
-	// one constant epoch; nothing advances it on this path.
+	// Epoch label retained for the Session shape. Non-resume sessions keep one
+	// constant epoch; nothing advances it on this path.
 	epoch uint64
 
 	// Mutable transport
 	mu            sync.Mutex
 	state         SessionState
-	activeCarrier core.Stream
+	activeCarrier node.Carrier
 
 	// Target connection (the local application endpoint)
 	targetConn io.ReadWriteCloser
@@ -90,15 +85,18 @@ type sessionPump struct {
 	workDone      chan struct{}
 	workCount     int
 	workClosed    bool
-	outbound      map[core.Stream]struct{}
 
 	// Session registry reference
 	registry *sessionRegistry
 
-	// Role: true for client (initiator), false for server (responder). There
-	// is no c2s/s2c ACK distinction on the non-resume path; retained for the
-	// #28 session shape.
+	// isClient: true for the initiator side, false for the responder side.
 	isClient bool
+
+	// Byte accounting for store.Session telemetry relocation. The Session is
+	// decoupled from *store.Store; these counters are read by the adapter
+	// after pump completion.
+	bytesIn  atomic.Int64
+	bytesOut atomic.Int64
 }
 
 // sessionRegistry is an isolated, PipeRuntime-owned session map.
@@ -165,12 +163,9 @@ type sessionConfig struct {
 	SessionID    string
 	PipeID       string
 	Scope        string
-	ClientPeerID peer.ID
-	ServerPeerID peer.ID
-	Host         host.Host
-	State        *store.Store
 	TargetConn   io.ReadWriteCloser
 	InitialEpoch uint64
+	IsClient     bool
 }
 
 func newSessionPump(parent context.Context, registry *sessionRegistry, cfg sessionConfig) (*sessionPump, error) {
@@ -183,10 +178,6 @@ func newSessionPump(parent context.Context, registry *sessionRegistry, cfg sessi
 		SessionID:     cfg.SessionID,
 		PipeID:        cfg.PipeID,
 		Scope:         cfg.Scope,
-		ClientPeerID:  cfg.ClientPeerID,
-		ServerPeerID:  cfg.ServerPeerID,
-		Host:          cfg.Host,
-		State:         cfg.State,
 		targetConn:    cfg.TargetConn,
 		epoch:         cfg.InitialEpoch,
 		state:         StateActive,
@@ -196,8 +187,7 @@ func newSessionPump(parent context.Context, registry *sessionRegistry, cfg sessi
 		carrierCancel: carrierCancel,
 		stopDone:      make(chan struct{}),
 		workDone:      make(chan struct{}),
-		outbound:      make(map[core.Stream]struct{}),
-		isClient:      cfg.Host != nil,
+		isClient:      cfg.IsClient,
 	}
 	sp.registry = registry
 	if err := sp.registry.register(cfg.SessionID, sp); err != nil {
@@ -209,13 +199,13 @@ func newSessionPump(parent context.Context, registry *sessionRegistry, cfg sessi
 }
 
 // SetActiveCarrier sets the raw duplex carrier only while session remains owned.
-func (sp *sessionPump) SetActiveCarrier(stream core.Stream) bool {
+func (sp *sessionPump) SetActiveCarrier(carrier node.Carrier) bool {
 	sp.mu.Lock()
 	defer sp.mu.Unlock()
 	if sp.stopping || sp.ctx.Err() != nil {
 		return false
 	}
-	sp.activeCarrier = stream
+	sp.activeCarrier = carrier
 	return true
 }
 
@@ -285,26 +275,9 @@ func (sp *sessionPump) beginOutbound(caller context.Context) (context.Context, f
 	}, nil
 }
 
-func (sp *sessionPump) trackOutbound(stream core.Stream) bool {
-	sp.mu.Lock()
-	defer sp.mu.Unlock()
-	if sp.stopping || sp.ctx.Err() != nil {
-		return false
-	}
-	sp.outbound[stream] = struct{}{}
-	return true
-}
-
-func (sp *sessionPump) untrackOutbound(stream core.Stream) {
-	sp.mu.Lock()
-	delete(sp.outbound, stream)
-	sp.mu.Unlock()
-}
-
 type sessionStopResources struct {
-	active   core.Stream
+	active   node.Carrier
 	target   io.ReadWriteCloser
-	outbound []core.Stream
 	workDone <-chan struct{}
 }
 
@@ -322,12 +295,8 @@ func (sp *sessionPump) beginStop() (sessionStopResources, bool) {
 		active:   sp.activeCarrier,
 		target:   sp.targetConn,
 		workDone: sp.workDone,
-		outbound: make([]core.Stream, 0, len(sp.outbound)),
 	}
 	sp.activeCarrier = nil
-	for stream := range sp.outbound {
-		resources.outbound = append(resources.outbound, stream)
-	}
 	sp.closeWorkDoneLocked()
 	return resources, true
 }
@@ -335,11 +304,8 @@ func (sp *sessionPump) beginStop() (sessionStopResources, bool) {
 func (sp *sessionPump) completeStop(resources sessionStopResources) {
 	sp.cancel()
 	sp.carrierCancel()
-	for _, stream := range resources.outbound {
-		_ = stream.Reset()
-	}
 	if resources.active != nil {
-		_ = resources.active.Close()
+		_ = resources.active.Reset()
 	}
 	if resources.target != nil {
 		_ = resources.target.Close()
@@ -368,7 +334,8 @@ func (sp *sessionPump) requestStop() {
 	}
 }
 
-// runServerSession starts the minimal non-resume session for the server side.
+// runServerSession starts the minimal non-resume session for the responder
+// (server) side. It blocks until the tunnel data plane completes.
 func (sp *sessionPump) runServerSession() {
 	if !sp.admitWork() {
 		return
@@ -378,14 +345,22 @@ func (sp *sessionPump) runServerSession() {
 	sp.pumpCarrier()
 }
 
-// runClientSession starts the minimal non-resume session for the client side.
+// runClientSession starts the minimal non-resume session for the initiator
+// (client) side.
 func (sp *sessionPump) runClientSession() {
 	sp.runServerSession()
 }
 
+func (sp *sessionPump) ByteCounts() (int64, int64) {
+	return sp.bytesIn.Load(), sp.bytesOut.Load()
+}
+
 // pumpCarrier moves raw bytes both directions between the active carrier and
-// the local target. A carrier read/write failure or EOF terminates the session
-// (carrier failure terminates Session; no resume, no detached grace).
+// the local target with exact half-close (FIN only after final bytes). A
+// carrier or local transport failure terminates the Session (fail closed; no
+// resume, no detached grace). A clean one-direction EOF half-closes that
+// direction and lets the opposite direction finish; the pump completes when
+// both directions have FIN-ed, then the session ends cleanly.
 func (sp *sessionPump) pumpCarrier() {
 	sp.mu.Lock()
 	carrier := sp.activeCarrier
@@ -397,73 +372,102 @@ func (sp *sessionPump) pumpCarrier() {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-
 	go func() {
 		defer wg.Done()
-		sp.pumpCarrierToTarget(carrier, sp.targetConn)
+		sp.carrierToTarget(carrier, sp.targetConn)
 	}()
 	go func() {
 		defer wg.Done()
-		sp.pumpTargetToCarrier(sp.targetConn, carrier)
+		sp.targetToCarrier(sp.targetConn, carrier)
 	}()
-
 	wg.Wait()
 }
 
-// pumpCarrierToTarget reads carrier bytes and writes them to the local target.
-func (sp *sessionPump) pumpCarrierToTarget(carrier io.Reader, local io.Writer) {
+// carrierToTarget copies carrier bytes to the local target. On clean carrier
+// EOF it half-closes the target write side and stops this direction. On a
+// transport error it fails the session closed.
+func (sp *sessionPump) carrierToTarget(carrier io.Reader, target io.Writer) {
 	buf := make([]byte, DefaultChunk)
 	for {
 		n, err := carrier.Read(buf)
 		if n > 0 {
-			written := 0
-			for written < n {
-				w, werr := local.Write(buf[written:n])
-				written += w
-				if werr != nil && written < n {
-					sp.requestStop()
-					return
-				}
-				if werr != nil {
-					break
-				}
+			if werr := sp.writeAllToTarget(target, buf[:n]); werr != nil {
+				sp.requestStop()
+				return
 			}
-			continue
+			sp.bytesIn.Add(int64(n))
+			if err == nil {
+				continue
+			}
 		}
-		if err == nil {
-			continue
+		if err == io.EOF {
+			if cw, ok := target.(interface{ CloseWrite() error }); ok {
+				_ = cw.CloseWrite()
+			}
+			return
 		}
-		// EOF or failure ends the session.
-		sp.requestStop()
-		return
+		if err != nil {
+			sp.requestStop()
+			return
+		}
 	}
 }
 
-// pumpTargetToCarrier reads target bytes and writes them to the carrier.
-func (sp *sessionPump) pumpTargetToCarrier(source io.Reader, carrier io.Writer) {
+// targetToCarrier reads target bytes and writes them to the carrier. On target
+// EOF it half-closes the carrier write side and stops that direction.
+func (sp *sessionPump) targetToCarrier(source io.Reader, carrier io.Writer) {
 	buf := make([]byte, DefaultChunk)
 	for {
 		n, err := source.Read(buf)
 		if n > 0 {
-			written := 0
-			for written < n {
-				w, werr := carrier.Write(buf[written:n])
-				written += w
-				if werr != nil && written < n {
-					sp.requestStop()
-					return
-				}
-				if werr != nil {
-					break
-				}
+			if werr := sp.writeAllToCarrier(carrier, buf[:n]); werr != nil {
+				sp.requestStop()
+				return
 			}
-			continue
+			sp.bytesOut.Add(int64(n))
+			if err == nil {
+				continue
+			}
 		}
-		if err == nil {
-			continue
+		if err == io.EOF {
+			if cw, ok := carrier.(interface{ CloseWrite() error }); ok {
+				_ = cw.CloseWrite()
+			}
+			return
 		}
-		// EOF or EOF terminates the session.
-		sp.requestStop()
-		return
+		if err != nil {
+			sp.requestStop()
+			return
+		}
 	}
+}
+
+func (sp *sessionPump) writeAllToTarget(target io.Writer, p []byte) error {
+	written := 0
+	for written < len(p) {
+		w, werr := target.Write(p[written:])
+		written += w
+		if werr != nil {
+			if written < len(p) {
+				return werr
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+func (sp *sessionPump) writeAllToCarrier(carrier io.Writer, p []byte) error {
+	written := 0
+	for written < len(p) {
+		w, werr := carrier.Write(p[written:])
+		written += w
+		if werr != nil {
+			if written < len(p) {
+				return werr
+			}
+			return nil
+		}
+	}
+	return nil
 }
