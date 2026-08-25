@@ -11,9 +11,8 @@ import (
 // ExactInvite is the redesigned, recipient-unbound, scope-independent exact-Pipe
 // redemption credential (issue #49/#52). It is NEVER an Access Lease: it is the
 // bootstrap credential a recipient redeems to obtain a short-lived
-// AccessLease. The recipient is bound only at redemption time via a fresh
-// identity-possession proof and atomic one-winner arbitration (wiring is step
-// 6B2, out of scope here) — the value itself carries no Subject.
+// AccessLease. The recipient is bound only by future redemption/runtime wiring
+// (step 6B2, out of scope here) — the value itself carries no Subject.
 //
 // The invite composes the immutable OwnerBinding ("binding"): the owner-signed
 // bonded exact Authority for the exact Pipe is embedded as a bounded base64url

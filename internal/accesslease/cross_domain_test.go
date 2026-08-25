@@ -53,7 +53,7 @@ func TestCrossDomainSigning(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, falseDomain := range []string{OwnerBindingSigningDomain, ExactInviteSigningDomain, OwnerKeyProofDomain} {
+	for _, falseDomain := range []string{OwnerBindingSigningDomain, ExactInviteSigningDomain} {
 		l := lease
 		body, lerr := l.signingBody()
 		if lerr != nil {

@@ -186,8 +186,8 @@ DURING the strict scan before typed unmarshal and before any byte-level work.
 The `signature` member is length-bounded at scan; its base64 validity and
 cryptographic value are enforced only by each credential's Verify path.
 
-All base64url text in these credentials — public keys, signatures, possession
-proofs, outer credential bodies, and embedded binding references — must be
+All base64url text in these credentials — public keys, signatures, outer
+credential bodies, and embedded binding references — must be
 canonical unpadded URL-safe base64url. Each decoded value is required to
 re-encode byte-for-byte to its original text (RawURLEncoding re-encode
 equality); since Go's encoder can skip newlines and tolerances vary, CR/LF/CRLF,

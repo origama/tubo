@@ -129,13 +129,12 @@ invariants:
   invite possession is never an Access Lease and never authorization on its
   own.
 - Distinct NUL-delimited signing domains (`tubo://access-lease/v1`,
-  `tubo://exact-owner-binding/v1`, `tubo://exact-invite/v1`,
-  `tubo://exact-owner-possession-proof/v1`) prevent signed bytes from being
-  re-used or mistaken across credential kinds.
+  `tubo://exact-owner-binding/v1`, `tubo://exact-invite/v1`) prevent signed
+  bytes from being re-used or mistaken across credential kinds.
 - Strict bounded decode (≤ 48 KiB limit, flat object, allow-listed keys, no
   duplicate/nested/trailing bytes) runs before typed unmarshal and before any
   cryptographic verification, and every base64url input (public keys,
-  signatures, proofs, outer credential bodies, embedded bindings) must be
+  signatures, outer credential bodies, embedded bindings) must be
   canonical unpadded URL-safe base64url verified by re-encode equality.
 - 6B1a writes, reads, or implies no durable secret or filesystem key lifecycle;
   no key file, path, envelope, or lifecycle exists here. It depends only on the

@@ -68,9 +68,6 @@ const (
 	AccessLeaseSigningDomain    = "tubo://access-lease/v1\x00"
 	OwnerBindingSigningDomain   = "tubo://exact-owner-binding/v1\x00"
 	ExactInviteSigningDomain    = "tubo://exact-invite/v1\x00"
-	OwnerKeyProofDomain         = "tubo://exact-owner-key-proof/v1\x00"
-	OpenProofPurpose            = "tubo-open-v2"
-	RedeemProofPurpose          = "tubo-exact-redeem-v2"
 	MaxRedemptionAddresses      = 8
 	OwnerBindingMaxAddressBytes = MaxRedemptionAddrLen
 )
@@ -140,25 +137,6 @@ func domainBytes(domain string, payload []byte) []byte {
 	out = append(out, domain...)
 	out = append(out, payload...)
 	return out
-}
-
-// SignProof signs a purpose-delimited possession message with a fresh domain
-// prefix so a possession proof cannot be confused across purposes.
-func SignProof(private ed25519.PrivateKey, purpose string, parts ...string) string {
-	message := purpose + "\x00" + strings.Join(parts, "\x00")
-	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, []byte(message)))
-}
-
-// VerifyProof verifies a purpose-delimited possession message. The signature
-// text must be canonical unpadded URL-safe base64url and decode to exactly
-// Ed25519.SignatureSize bytes; non-canonical or malformed text fails closed.
-func VerifyProof(public ed25519.PublicKey, signature, purpose string, parts ...string) bool {
-	value, err := decodeSignature(signature)
-	if err != nil {
-		return false
-	}
-	message := purpose + "\x00" + strings.Join(parts, "\x00")
-	return ed25519.Verify(public, []byte(message), value)
 }
 
 func decodeSignature(signature string) ([]byte, error) {

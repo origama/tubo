@@ -53,36 +53,6 @@ func TestPublicKeyRejectsNoncanonical(t *testing.T) {
 	}
 }
 
-// TestProofSignatureRejectsNoncanonical proves ownership-proof signature text
-// must be canonical base64url and decode to exactly SignatureSize bytes before
-// any verification; non-canonical or malformed text fails closed.
-func TestProofSignatureRejectsNoncanonical(t *testing.T) {
-	priv := newKey(t)
-	pub := priv.Public().(ed25519.PublicKey)
-	purpose := "test-purpose"
-	sig := accesslease.SignProof(priv, purpose, "a", "b")
-	if !accesslease.VerifyProof(pub, sig, purpose, "a", "b") {
-		t.Fatal("valid proof must verify")
-	}
-	badSigs := map[string]string{
-		"trailing-CR":  sig + "\r",
-		"leading-LF":   "\n" + sig,
-		"mid-CRLF":     sig[:5] + "\r\n" + sig[5:],
-		"padded":       sig + "=",
-		"truncated":    sig[:len(sig)-1],
-		"spaces":       sig[:20] + " " + sig[20:],
-		"illegal-char": "!" + sig[1:],
-		"wrong-length": sig[:len(sig)-4] + "XXXX",
-	}
-	for name, s := range badSigs {
-		t.Run(name, func(t *testing.T) {
-			if accesslease.VerifyProof(pub, s, purpose, "a", "b") {
-				t.Fatalf("accepted non-canonical proof signature: %q", s)
-			}
-		})
-	}
-}
-
 // TestLeaseOuterRejectsNoncanonical proves the outer AccessLease base64url body
 // must be exactly canonical: CR/LF/CRLF/padding injected into the outer text is
 // rejected even though Go's base64url decoder alone would silently skip newlines.
