@@ -41,7 +41,7 @@
 2. Explicit runtime ownership `NodeRuntime -> PipeRuntime -> SessionRegistry -> Session` (done: #26/#27, `7b6c06f`).
 3. Executed fail-closed session-resume quarantine (issue #39) — disables the defective prototype resume surface, removes a live attack surface, and unblocks the vertical path. The quarantine is wire-safe because capability negotiation is optional-intersection and because the post-quarantine binary simply does not advertise/offer/accept resume; mixed peers degrade to the ordinary authorized non-resume `/tubo/tunnel/2.0` tunnel.
 4. Neutral Carrier seam minimal (rescoped #28; supersedes closed PR #29) — Session consumes a Carrier contract, not libp2p stream/host/*store.Store concrete types — exit criterion 4, basis for 6/7.
-5. Reachability as L1 boundary returning carriers (no policy) + minimal signed public-bootstrap-bundle contract (version/validity/signature fail closed) — exit criteria 3, 6.
+5. Reachability as L1 boundary returning carriers (no policy) + minimal signed public-bootstrap-bundle contract (version/validity/signature fail closed) — exit criteria 3, 6 (done: #44; see ARCHITECTURE_ACCEPTANCE.md evidence). Criterion 6 implemented; criterion 3 structural-only until production trust material is ratified (issue #45); Journey A production reachability deferred to step 10.
 6. Consumer-side/neutral open-authorization contract at the receiving boundary + Exact Pipe Authority invite redemption → short-lived exact-Pipe Access Lease; L2 imports no concrete L3 — exit criteria 1, 2.
 7. Pipe Engine (`Ingress → Pipe → Target`) composition, Pipe-to-Pipe, loop/hop rules — exit criterion 7.
 8. Durable Service/Pipe definition distinct from PipeRuntime/Session + narrow persistence ports + L4 use cases + thin CLI — exit criteria 8, 9, 10.

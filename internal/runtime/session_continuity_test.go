@@ -70,8 +70,11 @@ func (q *byteQueue) Read(p []byte) (int, error) {
 		q.cond.L.Unlock()
 		return n, nil
 	}
+	// Snapshot the terminal flags while still holding the lock so a concurrent
+	// kill/reset cannot otherwise race this read outside the mutex.
+	dead := q.dead
 	q.cond.L.Unlock()
-	if q.dead {
+	if dead {
 		return 0, io.ErrClosedPipe
 	}
 	return 0, io.EOF
@@ -185,8 +188,11 @@ func TestTunnelContinuityFullDuplexHalfClose(t *testing.T) {
 	c.session.Stop()
 }
 
-// TestTunnelContinuityMidCancel verifies owner cancellation terminates an
-// in-flight session while bytes are mid-flow, and that Stop is idempotent.
+// TestTunnelContinuityMidCancel verifies an in-flight session terminates on an
+// abrupt transport failure and that Stop is idempotent with the retained
+// fail-closed owner contract. A graceful both-FIN completion instead closes the
+// carrier cleanly (see #43 finding 1 remediation); this test exercises the hard
+// reset / fail-closed path of an ungraceful mid-flight termination.
 func TestTunnelContinuityMidCancel(t *testing.T) {
 	c := newContinuity(t, "cancel", true)
 	started := make(chan struct{})
@@ -198,15 +204,18 @@ func TestTunnelContinuityMidCancel(t *testing.T) {
 	chunk := bytes.Repeat([]byte("midflow-"), 200)
 	go func() {
 		_, _ = c.app.Write(chunk)
-		_, _ = c.carrierFar.Write(chunk[:64])
-		_ = c.carrierFar.CloseWrite()
-		_ = c.app.CloseWrite()
+		_ = c.app.CloseWrite() // clean app write side; carrier side stays abnormal
 	}()
 	<-started
 	time.Sleep(10 * time.Millisecond)
-	c.session.Stop() // idempotent, must not panic or deadlock
+	_, _ = c.carrierFar.Write(chunk[:64])
+	// Abrupt transport failure (not a clean FIN) forces the fail-closed reset
+	// path; Stop is idempotent and must not panic or deadlock.
+	c.carrierFar.Reset()
+	c.session.Stop()
 
-	// Session owns the Carrier; after termination a late write must fail closed.
+	// Session owns the Carrier; after an ungraceful termination a late write
+	// must fail closed.
 	if _, err := c.carrierFar.Write([]byte("late")); err == nil {
 		t.Fatal("carrier write after session termination did not fail")
 	}

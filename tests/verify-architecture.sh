@@ -46,4 +46,26 @@ if [[ -n "$node_forbidden_deps" ]]; then
   exit 1
 fi
 
-echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling"
+# L1 Reachability boundary (issue #44). The reachability seam may depend on the
+# host adapter (internal/node) and its pure bundle subpackage, but must never
+# import runtime, authority, discovery, store, or CLI — its type surface is
+# transport-only (peer identity/dial addresses in, dial target / node.Carrier
+# out) and cannot express authorization. The pure bundle verifier must depend
+# on neither the node adapter nor any runtime/authority/store/discovery/CLI
+# package, keeping trust pinning isolated to the L1 contract.
+reach_root="$(go list -f '{{.ImportPath}}' ./internal/reachability)"
+reach_bundle="$(go list -f '{{.ImportPath}}' ./internal/reachability/bundle)"
+reach_forbidden="$(go list -deps -f '{{if and (not .Standard)}}{{.ImportPath}}{{end}}' "$reach_root" | grep '^github.com/origama/tubo-rebuilt/' | grep -E 'internal/(runtime|authority|discovery|store|cli)' || true)"
+if [[ -n "$reach_forbidden" ]]; then
+  echo "[architecture] L1 reachability imports forbidden policy/authority/store package(s):" >&2
+  printf '%s\n' "$reach_forbidden" >&2
+  exit 1
+fi
+bundle_forbidden="$(go list -deps -f '{{if and (not .Standard)}}{{.ImportPath}}{{end}}' "$reach_bundle" | grep '^github.com/origama/tubo-rebuilt/' | grep -E 'internal/(node|runtime|authority|discovery|store|cli)|internal/reachability$' || true)"
+if [[ -n "$bundle_forbidden" ]]; then
+  echo "[architecture] pure bootstrap bundle subpackage imports forbidden concrete packages:" >&2
+  printf '%s\n' "$bundle_forbidden" >&2
+  exit 1
+fi
+
+echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies"

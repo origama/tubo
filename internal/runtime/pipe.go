@@ -76,7 +76,7 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	if err != nil {
 		return err
 	}
-	relay, swarm, reachability, err := state.Overlay(ctx)
+	relay, swarm, reachability, err := relayOrBootstrap(ctx, state)
 	if err != nil {
 		return err
 	}

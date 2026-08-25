@@ -97,6 +97,13 @@ type sessionPump struct {
 	// after pump completion.
 	bytesIn  atomic.Int64
 	bytesOut atomic.Int64
+
+	// completedCleanly is set when both pump directions reach EOF (exact
+	// both-FIN completion). On a clean completion the Session closes the
+	// Carrier gracefully (Close, preserving mux FIN ordering) instead of
+	// hard-resetting it — #43 finding 1 remediation at the Session/Carrier
+	// boundary. Any error or forced-stop path still hard-resets fail-closed.
+	completedCleanly atomic.Bool
 }
 
 // sessionRegistry is an isolated, PipeRuntime-owned session map.
@@ -305,7 +312,13 @@ func (sp *sessionPump) completeStop(resources sessionStopResources) {
 	sp.cancel()
 	sp.carrierCancel()
 	if resources.active != nil {
-		_ = resources.active.Reset()
+		// Clean both-FIN completion closes the Carrier gracefully so FIN bytes are
+		// not preempted by a hard reset; any other completion hard-resets.
+		if sp.completedCleanly.Load() {
+			_ = resources.active.Close()
+		} else {
+			_ = resources.active.Reset()
+		}
 	}
 	if resources.target != nil {
 		_ = resources.target.Close()
@@ -371,29 +384,31 @@ func (sp *sessionPump) pumpCarrier() {
 	}
 
 	var wg sync.WaitGroup
+	var cleanA, cleanB bool
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		sp.carrierToTarget(carrier, sp.targetConn)
+		cleanA = sp.carrierToTarget(carrier, sp.targetConn)
 	}()
 	go func() {
 		defer wg.Done()
-		sp.targetToCarrier(sp.targetConn, carrier)
+		cleanB = sp.targetToCarrier(sp.targetConn, carrier)
 	}()
 	wg.Wait()
+	sp.completedCleanly.Store(cleanA && cleanB)
 }
 
 // carrierToTarget copies carrier bytes to the local target. On clean carrier
-// EOF it half-closes the target write side and stops this direction. On a
-// transport error it fails the session closed.
-func (sp *sessionPump) carrierToTarget(carrier io.Reader, target io.Writer) {
+// EOF it half-closes the target write side and reports clean; on a transport
+// error it fails the session closed.
+func (sp *sessionPump) carrierToTarget(carrier io.Reader, target io.Writer) (clean bool) {
 	buf := make([]byte, DefaultChunk)
 	for {
 		n, err := carrier.Read(buf)
 		if n > 0 {
 			if werr := sp.writeAllToTarget(target, buf[:n]); werr != nil {
 				sp.requestStop()
-				return
+				return false
 			}
 			sp.bytesIn.Add(int64(n))
 			if err == nil {
@@ -404,25 +419,25 @@ func (sp *sessionPump) carrierToTarget(carrier io.Reader, target io.Writer) {
 			if cw, ok := target.(interface{ CloseWrite() error }); ok {
 				_ = cw.CloseWrite()
 			}
-			return
+			return true
 		}
 		if err != nil {
 			sp.requestStop()
-			return
+			return false
 		}
 	}
 }
 
 // targetToCarrier reads target bytes and writes them to the carrier. On target
-// EOF it half-closes the carrier write side and stops that direction.
-func (sp *sessionPump) targetToCarrier(source io.Reader, carrier io.Writer) {
+// EOF it half-closes the carrier write side and returns clean.
+func (sp *sessionPump) targetToCarrier(source io.Reader, carrier io.Writer) (clean bool) {
 	buf := make([]byte, DefaultChunk)
 	for {
 		n, err := source.Read(buf)
 		if n > 0 {
 			if werr := sp.writeAllToCarrier(carrier, buf[:n]); werr != nil {
 				sp.requestStop()
-				return
+				return false
 			}
 			sp.bytesOut.Add(int64(n))
 			if err == nil {
@@ -433,11 +448,11 @@ func (sp *sessionPump) targetToCarrier(source io.Reader, carrier io.Writer) {
 			if cw, ok := carrier.(interface{ CloseWrite() error }); ok {
 				_ = cw.CloseWrite()
 			}
-			return
+			return true
 		}
 		if err != nil {
 			sp.requestStop()
-			return
+			return false
 		}
 	}
 }

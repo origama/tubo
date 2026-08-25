@@ -23,6 +23,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 	"github.com/origama/tubo-rebuilt/internal/node"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
+	"github.com/origama/tubo-rebuilt/internal/reachability"
 	"github.com/origama/tubo-rebuilt/internal/store"
 )
 
@@ -35,14 +36,14 @@ func OpenOverlayHostWithReporter(ctx context.Context, state *store.Store, keyNam
 }
 
 func openOverlayHost(ctx context.Context, state *store.Store, keyName string, reporter coremetrics.Reporter, observer NetworkOperationObserver, scope string) (host.Host, string, error) {
-	relay, key, reachability, err := state.Overlay(ctx)
+	relay, key, reachabilityMode, err := relayOrBootstrap(ctx, state)
 	if err != nil {
 		return nil, "", err
 	}
 	if observer != nil {
 		observer(scope)
 	}
-	h, err := node.Open(ctx, node.Options{KeyFile: state.SecretPath("nodes", keyName+".key"), SwarmKeyFile: key, Private: reachability == "private", BandwidthReporter: reporter})
+	h, err := node.Open(ctx, node.Options{KeyFile: state.SecretPath("nodes", keyName+".key"), SwarmKeyFile: key, Private: reachabilityMode == "private", BandwidthReporter: reporter})
 	if err != nil {
 		return nil, "", err
 	}
@@ -51,6 +52,31 @@ func openOverlayHost(ctx context.Context, state *store.Store, keyName string, re
 		return nil, "", err
 	}
 	return h, relay, nil
+}
+
+// relayOrBootstrap returns the relay dial target for host acquisition. When a
+// user overlay is configured it is returned unchanged (prototype-era scoped
+// flows). When no overlay is configured, the zero-config path resolves the
+// verified signed bootstrap bundle; with no production trust material installed
+// (A0, issue #45) that resolution fails closed deterministically with
+// ErrNoBootstrapBundle — never a hardcoded address or temporary provider.
+func relayOrBootstrap(ctx context.Context, state *store.Store) (relay, swarmKey, mode string, err error) {
+	relay, swarmKey, mode, err = state.Overlay(ctx)
+	if err == nil {
+		return relay, swarmKey, mode, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return "", "", "", err
+	}
+	provider, rerr := reachability.ResolveDefault(ctx)
+	if rerr != nil {
+		return "", "", "", rerr
+	}
+	address, aerr := provider.PrimaryAddress()
+	if aerr != nil {
+		return "", "", "", aerr
+	}
+	return address, "", "public", nil
 }
 
 func authorityRequest(ctx context.Context, state *store.Store, h host.Host, scope, operation, pipeID string) (wire.AuthorityResponse, error) {
