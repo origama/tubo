@@ -109,13 +109,34 @@ Ordinary inspect/config output prints references and fingerprints only.
 
 The literal PSK header `/key/swarm/psk/1.0.0/` may appear in implementation/tests only when followed by generated test material outside Git.
 
-## Owner-bound Exact Authority (step 6B1)
+## Owner-bound Exact Authority (step 6B1a)
 
-Issue #52 / step 6B1 establishes the pure owner-bound contract and owner-local key lifecycle; it does not yet wire the receiving remote-open path. Followed fail-closed invariants:
+Step 6B1a establishes the pure owner-bound value contract; it wires no
+remote-open and introduces no durable key/secret lifecycle (that is step 6B1b,
+the mandatory predecessor to 6B2's receiving path). Followed fail-closed
+invariants:
 
-- Every remote Pipe open still requires a short-lived, cryptographically verifiable Access Lease (owner rule). `PipeID` is self-deriving (`sha256(ownerPublic)`), so `VerifyPipeOwner` proves the exact-Pipe owner.
-- The `OwnerBinding` is owner-signed and binds exactly one dedicated Exact Authority key (plus bounded neutral redemption peers/protocol and an authorization epoch) to one exact Pipe. `VerifyOwnerAuthority` requires the binding owner to be the self-derived pipe owner and the authority key to match; anything else fails closed. This removes the PR #51 flaw where a remote/ambient key could be invented/trusted without owner binding.
-- The `ExactInvite` composes the owner-signed binding and is recipient-unbound: invite possession is never an Access Lease and never authorization on its own.
-- Distinct NUL-delimited signing domains (`tubo://access-lease/v1`, `tubo://exact-owner-binding/v1`, `tubo://exact-invite/v1`, `tubo://exact-owner-key-proof/v1`) prevent signed bytes from being re-used or mistaken across credential kinds.
-- Strict bounded decode (≤48 KiB limit, flat object, allow-listed keys, no duplicate/nested/trailing bytes) runs before typed unmarshal and before any cryptographic verification, so unknown, duplicate, and oversized fields fail closed with no unbounded allocation.
-- The deterministic key lifecycle creates the owner proof under the owner's identity secret; read-only `Load` fails closed on missing/corrupt/mismatched material and never creates a filesystem entry. `exactauthority` depends only on the pure `accesslease` contract (no runtime/reachability/discovery/store/authority/libp2p/CLI import).
+- Every remote Pipe open still requires a short-lived, cryptographically
+  verifiable Access Lease (owner rule). `PipeID` is self-deriving
+  (`sha256(ownerPublic)`), so `VerifyPipeOwner` proves the exact-Pipe owner.
+- The `OwnerBinding` is owner-signed and binds exactly one dedicated Exact
+  Authority key (plus bounded neutral redemption peers/protocol and an access
+  epoch) to one exact Pipe. `VerifyOwnerAuthority` requires the binding owner
+  to be the self-derived pipe owner and the authority key to match; anything
+  else fails closed. This disallows the old flaw where a remote/ambient key
+  could be invented/trusted without owner binding.
+- The `ExactInvite` composes the owner-signed binding and is recipient-unbound:
+  invite possession is never an Access Lease and never authorization on its
+  own.
+- Distinct NUL-delimited signing domains (`tubo://access-lease/v1`,
+  `tubo://exact-owner-binding/v1`, `tubo://exact-invite/v1`,
+  `tubo://exact-owner-possession-proof/v1`) prevent signed bytes from being
+  re-used or mistaken across credential kinds.
+- Strict bounded decode (≤ 48 KiB limit, flat object, allow-listed keys, no
+  duplicate/nested/trailing bytes) runs before typed unmarshal and before any
+  cryptographic verification, and every base64url input (public keys,
+  signatures, proofs, outer credential bodies, embedded bindings) must be
+  canonical unpadded URL-safe base64url verified by re-encode equality.
+- 6B1a writes, reads, or implies no durable secret or filesystem key lifecycle;
+  no key file, path, envelope, or lifecycle exists here. It depends only on the
+  standard library and remains a pure value contract.

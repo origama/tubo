@@ -165,6 +165,10 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.
 
-## Owner-local Exact Authority key (step 6B1)
+## Owner-bound Exact Authority (step 6B1a)
 
-Step 6B1 adds no SQLite schema. The owner-local dedicated Exact Authority key is a single local file at the deterministic path `<dir>/exact-authority/ea-<sha256(ownerPublic)[:16] base32>.key.json` (0600; containing directory 0700). The JSON envelope holds `format=exact_owner_authority_key_v1`, `version=1`, `owner`, `authority_secret` (base64url Ed25519 private), `authority_public`, and an `key`-bound owner proof (owner signature over the owner+authority public bytes under the `tubo://exact-owner-key-proof/v1` domain). `Provision` creates-or-loads this key once; `Load` is read-only and fails closed on missing, corrupt, or owner-mismatched material and creates no filesystem entry. No store/table change is made by 6B1.
+Step 6B1a adds no SQLite schema and no filesystem state. The owner-local secure
+dedicated-key lifecycle (rendering, publication, durable no-clobber storage of
+any owner-authority secret) is step 6B1b, the mandatory predecessor to 6B2; this
+PR claims none of that lifecycle and creates no persistence. No store/table
+change is made by 6B1a.

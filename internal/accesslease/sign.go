@@ -4,11 +4,11 @@
 // and the redesigned recipient-unbound Exact Invite that composes that binding.
 //
 // These are value/contract packages only: no network handlers, no persistence,
-// no CLI, no OpenAuthorizer runtime wiring, no Scope/membership/discovery, and
-// no import of any reachability/libp2p/store/CLI package. Decoding is strict
-// and bounded before any allocation beyond the bounded struct, unknown or
-// duplicate keys are rejected, trailing payload is rejected, and arbitrary
-// nested metadata maps and concrete multiaddrs are never representable.
+// no filesystem key lifecycle (that is step 6B1b), no CLI, no OpenAuthorizer
+// runtime wiring, no Scope/membership/discovery, and no import of any
+// reachability/libp2p/store/CLI package. Decoding is strict and bounded before
+// any allocation beyond the bounded struct, unknown or duplicate keys are
+// rejected, trailing payload is rejected, and arbitrary nested metadata maps and concrete multiaddrs are never representable.
 //
 // Ownership model: a PipeID is self-certifying — it is the SHA-256 digest of
 // the owning participant's Ed25519 public key. The Pipe owner owns the Exact
@@ -80,9 +80,13 @@ func PublicString(public ed25519.PublicKey) string {
 	return base64.RawURLEncoding.EncodeToString(public)
 }
 
-// PublicFromString parses a canonical base64url Ed25519 public key.
+// PublicFromString parses a canonical unpadded URL-safe base64url Ed25519
+// public key. The text must decode, decode to exactly Ed25519.PublicKeySize
+// bytes, and re-encode byte-for-byte to itself; any non-canonical input
+// (CR/LF/CRLF, padding, whitespace, alternate spellings, wrong length, or
+// malformed text) is rejected without trimming or canonicalization.
 func PublicFromString(value string) (ed25519.PublicKey, error) {
-	data, err := base64.RawURLEncoding.DecodeString(value)
+	data, err := decodeCanonicalRawBase64URL(value)
 	if err != nil || len(data) != ed25519.PublicKeySize {
 		return nil, errors.New("accesslease: invalid Ed25519 public key")
 	}
@@ -145,9 +149,11 @@ func SignProof(private ed25519.PrivateKey, purpose string, parts ...string) stri
 	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, []byte(message)))
 }
 
-// VerifyProof verifies a purpose-delimited possession message.
+// VerifyProof verifies a purpose-delimited possession message. The signature
+// text must be canonical unpadded URL-safe base64url and decode to exactly
+// Ed25519.SignatureSize bytes; non-canonical or malformed text fails closed.
 func VerifyProof(public ed25519.PublicKey, signature, purpose string, parts ...string) bool {
-	value, err := base64.RawURLEncoding.DecodeString(signature)
+	value, err := decodeSignature(signature)
 	if err != nil {
 		return false
 	}
@@ -156,11 +162,37 @@ func VerifyProof(public ed25519.PublicKey, signature, purpose string, parts ...s
 }
 
 func decodeSignature(signature string) ([]byte, error) {
-	value, err := base64.RawURLEncoding.DecodeString(signature)
+	value, err := decodeCanonicalRawBase64URL(signature)
 	if err != nil || len(value) != ed25519.SignatureSize {
 		return nil, errors.New("accesslease: invalid signature encoding")
 	}
 	return value, nil
+}
+
+// decodeCanonicalRawBase64URL decodes an unpadded URL-safe base64 string and
+// requires the input to equal the canonical re-encoding of the decoded bytes.
+// It fails closed (never trims or canonicalizes) on empty input, any CR/LF/
+// CRLF, padding ('='), whitespace, a length Go's decoder only tolerates
+// because it skips newlines, or any alternate spellings of the same bytes. It
+// does NOT by itself bound length; callers enforce any expected decoded length.
+func decodeCanonicalRawBase64URL(value string) ([]byte, error) {
+	if value == "" {
+		return nil, errors.New("accesslease: empty base64url value")
+	}
+	if strings.ContainsAny(value, "\r\n\t ") {
+		return nil, errors.New("accesslease: non-canonical base64url (whitespace)")
+	}
+	if strings.ContainsRune(value, '=') {
+		return nil, errors.New("accesslease: padded base64url")
+	}
+	data, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil, errors.New("accesslease: invalid base64url")
+	}
+	if base64.RawURLEncoding.EncodeToString(data) != value {
+		return nil, errors.New("accesslease: non-canonical base64url")
+	}
+	return data, nil
 }
 
 func base64RawURLEncode(data []byte) string {

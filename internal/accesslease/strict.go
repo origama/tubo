@@ -2,7 +2,6 @@ package accesslease
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,7 +24,7 @@ func decodeStrictJSON(encoded string, allowed map[string]int) ([]byte, error) {
 	if len(encoded) > MaxBytes {
 		return nil, errors.New("accesslease: encoded field exceeds bound")
 	}
-	data, err := base64.RawURLEncoding.DecodeString(encoded)
+	data, err := decodeCanonicalRawBase64URL(encoded)
 	if err != nil {
 		return nil, errStrict
 	}
