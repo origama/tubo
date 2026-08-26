@@ -139,3 +139,9 @@ invariants:
 - 6B1a writes, reads, or implies no durable secret or filesystem key lifecycle;
   no key file, path, envelope, or lifecycle exists here. It depends only on the
   standard library and remains a pure value contract.
+
+## Owner-local private-key lifecycle (step 6B1b)
+
+Step 6B1b introduces one local filesystem threat model and one shared key-file primitive for Pipe owner keys and dedicated Exact Authority keys. In scope: network attackers, untrusted relays/bootstrap/discovery/caches/query peers, other local OS users, unsafe group/other file modes, final-component symlinks, partial/corrupt/oversized/noncanonical key files, concurrent first provision races, crash before durable publication, and accidental remote-request-driven provisioning. Out of scope: a malicious process already running as the same OS UID; such a process can usually read, replace, race, or delete owner-readable files and would require future OS keychain/sandbox/hardware-key integration.
+
+Security contract: `Load` performs zero filesystem mutation and fails closed on missing or unsafe state. Private-key files are canonical unpadded raw-base64url Ed25519 private keys of the expected decoded length, read through a bounded path before allocation, with no trimming or alternate spellings accepted. Provisioning is available only to trusted local owner workflow code; it serializes local contenders, writes a temp file, fsyncs file data, publishes without clobber, fsyncs the containing directory, and reports no success before durable publication. Losers in concurrent first provision only return after loading the committed winner. `internal/exactauthority.Loader` is read-only for future redemption serving and cannot create keys; `LocalOwnerWorkflow` is the separate provisioning capability that requires the owner private key and cannot bind a foreign Pipe.

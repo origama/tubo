@@ -102,15 +102,13 @@ if grep -R -n -E 'Scope.*json:"scope|map\[string\]any' internal/openauth --inclu
   exit 1
 fi
 
-# #52 owner-bound Exact Authority (step 6B1a): this PR lands only the pure
-# value contract. internal/accesslease must be stdlib-only — no Scope,
-# endpoint, route, relay, discovery, namespace, CLI, store, libp2p host, or any
-# repo/third-party dependency. The owner-local secure key lifecycle
-# (internal/exactauthority) is step 6B1b and must NOT be introduced by this
-# 6B1a foundation, so this PR makes no durable secret-path/state/lifecycle
-# claim. The pure contract carries no Scope, arbitrary metadata, or concrete
-# multiaddrs, and every base64url text entry (public keys, signatures,
-# outer credential bodies, embedded bindings) is canonical and bounded.
+# #52/#54 owner-bound Exact Authority lifecycle: internal/accesslease remains
+# pure/stdlib-only value contract. Step 6B1b adds only owner-local private-key
+# lifecycle packages: internal/localkey (stdlib-only Ed25519 key-file primitive)
+# and internal/exactauthority (may depend only on accesslease + localkey). No
+# Scope, runtime receiving path, reachability, discovery, store/schema, CLI,
+# concrete multiaddrs, libp2p, or old authority token implementation may enter
+# these packages.
 accesslease_pkg="$(go list -f '{{.ImportPath}}' ./internal/accesslease)"
 accesslease_non_stdlib="$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/origama/tubo-rebuilt/internal/accesslease")}}{{.ImportPath}}{{end}}' "$accesslease_pkg")"
 if [[ -n "$accesslease_non_stdlib" ]]; then
@@ -118,26 +116,29 @@ if [[ -n "$accesslease_non_stdlib" ]]; then
   printf '%s\n' "$accesslease_non_stdlib" >&2
   exit 1
 fi
-# 6B1a is pure-contract-only: the owner-local secure key lifecycle package is
-# deferred to 6B1b. Its presence here would overclaim a durable secret path.
-if [[ -d internal/exactauthority ]]; then
-  echo "[architecture] 6B1a foundation must NOT ship internal/exactauthority (secure key lifecycle is step 6B1b):" >&2
+localkey_pkg="$(go list -f '{{.ImportPath}}' ./internal/localkey)"
+localkey_non_stdlib="$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/origama/tubo-rebuilt/internal/localkey")}}{{.ImportPath}}{{end}}' "$localkey_pkg")"
+if [[ -n "$localkey_non_stdlib" ]]; then
+  echo "[architecture] internal/localkey must be stdlib-only:" >&2
+  printf '%s\n' "$localkey_non_stdlib" >&2
   exit 1
 fi
-for f in $(find internal/accesslease -name '*.go' ! -name '*_test.go'); do
+exactauthority_pkg="$(go list -f '{{.ImportPath}}' ./internal/exactauthority)"
+exactauthority_forbidden="$(go list -deps -f '{{if and (not .Standard)}}{{.ImportPath}}{{end}}' "$exactauthority_pkg" | grep '^github.com/origama/tubo-rebuilt/' | grep -Ev 'internal/(accesslease|localkey|exactauthority)$' || true)"
+if [[ -n "$exactauthority_forbidden" ]]; then
+  echo "[architecture] internal/exactauthority imports forbidden repo package(s):" >&2
+  printf '%s\n' "$exactauthority_forbidden" >&2
+  exit 1
+fi
+for f in $(find internal/accesslease internal/localkey internal/exactauthority -name '*.go' ! -name '*_test.go'); do
   if grep -qE 'Scope.*json:"scope|map\[string\]any' "$f"; then
     echo "[architecture] $f carries Scope or arbitrary metadata (map[string]any)" >&2
     exit 1
   fi
-done
-# Concrete multiaddr / libp2p host / store / reachability / discovery / CLI
-# imports are forbidden in the exact owner-authority contract surface (it uses
-# bounded neutral address strings instead of concrete multiaddrs).
-for f in $(find internal/accesslease -name '*.go' ! -name '*_test.go'); do
   if grep -E '"github.com/origama/tubo-rebuilt/internal/(runtime|reachability|discovery|store|cli|authority)"|"github.com/multiformats|go-libp2p' "$f"; then
     echo "[architecture] $f imports forbidden runtime/reachability/discovery/store/authority/libp2p type" >&2
     exit 1
   fi
 done
 
-echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map; #52 6B1a accesslease is stdlib-only with canonical bounded base64url contracts and no internal/exactauthority lifecycle in the foundation, neither carries Scope/metadata/map or imports runtime/reachability/discovery/store/authority/CLI/libp2p/multiaddr"
+echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map; #52 accesslease remains stdlib-only canonical bounded base64url contract; #54 localkey/exactauthority add only owner-local secure key lifecycle with no Scope/runtime/reachability/discovery/store/authority/CLI/libp2p/multiaddr wiring"

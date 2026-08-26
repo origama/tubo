@@ -9,12 +9,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo-rebuilt/internal/localkey"
 )
 
 const (
@@ -189,48 +188,11 @@ func PublicFromString(value string) (ed25519.PublicKey, error) {
 }
 
 func ReadPrivate(path string) (ed25519.PrivateKey, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	decoded, err := base64.RawURLEncoding.DecodeString(strings.TrimSpace(string(data)))
-	if err != nil || len(decoded) != ed25519.PrivateKeySize {
-		return nil, errors.New("invalid Ed25519 private key file")
-	}
-	return ed25519.PrivateKey(decoded), nil
+	return localkey.Load(path)
 }
 
 func GeneratePrivate(path string) (ed25519.PrivateKey, error) {
-	_, private, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
-	}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	data := []byte(base64.RawURLEncoding.EncodeToString(private))
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		os.Remove(path)
-		return nil, err
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		os.Remove(path)
-		return nil, err
-	}
-	if err := file.Close(); err != nil {
-		os.Remove(path)
-		return nil, err
-	}
-	return private, nil
+	return localkey.Provision(path)
 }
 
 func PipeID(public ed25519.PublicKey) string {

@@ -194,3 +194,5 @@ equality); since Go's encoder can skip newlines and tolerances vary, CR/LF/CRLF,
 padding, whitespace, wrong decoded lengths, alternate spellings, and malformed
 text are rejected explicitly before any cryptographic verification or typed
 unmarshal. Nothing is trimmed or canonicalized on input.
+
+Step 6B1b changes no served protocol ID and adds no redemption operation. It only makes dedicated Exact Authority key material loadable/provisionable locally and able to produce/verify the existing owner-bound `OwnerBinding`. 6B2 remains responsible for binding these contract bytes into the receiving remote-open path and for any future redemption protocol message shape.
