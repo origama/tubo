@@ -80,6 +80,12 @@ This slice does **not** decide whether PipeRuntimes share a libp2p host. Its sam
 
 SQLite may implement transactional state. Consumer-owned narrow ports live beside consumer, such as PipeRepository or RevocationRepository. Do not use one generic ports package or spread concrete `*store.Store` through L0/L2 contracts. Persistence failures must prevent claimed mutation success.
 
+## Implemented A0 slice: L4 use cases + narrow persistence ports (issue #59, step 8A)
+
+`internal/usecase` is the L4 use-case composition boundary for Journey A: `Attach`, `ShareExact`, `ConnectExact`, and `StartPipe` compose narrow injected capabilities. The package imports only `domain` (L0), `accesslease`/`exactauthority`/`localkey` (L3 owner-local credential/key lifecycle), and stdlib — no store, runtime, discovery, authority, CLI, node, engine, or concrete reachability. Consumer-owned ports (`ServiceRepository`, `PipeRepository`) are defined beside the consumer; `internal/store` provides composition-root adapters (`ServiceRepoAdapter`/`PipeRepoAdapter`) satisfying them structurally, so no `*store.Store` appears in use-case contracts. Use cases never orchestrate Store transactions, authority provisioning topology, discovery, or runtime assembly; they own multi-step ordering and explicit failure semantics (durable definition left in place and reported exactly when a later step fails; no generic transaction coordinator). Journey A exact-path use cases are Scope-free by construction.
+
+The durable/runtime separation foundation (exit criterion 8, part 1): `domain.PipeSpec`/`domain.ServiceSpec` remain pure durable definitions with no PID/Carrier/Session/address/lease fields (structural assertion); Pipe identity is self-deriving and stable across repository restart; transient Run/Session persistence never mutates definition rows. The actual Scope-less published runtime path, redemption serving, thin CLI rewiring, and local Journey A proof remain step 8B (issue #61).
+
 ## Discovery boundary
 
 Discovery finds Pipe; reachability reaches identified peer; authorization permits open. PipeRecord is network metadata only. Descriptor/catalog discovery belongs above it. Exact invites bypass discovery.

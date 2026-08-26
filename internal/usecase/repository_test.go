@@ -64,14 +64,14 @@ func TestCase2_PipePutGetRoundTrip(t *testing.T) {
 	ref, _ := domain.NewRef(domain.KindPipe, "testpipe")
 	target, _ := domain.NewRef(domain.KindService, "echo")
 	spec := domain.PipeSpec{
-		Ref:     ref,
-		PipeID:  "pip_testpipe",
-		Ingress: domain.PipeIngress{Kind: domain.IngressLocal, Listen: "127.0.0.1:9000"},
-		Target:  target,
+		Ref:        ref,
+		PipeID:     "pip_testpipe",
+		Ingress:    domain.PipeIngress{Kind: domain.IngressLocal, Listen: "127.0.0.1:9000"},
+		Target:     target,
 		Visibility: domain.VisibilityPrivate,
-		Access: domain.AccessInviteOnly,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Access:     domain.AccessInviteOnly,
+		CreatedAt:  now,
+		UpdatedAt:  now,
 	}
 	keyFile := "/tmp/test-owner.key"
 
@@ -193,8 +193,8 @@ func TestCase6_ValidationRejectionBeforeWrite(t *testing.T) {
 
 	// Invalid service: missing target.
 	invalidService := domain.ServiceSpec{
-		Ref:   domain.Ref{Kind: domain.KindService, Name: "bad"},
-		Kind:  domain.ServiceHTTP,
+		Ref:    domain.Ref{Kind: domain.KindService, Name: "bad"},
+		Kind:   domain.ServiceHTTP,
 		Target: "",
 	}
 	_, err := serviceRepo.Upsert(ctx, invalidService)
@@ -211,10 +211,10 @@ func TestCase6_ValidationRejectionBeforeWrite(t *testing.T) {
 	svcRef, _ := domain.NewRef(domain.KindService, "exists")
 	_ = mustService(ctx, t, serviceRepo, "exists", "http://127.0.0.1:8080")
 	invalidPipe := domain.PipeSpec{
-		Ref:    domain.Ref{Kind: domain.KindPipe, Name: "bad"},
-		PipeID: "pip_bad",
+		Ref:     domain.Ref{Kind: domain.KindPipe, Name: "bad"},
+		PipeID:  "pip_bad",
 		Ingress: domain.PipeIngress{Kind: domain.IngressLocal}, // missing Listen
-		Target: svcRef,
+		Target:  svcRef,
 	}
 	_, err = pipeRepo.Upsert(ctx, invalidPipe, "/fake")
 	if err == nil {

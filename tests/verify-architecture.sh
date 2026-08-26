@@ -102,6 +102,29 @@ if grep -R -n -E 'Scope.*json:"scope|map\[string\]any' internal/openauth --inclu
   exit 1
 fi
 
+# Step 8A: L4 use-case boundary (internal/usecase). Use cases compose narrow
+# injected capabilities; they must never import store, runtime, discovery,
+# authority, CLI, node, engine, or concrete reachability. Only L0 domain,
+# accesslease/exactauthority/localkey (L3 owner-local lifecycle), openauth, and
+# stdlib are permitted. Contracts expose no *store.Store anywhere.
+usecase_pkg="$(go list -f '{{.ImportPath}}' ./internal/usecase)"
+usecase_forbidden="$(go list -deps -f '{{if and (not .Standard)}}{{.ImportPath}}{{end}}' "$usecase_pkg" | grep '^github.com/origama/tubo-rebuilt/' | grep -E 'internal/(store|runtime|discovery|authority|cli|node|engine|reachability)' || true)"
+if [[ -n "$usecase_forbidden" ]]; then
+  echo "[architecture] L4 usecase imports forbidden concrete package(s):" >&2
+  printf '%s\n' "$usecase_forbidden" >&2
+  exit 1
+fi
+if grep -R -n -E 'store\.Store|\*store\.Store' internal/usecase --include='*.go' | grep -v '_test.go' | grep -vE ':[0-9]+:.*//' >/dev/null; then
+  echo "[architecture] L4 usecase contract exposes *store.Store" >&2
+  exit 1
+fi
+# The new narrow ports live beside the consumer and must remain generic-free:
+# no Repository[T], UnitOfWork, or giant Storage interface in usecase.
+if grep -R -n -E 'Repository\[|UnitOfWork|type Storage interface' internal/usecase --include='*.go' | grep -v '_test.go' >/dev/null; then
+  echo "[architecture] L4 usecase must define narrow consumer-owned ports only" >&2
+  exit 1
+fi
+
 # #52/#54 owner-bound Exact Authority lifecycle: internal/accesslease remains
 # pure/stdlib-only value contract. Step 6B1b adds only owner-local private-key
 # lifecycle packages: internal/localkey (stdlib-only Ed25519 key-file primitive)
@@ -152,4 +175,4 @@ if [[ -n "$engine_forbidden" ]]; then
   exit 1
 fi
 
-echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map; #52 accesslease remains stdlib-only canonical bounded base64url contract; #54 localkey/exactauthority add only owner-local secure key lifecycle with no Scope/runtime/reachability/discovery/store/authority/CLI/libp2p/multiaddr wiring; Step 7 engine has no store/discovery/authority/Scope/CLI dependency"
+echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map; #52 accesslease remains stdlib-only canonical bounded base64url contract; #54 localkey/exactauthority add only owner-local secure key lifecycle with no Scope/runtime/reachability/discovery/store/authority/CLI/libp2p/multiaddr wiring; Step 7 engine has no store/discovery/authority/Scope/CLI dependency; Step 8A usecase boundary imports no store/runtime/discovery/authority/CLI/node/engine/reachability and exposes no *store.Store or generic repository framework"
