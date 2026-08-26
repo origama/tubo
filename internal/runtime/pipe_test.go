@@ -24,8 +24,8 @@ func TestRunPublishedPipeRejectsScopeLessTuboIngress(t *testing.T) {
 		Visibility: domain.VisibilityUnlisted,
 		Access:     domain.AccessInviteOnly,
 	}, "", "")
-	if err == nil || err.Error() != "invalid_input: Scope-less Tubo ingress is not supported by prototype runtime" {
-		t.Fatalf("expected deterministic Scope-less runtime rejection, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "Step 8") {
+		t.Fatalf("expected Step-8 deferred error, got %v", err)
 	}
 }
 

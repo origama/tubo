@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net"
 
+	"github.com/libp2p/go-libp2p/core/host"
+
 	"github.com/origama/tubo-rebuilt/internal/domain"
 	"github.com/origama/tubo-rebuilt/internal/engine"
 	"github.com/origama/tubo-rebuilt/internal/node"
@@ -29,38 +31,32 @@ func newPipeEngine(state *store.Store) *engine.Engine {
 	)
 }
 
-// newDownstreamPipeOpener creates a DownstreamOpener wired to the Store and
-// the existing runtime infrastructure. This opens a remote Pipe hop with
-// full tunnel handshake, access lease acquisition, and authorization.
+// newDownstreamPipeOpener creates a DownstreamOpener wired to the Store, the
+// serving process's libp2p host, and the PipeRuntime. This opens a remote
+// Pipe hop with the full tunnel handshake, access lease acquisition, and the
+// traversal state propagated from the Engine.
 //
-// In the A0 Step 7 scope, this opener handles the first-hop remote Pipe
-// open. Full multi-hop remote traversal (where each hop independently
-// acquires a lease) is wired here as a narrow consumer-side injection.
-func newDownstreamPipeOpener(state *store.Store, eng *engine.Engine) engine.DownstreamOpener {
-	return func(ctx context.Context, nextSpec domain.PipeSpec, state engine.TraversalState) (node.Carrier, string, error) {
-		// The downstream opener must independently authorize the hop.
-		// It acquires the carrier via reachability, performs the tunnel
-		// handshake, and returns the carrier.
-		//
-		// For A0 Step 7, this is a stub that returns an error indicating
-		// the downstream open is not yet fully wired. The full integration
-		// with reachability, lease acquisition, and tunnel handshake is
-		// completed when the prototype branching is replaced.
-		_ = state
-		_ = nextSpec
-		return nil, "", errDownstreamPipeNotWired
+// The opener is the composition-root seam for per-hop authorization: it
+// acquires the Access Lease for the downstream Pipe through the existing
+// scope-authority lease request, performs reachability/dial, and hands back
+// only the established carrier. The Engine never sees lease or discovery
+// material.
+func newDownstreamPipeOpener(state *store.Store, h host.Host, pipeRuntime *PipeRuntime) engine.DownstreamOpener {
+	leases := &localLeaseCache{}
+	return func(ctx context.Context, nextSpec domain.PipeSpec, traversal engine.TraversalState) (node.Carrier, string, error) {
+		recordStored, err := state.Record(ctx, nextSpec.Ref.Name)
+		if err != nil {
+			return nil, "", err
+		}
+		record, err := ParseVerifiedRecord(ctx, state, recordStored)
+		if err != nil {
+			return nil, "", err
+		}
+		return openRemotePipeCarrier(ctx, state, h, record, traversal, leases)
 	}
 }
 
-// errDownstreamPipeNotWired is returned when the downstream pipe opener
-// is called but the full remote open path is not yet wired. This is a
-// temporary error during the transition from prototype to Engine-based
-// composition.
+// errDownstreamPipeNotWired is returned when a downstream pipe open is
+// attempted without lease/reachability material. It fails closed with the
+// generic denial shape the Engine maps to target_unreachable.
 var errDownstreamPipeNotWired = errors.New("downstream pipe open not wired in this adapter")
-
-// engineForwardTarget is a convenience function that wraps Engine.Forward
-// for the single-hop case used in the tunnel server. It resolves the
-// target and returns the connection or carrier.
-func engineForwardTarget(ctx context.Context, eng *engine.Engine, spec domain.PipeSpec, state engine.TraversalState, opener engine.DownstreamOpener) (engine.ForwardResult, error) {
-	return eng.Forward(ctx, spec, state, opener)
-}
