@@ -336,6 +336,12 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 	if _, err := pipeEngine.ResolvePath(spec.Ref, domain.DefaultMaxPipeHops); err != nil {
 		return err
 	}
+	// Check if this is a Journey A exact connect path (Scope-less, no discovery).
+	// The target pipe ID is derived from the spec.Target.Name.
+	if connState, connErr := state.GetExactConnectionState(ctx, spec.Target.Name); connErr == nil && connState.AccessLease != "" {
+		return runLocalPipeExact(ctx, state, spec, connState, nodeRuntime, pipeRuntime, pipeEngine)
+	}
+	// Fall through to the scoped discovery path for backward compatibility.
 	recordStored, err := state.Record(ctx, spec.Target.Name)
 	if err != nil {
 		return err
@@ -1045,6 +1051,113 @@ func runScopeLessPublishedPipe(
 			runtimeWarnf("degraded %s reason=relay_unavailable detail=%s", spec.Ref, safeLogError(err))
 		}
 	})
+}
+
+// runLocalPipeExact runs the Journey A exact connect path for a local ingress
+// Pipe that targets a remote Pipe. It uses the exact connection state (no
+// discovery, no Scope, no membership, no PipeRecord) to open the remote
+// tunnel when a local connection arrives.
+func runLocalPipeExact(
+	ctx context.Context,
+	state *store.Store,
+	spec domain.PipeSpec,
+	connState store.ExactConnectionState,
+	nodeRuntime *NodeRuntime,
+	pipeRuntime *PipeRuntime,
+	pipeEngine *engine.Engine,
+) error {
+	bandwidth := coremetrics.NewBandwidthCounter()
+	h, relayAddress, err := OpenOverlayHostWithReporter(ctx, state, strings.ReplaceAll(spec.Ref.String(), "/", "-"), bandwidth)
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+	relayInfo, err := node.RelayInfo(relayAddress)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", spec.Ingress.Listen)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	actual := listener.Addr().String()
+	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: actual, StartedAt: time.Now().UTC()}
+	if err := state.PutRun(ctx, run); err != nil {
+		return err
+	}
+	runtimeInfof("ready %s listen=%s", spec.Ref, actual)
+	stopTelemetry := startRuntimeTelemetry(ctx, state, spec.Ref.String(), h, bandwidth)
+	defer stopTelemetry()
+	stopRecovery := startRelayRecovery(ctx, state, spec.Ref.String(), h, *relayInfo)
+	defer stopRecovery()
+	defer func() {
+		run.Status = "stopped"
+		_ = state.PutRun(context.Background(), run)
+		runtimeInfof("stopped %s", spec.Ref)
+	}()
+	// No scope sync, no discovery, no membership.
+	go func() { <-ctx.Done(); listener.Close() }()
+	go func() {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(signals)
+		select {
+		case <-signals:
+			listener.Close()
+		case <-ctx.Done():
+		}
+	}()
+	// Use the exact downstream opener to establish the remote tunnel.
+	// Each local connection triggers a new tunnel open.
+	exactOpener := newExactDownstreamPipeOpener(state, h, pipeRuntime, spec.Target.Name)
+	for {
+		local, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		go func(local net.Conn) {
+			defer local.Close()
+			carrier, sessionID, err := exactOpener(ctx, spec, engine.TraversalState{
+				VisitedIDs: []string{spec.PipeID},
+				MaxHops:    domain.DefaultMaxPipeHops,
+			})
+			if err != nil {
+				runtimeWarnf("exact tunnel open failed: %s", safeLogError(err))
+				if setRunStatus(state, spec.Ref.String(), "degraded") {
+					runtimeWarnf("degraded %s reason=%s", spec.Ref, safeLogError(err))
+				}
+				return
+			}
+			defer carrier.Close()
+			session := store.Session{ID: sessionID, PipeRef: spec.Ref.String(), InitialTransportPath: "relayed", CurrentTransportPath: "relayed", StartedAt: time.Now().UTC()}
+			_ = state.PutSession(context.Background(), session)
+			runtimeInfof("session opened pipe=%s session=%s path=relayed", spec.Ref, sessionID)
+			sp, sessionErr := pipeRuntime.NewSession(sessionConfig{
+				SessionID:    sessionID,
+				PipeID:       spec.PipeID,
+				Scope:        "",
+				TargetConn:   local,
+				InitialEpoch: 1,
+				IsClient:     true,
+			})
+			if sessionErr != nil {
+				return
+			}
+			if !sp.SetActiveCarrier(carrier) {
+				return
+			}
+			sp.runClientSession()
+			in, out := sp.ByteCounts()
+			session.BytesIn = in
+			session.BytesOut = out
+			_ = state.PutSession(context.Background(), session)
+			runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", spec.Ref, sessionID, in, out)
+		}(local)
+	}
 }
 
 func loadExactAuthorizer(state *store.Store, pipeID string) openauth.OpenAuthorizer {
