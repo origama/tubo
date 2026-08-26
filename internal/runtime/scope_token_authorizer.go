@@ -11,27 +11,27 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/store"
 )
 
-// scopeTokenOpenAuthorizer is a TRANSITIONAL concrete L3 adapter that moves the
-// prototype Scope-token remote-open validation out of the receiving-boundary
-// files (issue #48) so the receiving L2 path consumes only the neutral
+// scopeTokenOpenAuthorizer is QUARANTINED as of step 6B2 (issue #49/#49).
+// The prototype Scope-token is UNREACHABLE as remote-open authorization.
+// This file remains only for test-reference. Any production call panics.
+//
+// It was a TRANSITIONAL concrete L3 adapter that moved the prototype
+// Scope-token remote-open validation out of the receiving-boundary files
+// (issue #48) so the receiving L2 path consumed only the neutral
 // openauth.OpenAuthorizer contract.
 //
-// It re-uses the existing prototype authority.Token decode/verify, Scope
-// binding, revocation/epoch, and challenge-proof checks to preserve the
-// current scoped production behavior unchanged and fail-closed. This adapter
-// is NOT a target Access Lease contract and MUST NOT be renamed, wrapped, or
-// promoted as one: issue #49 replaces this transitional remote-open path with
-// the canonical Scope-independent exact-Pipe Access Lease + Exact Pipe
-// Authority. No compatibility promise is made for the prototype
-// authority.Token.
+// Step 6B2 replaces this transitional remote-open path with the canonical
+// Scope-independent exact-Pipe Access Lease + Exact Pipe Authority.
 type scopeTokenOpenAuthorizer struct {
 	state           *store.Store
 	scope           string
 	authorityPublic ed25519.PublicKey
 }
 
+// newScopeTokenOpenAuthorizer is QUARANTINED. Production code must use
+// ExactOpenAuthorizer. Calling this function panics.
 func newScopeTokenOpenAuthorizer(state *store.Store, scope string, public ed25519.PublicKey) *scopeTokenOpenAuthorizer {
-	return &scopeTokenOpenAuthorizer{state: state, scope: scope, authorityPublic: public}
+	panic("scopeTokenOpenAuthorizer is quarantined as of A0 step 6B2")
 }
 
 func (a *scopeTokenOpenAuthorizer) AuthorizeOpen(ctx context.Context, req openauth.OpenRequest) (openauth.Authorization, error) {

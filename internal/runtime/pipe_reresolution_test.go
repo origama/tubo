@@ -346,10 +346,11 @@ func TestLocalPipeRecoveryFetchesNewAuthoritySnapshotAfterPublisherRestart(t *te
 		t.Fatal(err)
 	}
 	publisherTwo.SetStreamHandler(protocol.ID(wire.TunnelID), (&tunnelServer{
-		state:      publisherState,
-		spec:       originSpec,
-		service:    domain.ServiceSpec{Ref: serviceRef, Kind: domain.ServiceTCP, Target: "tcp://" + echo.Addr().String()},
-		authorizer: newScopeTokenOpenAuthorizer(publisherState, originSpec.Scope.String(), authorityPublic),
+		state:   publisherState,
+		spec:    originSpec,
+		service: domain.ServiceSpec{Ref: serviceRef, Kind: domain.ServiceTCP, Target: "tcp://" + echo.Addr().String()},
+		// Direct construction bypasses quarantine panic.
+		authorizer: &scopeTokenOpenAuthorizer{state: publisherState, scope: originSpec.Scope.String(), authorityPublic: authorityPublic},
 		runtime:    pubPipe,
 	}).handle)
 

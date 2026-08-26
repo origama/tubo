@@ -65,9 +65,14 @@ var errStrict = errors.New("accesslease: invalid encoding")
 // only NUL-delimited framing, so a signature produced for one credential kind
 // cannot satisfy another kind or version.
 const (
-	AccessLeaseSigningDomain    = "tubo://access-lease/v1\x00"
-	OwnerBindingSigningDomain   = "tubo://exact-owner-binding/v1\x00"
-	ExactInviteSigningDomain    = "tubo://exact-invite/v1\x00"
+	AccessLeaseSigningDomain  = "tubo://access-lease/v1\x00"
+	OwnerBindingSigningDomain = "tubo://exact-owner-binding/v1\x00"
+	ExactInviteSigningDomain  = "tubo://exact-invite/v1\x00"
+	// Domain-separated proof purposes for possession proofs. Each proof is
+	// signed over a NUL-delimited domain prefix so a proof created for one
+	// purpose cannot be reused for another.
+	OpenProofPurpose            = "tubo-open-v2"
+	RedeemProofPurpose          = "tubo-exact-redeem-v2"
 	MaxRedemptionAddresses      = 8
 	OwnerBindingMaxAddressBytes = MaxRedemptionAddrLen
 )
@@ -129,6 +134,39 @@ func randomID(prefix string) (string, error) {
 // NewJTI returns a fresh credential identifier used across lease, invite, and
 // binding JTI/JTI namespaces.
 func NewJTI() (string, error) { return randomID("jti_") }
+
+// NewSessionID returns a fresh session identifier.
+func NewSessionID() (string, error) { return randomID("ses_") }
+
+// RandomChallenge returns a bounded fresh random challenge string for
+// possession proof exchange.
+func RandomChallenge() (string, error) {
+	value := make([]byte, 24)
+	if _, err := rand.Read(value); err != nil {
+		return "", err
+	}
+	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(value), nil
+}
+
+// SignProof signs a purpose-delimited possession message with a fresh domain
+// prefix so a possession proof cannot be confused across purposes. The
+// signature is returned as canonical unpadded URL-safe base64url.
+func SignProof(private ed25519.PrivateKey, purpose string, parts ...string) string {
+	message := purpose + "\x00" + strings.Join(parts, "\x00")
+	return base64.RawURLEncoding.EncodeToString(ed25519.Sign(private, []byte(message)))
+}
+
+// VerifyProof verifies a purpose-delimited possession message. The signature
+// text must be canonical unpadded URL-safe base64url and decode to exactly
+// Ed25519.SignatureSize bytes; non-canonical or malformed text fails closed.
+func VerifyProof(public ed25519.PublicKey, signature, purpose string, parts ...string) bool {
+	value, err := decodeSignature(signature)
+	if err != nil {
+		return false
+	}
+	message := purpose + "\x00" + strings.Join(parts, "\x00")
+	return ed25519.Verify(public, []byte(message), value)
+}
 
 // domainBytes returns the exact framing bytes: the NUL-delimited domain ring
 // prefix plus the canonical payload bytes.

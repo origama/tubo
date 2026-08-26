@@ -1,0 +1,93 @@
+// Package runtime is the composition root for the Tubo runtime. It
+// concretely wires the receiving-boundary open-authorizer behind the neutral
+// openauth seam (step 6B2). The ExactOpenAuthorizer lives here as a
+// composition-root adapter, not in internal/exactauthority, so that the pure
+// L3 exactauthority package imports only accesslease + localkey + stdlib.
+package runtime
+
+import (
+	"context"
+	"crypto/ed25519"
+	"errors"
+
+	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo-rebuilt/internal/exactauthority"
+	"github.com/origama/tubo-rebuilt/internal/openauth"
+)
+
+// ExactOpenAuthorizer is the concrete L3 open-authorizer behind the neutral
+// openauth.OpenAuthorizer contract (step 6B2). It validates a canonical
+// AccessLease + receiver-challenge possession proof. Failures produce only
+// generic "authorization denied" errors; internal revocation/trust details
+// never leak to the caller.
+//
+// Issuer trust is derived from the local owner-binding -> exact authority
+// public key -> lease issuer match. There is no generic issuer registry: the
+// authorizer trusts exactly the local owner-bound Exact Authority key.
+type ExactOpenAuthorizer struct {
+	leasePublic ed25519.PublicKey
+	pipeID      string
+	state       exactauthority.RevocationState
+}
+
+// NewExactOpenAuthorizer creates an ExactOpenAuthorizer that trusts the
+// given exact authority public key for the given pipe audience.
+func NewExactOpenAuthorizer(leasePublic ed25519.PublicKey, pipeID string, state exactauthority.RevocationState) *ExactOpenAuthorizer {
+	return &ExactOpenAuthorizer{leasePublic: leasePublic, pipeID: pipeID, state: state}
+}
+
+func (a *ExactOpenAuthorizer) AuthorizeOpen(ctx context.Context, req openauth.OpenRequest) (openauth.Authorization, error) {
+	var zero openauth.Authorization
+
+	// Decode and verify the AccessLease.
+	lease, err := accesslease.Decode(req.AccessLease)
+	if err != nil {
+		return zero, errors.New("authorization denied")
+	}
+
+	// Verify lease against the exact authority key and pipe audience.
+	if err := lease.Verify(a.leasePublic, req.ClientPublic, req.PipeID, req.Now); err != nil {
+		return zero, errors.New("authorization denied")
+	}
+
+	// Verify the issuer is exactly the expected exact authority.
+	wantIssuer := accesslease.PublicString(a.leasePublic)
+	if lease.Issuer != wantIssuer {
+		return zero, errors.New("authorization denied")
+	}
+
+	// Verify challenge proof.
+	clientPub, err := accesslease.PublicFromString(req.ClientPublic)
+	if err != nil {
+		return zero, errors.New("authorization denied")
+	}
+	if !accesslease.VerifyProof(clientPub, req.ChallengeProof, accesslease.OpenProofPurpose, req.Challenge, req.PipeID) {
+		return zero, errors.New("authorization denied")
+	}
+
+	// Revocation checks.
+	if a.state != nil {
+		revoked, revErr := a.state.IsRevoked(ctx, lease.JTI, "access-lease")
+		if revErr != nil {
+			return zero, errors.New("authorization denied")
+		}
+		if revoked {
+			return zero, errors.New("authorization denied")
+		}
+		currentEpoch, epochErr := a.state.RevocationEpoch(ctx, req.PipeID, "pipe-access")
+		if epochErr != nil {
+			return zero, errors.New("authorization denied")
+		}
+		if currentEpoch > lease.AccessEpoch {
+			return zero, errors.New("authorization denied")
+		}
+	}
+	return openauth.Authorization{
+		PipeID:      req.PipeID,
+		Subject:     req.ClientPublic,
+		Issuer:      lease.Issuer,
+		LeaseID:     lease.JTI,
+		ExpiresAt:   lease.ExpiresAt,
+		AccessEpoch: lease.AccessEpoch,
+	}, nil
+}
