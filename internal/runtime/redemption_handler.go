@@ -15,8 +15,8 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/exactauthority"
 	"github.com/origama/tubo-rebuilt/internal/localkey"
-	"github.com/origama/tubo-rebuilt/internal/store"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
+	"github.com/origama/tubo-rebuilt/internal/store"
 )
 
 // exactRedemptionHandler handles the /tubo/exact-redemption/1 protocol.
@@ -35,10 +35,10 @@ func newExactRedemptionHandler(state *store.Store, pipeID string) *exactRedempti
 // handle is the stream handler for /tubo/exact-redemption/1.
 // Protocol:
 //
-//	1. Client sends ExactInvite (bounded wire frame)
-//	2. Server responds with challenge (random nonce)
-//	3. Client sends challenge proof (signature of challenge + invite JTI + pipeID)
-//	4. Server calls RedeemExactInvite, returns AccessLease or error
+//  1. Client sends ExactInvite (bounded wire frame)
+//  2. Server responds with challenge (random nonce)
+//  3. Client sends challenge proof (signature of challenge + invite JTI + pipeID)
+//  4. Server calls RedeemExactInvite, returns AccessLease or error
 //
 // Server never provisions keys, never accesses LocalOwnerWorkflow.
 func (h *exactRedemptionHandler) handle(stream core.Stream) {

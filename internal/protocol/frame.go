@@ -140,6 +140,7 @@ type OpenPipe struct {
 	VisitedPipeIDs []string `json:"visited_pipe_ids"`
 	HopLimit       int      `json:"hop_limit"`
 }
+
 // ExactRedemptionRequest is the client's first message in the
 // /tubo/exact-redemption/1 protocol. It carries the encoded ExactInvite.
 type ExactRedemptionRequest struct {

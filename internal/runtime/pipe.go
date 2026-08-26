@@ -971,9 +971,9 @@ func runScopeLessPublishedPipe(
 	}
 	bandwidth := coremetrics.NewBandwidthCounter()
 	h, err := node.Open(ctx, node.Options{
-		KeyFile:          state.SecretPath("nodes", strings.ReplaceAll(spec.Ref.String(), "/", "-")+".key"),
-		SwarmKeyFile:     swarm,
-		Private:          reachability == "private",
+		KeyFile:           state.SecretPath("nodes", strings.ReplaceAll(spec.Ref.String(), "/", "-")+".key"),
+		SwarmKeyFile:      swarm,
+		Private:           reachability == "private",
 		BandwidthReporter: bandwidth,
 	})
 	if err != nil {
