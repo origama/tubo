@@ -4,6 +4,8 @@
 
 Status: protocol 2.1 adds negotiated authority snapshot ordering for destructive `records.list` reconciliation. Protocol 2.0 implements authority-backed remote publication grants, record announcement/listing compatibility surface, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, and further negotiated extensions are pending. Authority 2.0 now supports bounded access/refresh lease exchange, revocation query, and one-time share invite issue/redemption.
 
+Step 8A makes **no wire-format change**: the L4 use-case boundary (`internal/usecase`) and narrow persistence ports are wire-neutral; the exact-invite credential contract, tunnel handshake, and lease exchange are unchanged. Scope-less exact redemption serving and its wire path land with step 8B.
+
 There is intentionally no negotiation or fallback to previous Tubo protocols.
 
 ## Protocol IDs

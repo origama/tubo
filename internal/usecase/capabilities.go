@@ -1,0 +1,95 @@
+package usecase
+
+import (
+	"context"
+	"time"
+
+	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo-rebuilt/internal/domain"
+)
+
+// Carrier is the minimal raw full-duplex byte transport consumed by L4 use
+// cases. 8B wires node.Carrier at the composition root; 8A tests use
+// in-memory pipes. Reachability returns a carrier, never an authorization.
+type Carrier interface {
+	Read(p []byte) (int, error)
+	Write(p []byte) (int, error)
+	Close() error
+}
+
+// ReachabilityAcquirer is an injected L1 capability that obtains a carrier
+// toward an identified peer address. It never authorizes a Pipe open.
+type ReachabilityAcquirer interface {
+	Acquire(ctx context.Context, address string) (Carrier, error)
+}
+
+// RedemptionService performs exact-invite redemption over an acquired carrier
+// and returns the canonical short-lived Access Lease. The concrete wire
+// implementation (dial the redemption peer, challenge/response, receive the
+// lease) is composed at the 8B composition root.
+type RedemptionService interface {
+	Redeem(ctx context.Context, carrier Carrier, invite accesslease.ExactInvite, recipientPublic string) (accesslease.AccessLease, error)
+}
+
+// PipeStarter launches the runtime for a durable PipeSpec. 8B wires the real
+// PipeRuntime; 8A tests inject fakes. The durable definition is never
+// modified by starting or stopping.
+type PipeStarter interface {
+	Start(ctx context.Context, spec domain.PipeSpec) (StartPipeResult, error)
+}
+
+// AttachInput carries the parameters for creating a durable Service and
+// Scope-less Pipe (Journey A).
+type AttachInput struct {
+	Name   string
+	Target string // HTTP URL, TCP host:port, or unix path
+	// ScopeRef is accepted for backward-compatible callers; Journey A
+	// requires no Scope and the use case never consults Scope state.
+	ScopeRef string
+}
+
+// AttachResult carries the durable references created by Attach.
+type AttachResult struct {
+	ServiceRef domain.Ref
+	PipeRef    domain.Ref
+	PipeID     string
+	Created    bool
+}
+
+// ShareExactInput carries the parameters for minting an ExactInvite from an
+// owned Pipe.
+type ShareExactInput struct {
+	PipeRef string
+}
+
+// ShareExactResult carries the encoded exact invite and pipe metadata.
+type ShareExactResult struct {
+	PipeRef   domain.Ref
+	PipeID    string
+	Invite    string
+	ExpiresAt time.Time
+}
+
+// ConnectExactInput carries the parameters for redeeming an exact invite and
+// creating a durable local ingress Pipe.
+type ConnectExactInput struct {
+	Invite      string // canonical base64url ExactInvite
+	LocalListen string // host:port for the local ingress
+}
+
+// ConnectExactResult carries the durable refs of the local ingress Pipe.
+type ConnectExactResult struct {
+	PipeRef domain.Ref
+	PipeID  string
+}
+
+// StartPipeInput carries the Pipe ref to start.
+type StartPipeInput struct {
+	PipeRef string
+}
+
+// StartPipeResult carries the runtime status of a started Pipe.
+type StartPipeResult struct {
+	PipeRef domain.Ref
+	Status  string
+}

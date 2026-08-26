@@ -4,6 +4,8 @@
 
 Implementation status: private-HTTP/WebSocket/raw-TCP vertical slice supports `keygen swarm`, `join overlay`, scope create/invite/join/use, remote publisher grants and announcements, foreground relay/authority/published pipes, service/pipe create, `attach`, detached `connect`, one-time share invites, revocation, local inventory/inspection, peer aliases, masked config validation/printing, `doctor`, `logs`, detached pipe restart/removal/stale cleanup, `ps`, `top`, and identity-safe `stop`.
 
+**A0 Step 8 status:** Step 8A (issue #59, `internal/usecase`) lands the L4 Journey-A use-case contracts (`Attach`, `ShareExact`, `ConnectExact`, `StartPipe`) and narrow persistence ports with zero CLI change. The CLI surface above is therefore still the prototype-orchestrated surface until Step 8B (issue #61) rewires these commands to invoke the use cases and defines the final Journey-A contract shapes: `tubo attach http://127.0.0.1:8080`, `tubo share pipe/<name-or-ref>`, `tubo connect --token <exact-invite> --local <listen>` (optionally `service create`/`pipe create`/`start`). Output contract for the rewired commands: stable resource refs plus a useful next action; never authority key paths, Store IDs, relay internals, or a local Service target inside an invite. `attach` and `connect` are L4 presets, not runtime resource kinds.
+
 ## Output
 
 ```text
