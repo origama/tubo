@@ -8,12 +8,12 @@
 // and opens the local endpoint.
 //
 // Dependency rules:
-//  - Depends on L0 domain (Ref, PipeSpec, ServiceSpec, ResolveLogicalPath)
-//  - Depends on L1 node (Carrier interface)
-//  - Depends on stdlib only for core logic
-//  - Does NOT import internal/discovery, internal/store, internal/authority,
-//    internal/openauth, or any L3 package
-//  - Traversal state and hop enforcement are pure L0-style logic
+//   - Depends on L0 domain (Ref, PipeSpec, ServiceSpec, ResolveLogicalPath)
+//   - Depends on L1 node (Carrier interface)
+//   - Depends on stdlib only for core logic
+//   - Does NOT import internal/discovery, internal/store, internal/authority,
+//     internal/openauth, or any L3 package
+//   - Traversal state and hop enforcement are pure L0-style logic
 package engine
 
 import (
@@ -143,10 +143,10 @@ type DownstreamOpener func(ctx context.Context, nextSpec domain.PipeSpec, state 
 // set. If IsService is false, the target is a downstream Pipe and
 // DownstreamCarrier and DownstreamSessionID are set.
 type ForwardResult struct {
-	IsService    bool
-	ServiceConn  net.Conn
-	DownstreamCarrier        node.Carrier
-	DownstreamSessionID      string
+	IsService           bool
+	ServiceConn         net.Conn
+	DownstreamCarrier   node.Carrier
+	DownstreamSessionID string
 }
 
 // Engine composes Pipe connectivity traversal. It resolves the logical path
@@ -163,8 +163,8 @@ type Engine struct {
 // to the injected functions.
 func New(
 	resolveService func(domain.Ref) (domain.ServiceSpec, error),
-	resolvePipe    func(domain.Ref) (domain.PipeSpec, error),
-	dialService    func(domain.ServiceSpec) (net.Conn, error),
+	resolvePipe func(domain.Ref) (domain.PipeSpec, error),
+	dialService func(domain.ServiceSpec) (net.Conn, error),
 ) *Engine {
 	return &Engine{
 		resolveService: resolveService,
@@ -247,8 +247,8 @@ func (e *Engine) forwardPipeTarget(ctx context.Context, target domain.Ref, state
 		return ForwardResult{}, err
 	}
 	return ForwardResult{
-		IsService:          false,
-		DownstreamCarrier:  carrier,
+		IsService:           false,
+		DownstreamCarrier:   carrier,
 		DownstreamSessionID: sessionID,
 	}, nil
 }

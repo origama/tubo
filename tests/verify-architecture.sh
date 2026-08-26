@@ -141,4 +141,15 @@ for f in $(find internal/accesslease internal/localkey internal/exactauthority -
   fi
 done
 
-echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map; #52 accesslease remains stdlib-only canonical bounded base64url contract; #54 localkey/exactauthority add only owner-local secure key lifecycle with no Scope/runtime/reachability/discovery/store/authority/CLI/libp2p/multiaddr wiring"
+# Step 7: Pipe Engine (L2 connectivity composition) must not import concrete
+# store, discovery, authority, Scope/CLI packages. It may depend on domain (L0)
+# and node (L1 Carrier), and on the openauth seam via the consumer contract.
+engine_pkg="$(go list -f '{{.ImportPath}}' ./internal/engine)"
+engine_forbidden="$(go list -deps -f '{{if and (not .Standard)}}{{.ImportPath}}{{end}}' "$engine_pkg" | grep '^github.com/origama/tubo-rebuilt/' | grep -E 'internal/(store|discovery|authority|cli|exactauthority|localkey|accesslease|openauth)' || true)"
+if [[ -n "$engine_forbidden" ]]; then
+  echo "[architecture] Step 7 engine imports forbidden package(s):" >&2
+  printf '%s\n' "$engine_forbidden" >&2
+  exit 1
+fi
+
+echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map; #52 accesslease remains stdlib-only canonical bounded base64url contract; #54 localkey/exactauthority add only owner-local secure key lifecycle with no Scope/runtime/reachability/discovery/store/authority/CLI/libp2p/multiaddr wiring; Step 7 engine has no store/discovery/authority/Scope/CLI dependency"

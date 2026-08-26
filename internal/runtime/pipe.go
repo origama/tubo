@@ -283,13 +283,13 @@ func transferSessionAuthorizationTimer(timer *time.Timer, expiresAt time.Time, s
 }
 
 type tunnelServer struct {
-	state      *store.Store
-	spec       domain.PipeSpec
-	service    domain.ServiceSpec
-	authorizer openauth.OpenAuthorizer
-	dialFunc   func(domain.ServiceSpec) (net.Conn, error)
-	runtime    *PipeRuntime
-	engine     *engine.Engine
+	state            *store.Store
+	spec             domain.PipeSpec
+	service          domain.ServiceSpec
+	authorizer       openauth.OpenAuthorizer
+	dialFunc         func(domain.ServiceSpec) (net.Conn, error)
+	runtime          *PipeRuntime
+	engine           *engine.Engine
 	downstreamOpener engine.DownstreamOpener
 }
 
