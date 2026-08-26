@@ -26,8 +26,6 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/discovery"
 	"github.com/origama/tubo-rebuilt/internal/domain"
 	"github.com/origama/tubo-rebuilt/internal/engine"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
 	"github.com/origama/tubo-rebuilt/internal/node"
 	"github.com/origama/tubo-rebuilt/internal/openauth"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
@@ -333,13 +331,18 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 	// terminal service) through the Engine at startup: cycles, hop limits, and
 	// invalid definitions fail closed before any listener accept.
 	pipeEngine := newPipeEngine(state)
-	if _, err := pipeEngine.ResolvePath(spec.Ref, domain.DefaultMaxPipeHops); err != nil {
-		return err
-	}
+
 	// Check if this is a Journey A exact connect path (Scope-less, no discovery).
 	// The target pipe ID is derived from the spec.Target.Name.
+	// This check must happen BEFORE ResolvePath because the target pipe
+	// (remote Pipe ID) is not stored locally; the exact connection state
+	// provides the authorization material directly.
 	if connState, connErr := state.GetExactConnectionState(ctx, spec.Target.Name); connErr == nil && connState.AccessLease != "" {
 		return runLocalPipeExact(ctx, state, spec, connState, nodeRuntime, pipeRuntime, pipeEngine)
+	}
+
+	if _, err := pipeEngine.ResolvePath(spec.Ref, domain.DefaultMaxPipeHops); err != nil {
+		return err
 	}
 	// Fall through to the scoped discovery path for backward compatibility.
 	recordStored, err := state.Record(ctx, spec.Target.Name)
@@ -1061,7 +1064,7 @@ func runLocalPipeExact(
 	ctx context.Context,
 	state *store.Store,
 	spec domain.PipeSpec,
-	connState store.ExactConnectionState,
+	connState domain.ExactConnectionState,
 	nodeRuntime *NodeRuntime,
 	pipeRuntime *PipeRuntime,
 	pipeEngine *engine.Engine,
@@ -1164,18 +1167,8 @@ func loadExactAuthorizer(state *store.Store, pipeID string) openauth.OpenAuthori
 	if pipeID == "" {
 		return nil
 	}
-	secretDir := state.SecretPath("exact-authorities")
-	keyPath, err := exactauthority.KeyPath(secretDir, pipeID)
-	if err != nil {
-		runtimeInfof("no exact authority key path for pipe %s: %v", pipeID, err)
-		return nil
-	}
-	private, err := localkey.Load(keyPath)
-	if err != nil {
-		runtimeInfof("exact authority key not provisioned for pipe %s: %v", pipeID, err)
-		return nil
-	}
-	adapter := store.NewExactAuthorityRevocationState(state, pipeID)
-	pub := private.Public().(ed25519.PublicKey)
-	return NewExactOpenAuthorizer(pub, pipeID, adapter)
+	// Use lazy authorizer that loads the key on first AuthorizeOpen call.
+	// This allows the pipe daemon to start before ShareExact provisions
+	// the exact authority key.
+	return NewLazyExactAuthorizer(state, pipeID)
 }

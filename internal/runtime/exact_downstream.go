@@ -17,6 +17,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/domain"
 	"github.com/origama/tubo-rebuilt/internal/engine"
+	"github.com/origama/tubo-rebuilt/internal/localkey"
 	"github.com/origama/tubo-rebuilt/internal/node"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 	"github.com/origama/tubo-rebuilt/internal/store"
@@ -70,8 +71,12 @@ func newExactDownstreamPipeOpener(
 			}
 		}()
 		_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
+
+		// Client public key is the lease subject (recipient identity).
+		clientPublic := lease.Subject
+
 		// Perform the tunnel handshake.
-		if err := wire.WriteFrame(stream, wire.ClientHello{Version: "2.0", ClientPublic: "", Capabilities: baseSessionCapabilities()}); err != nil {
+		if err := wire.WriteFrame(stream, wire.ClientHello{Version: "2.0", ClientPublic: clientPublic, Capabilities: baseSessionCapabilities()}); err != nil {
 			return nil, "", err
 		}
 		var server wire.ServerHello
@@ -81,15 +86,23 @@ func newExactDownstreamPipeOpener(
 		if server.PipeID != pipeID || server.Version != "2.0" {
 			return nil, "", errors.New("tunnel_handshake_failed: pipe or version mismatch")
 		}
-		// For the exact path, the client public key is derived from the
-		// recipient identity. We need a proof of possession.
-		// Use a simple challenge proof since we have the AccessLease.
-		// Generate a proof using the recipient's key.
-		// For now, send the AccessLease with an empty proof (the server will
-		// validate the lease and reject if invalid).
+
+		// Sign the challenge proof using the recipient private key.
+		// The recipient key is stored at <secrets>/pipes/connect-<pipeID>.key.
+		keyPath := state.SecretPath("pipes", "connect-"+pipeID+".key")
+		recipientPrivate, keyErr := localkey.Load(keyPath)
+		if keyErr != nil {
+			// Try Provision if the key doesn't exist yet.
+			recipientPrivate, keyErr = localkey.Provision(keyPath)
+			if keyErr != nil {
+				return nil, "", errors.New("exact_connection: recipient key unavailable")
+			}
+		}
+		challengeProof := accesslease.SignProof(recipientPrivate, accesslease.OpenProofPurpose, server.Challenge, pipeID)
+
 		open := wire.OpenPipe{
 			PipeID:         pipeID,
-			ChallengeProof: "",
+			ChallengeProof: challengeProof,
 			AccessLease:    connState.AccessLease,
 			VisitedPipeIDs: traversal.VisitedIDs,
 			HopLimit:       traversal.MaxHops,

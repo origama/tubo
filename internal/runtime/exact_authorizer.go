@@ -9,10 +9,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"sync"
 
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/exactauthority"
+	"github.com/origama/tubo-rebuilt/internal/localkey"
 	"github.com/origama/tubo-rebuilt/internal/openauth"
+	"github.com/origama/tubo-rebuilt/internal/store"
 )
 
 // ExactOpenAuthorizer is the concrete L3 open-authorizer behind the neutral
@@ -34,6 +37,48 @@ type ExactOpenAuthorizer struct {
 // given exact authority public key for the given pipe audience.
 func NewExactOpenAuthorizer(leasePublic ed25519.PublicKey, pipeID string, state exactauthority.RevocationState) *ExactOpenAuthorizer {
 	return &ExactOpenAuthorizer{leasePublic: leasePublic, pipeID: pipeID, state: state}
+}
+
+// LazyExactAuthorizer is a lazy wrapper that loads the exact authority key
+// on the first AuthorizeOpen call. This allows the authorizer to be created
+// before the key is provisioned (e.g., pipe daemon starts before ShareExact
+// provisions the key).
+type LazyExactAuthorizer struct {
+	state  *store.Store
+	pipeID string
+	mu     sync.Mutex
+	loaded bool
+	auth   *ExactOpenAuthorizer
+}
+
+// NewLazyExactAuthorizer creates a lazy authorizer that loads the key from
+// the store's secrets directory on first use.
+func NewLazyExactAuthorizer(state *store.Store, pipeID string) *LazyExactAuthorizer {
+	return &LazyExactAuthorizer{state: state, pipeID: pipeID}
+}
+
+func (a *LazyExactAuthorizer) AuthorizeOpen(ctx context.Context, req openauth.OpenRequest) (openauth.Authorization, error) {
+	a.mu.Lock()
+	if !a.loaded {
+		// Try to load the exact authority key.
+		secretDir := a.state.SecretPath()
+		keyPath, keyErr := exactauthority.KeyPath(secretDir, a.pipeID)
+		if keyErr == nil {
+			private, loadErr := localkey.Load(keyPath)
+			if loadErr == nil {
+				adapter := store.NewExactAuthorityRevocationState(a.state, a.pipeID)
+				pub := private.Public().(ed25519.PublicKey)
+				a.auth = NewExactOpenAuthorizer(pub, a.pipeID, adapter)
+				a.loaded = true
+			}
+		}
+	}
+	a.mu.Unlock()
+
+	if a.auth == nil {
+		return openauth.Authorization{}, errors.New("authorization denied: no open authorizer")
+	}
+	return a.auth.AuthorizeOpen(ctx, req)
 }
 
 func (a *ExactOpenAuthorizer) AuthorizeOpen(ctx context.Context, req openauth.OpenRequest) (openauth.Authorization, error) {

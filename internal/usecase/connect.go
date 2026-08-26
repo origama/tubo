@@ -107,5 +107,24 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 	if _, err := u.Pipes.Upsert(ctx, spec, recipientKeyFile); err != nil {
 		return ConnectExactResult{}, persistenceError("local pipe", err)
 	}
+	// Persist the exact connection state for detached-start consumption.
+	// Expired state fails closed on read; this is not a generic credential
+	// repository and not a PipeSpec field.
+	leaseStr, encodeErr := accesslease.Encode(lease)
+	if encodeErr != nil {
+		return ConnectExactResult{}, fmt.Errorf("persistence_failed: encode lease: %w", encodeErr)
+	}
+	exactState := domain.ExactConnectionState{
+		RemotePipeID: invite.AudiencePipeID,
+		Locator:      address,
+		AccessLease:  leaseStr,
+		ExpiresAt:    lease.ExpiresAt.UTC(),
+		LocalPipeRef: spec.Ref.String(),
+	}
+	if u.ExactConnections != nil {
+		if err := u.ExactConnections.Put(ctx, exactState); err != nil {
+			return ConnectExactResult{}, persistenceError("exact connection state", err)
+		}
+	}
 	return ConnectExactResult{PipeRef: spec.Ref, PipeID: spec.PipeID}, nil
 }

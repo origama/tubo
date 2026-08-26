@@ -91,7 +91,10 @@ func (h *exactRedemptionHandler) handle(stream core.Stream) {
 	}
 
 	// Build the Loader for the exact authority key.
-	secretDir := h.state.SecretPath("exact-authorities")
+	// Note: SecretPath("exact-authorities") returns <home>/secrets/exact-authorities,
+	// and KeyPath already appends "exact-authorities" to the secrets dir, so
+	// we pass the base secrets dir (without the subdirectory).
+	secretDir := h.state.SecretPath()
 	keyPath, keyErr := exactauthority.KeyPath(secretDir, h.pipeID)
 	if keyErr != nil {
 		_ = wire.WriteFrame(stream, wire.ExactRedemptionResponse{OK: false, Error: "authority_unavailable"})

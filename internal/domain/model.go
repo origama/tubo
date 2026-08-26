@@ -168,3 +168,19 @@ func (p PipeSpec) Validate() error {
 func (p PipeSpec) IsPublished() bool {
 	return p.Ingress.Kind == IngressTubo && p.Visibility != VisibilityPrivate
 }
+
+// ExactConnectionState stores the transient authorization material needed to
+// open a remote Pipe via the exact (Scope-less) path. It is deliberately
+// separate from PipeSpec (durable) and from connect_leases (Scope-required).
+type ExactConnectionState struct {
+	// RemotePipeID is the PipeID of the remote Pipe (the invite audience).
+	RemotePipeID string `json:"remote_pipe_id"`
+	// Locator is the verified peer address from the invite's OwnerBinding.
+	Locator string `json:"locator"`
+	// AccessLease is the canonical base64url-encoded AccessLease.
+	AccessLease string `json:"access_lease"`
+	// ExpiresAt is the lease expiry; zero means no lease stored.
+	ExpiresAt time.Time `json:"expires_at"`
+	// LocalPipeRef is the ref of the local Pipe that targets this remote.
+	LocalPipeRef string `json:"local_pipe_ref"`
+}
