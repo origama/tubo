@@ -287,3 +287,55 @@ func entryNames(entries []os.DirEntry) []string {
 	}
 	return out
 }
+
+// TestParseCanonicalPrivateRejectsInconsistentPublicSuffix proves P2
+// hardening: a 64-byte Ed25519 private key whose last 32 bytes (public key
+// suffix) are not the canonical key derived from its 32-byte seed must be
+// rejected. Without this check a corrupt or adversarial key file with an
+// arbitrary public suffix would be accepted, silently defeating identity and
+// signature verification.
+func TestParseCanonicalPrivateRejectsInconsistentPublicSuffix(t *testing.T) {
+	// Generate a real key so we have a valid seed and public suffix.
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Serialize the real key as canonical base64url.
+	good := base64.RawURLEncoding.EncodeToString([]byte(private))
+	if _, err := parseCanonicalPrivate([]byte(good)); err != nil {
+		t.Fatalf("good key rejected: %v", err)
+	}
+
+	// Flip one byte in the public suffix (last 32 bytes) so it no longer
+	// matches the seed-derived public key.
+	tampered := make([]byte, ed25519.PrivateKeySize)
+	copy(tampered, private)
+	tampered[ed25519.SeedSize+5] ^= 0xff
+	bad := base64.RawURLEncoding.EncodeToString(tampered)
+	if _, err := parseCanonicalPrivate([]byte(bad)); err == nil {
+		t.Fatal("tampered public suffix accepted")
+	}
+
+	// Also test: a key whose seed and public are both arbitrary unrelated
+	// 32-byte values.
+	randomPri := make([]byte, ed25519.PrivateKeySize)
+	if _, err := rand.Read(randomPri); err != nil {
+		t.Fatal(err)
+	}
+	// Write out the first 32 bytes (fake seed) and last 32 bytes (fake
+	// public) independently so there is zero chance of accidental match.
+	sepSeed := make([]byte, 32)
+	sepPub := make([]byte, 32)
+	if _, err := rand.Read(sepSeed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rand.Read(sepPub); err != nil {
+		t.Fatal(err)
+	}
+	copy(randomPri[:32], sepSeed)
+	copy(randomPri[32:], sepPub)
+	arbitrary := base64.RawURLEncoding.EncodeToString(randomPri)
+	if _, err := parseCanonicalPrivate([]byte(arbitrary)); err == nil {
+		t.Fatal("arbitrary seed+public accepted")
+	}
+}

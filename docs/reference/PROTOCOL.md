@@ -195,4 +195,18 @@ padding, whitespace, wrong decoded lengths, alternate spellings, and malformed
 text are rejected explicitly before any cryptographic verification or typed
 unmarshal. Nothing is trimmed or canonicalized on input.
 
-Step 6B1b changes no served protocol ID and adds no redemption operation. It only makes dedicated Exact Authority key material loadable/provisionable locally and able to produce/verify the existing owner-bound `OwnerBinding`. 6B2 remains responsible for binding these contract bytes into the receiving remote-open path and for any future redemption protocol message shape.
+Step 6B1b changes no served protocol ID and adds no redemption operation. It only makes dedicated Exact Authority key material loadable/provisionable locally and able to produce/verify the existing owner-bound `OwnerBinding`.
+
+## Exact-Pipe Access Lease remote-open authorization (step 6B2)
+
+Step 6B2 binds the canonical AccessLease into the receiving remote-open path on `/tubo/tunnel/2.0` (the same protocol ID as the A0 authorized tunnel transport from issue #48). The receiving serve path (`internal/runtime/serve.go`) performs bounded frame decode, then delegates to the injected `openauth.OpenAuthorizer` seam. The concrete `ExactOpenAuthorizer` (in `internal/runtime` as composition-root adapter) validates:
+
+1. **AccessLease decode**: canonical bounded flat-JSON decode, strict base64url, type/version/domain check.
+2. **Issuer trust**: issuer must match the local owner-bound Exact Authority public key.
+3. **Lease verify**: Ed25519 signature over NUL-delimited domain `tubo://access-lease/v1`, subject, pipe audience, time window.
+4. **Possession proof**: a fresh server challenge is generated and sent in `ServerHello`. The client must include a `ChallengeProof` in `OpenPipe` that is a domain-separated Ed25519 signature over `"tubo-open-v2"\x00<challenge>\x00<pipe_id>`. The proof is bound to the exact Pipe and challenge, preventing replay across pipes or sessions.
+5. **Revocation/epoch check**: the lease JTI is checked against the revocation store; the authorization epoch is validated against the current epoch for the pipe.
+
+All 16 fail-closed cases return only the generic error message "authorization denied". The ordering is bounded decode -> AuthorizeOpen -> defensive result binding (PipeID/Subject/non-zero future expiry) -> target dial -> OpenOK -> Session.
+
+Redemption is not yet served on a dedicated protocol ID; it is a local owner-side operation that produces the AccessLease for the recipient. The mandatory 12-step redemption ordering (RedeemExactInvite) is: canonical invite decode, OwnerBinding verify, existing Loader.Load (no Provision), invite signature verify, time/one_time/epoch checks, recipient public key validation, fresh server challenge generation, recipient possession proof verify (domain-separated `"tubo-exact-redeem-v2"\x00<jti>\x00<pipe_id>\x00<challenge>`), atomic redemption mutation, and AccessLease minting. Steps 4-9 produce zero state mutations.

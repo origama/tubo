@@ -37,7 +37,9 @@ func scopeTokenFixture(t *testing.T) (*scopeTokenOpenAuthorizer, *store.Store, d
 	if err != nil {
 		t.Fatal(err)
 	}
-	return newScopeTokenOpenAuthorizer(state, scope.String(), authPub), state, scope, authPriv, clientPriv
+	// Construct directly to bypass quarantine panic in newScopeTokenOpenAuthorizer.
+	a := &scopeTokenOpenAuthorizer{state: state, scope: scope.String(), authorityPublic: authPub}
+	return a, state, scope, authPriv, clientPriv
 }
 
 func signedConnectLease(authPriv ed25519.PrivateKey, scope domain.Scope, clientPub, pipeID string, lifetime time.Duration) (string, authority.Token) {

@@ -5,6 +5,7 @@
 package localkey
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -246,7 +247,20 @@ func parseCanonicalPrivate(data []byte) (ed25519.PrivateKey, error) {
 	if base64.RawURLEncoding.EncodeToString(decoded) != text {
 		return nil, fmt.Errorf("%w: non-canonical private key", ErrInvalid)
 	}
-	return ed25519.PrivateKey(decoded), nil
+	// P2 hardening: verify that the public suffix (last 32 bytes) of the
+	// loaded 64-byte Ed25519 private key matches the canonical key derived
+	// from its 32-byte seed. Go's ed25519.PrivateKey is a 64-byte sequence
+	// (seed || public) but does not enforce consistency. Without this check
+	// a corrupt or adversarial 64-byte payload with an arbitrary public suffix
+	// would be accepted and used, silently defeating identity and signature
+	// verification guarantees.
+	private := ed25519.PrivateKey(decoded)
+	seed := private.Seed()
+	expected := ed25519.NewKeyFromSeed(seed)
+	if !bytes.Equal([]byte(private), []byte(expected)) {
+		return nil, fmt.Errorf("%w: private key public suffix inconsistent with seed", ErrInvalid)
+	}
+	return private, nil
 }
 
 func acquireLock(dir, name string) (*os.File, string, error) {

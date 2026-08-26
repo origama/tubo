@@ -25,6 +25,8 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/authority"
 	"github.com/origama/tubo-rebuilt/internal/discovery"
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo-rebuilt/internal/exactauthority"
+	"github.com/origama/tubo-rebuilt/internal/localkey"
 	"github.com/origama/tubo-rebuilt/internal/node"
 	"github.com/origama/tubo-rebuilt/internal/openauth"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
@@ -205,7 +207,12 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	if err := publish(time.Now().UTC()); err != nil {
 		return err
 	}
-	handler := &tunnelServer{state: state, spec: spec, service: service, authorizer: newScopeTokenOpenAuthorizer(state, spec.Scope.String(), authorityPublic), runtime: pipeRuntime}
+	// Wire the concrete ExactOpenAuthorizer behind the neutral openauth seam.
+	// Load the exact authority key. If the key does not exist (e.g. pipe was
+	// created before exact authority provisioning), fall back to nil authorizer
+	// which denies all incoming opens.
+	exactAuthorizer := loadExactAuthorizer(state, spec.PipeID)
+	handler := &tunnelServer{state: state, spec: spec, service: service, authorizer: exactAuthorizer, runtime: pipeRuntime}
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
 	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: address, StartedAt: time.Now().UTC()}
 	if err := state.PutRun(ctx, run); err != nil {
@@ -773,4 +780,28 @@ func copyDuplex(a, b io.ReadWriteCloser) (int64, int64) {
 	}()
 	wg.Wait()
 	return ba.n.Load(), ab.n.Load()
+}
+
+// loadExactAuthorizer loads the exact authority key for the pipe's remote-open
+// authorization and returns a concrete ExactOpenAuthorizer behind the neutral
+// openauth seam. If the key is not present (pipe provisioned before exact
+// authority), it returns nil, which denies all inbound opens (fail closed).
+func loadExactAuthorizer(state *store.Store, pipeID string) openauth.OpenAuthorizer {
+	if pipeID == "" {
+		return nil
+	}
+	secretDir := state.SecretPath("exact-authorities")
+	keyPath, err := exactauthority.KeyPath(secretDir, pipeID)
+	if err != nil {
+		runtimeInfof("no exact authority key path for pipe %s: %v", pipeID, err)
+		return nil
+	}
+	private, err := localkey.Load(keyPath)
+	if err != nil {
+		runtimeInfof("exact authority key not provisioned for pipe %s: %v", pipeID, err)
+		return nil
+	}
+	adapter := store.NewExactAuthorityRevocationState(state, pipeID)
+	pub := private.Public().(ed25519.PublicKey)
+	return NewExactOpenAuthorizer(pub, pipeID, adapter)
 }
