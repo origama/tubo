@@ -164,3 +164,11 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 - Schema 9/10 adds `current_transport_path` to sessions and a `path_events` table tracking session transport path transitions with epoch, committed byte offsets, and reason. Older binaries reject schema 10. No downgrade migration exists.
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.
+
+## Owner-bound Exact Authority (step 6B1a)
+
+Step 6B1a adds no SQLite schema and no filesystem state. The owner-local secure
+dedicated-key lifecycle (rendering, publication, durable no-clobber storage of
+any owner-authority secret) is step 6B1b, the mandatory predecessor to 6B2; this
+PR claims none of that lifecycle and creates no persistence. No store/table
+change is made by 6B1a.

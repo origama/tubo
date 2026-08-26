@@ -102,4 +102,42 @@ if grep -R -n -E 'Scope.*json:"scope|map\[string\]any' internal/openauth --inclu
   exit 1
 fi
 
-echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map"
+# #52 owner-bound Exact Authority (step 6B1a): this PR lands only the pure
+# value contract. internal/accesslease must be stdlib-only — no Scope,
+# endpoint, route, relay, discovery, namespace, CLI, store, libp2p host, or any
+# repo/third-party dependency. The owner-local secure key lifecycle
+# (internal/exactauthority) is step 6B1b and must NOT be introduced by this
+# 6B1a foundation, so this PR makes no durable secret-path/state/lifecycle
+# claim. The pure contract carries no Scope, arbitrary metadata, or concrete
+# multiaddrs, and every base64url text entry (public keys, signatures,
+# outer credential bodies, embedded bindings) is canonical and bounded.
+accesslease_pkg="$(go list -f '{{.ImportPath}}' ./internal/accesslease)"
+accesslease_non_stdlib="$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/origama/tubo-rebuilt/internal/accesslease")}}{{.ImportPath}}{{end}}' "$accesslease_pkg")"
+if [[ -n "$accesslease_non_stdlib" ]]; then
+  echo "[architecture] internal/accesslease must be stdlib-only (rejecting ALL non-stdlib deps, including third-party):" >&2
+  printf '%s\n' "$accesslease_non_stdlib" >&2
+  exit 1
+fi
+# 6B1a is pure-contract-only: the owner-local secure key lifecycle package is
+# deferred to 6B1b. Its presence here would overclaim a durable secret path.
+if [[ -d internal/exactauthority ]]; then
+  echo "[architecture] 6B1a foundation must NOT ship internal/exactauthority (secure key lifecycle is step 6B1b):" >&2
+  exit 1
+fi
+for f in $(find internal/accesslease -name '*.go' ! -name '*_test.go'); do
+  if grep -qE 'Scope.*json:"scope|map\[string\]any' "$f"; then
+    echo "[architecture] $f carries Scope or arbitrary metadata (map[string]any)" >&2
+    exit 1
+  fi
+done
+# Concrete multiaddr / libp2p host / store / reachability / discovery / CLI
+# imports are forbidden in the exact owner-authority contract surface (it uses
+# bounded neutral address strings instead of concrete multiaddrs).
+for f in $(find internal/accesslease -name '*.go' ! -name '*_test.go'); do
+  if grep -E '"github.com/origama/tubo-rebuilt/internal/(runtime|reachability|discovery|store|cli|authority)"|"github.com/multiformats|go-libp2p' "$f"; then
+    echo "[architecture] $f imports forbidden runtime/reachability/discovery/store/authority/libp2p type" >&2
+    exit 1
+  fi
+done
+
+echo "[architecture] PASS: L0 stdlib-only; runtime dispatch has no forbidden global symbols; Session boundary has no libp2p host/network/peer/protocol or store import; node adapter has no runtime coupling; L1 reachability/bundle closure is transport-only without policy/authority/store dependencies; #48 receiving openauth seam imports no concrete authority/store and openauth carries no Scope/metadata map; #52 6B1a accesslease is stdlib-only with canonical bounded base64url contracts and no internal/exactauthority lifecycle in the foundation, neither carries Scope/metadata/map or imports runtime/reachability/discovery/store/authority/CLI/libp2p/multiaddr"

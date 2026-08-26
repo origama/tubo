@@ -165,3 +165,32 @@ Request proof binds literal operation `records.list`. Authority reads records pl
 ## Version behavior
 
 A protocol major mismatch is rejected. Authority 2.1 snapshot consumers require that exact protocol ID; unavailable 2.1 is failure, not 2.0 fallback. Minor additions require explicit capability negotiation and bounded optional fields. See `VERSIONING.md`.
+
+## Exact-Pipe Access Lease, Owner Binding, and Exact Invite (contract foundation, step 6B1a)
+
+Issue #52 / step 6B1a defines, as pure value contracts only, the canonical exact-Pipe credentials that step 6B2 will later bind into the receiving remote-open path. These are NOT yet served on any protocol ID; neither `/tubo/authority/2.0` nor `/tubo/authority/2.1` emits or accepts them, and this document describes contract bytes, not a served operation.
+
+- `AccessLease`: `version=1`, `type=pipe.open.access`, fields `issuer`, `subject`, `audience_pipe_id`, `jti`, `issued_at`, `not_before`, `expires_at`, `access_epoch`, `signature`. Signature is Ed25519 over the canonical JSON (signature omitted) prefixed by the NUL-delimited domain `tubo://access-lease/v1`. No Scope, endpoint, route, target, discovery, namespace, or arbitrary metadata.
+- `OwnerBinding`: owner-signed, `version=1`, `type=exact.owner.binding`, fields `owner`, `authority_key` (exactly one dedicated Exact Authority key), `pipe_id`, `redemption_peers` (bounded neutral address string), `redemption_protocol`, `epoch`, `signature`. NUL-delimited domain `tubo://exact-owner-binding/v1`.
+- `ExactInvite`: recipient-unbound, `version=1`, `type=pipe.open.invite`, fields `issuer` (the dedicated Exact Authority key), `audience_pipe_id`, `binding` (bounded base64url OwnerBinding reference), `jti`, `issued_at`, `not_before`, `expires_at`, `access_epoch`, `one_time`, `signature`. NUL-delimited domain `tubo://exact-invite/v1`. The invite composes the owner-signed binding so redemption proves the issuer is the exact-Pipe owner's bound Authority.
+
+Signing bytes: each signature is Ed25519 over the canonical JSON body WITH the
+`signature` field omitted entirely (an explicit signature-less wire body, never
+a `"signature":""` placeholder) prefixed by the NUL-delimited signing domain.
+
+Decoding is strict and bounded (≤48 KiB total payload; each string member
+≤4096 bytes; comma-joined redemption peers ≤8 entries / 1024 bytes; redemption
+protocol ≤128 bytes; pipe id ≤256): unknown keys, duplicate keys, trailing
+payload, nested objects/arrays, and every over-long string member are rejected
+DURING the strict scan before typed unmarshal and before any byte-level work.
+The `signature` member is length-bounded at scan; its base64 validity and
+cryptographic value are enforced only by each credential's Verify path.
+
+All base64url text in these credentials — public keys, signatures, outer
+credential bodies, and embedded binding references — must be
+canonical unpadded URL-safe base64url. Each decoded value is required to
+re-encode byte-for-byte to its original text (RawURLEncoding re-encode
+equality); since Go's encoder can skip newlines and tolerances vary, CR/LF/CRLF,
+padding, whitespace, wrong decoded lengths, alternate spellings, and malformed
+text are rejected explicitly before any cryptographic verification or typed
+unmarshal. Nothing is trimmed or canonicalized on input.
