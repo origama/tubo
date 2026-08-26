@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 )
 
 const (
@@ -139,6 +140,35 @@ type OpenPipe struct {
 	VisitedPipeIDs []string `json:"visited_pipe_ids"`
 	HopLimit       int      `json:"hop_limit"`
 }
+
+// ExactRedemptionRequest is the client's first message in the
+// /tubo/exact-redemption/1 protocol. It carries the encoded ExactInvite.
+type ExactRedemptionRequest struct {
+	Invite string `json:"invite"`
+}
+
+// ExactRedemptionChallenge is the server's response to the invite. It carries
+// a random nonce challenge the recipient must sign.
+type ExactRedemptionChallenge struct {
+	Challenge string `json:"challenge"`
+}
+
+// ExactRedemptionProof is the recipient's response to the server challenge.
+// It carries the recipient's public key and the signed proof.
+type ExactRedemptionProof struct {
+	RecipientPublic string `json:"recipient_public"`
+	ChallengeProof  string `json:"challenge_proof"`
+}
+
+// ExactRedemptionResponse is the final server response. On success it carries
+// the encoded AccessLease and expiry.
+type ExactRedemptionResponse struct {
+	OK          bool      `json:"ok"`
+	Error       string    `json:"error,omitempty"`
+	AccessLease string    `json:"access_lease,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+}
+
 type OpenResult struct {
 	OK         bool   `json:"ok"`
 	SessionID  string `json:"session_id,omitempty"`

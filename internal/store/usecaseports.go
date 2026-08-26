@@ -86,3 +86,38 @@ func (a *PipeRepoAdapter) Delete(ctx context.Context, ref string) error {
 	_, err := a.s.DeletePipe(ctx, ref)
 	return err
 }
+
+// ExactConnectionStateRepoContract is the consumer-owned narrow exact
+// connection state persistence contract (duplicated here so internal/store
+// does not import internal/usecase).
+type ExactConnectionStateRepoContract interface {
+	Get(ctx context.Context, remotePipeID string) (domain.ExactConnectionState, error)
+	Put(ctx context.Context, state domain.ExactConnectionState) error
+	Delete(ctx context.Context, remotePipeID string) error
+}
+
+// ExactConnectionStateAdapter adapts *Store to the consumer-owned narrow
+// exact connection state contract.
+type ExactConnectionStateAdapter struct {
+	s *Store
+}
+
+// NewExactConnectionStateAdapter returns the adapter or nil when s is nil.
+func NewExactConnectionStateAdapter(s *Store) *ExactConnectionStateAdapter {
+	if s == nil {
+		return nil
+	}
+	return &ExactConnectionStateAdapter{s: s}
+}
+
+func (a *ExactConnectionStateAdapter) Get(ctx context.Context, remotePipeID string) (domain.ExactConnectionState, error) {
+	return a.s.GetExactConnectionState(ctx, remotePipeID)
+}
+
+func (a *ExactConnectionStateAdapter) Put(ctx context.Context, state domain.ExactConnectionState) error {
+	return a.s.PutExactConnectionState(ctx, state)
+}
+
+func (a *ExactConnectionStateAdapter) Delete(ctx context.Context, remotePipeID string) error {
+	return a.s.DeleteExactConnectionState(ctx, remotePipeID)
+}

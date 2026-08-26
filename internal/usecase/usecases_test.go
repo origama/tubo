@@ -279,3 +279,290 @@ func TestCase11_ConnectExactNoScopeNoDiscovery(t *testing.T) {
 	// The connect operation never referenced Scope, discovery, or membership:
 	// the crafted path above used only the invite plus injected reachability.
 }
+
+// TestCase15_ConnectExactPersistsExactConnectionState verifies that
+// ConnectExact persists the exact connection state through the injected
+// ExactConnectionStateRepo for detached-start consumption.
+func TestCase15_ConnectExactPersistsExactConnectionState(t *testing.T) {
+	ctx := context.Background()
+	services := newMemoryServiceRepo()
+	pipes := newMemoryPipeRepo()
+	exactConn := newMemoryExactConnectionRepo()
+	secretsDir := t.TempDir()
+
+	u := New(services, pipes)
+	u.Secrets = secretsDir
+	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	u.Reach = newFakeReachability()
+	u.Redemption = newFakeRedemptionService(secretsDir)
+	u.ExactConnections = exactConn
+
+	// Attach + Share.
+	attachResult, err := u.Attach(ctx, AttachInput{Name: "persisttest", Target: "http://127.0.0.1:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareResult, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attachResult.PipeRef.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Connect.
+	connectResult, err := u.ConnectExact(ctx, ConnectExactInput{
+		Invite:      shareResult.Invite,
+		LocalListen: "127.0.0.1:9998",
+	})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// Verify exact connection state was persisted.
+	state, err := exactConn.Get(ctx, shareResult.PipeID)
+	if err != nil {
+		t.Fatalf("exact connection state should be persisted: %v", err)
+	}
+	if state.RemotePipeID != shareResult.PipeID {
+		t.Fatalf("remote pipe ID mismatch: %s vs %s", state.RemotePipeID, shareResult.PipeID)
+	}
+	if state.Locator == "" {
+		t.Fatal("locator must be non-empty")
+	}
+	if state.AccessLease == "" {
+		t.Fatal("access lease must be non-empty")
+	}
+	if state.LocalPipeRef != connectResult.PipeRef.String() {
+		t.Fatalf("local pipe ref mismatch: %s vs %s", state.LocalPipeRef, connectResult.PipeRef)
+	}
+	if state.ExpiresAt.IsZero() {
+		t.Fatal("expiry must be non-zero")
+	}
+}
+
+// TestCase16_ConnectExactExpiredLeaseFailsClosed verifies that an expired
+// exact connection state returns ErrNotFound from the repo (fail closed).
+func TestCase16_ConnectExactExpiredLeaseFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	services := newMemoryServiceRepo()
+	pipes := newMemoryPipeRepo()
+	exactConn := newMemoryExactConnectionRepo()
+	secretsDir := t.TempDir()
+
+	u := New(services, pipes)
+	u.Secrets = secretsDir
+	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	u.Reach = newFakeReachability()
+	u.Redemption = newFakeRedemptionService(secretsDir)
+	u.ExactConnections = exactConn
+
+	// Attach + Share + Connect.
+	attachResult, err := u.Attach(ctx, AttachInput{Name: "expiretest", Target: "http://127.0.0.1:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareResult, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attachResult.PipeRef.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = u.ConnectExact(ctx, ConnectExactInput{
+		Invite:      shareResult.Invite,
+		LocalListen: "127.0.0.1:9997",
+	})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// Manually expire the stored state.
+	state, err := exactConn.Get(ctx, shareResult.PipeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Set expiry to the past.
+	state.ExpiresAt = time.Now().UTC().Add(-time.Hour)
+	if err := exactConn.Put(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Get should fail with ErrNotFound.
+	_, err = exactConn.Get(ctx, shareResult.PipeID)
+	if err != domain.ErrNotFound {
+		t.Fatalf("expired state must return ErrNotFound, got %v", err)
+	}
+}
+
+// TestCase17_ConnectExactNoExactConnectionsRepoIsGraceful verifies that
+// ConnectExact succeeds even when no ExactConnectionStateRepo is wired.
+func TestCase17_ConnectExactNoExactConnectionsRepoIsGraceful(t *testing.T) {
+	ctx := context.Background()
+	services := newMemoryServiceRepo()
+	pipes := newMemoryPipeRepo()
+	secretsDir := t.TempDir()
+
+	u := New(services, pipes)
+	u.Secrets = secretsDir
+	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	u.Reach = newFakeReachability()
+	u.Redemption = newFakeRedemptionService(secretsDir)
+	// ExactConnections is nil — no persistence.
+
+	attachResult, err := u.Attach(ctx, AttachInput{Name: "norepotest", Target: "http://127.0.0.1:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareResult, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attachResult.PipeRef.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Connect must still succeed.
+	_, err = u.ConnectExact(ctx, ConnectExactInput{
+		Invite:      shareResult.Invite,
+		LocalListen: "127.0.0.1:9996",
+	})
+	if err != nil {
+		t.Fatalf("connect must succeed without exact connections repo: %v", err)
+	}
+}
+
+// TestCase18_DetachedStartConsumesExactConnectionState verifies that
+// persisted exact connection state can be consumed by a detached start
+// (simulating runLocalPipeExact lookup).
+func TestCase18_DetachedStartConsumesExactConnectionState(t *testing.T) {
+	ctx := context.Background()
+	services := newMemoryServiceRepo()
+	pipes := newMemoryPipeRepo()
+	exactConn := newMemoryExactConnectionRepo()
+	secretsDir := t.TempDir()
+
+	u := New(services, pipes)
+	u.Secrets = secretsDir
+	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	u.Reach = newFakeReachability()
+	u.Redemption = newFakeRedemptionService(secretsDir)
+	u.ExactConnections = exactConn
+
+	// Attach + Share + Connect.
+	attachResult, err := u.Attach(ctx, AttachInput{Name: "detachedtest", Target: "http://127.0.0.1:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shareResult, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attachResult.PipeRef.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connectResult, err := u.ConnectExact(ctx, ConnectExactInput{
+		Invite:      shareResult.Invite,
+		LocalListen: "127.0.0.1:9995",
+	})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// Simulate detached start: load exact connection state by remote PipeID.
+	// The remote PipeID is the invite audience (= shareResult.PipeID).
+	state, err := exactConn.Get(ctx, shareResult.PipeID)
+	if err != nil {
+		t.Fatalf("detached start must find exact connection state: %v", err)
+	}
+
+	// Verify all fields needed by runLocalPipeExact are present.
+	if state.RemotePipeID != shareResult.PipeID {
+		t.Fatalf("remote pipe ID mismatch: %s vs %s", state.RemotePipeID, shareResult.PipeID)
+	}
+	if state.Locator == "" {
+		t.Fatal("locator required for downstream dial")
+	}
+	if state.AccessLease == "" {
+		t.Fatal("access lease required for open auth")
+	}
+	if state.LocalPipeRef != connectResult.PipeRef.String() {
+		t.Fatalf("local pipe ref mismatch: %s vs %s", state.LocalPipeRef, connectResult.PipeRef)
+	}
+}
+
+// TestCase19_ExactConnectionStateExpiryDeterministic verifies the expiry
+// check is deterministic (no sleeps). Uses a fixed clock past expiry.
+func TestCase19_ExactConnectionStateExpiryDeterministic(t *testing.T) {
+	exactConn := newMemoryExactConnectionRepo()
+	ctx := context.Background()
+
+	// Insert state with expiry in the past.
+	pastState := domain.ExactConnectionState{
+		RemotePipeID: "pip_expired",
+		Locator:      "/ip4/127.0.0.1/tcp/4001",
+		AccessLease:  "dGVzdA",
+		ExpiresAt:    time.Now().UTC().Add(-time.Hour),
+		LocalPipeRef: "pipe/expired",
+	}
+	if err := exactConn.Put(ctx, pastState); err != nil {
+		t.Fatal(err)
+	}
+
+	// Get must fail with ErrNotFound.
+	_, err := exactConn.Get(ctx, "pip_expired")
+	if err != domain.ErrNotFound {
+		t.Fatalf("expired state must return ErrNotFound, got %v", err)
+	}
+}
+
+// TestCase20_ExactConnectionStateNoExpiryIsValid verifies that a state
+// with zero expiry is valid (no expiry check).
+func TestCase20_ExactConnectionStateNoExpiryIsValid(t *testing.T) {
+	exactConn := newMemoryExactConnectionRepo()
+	ctx := context.Background()
+
+	noExpiryState := domain.ExactConnectionState{
+		RemotePipeID: "pip_no_expiry",
+		Locator:      "/ip4/127.0.0.1/tcp/4001",
+		AccessLease:  "dGVzdA",
+		LocalPipeRef: "pipe/no_expiry",
+	}
+	if err := exactConn.Put(ctx, noExpiryState); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := exactConn.Get(ctx, "pip_no_expiry")
+	if err != nil {
+		t.Fatalf("state without expiry must be retrievable: %v", err)
+	}
+	if state.RemotePipeID != "pip_no_expiry" {
+		t.Fatalf("pipe ID mismatch")
+	}
+}
+
+// TestCase21_ExactConnectionStateInvalidRejectedByPut verifies that the
+// fake repo rejects invalid state (missing required fields).
+func TestCase21_ExactConnectionStateInvalidRejectedByPut(t *testing.T) {
+	exactConn := newMemoryExactConnectionRepo()
+	ctx := context.Background()
+
+	// Missing RemotePipeID.
+	err := exactConn.Put(ctx, domain.ExactConnectionState{
+		Locator:     "/ip4/127.0.0.1/tcp/4001",
+		AccessLease: "dGVzdA",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing remote pipe ID")
+	}
+
+	// Missing Locator.
+	err = exactConn.Put(ctx, domain.ExactConnectionState{
+		RemotePipeID: "pip_test",
+		AccessLease:  "dGVzdA",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing locator")
+	}
+
+	// Missing AccessLease.
+	err = exactConn.Put(ctx, domain.ExactConnectionState{
+		RemotePipeID: "pip_test",
+		Locator:      "/ip4/127.0.0.1/tcp/4001",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing access lease")
+	}
+}

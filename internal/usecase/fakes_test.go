@@ -68,6 +68,50 @@ func (r *memoryServiceRepo) Delete(_ context.Context, ref domain.Ref) error {
 
 // ---- Pipe repo fake ----
 
+// memoryExactConnectionRepo is an in-memory fake for ExactConnectionStateRepo.
+type memoryExactConnectionRepo struct {
+	mu    sync.Mutex
+	items map[string]domain.ExactConnectionState
+}
+
+func newMemoryExactConnectionRepo() *memoryExactConnectionRepo {
+	return &memoryExactConnectionRepo{items: make(map[string]domain.ExactConnectionState)}
+}
+
+func (r *memoryExactConnectionRepo) Get(_ context.Context, remotePipeID string) (domain.ExactConnectionState, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state, ok := r.items[remotePipeID]
+	if !ok {
+		return domain.ExactConnectionState{}, domain.ErrNotFound
+	}
+	// Expired material fails closed.
+	if !state.ExpiresAt.IsZero() && !state.ExpiresAt.After(time.Now().UTC()) {
+		delete(r.items, remotePipeID)
+		return domain.ExactConnectionState{}, domain.ErrNotFound
+	}
+	return state, nil
+}
+
+func (r *memoryExactConnectionRepo) Put(_ context.Context, state domain.ExactConnectionState) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if state.RemotePipeID == "" || state.AccessLease == "" || state.Locator == "" {
+		return errors.New("invalid exact connection state: missing required fields")
+	}
+	r.items[state.RemotePipeID] = state
+	return nil
+}
+
+func (r *memoryExactConnectionRepo) Delete(_ context.Context, remotePipeID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.items, remotePipeID)
+	return nil
+}
+
+// ---- Pipe repo fake ----
+
 type memoryPipeRepo struct {
 	mu        sync.Mutex
 	specs     map[string]domain.PipeSpec

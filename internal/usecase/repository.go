@@ -26,6 +26,22 @@ type ServiceRepository interface {
 	Delete(ctx context.Context, ref domain.Ref) error
 }
 
+// ExactConnectionStateRepo is the narrow persistence port for Journey A exact
+// connection state. It stores the verified remote PipeID, locator/binding,
+// canonical AccessLease, and expiry. Expired material fails closed (returns
+// ErrNotFound). It is NOT a generic credential repository or a PipeSpec field.
+type ExactConnectionStateRepo interface {
+	// Get retrieves exact connection state for a remote PipeID.
+	// Returns domain.ErrNotFound when no state exists or the lease is expired.
+	Get(ctx context.Context, remotePipeID string) (domain.ExactConnectionState, error)
+
+	// Put stores or replaces exact connection state for a remote PipeID.
+	Put(ctx context.Context, state domain.ExactConnectionState) error
+
+	// Delete removes exact connection state for a remote PipeID.
+	Delete(ctx context.Context, remotePipeID string) error
+}
+
 // PipeRepository is the narrow persistence port for durable Pipe definitions.
 type PipeRepository interface {
 	// Upsert saves a PipeSpec with its owner key file path. created=true

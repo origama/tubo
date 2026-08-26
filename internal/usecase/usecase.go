@@ -62,6 +62,12 @@ type UseCases struct {
 	// produces an explicit runtime_unavailable error. 8B wires the real
 	// PipeRuntime; 8A tests inject fakes.
 	Starter PipeStarter
+
+	// ExactConnections persists exact connection state (remote PipeID,
+	// verified locator, AccessLease, expiry) for Journey A detached-start
+	// consumption. nil is allowed for backward compatibility; ConnectExact
+	// falls back to no-persist when unset.
+	ExactConnections ExactConnectionStateRepo
 }
 
 // New returns a UseCases value with the default wall clock. Callers must

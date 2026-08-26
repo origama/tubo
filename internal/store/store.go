@@ -21,7 +21,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
 
-const SchemaVersion = 10
+const SchemaVersion = 11
 
 const maxScopeSyncLeaseTTL = 5 * time.Minute
 
@@ -291,6 +291,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS runtime_stats(run_ref TEXT PRIMARY KEY REFERENCES runs(primary_ref) ON DELETE CASCADE, bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL, rate_in REAL NOT NULL, rate_out REAL NOT NULL, connected_peers INTEGER NOT NULL, open_connections INTEGER NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runtime_peers(run_ref TEXT NOT NULL REFERENCES runs(primary_ref) ON DELETE CASCADE, peer_id TEXT NOT NULL, addresses BLOB NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY(run_ref,peer_id))`,
 		`CREATE TABLE IF NOT EXISTS path_events(session_id TEXT NOT NULL, epoch INTEGER NOT NULL, from_path TEXT NOT NULL, to_path TEXT NOT NULL, reason TEXT NOT NULL, c2s_committed INTEGER NOT NULL, s2c_committed INTEGER NOT NULL, committed_at TEXT NOT NULL, PRIMARY KEY(session_id,epoch))`,
+		`CREATE TABLE IF NOT EXISTS exact_connections(remote_pipe_id TEXT PRIMARY KEY, locator TEXT NOT NULL, access_lease TEXT NOT NULL, expires_at TEXT NOT NULL, local_pipe_ref TEXT NOT NULL DEFAULT '')`,
 	}
 	if _, err := tx.ExecContext(ctx, statements[0]); err != nil {
 		return fmt.Errorf("schema: %w", err)

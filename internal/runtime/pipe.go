@@ -26,8 +26,6 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/discovery"
 	"github.com/origama/tubo-rebuilt/internal/domain"
 	"github.com/origama/tubo-rebuilt/internal/engine"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
 	"github.com/origama/tubo-rebuilt/internal/node"
 	"github.com/origama/tubo-rebuilt/internal/openauth"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
@@ -71,11 +69,11 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 		return err
 	}
 	if spec.Scope == nil {
-		// Scope-less published ingress (zero-config public sharing) requires the
-		// Step 8 L4/persistence publish workflow; the scope-bound publish path
-		// below stays the current supported path. Explicit deferred debt, fail
-		// closed — never a temporary provider or hardcoded reachability.
-		return errors.New("invalid_input: scope-less published ingress is deferred to Step 8 (L4/CLI/persistence)")
+		// Scope-less published ingress (Journey A): open baseline L1 host,
+		// wire exact authorizer, install tunnel handler and redemption handler,
+		// serve. No discovery, no publish grant, no membership, no scope sync,
+		// no record announcement. Remote open still requires canonical AccessLease.
+		return runScopeLessPublishedPipe(ctx, state, spec, ownerKeyFile, nodeRuntime, pipeRuntime)
 	}
 	// Target resolution is derived from the spec through the Pipe Engine. A
 	// Service target is resolved locally; a Pipe target is validated against
@@ -333,9 +331,20 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 	// terminal service) through the Engine at startup: cycles, hop limits, and
 	// invalid definitions fail closed before any listener accept.
 	pipeEngine := newPipeEngine(state)
+
+	// Check if this is a Journey A exact connect path (Scope-less, no discovery).
+	// The target pipe ID is derived from the spec.Target.Name.
+	// This check must happen BEFORE ResolvePath because the target pipe
+	// (remote Pipe ID) is not stored locally; the exact connection state
+	// provides the authorization material directly.
+	if connState, connErr := state.GetExactConnectionState(ctx, spec.Target.Name); connErr == nil && connState.AccessLease != "" {
+		return runLocalPipeExact(ctx, state, spec, connState, nodeRuntime, pipeRuntime, pipeEngine)
+	}
+
 	if _, err := pipeEngine.ResolvePath(spec.Ref, domain.DefaultMaxPipeHops); err != nil {
 		return err
 	}
+	// Fall through to the scoped discovery path for backward compatibility.
 	recordStored, err := state.Record(ctx, spec.Target.Name)
 	if err != nil {
 		return err
@@ -936,22 +945,230 @@ func copyDuplex(a, b io.ReadWriteCloser) (int64, int64) {
 // authorization and returns a concrete ExactOpenAuthorizer behind the neutral
 // openauth seam. If the key is not present (pipe provisioned before exact
 // authority), it returns nil, which denies all inbound opens (fail closed).
+// runScopeLessPublishedPipe runs a Scope-less published pipe (Journey A).
+// It opens a baseline L1 host, wires the exact authorizer, installs the
+// tunnel handler and the redemption handler, and serves. No discovery,
+// no publish grant, no membership, no scope sync, no record announcement.
+func runScopeLessPublishedPipe(
+	ctx context.Context,
+	state *store.Store,
+	spec domain.PipeSpec,
+	ownerKeyFile string,
+	nodeRuntime *NodeRuntime,
+	pipeRuntime *PipeRuntime,
+) error {
+	// Target resolution for Service targets.
+	var service domain.ServiceSpec
+	var err error
+	if spec.Target.Kind == domain.KindService {
+		service, err = state.Service(ctx, spec.Target)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Open baseline L1 host using configured overlay or bootstrap.
+	relay, swarm, reachability, err := relayOrBootstrap(ctx, state)
+	if err != nil {
+		return err
+	}
+	bandwidth := coremetrics.NewBandwidthCounter()
+	h, err := node.Open(ctx, node.Options{
+		KeyFile:           state.SecretPath("nodes", strings.ReplaceAll(spec.Ref.String(), "/", "-")+".key"),
+		SwarmKeyFile:      swarm,
+		Private:           reachability == "private",
+		BandwidthReporter: bandwidth,
+	})
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+
+	relayInfo, err := node.ConnectRelay(ctx, h, relay, true)
+	if err != nil {
+		return err
+	}
+	address, err := node.CircuitAddress(relay, h.ID())
+	if err != nil {
+		return err
+	}
+
+	// Wire the exact open authorizer.
+	pipeEngine := newPipeEngine(state)
+	exactAuthorizer := loadExactAuthorizer(state, spec.PipeID)
+
+	// Install the tunnel handler.
+	handler := &tunnelServer{
+		state:            state,
+		spec:             spec,
+		service:          service,
+		authorizer:       exactAuthorizer,
+		runtime:          pipeRuntime,
+		engine:           pipeEngine,
+		downstreamOpener: newDownstreamPipeOpener(state, h, pipeRuntime),
+	}
+	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
+
+	// Install the exact redemption handler.
+	h.SetStreamHandler(protocol.ID("/tubo/exact-redemption/1"), newExactRedemptionHandler(state, spec.PipeID).handle)
+
+	// Record the run.
+	run := store.Run{
+		PrimaryRef: spec.Ref.String(),
+		Kind:       "pipe",
+		PID:        os.Getpid(),
+		Source:     RunSource(),
+		Status:     "ready",
+		PeerID:     h.ID().String(),
+		Address:    address,
+		StartedAt:  time.Now().UTC(),
+	}
+	if err := state.PutRun(ctx, run); err != nil {
+		return err
+	}
+	runtimeInfof("ready %s peer=%s", spec.Ref, h.ID())
+
+	stopTelemetry := startRuntimeTelemetry(ctx, state, spec.Ref.String(), h, bandwidth)
+	defer stopTelemetry()
+
+	defer func() {
+		run.Status = "stopped"
+		_ = state.PutRun(context.Background(), run)
+		runtimeInfof("stopped %s", spec.Ref)
+	}()
+
+	// No discovery, no publish grant, no membership, no scope sync, no record
+	// announcement. Just periodic relay recovery.
+	return waitSignalRenew(ctx, 5*time.Second, func() error {
+		if !node.PeerConnected(h, relayInfo.ID) {
+			if err := node.EnsureRelay(ctx, h, *relayInfo, true); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, func(err error) {
+		first := run.Status != "degraded"
+		run.Status = "degraded"
+		_ = state.PutRun(context.Background(), run)
+		if first {
+			runtimeWarnf("degraded %s reason=relay_unavailable detail=%s", spec.Ref, safeLogError(err))
+		}
+	})
+}
+
+// runLocalPipeExact runs the Journey A exact connect path for a local ingress
+// Pipe that targets a remote Pipe. It uses the exact connection state (no
+// discovery, no Scope, no membership, no PipeRecord) to open the remote
+// tunnel when a local connection arrives.
+func runLocalPipeExact(
+	ctx context.Context,
+	state *store.Store,
+	spec domain.PipeSpec,
+	connState domain.ExactConnectionState,
+	nodeRuntime *NodeRuntime,
+	pipeRuntime *PipeRuntime,
+	pipeEngine *engine.Engine,
+) error {
+	bandwidth := coremetrics.NewBandwidthCounter()
+	h, relayAddress, err := OpenOverlayHostWithReporter(ctx, state, strings.ReplaceAll(spec.Ref.String(), "/", "-"), bandwidth)
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+	relayInfo, err := node.RelayInfo(relayAddress)
+	if err != nil {
+		return err
+	}
+	listener, err := net.Listen("tcp", spec.Ingress.Listen)
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+	actual := listener.Addr().String()
+	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: actual, StartedAt: time.Now().UTC()}
+	if err := state.PutRun(ctx, run); err != nil {
+		return err
+	}
+	runtimeInfof("ready %s listen=%s", spec.Ref, actual)
+	stopTelemetry := startRuntimeTelemetry(ctx, state, spec.Ref.String(), h, bandwidth)
+	defer stopTelemetry()
+	stopRecovery := startRelayRecovery(ctx, state, spec.Ref.String(), h, *relayInfo)
+	defer stopRecovery()
+	defer func() {
+		run.Status = "stopped"
+		_ = state.PutRun(context.Background(), run)
+		runtimeInfof("stopped %s", spec.Ref)
+	}()
+	// No scope sync, no discovery, no membership.
+	go func() { <-ctx.Done(); listener.Close() }()
+	go func() {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(signals)
+		select {
+		case <-signals:
+			listener.Close()
+		case <-ctx.Done():
+		}
+	}()
+	// Use the exact downstream opener to establish the remote tunnel.
+	// Each local connection triggers a new tunnel open.
+	exactOpener := newExactDownstreamPipeOpener(state, h, pipeRuntime, spec.Target.Name)
+	for {
+		local, err := listener.Accept()
+		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, net.ErrClosed) {
+				return nil
+			}
+			return err
+		}
+		go func(local net.Conn) {
+			defer local.Close()
+			carrier, sessionID, err := exactOpener(ctx, spec, engine.TraversalState{
+				VisitedIDs: []string{spec.PipeID},
+				MaxHops:    domain.DefaultMaxPipeHops,
+			})
+			if err != nil {
+				runtimeWarnf("exact tunnel open failed: %s", safeLogError(err))
+				if setRunStatus(state, spec.Ref.String(), "degraded") {
+					runtimeWarnf("degraded %s reason=%s", spec.Ref, safeLogError(err))
+				}
+				return
+			}
+			defer carrier.Close()
+			session := store.Session{ID: sessionID, PipeRef: spec.Ref.String(), InitialTransportPath: "relayed", CurrentTransportPath: "relayed", StartedAt: time.Now().UTC()}
+			_ = state.PutSession(context.Background(), session)
+			runtimeInfof("session opened pipe=%s session=%s path=relayed", spec.Ref, sessionID)
+			sp, sessionErr := pipeRuntime.NewSession(sessionConfig{
+				SessionID:    sessionID,
+				PipeID:       spec.PipeID,
+				Scope:        "",
+				TargetConn:   local,
+				InitialEpoch: 1,
+				IsClient:     true,
+			})
+			if sessionErr != nil {
+				return
+			}
+			if !sp.SetActiveCarrier(carrier) {
+				return
+			}
+			sp.runClientSession()
+			in, out := sp.ByteCounts()
+			session.BytesIn = in
+			session.BytesOut = out
+			_ = state.PutSession(context.Background(), session)
+			runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", spec.Ref, sessionID, in, out)
+		}(local)
+	}
+}
+
 func loadExactAuthorizer(state *store.Store, pipeID string) openauth.OpenAuthorizer {
 	if pipeID == "" {
 		return nil
 	}
-	secretDir := state.SecretPath("exact-authorities")
-	keyPath, err := exactauthority.KeyPath(secretDir, pipeID)
-	if err != nil {
-		runtimeInfof("no exact authority key path for pipe %s: %v", pipeID, err)
-		return nil
-	}
-	private, err := localkey.Load(keyPath)
-	if err != nil {
-		runtimeInfof("exact authority key not provisioned for pipe %s: %v", pipeID, err)
-		return nil
-	}
-	adapter := store.NewExactAuthorityRevocationState(state, pipeID)
-	pub := private.Public().(ed25519.PublicKey)
-	return NewExactOpenAuthorizer(pub, pipeID, adapter)
+	// Use lazy authorizer that loads the key on first AuthorizeOpen call.
+	// This allows the pipe daemon to start before ShareExact provisions
+	// the exact authority key.
+	return NewLazyExactAuthorizer(state, pipeID)
 }
