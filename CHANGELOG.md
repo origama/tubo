@@ -23,6 +23,12 @@
 - #43 finding 1 remediation: `sessionPump` now distinguishes clean both-FIN completion (graceful `Carrier.Close`, preserving mux FIN ordering) from error/forced termination (`Carrier.Reset`, fail-closed) at the Session/Carrier boundary; the continuity mid-cancel test now exercises the abrupt-reset fail-closed path.
 - Architecture guard extended: `internal/reachability` may not import runtime/authority/discovery/store/CLI; the pure bundle subpackage may not import the node adapter or any runtime/authority/store/discovery/CLI package.
 
+### Added (A0)
+
+- Pipe Engine (L2 connectivity composition, issue #57 / step 7): new `internal/engine` package implements the canonical `Ingress -> Pipe -> Target (Service | Pipe)` traversal model. Engine resolves logical paths via `domain.ResolveLogicalPath` (reusing L0 cycle/hop enforcement), then opens each hop sequentially through narrow injected capabilities. TraversalState provides immutable-copy Advance with loop detection and hop-limit enforcement. Engine.Forward handles both Service targets (via injected dialer) and Pipe targets (via injected DownstreamOpener for per-hop authorization). Engine imports no `internal/store`, `internal/discovery`, `internal/authority`, `internal/cli`, or L3 concrete packages.
+- Serve path supports Pipe target forwarding: `tunnelServer` gained `engine` and `downstreamOpener` fields; authorization is separated from target opening via `authorizeOpenOnly`; Pipe targets advance traversal state and open the downstream hop through `Engine.Forward`.
+- Architecture guard extended: Step 7 engine verified to import no store/discovery/authority/Scope/CLI packages.
+
 ### Added
 
 Resume-related entries immediately below are historical prototype records superseded by the quarantine above; they are not current A0 features.
