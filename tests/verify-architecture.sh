@@ -109,7 +109,7 @@ fi
 # (internal/exactauthority) is step 6B1b and must NOT be introduced by this
 # 6B1a foundation, so this PR makes no durable secret-path/state/lifecycle
 # claim. The pure contract carries no Scope, arbitrary metadata, or concrete
-# multiaddrs, and every base64url text entry (public keys, signatures, proofs,
+# multiaddrs, and every base64url text entry (public keys, signatures,
 # outer credential bodies, embedded bindings) is canonical and bounded.
 accesslease_pkg="$(go list -f '{{.ImportPath}}' ./internal/accesslease)"
 accesslease_non_stdlib="$(go list -deps -f '{{if and (not .Standard) (ne .ImportPath "github.com/origama/tubo-rebuilt/internal/accesslease")}}{{.ImportPath}}{{end}}' "$accesslease_pkg")"
