@@ -103,10 +103,11 @@ Private material stays outside the database where practical:
 ~/.config/tubo/secrets/swarm.key
 ~/.config/tubo/secrets/authorities/<cluster>.key
 ~/.config/tubo/secrets/pipes/<pipe-id>.key
+~/.config/tubo/secrets/exact-authorities/<pipe-id>.key
 ~/.config/tubo/secrets/namespaces/<scope>/<key-id>.secret
 ```
 
-Directories use `0700`; files use `0600`. Database references secrets by path/fingerprint, never by bytes in ordinary output.
+Directories use `0700`; files use `0600`. Pipe owner keys and Exact Authority keys share one strict file format: canonical unpadded raw-base64url Ed25519 private key bytes, decoded length exactly 64 bytes, encoded length exactly 86 bytes, with no whitespace, padding, trimming, envelope metadata, or SQLite row. Database references secrets by path/fingerprint, never by bytes in ordinary output.
 
 ## Home override
 
@@ -165,10 +166,6 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.
 
-## Owner-bound Exact Authority (step 6B1a)
+## Owner-bound Exact Authority key state (step 6B1b)
 
-Step 6B1a adds no SQLite schema and no filesystem state. The owner-local secure
-dedicated-key lifecycle (rendering, publication, durable no-clobber storage of
-any owner-authority secret) is step 6B1b, the mandatory predecessor to 6B2; this
-PR claims none of that lifecycle and creates no persistence. No store/table
-change is made by 6B1a.
+Step 6B1b adds filesystem secret state only, not SQLite. Dedicated Exact Authority keys live under `secrets/exact-authorities/<pipe-id>.key`; existing Pipe owner key callers are re-grounded on the same `internal/localkey` primitive. `Load` checks directory and key modes, final symlink status, canonical encoding, exact length, and bounded size without creating entries. `Provision` is trusted-local only and publishes by temp write, file fsync, final no-clobber link, temp removal, directory fsync, then success; concurrent provisioners serialize and losers load the durable committed key. Failed write/fsync/dir-fsync reports failure and no store/table mutation occurs. 6B2 remains responsible for runtime redemption/open authorization wiring.
