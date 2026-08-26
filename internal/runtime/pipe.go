@@ -25,6 +25,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/authority"
 	"github.com/origama/tubo-rebuilt/internal/discovery"
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo-rebuilt/internal/engine"
 	"github.com/origama/tubo-rebuilt/internal/exactauthority"
 	"github.com/origama/tubo-rebuilt/internal/localkey"
 	"github.com/origama/tubo-rebuilt/internal/node"
@@ -288,6 +289,8 @@ type tunnelServer struct {
 	authorizer openauth.OpenAuthorizer
 	dialFunc   func(domain.ServiceSpec) (net.Conn, error)
 	runtime    *PipeRuntime
+	engine     *engine.Engine
+	downstreamOpener engine.DownstreamOpener
 }
 
 func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec) error {
