@@ -58,14 +58,19 @@ func TestProductionTunnelAdapterHasNoResumeSurface(t *testing.T) {
 		}
 	}
 
-	// The only stream handler registered is the authorized /tubo/tunnel/2.0
-	// handler. A resume protocol ID is never registered, so libp2p resets any
-	// unsolicited /tubo/tunnel-resume/2.1 stream.
-	if strings.Count(strings.ToLower(raw), "setstreamhandler") != 1 {
-		t.Fatalf("expected exactly one SetStreamHandler (authorized tunnel), got %d", strings.Count(strings.ToLower(raw), "setstreamhandler"))
+	// The only stream handlers registered are the authorized /tubo/tunnel/2.0
+	// handler and the /tubo/exact-redemption/1 handler. A resume protocol ID
+	// is never registered, so libp2p resets any unsolicited
+	// /tubo/tunnel-resume/2.1 stream.
+	count := strings.Count(strings.ToLower(raw), "setstreamhandler")
+	if count != 3 {
+		t.Fatalf("expected exactly 3 SetStreamHandler calls (scoped tunnel + scope-less tunnel + redemption), got %d", count)
 	}
 	if !strings.Contains(strings.ToLower(raw), "wire.tunnelid") {
 		t.Fatalf("production adapter did not register the authorized tunnel handler")
+	}
+	if !strings.Contains(strings.ToLower(raw), "exact-redemption") {
+		t.Fatalf("production adapter did not register the exact redemption handler")
 	}
 }
 

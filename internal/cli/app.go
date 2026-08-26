@@ -24,6 +24,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 	appRuntime "github.com/origama/tubo-rebuilt/internal/runtime"
 	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo-rebuilt/internal/usecase"
 )
 
 type App struct {
@@ -32,6 +33,7 @@ type App struct {
 	Quiet                                                 bool
 	Verbosity                                             int
 	LogLevel                                              string
+	UseCases                                              usecase.UseCases
 	fetchRecords                                          func(context.Context, *store.Store, string, appRuntime.FetchRecordsOptions) error
 	networkOperationObserver                              appRuntime.NetworkOperationObserver
 	now                                                   func() time.Time
@@ -116,6 +118,19 @@ func (a App) Run(ctx context.Context, args []string) error {
 		return fmt.Errorf("persistence_failed: %w", err)
 	}
 	defer state.Close()
+
+	// Wire the Journey A use-case composition root.
+	a.UseCases = usecase.New(
+		store.NewServiceRepoAdapter(state),
+		store.NewPipeRepoAdapter(state),
+	)
+	a.UseCases.Secrets = state.SecretPath()
+	a.UseCases.RedemptionAddress = "" // 8B wires real address
+	a.UseCases.RedemptionProtocol = "/tubo/exact-redemption/1"
+	a.UseCases.Redemption = nil // not wired for CLI-only commands
+	a.UseCases.Reach = nil
+	a.UseCases.Starter = nil
+
 	if a.Verbosity > 0 && !a.Quiet {
 		fmt.Fprintf(a.Err, "debug: command=%s home=%s\n", args[0], state.Home())
 	}
@@ -700,20 +715,13 @@ func (a App) share(ctx context.Context, state *store.Store, args []string) error
 	if len(f.args) != 1 || !strings.HasPrefix(f.args[0], "pipe/") {
 		return errors.New("usage: tubo share pipe/<name> [--json]")
 	}
-	spec, _, _, err := state.Pipe(ctx, f.args[0])
+	result, err := a.UseCases.ShareExact(ctx, usecase.ShareExactInput{
+		PipeRef: f.args[0],
+	})
 	if err != nil {
 		return err
 	}
-	h, _, err := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("share-%d", os.Getpid()))
-	if err != nil {
-		return err
-	}
-	defer h.Close()
-	invite, err := appRuntime.RequestShareInvite(ctx, state, h, spec.Scope.String(), spec.PipeID)
-	if err != nil {
-		return err
-	}
-	return a.emit(f.bools["json"], map[string]any{"pipe_id": spec.PipeID, "invite": invite}, invite)
+	return a.emit(f.bools["json"], map[string]any{"pipe_id": result.PipeID, "invite": result.Invite, "expires_at": result.ExpiresAt}, result.Invite)
 }
 
 func (a App) revoke(ctx context.Context, state *store.Store, args []string) error {
@@ -771,57 +779,38 @@ func (a App) connect(ctx context.Context, state *store.Store, args []string) err
 	if err != nil {
 		return err
 	}
-	var record discovery.PipeRecord
+	// Journey A: --token path uses UseCases (no discovery, no Scope).
 	if tokenValue := f.values["token"]; tokenValue != "" {
-		token, decodeErr := authority.Decode(tokenValue)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		issuer, keyErr := authority.PublicFromString(token.Issuer)
-		if keyErr != nil {
-			return keyErr
-		}
-		if verifyErr := token.Verify(issuer, time.Now().UTC()); verifyErr != nil || token.Type != "share.invite" || token.PipeEndpoint == nil || token.AuthorityAddress == "" {
-			return errors.New("authorization_denied: invalid share invite")
-		}
-		clientPath := state.SecretPath("clients", "invite-"+token.JTI+".key")
-		if _, clientErr := loadOrGeneratePrivate(clientPath); clientErr != nil {
-			return clientErr
-		}
-		if putErr := state.PutMembership(ctx, store.Membership{Scope: token.Scope.String(), Role: "invite", Token: tokenValue, AuthorityPublic: token.Issuer, AuthorityAddress: token.AuthorityAddress, ClientKeyFile: clientPath}); putErr != nil {
-			return fmt.Errorf("persistence_failed: %w", putErr)
-		}
-		accessHost, _, hostErr := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("redeem-%d", os.Getpid()))
-		if hostErr != nil {
-			return hostErr
-		}
-		access, refresh, redeemErr := appRuntime.RedeemShareInvite(ctx, state, accessHost, token.Scope.String(), tokenValue)
-		_ = accessHost.Close()
-		if redeemErr != nil {
-			return redeemErr
-		}
-		lease, leaseErr := authority.Decode(access)
-		if leaseErr != nil {
-			return leaseErr
-		}
-		if err := state.PutConnectLease(ctx, token.Audience, token.Scope.String(), access, refresh, lease.ExpiresAt); err != nil {
-			return fmt.Errorf("persistence_failed: %w", err)
-		}
-		record = discovery.PipeRecord{PipeID: token.Audience, DisplayName: token.DisplayNameHint, RuntimePeerID: token.PipeEndpoint.PeerID, Scope: token.Scope, Protocol: token.PipeEndpoint.Protocol, Addresses: append([]string(nil), token.PipeEndpoint.Addresses...)}
-	} else {
-		record, err = a.resolveRemote(ctx, state, f.args[0], f.values["scope"])
+		result, err := a.UseCases.ConnectExact(ctx, usecase.ConnectExactInput{
+			Invite:      tokenValue,
+			LocalListen: local,
+		})
 		if err != nil {
 			return err
 		}
-		accessHost, _, hostErr := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("access-%d", os.Getpid()))
-		if hostErr != nil {
-			return hostErr
+		if !f.bools["d"] {
+			return runPipeForeground(ctx, state, result.PipeRef.String())
 		}
-		_, accessErr := appRuntime.RequestLease(ctx, state, accessHost, record.Scope.String(), record.PipeID)
-		_ = accessHost.Close()
-		if accessErr != nil {
-			return accessErr
+		run, err := a.startDetached(ctx, state, result.PipeRef.String())
+		if err != nil {
+			return err
 		}
+		return a.emit(f.bools["json"], map[string]any{"ref": result.PipeRef.String(), "id": result.PipeID, "status": "running", "pid": run.PID}, result.PipeRef.String()+" running")
+	}
+	// Legacy scope-based path (preserved for backward compatibility).
+	var record discovery.PipeRecord
+	record, err = a.resolveRemote(ctx, state, f.args[0], f.values["scope"])
+	if err != nil {
+		return err
+	}
+	accessHost, _, hostErr := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("access-%d", os.Getpid()))
+	if hostErr != nil {
+		return hostErr
+	}
+	_, accessErr := appRuntime.RequestLease(ctx, state, accessHost, record.Scope.String(), record.PipeID)
+	_ = accessHost.Close()
+	if accessErr != nil {
+		return accessErr
 	}
 	name := "connect-" + strings.TrimPrefix(record.PipeID, "pip_")
 	if len(name) > 32 {
@@ -927,24 +916,11 @@ func (a App) attach(ctx context.Context, state *store.Store, args []string) erro
 	if err != nil {
 		return err
 	}
-	scopeRaw := f.values["scope"]
-	if scopeRaw == "" {
-		scopeRaw, err = state.CurrentScope(ctx)
-		if err != nil {
-			return errors.New("invalid_input: no current scope; create/join/use scope or pass --scope")
-		}
-	}
-	service, err := serviceSpec(name, f.args[0])
+	result, err := a.UseCases.Attach(ctx, usecase.AttachInput{
+		Name:   name,
+		Target: f.args[0],
+	})
 	if err != nil {
-		return err
-	}
-	if _, err := state.PutService(ctx, service); err != nil {
-		return err
-	}
-	pipeArgs := []string{"create", name, "--ingress", "tubo", "--target", service.Ref.String(), "--scope", scopeRaw, "--visibility", "discoverable", "--access", "members"}
-	silent := a
-	silent.Out = io.Discard
-	if err := silent.pipe(ctx, state, pipeArgs); err != nil {
 		return err
 	}
 	if f.bools["d"] {
@@ -954,7 +930,7 @@ func (a App) attach(ctx context.Context, state *store.Store, args []string) erro
 		}
 		return a.start(ctx, state, startArgs)
 	}
-	return runPipeForeground(ctx, state, "pipe/"+name)
+	return runPipeForeground(ctx, state, result.PipeRef.String())
 }
 
 const pipeCacheFreshTTL = 5 * time.Minute

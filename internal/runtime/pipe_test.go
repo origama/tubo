@@ -10,22 +10,35 @@ import (
 	"testing"
 
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo-rebuilt/internal/store"
 )
 
-func TestRunPublishedPipeRejectsScopeLessTuboIngress(t *testing.T) {
+func TestRunPublishedPipeScopeLessIngressOpensWithoutPublishGrant(t *testing.T) {
+	t.Setenv("TUBO_HOME", t.TempDir())
+	ctx := context.Background()
+	state, err := store.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+
 	ref, err := domain.ParseRef("pipe/scope-less")
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = runPublishedPipe(context.Background(), nil, domain.PipeSpec{
+	// Scope-less published ingress must not fail with a "deferred" error:
+	// it takes the Journey-A scope-less path, which requires reachability
+	// configuration. With no overlay configured it fails deterministically
+	// on reachability (never a temporary provider).
+	err = runPublishedPipe(ctx, state, domain.PipeSpec{
 		Ref:        ref,
 		Ingress:    domain.PipeIngress{Kind: domain.IngressTubo},
 		Target:     mustServiceRef(t, "service/origin"),
 		Visibility: domain.VisibilityUnlisted,
 		Access:     domain.AccessInviteOnly,
 	}, "", "")
-	if err == nil || !strings.Contains(err.Error(), "Step 8") {
-		t.Fatalf("expected Step-8 deferred error, got %v", err)
+	if err == nil || strings.Contains(err.Error(), "Step 8") || strings.Contains(err.Error(), "pipe.publish") || strings.Contains(err.Error(), "membership") || strings.Contains(err.Error(), "scope") {
+		t.Fatalf("scope-less path must not require discovery/scope material, got %v", err)
 	}
 }
 

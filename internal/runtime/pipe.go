@@ -71,11 +71,11 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 		return err
 	}
 	if spec.Scope == nil {
-		// Scope-less published ingress (zero-config public sharing) requires the
-		// Step 8 L4/persistence publish workflow; the scope-bound publish path
-		// below stays the current supported path. Explicit deferred debt, fail
-		// closed — never a temporary provider or hardcoded reachability.
-		return errors.New("invalid_input: scope-less published ingress is deferred to Step 8 (L4/CLI/persistence)")
+		// Scope-less published ingress (Journey A): open baseline L1 host,
+		// wire exact authorizer, install tunnel handler and redemption handler,
+		// serve. No discovery, no publish grant, no membership, no scope sync,
+		// no record announcement. Remote open still requires canonical AccessLease.
+		return runScopeLessPublishedPipe(ctx, state, spec, ownerKeyFile, nodeRuntime, pipeRuntime)
 	}
 	// Target resolution is derived from the spec through the Pipe Engine. A
 	// Service target is resolved locally; a Pipe target is validated against
@@ -936,6 +936,117 @@ func copyDuplex(a, b io.ReadWriteCloser) (int64, int64) {
 // authorization and returns a concrete ExactOpenAuthorizer behind the neutral
 // openauth seam. If the key is not present (pipe provisioned before exact
 // authority), it returns nil, which denies all inbound opens (fail closed).
+// runScopeLessPublishedPipe runs a Scope-less published pipe (Journey A).
+// It opens a baseline L1 host, wires the exact authorizer, installs the
+// tunnel handler and the redemption handler, and serves. No discovery,
+// no publish grant, no membership, no scope sync, no record announcement.
+func runScopeLessPublishedPipe(
+	ctx context.Context,
+	state *store.Store,
+	spec domain.PipeSpec,
+	ownerKeyFile string,
+	nodeRuntime *NodeRuntime,
+	pipeRuntime *PipeRuntime,
+) error {
+	// Target resolution for Service targets.
+	var service domain.ServiceSpec
+	var err error
+	if spec.Target.Kind == domain.KindService {
+		service, err = state.Service(ctx, spec.Target)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Open baseline L1 host using configured overlay or bootstrap.
+	relay, swarm, reachability, err := relayOrBootstrap(ctx, state)
+	if err != nil {
+		return err
+	}
+	bandwidth := coremetrics.NewBandwidthCounter()
+	h, err := node.Open(ctx, node.Options{
+		KeyFile:          state.SecretPath("nodes", strings.ReplaceAll(spec.Ref.String(), "/", "-")+".key"),
+		SwarmKeyFile:     swarm,
+		Private:          reachability == "private",
+		BandwidthReporter: bandwidth,
+	})
+	if err != nil {
+		return err
+	}
+	defer h.Close()
+
+	relayInfo, err := node.ConnectRelay(ctx, h, relay, true)
+	if err != nil {
+		return err
+	}
+	address, err := node.CircuitAddress(relay, h.ID())
+	if err != nil {
+		return err
+	}
+
+	// Wire the exact open authorizer.
+	pipeEngine := newPipeEngine(state)
+	exactAuthorizer := loadExactAuthorizer(state, spec.PipeID)
+
+	// Install the tunnel handler.
+	handler := &tunnelServer{
+		state:            state,
+		spec:             spec,
+		service:          service,
+		authorizer:       exactAuthorizer,
+		runtime:          pipeRuntime,
+		engine:           pipeEngine,
+		downstreamOpener: newDownstreamPipeOpener(state, h, pipeRuntime),
+	}
+	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
+
+	// Install the exact redemption handler.
+	h.SetStreamHandler(protocol.ID("/tubo/exact-redemption/1"), newExactRedemptionHandler(state, spec.PipeID).handle)
+
+	// Record the run.
+	run := store.Run{
+		PrimaryRef: spec.Ref.String(),
+		Kind:       "pipe",
+		PID:        os.Getpid(),
+		Source:     RunSource(),
+		Status:     "ready",
+		PeerID:     h.ID().String(),
+		Address:    address,
+		StartedAt:  time.Now().UTC(),
+	}
+	if err := state.PutRun(ctx, run); err != nil {
+		return err
+	}
+	runtimeInfof("ready %s peer=%s", spec.Ref, h.ID())
+
+	stopTelemetry := startRuntimeTelemetry(ctx, state, spec.Ref.String(), h, bandwidth)
+	defer stopTelemetry()
+
+	defer func() {
+		run.Status = "stopped"
+		_ = state.PutRun(context.Background(), run)
+		runtimeInfof("stopped %s", spec.Ref)
+	}()
+
+	// No discovery, no publish grant, no membership, no scope sync, no record
+	// announcement. Just periodic relay recovery.
+	return waitSignalRenew(ctx, 5*time.Second, func() error {
+		if !node.PeerConnected(h, relayInfo.ID) {
+			if err := node.EnsureRelay(ctx, h, *relayInfo, true); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, func(err error) {
+		first := run.Status != "degraded"
+		run.Status = "degraded"
+		_ = state.PutRun(context.Background(), run)
+		if first {
+			runtimeWarnf("degraded %s reason=relay_unavailable detail=%s", spec.Ref, safeLogError(err))
+		}
+	})
+}
+
 func loadExactAuthorizer(state *store.Store, pipeID string) openauth.OpenAuthorizer {
 	if pipeID == "" {
 		return nil
