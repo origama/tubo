@@ -15,16 +15,28 @@ package runtime
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"time"
 
 	core "github.com/libp2p/go-libp2p/core/network"
 
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo-rebuilt/internal/engine"
 	"github.com/origama/tubo-rebuilt/internal/node"
 	"github.com/origama/tubo-rebuilt/internal/openauth"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 )
+
+// pipeScopeString renders the pipe's optional Scope as a stable string or ""
+// when the pipe is Scope-less. Scope is optional coordination topology, never
+// a connectivity prerequisite: a nil Scope must not panic the receive path.
+func pipeScopeString(pipe domain.PipeSpec) string {
+	if pipe.Scope == nil {
+		return ""
+	}
+	return pipe.Scope.String()
+}
 
 // errTargetUnreachable is returned by authorizeOpen when the local service
 // target dial failed; the serve path maps it to the target_unreachable wire
@@ -43,6 +55,10 @@ func (s *tunnelServer) handle(stream core.Stream) {
 	}
 }
 
+// serve handles one incoming tunnel connection. It validates the remote
+// open, authorizes the Access Lease, resolves the target (Service or Pipe
+// via the Engine), and creates a Session between the incoming carrier and
+// the resolved target.
 func (s *tunnelServer) serve(stream core.Stream) error {
 	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 	var hello wire.ClientHello
@@ -78,21 +94,73 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	}
 
 	now := time.Now().UTC()
-	auth, target, err := s.authorizeOpen(context.Background(), hello.ClientPublic, challenge, open, now)
+	auth, err := s.authorizeOpenOnly(context.Background(), hello.ClientPublic, challenge, open, now)
 	if err != nil {
-		if errors.Is(err, errTargetUnreachable) {
-			return s.openError(stream, "target_unreachable", "local target unavailable")
-		}
 		return s.openError(stream, "authorization_denied", authorizationMessage(err))
 	}
+
+	// Resolve target via Engine. For Service targets, dial the local service.
+	// For Pipe targets, forward through the Engine to get the downstream carrier.
+	var target net.Conn
+	var isPipeTarget bool
+	var downstreamCarrier node.Carrier
+
+	if s.spec.Target.Kind == domain.KindPipe {
+		// Forward through the Engine to open the downstream Pipe.
+		pipeState, stateErr := engine.FromWire(open.VisitedPipeIDs, open.HopLimit)
+		if stateErr != nil {
+			return s.openError(stream, "hop_limit_exceeded", "invalid traversal state")
+		}
+		pipeState, stateErr = pipeState.Advance(s.spec.PipeID)
+		if stateErr != nil {
+			if errors.Is(stateErr, engine.ErrLoopDetected) {
+				return s.openError(stream, "loop_detected", "repeated pipe_id")
+			}
+			return s.openError(stream, "hop_limit_exceeded", "logical hop limit exceeded")
+		}
+
+		result, fwdErr := s.engine.Forward(context.Background(), s.spec, pipeState, s.downstreamOpener)
+		if fwdErr != nil {
+			return s.openError(stream, "target_unreachable", "pipe target unavailable")
+		}
+		if result.IsService {
+			// Unexpected: Pipe target resolved to Service. Use the service connection.
+			target = result.ServiceConn
+		} else {
+			downstreamCarrier = result.DownstreamCarrier
+			isPipeTarget = true
+		}
+	} else {
+		// Service target: dial local service via the existing dialFunc.
+		dial := s.dialFunc
+		if dial == nil {
+			dial = dialService
+		}
+		target, err = dial(s.service)
+		if err != nil {
+			return s.openError(stream, "target_unreachable", "local target unavailable")
+		}
+	}
+
 	targetOwned := false
 	defer func() {
 		if !targetOwned {
-			_ = target.Close()
+			if isPipeTarget && downstreamCarrier != nil {
+				_ = downstreamCarrier.Close()
+			} else if target != nil {
+				_ = target.Close()
+			}
 		}
 	}()
-	authorizationTimer := time.AfterFunc(time.Until(auth.ExpiresAt), func() { _ = target.Close() })
+	authorizationTimer := time.AfterFunc(time.Until(auth.ExpiresAt), func() {
+		if isPipeTarget && downstreamCarrier != nil {
+			_ = downstreamCarrier.Close()
+		} else if target != nil {
+			_ = target.Close()
+		}
+	})
 	defer func() { authorizationTimer.Stop() }()
+
 	sessionID, err := randomSessionID()
 	if err != nil {
 		return err
@@ -115,11 +183,21 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	// is transferred to Session.Stop so lease expiry terminates the Session
 	// (closing carrier and target), never the raw stream twice.
 	carrier := node.WrapStream(stream)
+
+	// For Pipe targets, the target is the downstream carrier. Create a Session
+	// between the incoming carrier and the downstream carrier.
+	var targetConn io.ReadWriteCloser
+	if isPipeTarget {
+		targetConn = downstreamCarrier
+	} else {
+		targetConn = target
+	}
+
 	sp, err := s.runtime.NewSession(sessionConfig{
 		SessionID:    sessionID,
 		PipeID:       s.spec.PipeID,
-		Scope:        s.spec.Scope.String(),
-		TargetConn:   target,
+		Scope:        pipeScopeString(s.spec),
+		TargetConn:   targetConn,
 		InitialEpoch: 1,
 		IsClient:     false,
 	})
@@ -183,6 +261,31 @@ func (s *tunnelServer) authorizeOpen(ctx context.Context, clientPublic, challeng
 		return zero, nil, errTargetUnreachable
 	}
 	return auth, target, nil
+}
+
+// authorizeOpenOnly performs the L2 receiving-boundary authorization decision
+// without dialing the local target. It is used when the target is a Pipe that
+// will be opened via the Engine. Returns the authorization result only.
+func (s *tunnelServer) authorizeOpenOnly(ctx context.Context, clientPublic, challenge string, open wire.OpenPipe, now time.Time) (openauth.Authorization, error) {
+	var zero openauth.Authorization
+	if s.authorizer == nil {
+		return zero, errors.New("authorization denied: no open authorizer")
+	}
+	auth, err := s.authorizer.AuthorizeOpen(ctx, openauth.OpenRequest{
+		PipeID:         open.PipeID,
+		ClientPublic:   clientPublic,
+		Challenge:      challenge,
+		ChallengeProof: open.ChallengeProof,
+		AccessLease:    open.AccessLease,
+		Now:            now,
+	})
+	if err != nil {
+		return zero, errors.New("authorization denied")
+	}
+	if auth.PipeID != open.PipeID || auth.Subject != clientPublic || auth.ExpiresAt.IsZero() || !auth.ExpiresAt.After(now) {
+		return zero, errors.New("authorization denied: invalid authorization result")
+	}
+	return auth, nil
 }
 
 func (s *tunnelServer) openError(stream core.Stream, code, message string) error {

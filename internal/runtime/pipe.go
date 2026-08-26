@@ -25,6 +25,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/authority"
 	"github.com/origama/tubo-rebuilt/internal/discovery"
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo-rebuilt/internal/engine"
 	"github.com/origama/tubo-rebuilt/internal/exactauthority"
 	"github.com/origama/tubo-rebuilt/internal/localkey"
 	"github.com/origama/tubo-rebuilt/internal/node"
@@ -70,14 +71,27 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 		return err
 	}
 	if spec.Scope == nil {
-		return errors.New("invalid_input: Scope-less Tubo ingress is not supported by prototype runtime")
+		// Scope-less published ingress (zero-config public sharing) requires the
+		// Step 8 L4/persistence publish workflow; the scope-bound publish path
+		// below stays the current supported path. Explicit deferred debt, fail
+		// closed — never a temporary provider or hardcoded reachability.
+		return errors.New("invalid_input: scope-less published ingress is deferred to Step 8 (L4/CLI/persistence)")
 	}
-	if spec.Target.Kind != domain.KindService {
-		return errors.New("forwarding pipe runtime requires pipe.forward and is not implemented")
-	}
-	service, err := state.Service(ctx, spec.Target)
-	if err != nil {
-		return err
+	// Target resolution is derived from the spec through the Pipe Engine. A
+	// Service target is resolved locally; a Pipe target is validated against
+	// the full logical path at startup and forwarded hop-by-hop through the
+	// Engine in the serve handler (no pipe.forward special case).
+	pipeEngine := newPipeEngine(state)
+	var service domain.ServiceSpec
+	if spec.Target.Kind == domain.KindService {
+		service, err = state.Service(ctx, spec.Target)
+		if err != nil {
+			return err
+		}
+	} else {
+		if _, err := pipeEngine.ResolvePath(spec.Ref, domain.DefaultMaxPipeHops); err != nil {
+			return err
+		}
 	}
 	relay, swarm, reachability, err := relayOrBootstrap(ctx, state)
 	if err != nil {
@@ -212,7 +226,15 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	// created before exact authority provisioning), fall back to nil authorizer
 	// which denies all incoming opens.
 	exactAuthorizer := loadExactAuthorizer(state, spec.PipeID)
-	handler := &tunnelServer{state: state, spec: spec, service: service, authorizer: exactAuthorizer, runtime: pipeRuntime}
+	handler := &tunnelServer{
+		state:            state,
+		spec:             spec,
+		service:          service,
+		authorizer:       exactAuthorizer,
+		runtime:          pipeRuntime,
+		engine:           pipeEngine,
+		downstreamOpener: newDownstreamPipeOpener(state, h, pipeRuntime),
+	}
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
 	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: address, StartedAt: time.Now().UTC()}
 	if err := state.PutRun(ctx, run); err != nil {
@@ -282,12 +304,14 @@ func transferSessionAuthorizationTimer(timer *time.Timer, expiresAt time.Time, s
 }
 
 type tunnelServer struct {
-	state      *store.Store
-	spec       domain.PipeSpec
-	service    domain.ServiceSpec
-	authorizer openauth.OpenAuthorizer
-	dialFunc   func(domain.ServiceSpec) (net.Conn, error)
-	runtime    *PipeRuntime
+	state            *store.Store
+	spec             domain.PipeSpec
+	service          domain.ServiceSpec
+	authorizer       openauth.OpenAuthorizer
+	dialFunc         func(domain.ServiceSpec) (net.Conn, error)
+	runtime          *PipeRuntime
+	engine           *engine.Engine
+	downstreamOpener engine.DownstreamOpener
 }
 
 func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec) error {
@@ -298,7 +322,19 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 		return err
 	}
 	if spec.Target.Kind != domain.KindPipe {
-		return errors.New("local pipe target must be remote pipe")
+		// Local ingress with a Service target (local passthrough) is an L4
+		// workflow: it opens no remote hop, so no traversal, lease, or
+		// authorization is involved. Step 8 owns that CLI/persistence slice;
+		// this explicit deferred error replaces the prototype product-semantics
+		// branch, which required Pipe targets only.
+		return errors.New("invalid_input: local ingress with Service target (local passthrough) is deferred to Step 8 (L4 workflows)")
+	}
+	// Validate the full logical path (local pipe -> remote pipe chain ->
+	// terminal service) through the Engine at startup: cycles, hop limits, and
+	// invalid definitions fail closed before any listener accept.
+	pipeEngine := newPipeEngine(state)
+	if _, err := pipeEngine.ResolvePath(spec.Ref, domain.DefaultMaxPipeHops); err != nil {
+		return err
 	}
 	recordStored, err := state.Record(ctx, spec.Target.Name)
 	if err != nil {
@@ -711,6 +747,120 @@ func openLocalConnection(ctx context.Context, state *store.Store, h host.Host, r
 	_ = state.PutSession(context.Background(), session)
 	runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", spec.Ref, sessionID, in, out)
 	return result
+}
+
+var errNoRecordAddress = errors.New("pipe_unreachable: no record addresses")
+
+// openRemotePipeCarrier opens an authorized tunnel to a remote Pipe and
+// returns the established carrier and session ID. It performs the bounded
+// tunnel handshake (ClientHello / ServerHello / OpenPipe / OpenResult) with
+// the given traversal state, acquiring an access lease through the scope
+// authority when no cached lease is available. It is the tunnel-open
+// primitive shared by the local-pipe client path and the serve-side
+// Pipe-to-Pipe forwarding opener (newDownstreamPipeOpener).
+//
+// Transient setup failures (dial/stream/frame) are wrapped so the caller can
+// classify and retry exactly once before OpenOK; lease/authority failures are
+// permanent (fail closed).
+func openRemotePipeCarrier(ctx context.Context, state *store.Store, h host.Host, record discovery.PipeRecord, traversal engine.TraversalState, leases *localLeaseCache) (node.Carrier, string, error) {
+	setup, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	lease, refresh, cached := leases.current()
+	var err error
+	if !cached {
+		lease, refresh, err = RequestLeasePair(setup, state, h, record.Scope.String(), record.PipeID)
+		if err != nil {
+			return nil, "", err
+		}
+		if err := leases.set(lease, refresh); err != nil {
+			return nil, "", err
+		}
+		leases.mu.Lock()
+		expires := leases.expires
+		leases.mu.Unlock()
+		if err := state.PutConnectLease(context.Background(), record.PipeID, record.Scope.String(), lease, refresh, expires); err != nil {
+			return nil, "", err
+		}
+	}
+	leases.startRefresh(ctx, state, h, record.Scope.String(), record.PipeID)
+	if len(record.Addresses) == 0 {
+		return nil, "", errNoRecordAddress
+	}
+	remotePeerID, err := node.DialPeer(setup, h, record.Addresses[0])
+	if err != nil {
+		return nil, "", transient(err)
+	}
+	stream, err := h.NewStream(core.WithAllowLimitedConn(setup, "tubo tunnel via relay"), remotePeerID, protocol.ID(wire.TunnelID))
+	if err != nil {
+		return nil, "", transient(err)
+	}
+	streamOwned := false
+	defer func() {
+		if !streamOwned {
+			_ = stream.Close()
+		}
+	}()
+	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
+
+	membership, err := state.Membership(setup, record.Scope.String())
+	if err != nil {
+		return nil, "", err
+	}
+	private, err := authority.ReadPrivate(membership.ClientKeyFile)
+	if err != nil {
+		return nil, "", err
+	}
+	public := authority.PublicString(private.Public().(ed25519.PublicKey))
+	if err := wire.WriteFrame(stream, wire.ClientHello{Version: "2.0", ClientPublic: public, Capabilities: baseSessionCapabilities()}); err != nil {
+		return nil, "", transient(err)
+	}
+	var server wire.ServerHello
+	if err := wire.ReadFrame(stream, &server); err != nil {
+		return nil, "", transient(err)
+	}
+	if server.PipeID != record.PipeID || server.Version != "2.0" {
+		return nil, "", errors.New("tunnel_handshake_failed: pipe or version mismatch")
+	}
+	hopLimit := traversal.MaxHops
+	if hopLimit <= 0 {
+		hopLimit = domain.DefaultMaxPipeHops
+	}
+	open := wire.OpenPipe{PipeID: record.PipeID, ChallengeProof: authority.SignProof(private, "tubo-open-v2", server.Challenge, record.PipeID), AccessLease: lease, VisitedPipeIDs: traversal.VisitedIDs, HopLimit: hopLimit}
+	if err := wire.WriteFrame(stream, open); err != nil {
+		return nil, "", transient(err)
+	}
+	var openResult wire.OpenResult
+	if err := wire.ReadFrame(stream, &openResult); err != nil {
+		return nil, "", transient(err)
+	}
+	if !openResult.OK {
+		return nil, "", fmt.Errorf("%s: %s", openResult.ErrorCode, openResult.Message)
+	}
+	_ = stream.SetDeadline(time.Time{})
+	streamOwned = true
+	return node.WrapStream(stream), openResult.SessionID, nil
+}
+
+// transientSetupError classifies pre-OpenOK setup failures that may be retried
+// exactly once after a verified endpoint change. Lease/membership/authority
+// failures are permanent and are not wrapped.
+type transientSetupError struct {
+	err error
+}
+
+func (e *transientSetupError) Error() string { return e.err.Error() }
+func (e *transientSetupError) Unwrap() error { return e.err }
+
+func transient(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &transientSetupError{err: err}
+}
+
+func isTransientSetupError(err error) bool {
+	var target *transientSetupError
+	return errors.As(err, &target)
 }
 
 func dialService(service domain.ServiceSpec) (net.Conn, error) { return dialServiceTLS(service, nil) }

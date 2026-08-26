@@ -31,7 +31,7 @@ func randomSessionID() (string, error) {
 // revoked under the pipe's scope. It is liveness/accounting data, not a
 // remote-open authorization decision; a revoke/epoch error fails closed.
 func (s *tunnelServer) sessionAllowed(ctx context.Context, sessionID string) (bool, error) {
-	revoked, err := s.state.IsRevoked(ctx, s.spec.Scope.String(), "session", sessionID)
+	revoked, err := s.state.IsRevoked(ctx, pipeScopeString(s.spec), "session", sessionID)
 	if err != nil {
 		return false, err
 	}
