@@ -28,6 +28,16 @@ import (
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 )
 
+// pipeScopeString renders the pipe's optional Scope as a stable string or ""
+// when the pipe is Scope-less. Scope is optional coordination topology, never
+// a connectivity prerequisite: a nil Scope must not panic the receive path.
+func pipeScopeString(pipe domain.PipeSpec) string {
+	if pipe.Scope == nil {
+		return ""
+	}
+	return pipe.Scope.String()
+}
+
 // errTargetUnreachable is returned by authorizeOpen when the local service
 // target dial failed; the serve path maps it to the target_unreachable wire
 // code (distinct from authorization denial) so the pre-#48 behavior is
@@ -186,7 +196,7 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	sp, err := s.runtime.NewSession(sessionConfig{
 		SessionID:    sessionID,
 		PipeID:       s.spec.PipeID,
-		Scope:        s.spec.Scope.String(),
+		Scope:        pipeScopeString(s.spec),
 		TargetConn:   targetConn,
 		InitialEpoch: 1,
 		IsClient:     false,

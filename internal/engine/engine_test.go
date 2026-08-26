@@ -1019,3 +1019,60 @@ func TestEngine_ForwardServiceNoDownstreamCall(t *testing.T) {
 		t.Fatal("downstream opener should not be called for service target")
 	}
 }
+
+// TestEngine_ForwardBudgetExhaustedNoDownstreamOpen proves the Engine rejects
+// a downstream Pipe hop attempt when the remaining budget cannot accommodate
+// the downstream serve acceptance, and does so without invoking the opener.
+func TestEngine_ForwardBudgetExhaustedNoDownstreamOpen(t *testing.T) {
+	b := newBroker(t)
+	b.addPipe(pipePipe(t, "a", "pipe/b"))
+	b.addPipe(pipeService(t, "b", "service/s1", "127.0.0.1:0"))
+	b.addService(svc(t, "s1"))
+	eng := New(b.resolveService, b.resolvePipe, b.dialService)
+
+	openerCalls := 0
+	opener := func(ctx context.Context, nextSpec domain.PipeSpec, state TraversalState) (node.Carrier, string, error) {
+		openerCalls++
+		return nil, "", errors.New("must not be called")
+	}
+
+	specA := b.pipes["pipe/a"]
+	// state: visited=[pip_a], remaining 0 -> downstream hop must be rejected
+	state := TraversalState{VisitedIDs: []string{specA.PipeID}, Remaining: 0, MaxHops: 1}
+	_, err := eng.Forward(context.Background(), specA, state, opener)
+	if err == nil || !errors.Is(err, ErrHopLimitExceeded) {
+		t.Fatalf("expected hop limit error, got %v", err)
+	}
+	if openerCalls != 0 {
+		t.Fatalf("opener called %d times on budget-exhausted downstream, want 0", openerCalls)
+	}
+}
+
+// TestEngine_ForwardDownstreamLoopRejected proves the Engine rejects a
+// downstream Pipe target whose PipeID is already in the visited chain, without
+// invoking the opener.
+func TestEngine_ForwardDownstreamLoopRejected(t *testing.T) {
+	b := newBroker(t)
+	b.addPipe(pipePipe(t, "a", "pipe/b"))
+	b.addPipe(pipePipe(t, "b", "pipe/a")) // cycle back to a
+	b.addService(svc(t, "s1"))
+	eng := New(b.resolveService, b.resolvePipe, b.dialService)
+
+	openerCalls := 0
+	opener := func(ctx context.Context, nextSpec domain.PipeSpec, state TraversalState) (node.Carrier, string, error) {
+		openerCalls++
+		return nil, "", errors.New("must not be called")
+	}
+
+	// State where current pipe a has already visited pip_a; target pipe a
+	// resolved from b => downstream pipe ID pip_a already in chain.
+	state := NewTraversal("pip_a")
+	specB := b.pipes["pipe/b"] // targets pipe/a
+	_, err := eng.Forward(context.Background(), specB, state, opener)
+	if err == nil || !errors.Is(err, ErrLoopDetected) {
+		t.Fatalf("expected loop error, got %v", err)
+	}
+	if openerCalls != 0 {
+		t.Fatalf("opener called %d times on loop, want 0", openerCalls)
+	}
+}

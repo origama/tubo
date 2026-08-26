@@ -235,14 +235,24 @@ func (e *Engine) forwardPipeTarget(ctx context.Context, target domain.Ref, state
 	if err := nextSpec.Validate(); err != nil {
 		return ForwardResult{}, errors.Join(ErrInvalidPipeDefinition, err)
 	}
-	newState, err := state.Advance(nextSpec.PipeID)
-	if err != nil {
-		return ForwardResult{}, err
+	// The downstream Pipe's receiving boundary rejects its own PipeID in the
+	// visited chain, so the downstream PipeID must NOT be pre-appended here;
+	// it is appended by the downstream serve once the hop is entered. The
+	// Engine only validates that the downstream hop is not already in the
+	// chain (loop) and that the remaining budget allows the downstream serve
+	// to accept the chain (len(visited) < hopLimit).
+	for _, id := range state.VisitedIDs {
+		if id == nextSpec.PipeID {
+			return ForwardResult{}, ErrLoopDetected
+		}
+	}
+	if state.Remaining < 1 {
+		return ForwardResult{}, ErrHopLimitExceeded
 	}
 	if openDownstream == nil {
 		return ForwardResult{}, errors.New("downstream opener required for pipe target")
 	}
-	carrier, sessionID, err := openDownstream(ctx, nextSpec, newState)
+	carrier, sessionID, err := openDownstream(ctx, nextSpec, state)
 	if err != nil {
 		return ForwardResult{}, err
 	}
