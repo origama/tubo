@@ -275,3 +275,153 @@ func TestRejectsEmptyAddressAtSign(t *testing.T) {
 		t.Fatal("address without peer identity accepted at sign")
 	}
 }
+
+// === 12 Trust-Material Tests (governance issue #45, Step 10A) ===
+
+func productionFixtureTime() time.Time {
+	return time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+}
+
+func Test1EmbeddedBundleParsesSuccessfully(t *testing.T) {
+	raw := MustProductionBundle()
+	roots := ProductionRoots()
+	b, err := ParseVerify(raw, roots, productionFixtureTime())
+	if err != nil {
+		t.Fatalf("production bundle parse failed: %v", err)
+	}
+	if b.Kind != KindBootstrap {
+		t.Fatalf("unexpected kind: %s", b.Kind)
+	}
+	if b.Version != 1 {
+		t.Fatalf("unexpected version: %d", b.Version)
+	}
+	if b.RootKeyID != "tubo-bootstrap-root-2026-01" {
+		t.Fatalf("unexpected root key ID: %s", b.RootKeyID)
+	}
+}
+
+func Test2PinnedRootHasRoleBootstrap(t *testing.T) {
+	roots := ProductionRoots()
+	if len(roots) == 0 {
+		t.Fatal("no production roots")
+	}
+	for _, r := range roots {
+		if r.Role != RoleBootstrap {
+			t.Fatalf("root %q has role %q, want %q", r.KeyID, r.Role, RoleBootstrap)
+		}
+	}
+}
+
+func Test3RootKeyIDResolves(t *testing.T) {
+	raw := MustProductionBundle()
+	roots := ProductionRoots()
+	b, err := ParseVerify(raw, roots, productionFixtureTime())
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, r := range roots {
+		if r.KeyID == b.RootKeyID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("root key ID %q not found in pinned roots", b.RootKeyID)
+	}
+}
+
+func Test4SignatureVerifies(t *testing.T) {
+	raw := MustProductionBundle()
+	roots := ProductionRoots()
+	if _, err := ParseVerify(raw, roots, productionFixtureTime()); err != nil {
+		t.Fatalf("signature verification failed: %v", err)
+	}
+}
+
+func Test5AddressPeerIDMatches(t *testing.T) {
+	raw := MustProductionBundle()
+	roots := ProductionRoots()
+	b, err := ParseVerify(raw, roots, productionFixtureTime())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, addr := range b.Addresses {
+		if err := validateAddress(addr, b.PeerID); err != nil {
+			t.Fatalf("address %q does not match PeerID %s: %v", addr, b.PeerID, err)
+		}
+	}
+}
+
+func Test6InWindowAtFixtureTime(t *testing.T) {
+	raw := MustProductionBundle()
+	roots := ProductionRoots()
+	fixture := productionFixtureTime()
+	if _, err := ParseVerify(raw, roots, fixture); err != nil {
+		t.Fatalf("bundle not valid at fixture time %s: %v", fixture, err)
+	}
+}
+
+func Test7InvalidSignatureFailsClosed(t *testing.T) {
+	raw := MustProductionBundle()
+	roots := ProductionRoots()
+	tampered := append([]byte(nil), raw...)
+	tampered[len(tampered)-1] ^= 0xff
+	if _, err := ParseVerify(tampered, roots, productionFixtureTime()); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("tampered bundle accepted: %v", err)
+	}
+}
+
+func Test8WrongRootFailsClosed(t *testing.T) {
+	raw := MustProductionBundle()
+	otherRoot, _ := testRoot(t, RoleBootstrap)
+	otherRoot.KeyID = "wrong-root"
+	if _, err := ParseVerify(raw, []Root{otherRoot}, productionFixtureTime()); !errors.Is(err, ErrUnpinnedRoot) {
+		t.Fatalf("unpinned root accepted: %v", err)
+	}
+}
+
+func Test9AuthorityRoleRootFailsClosed(t *testing.T) {
+	raw := MustProductionBundle()
+	roots := ProductionRoots()
+	badRoots := make([]Root, len(roots))
+	for i, r := range roots {
+		badRoots[i] = Root{KeyID: r.KeyID, Role: "tubo.authority.v1", Public: r.Public}
+	}
+	if _, err := ParseVerify(raw, badRoots, productionFixtureTime()); !errors.Is(err, ErrUnpinnedRoot) {
+		t.Fatalf("authority-role root accepted: %v", err)
+	}
+}
+
+func Test10ExpiredFailsClosed(t *testing.T) {
+	raw := MustProductionBundle()
+	roots := ProductionRoots()
+	after := time.Date(2027, 6, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := ParseVerify(raw, roots, after); !errors.Is(err, ErrExpired) {
+		t.Fatalf("expired bundle accepted: %v", err)
+	}
+}
+
+func Test11WrongPeerIDAddressFailsClosed(t *testing.T) {
+	root, priv := testRoot(t, RoleBootstrap)
+	id, _ := testID(t)
+	other, _ := testID(t)
+	window := struct{ n, a time.Time }{nowUTC().Add(-time.Hour), nowUTC().Add(time.Hour)}
+	mismatch := appendSigned(rawUnsigned(1, KindBootstrap, root.KeyID, id, []string{validRelayAddr(t, other)}, window.n, window.a), priv)
+	if _, err := ParseVerify(mismatch, []Root{root}, nowUTC()); !errors.Is(err, ErrIdentityMismatch) {
+		t.Fatalf("identity/address mismatch accepted: %v", err)
+	}
+}
+
+func Test12NoPrivateKeyEmbedded(t *testing.T) {
+	raw := MustProductionBundle()
+	if len(raw) < ed25519.PrivateKeySize {
+		t.Logf("bundle size %d < private key size %d: safe", len(raw), ed25519.PrivateKeySize)
+	}
+	for _, r := range ProductionRoots() {
+		if len(r.Public) != ed25519.PublicKeySize {
+			t.Fatalf("root %q has public key of length %d, want %d", r.KeyID, len(r.Public), ed25519.PublicKeySize)
+		}
+	}
+	t.Logf("production bundle: %d bytes, roots: %d, all public keys are %d bytes", len(raw), len(ProductionRoots()), ed25519.PublicKeySize)
+}

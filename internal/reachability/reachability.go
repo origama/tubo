@@ -25,6 +25,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 
 	"github.com/origama/tubo-rebuilt/internal/node"
+	"github.com/origama/tubo-rebuilt/internal/reachability/bundle"
 )
 
 // ErrNoBootstrapBundle is the deterministic fail-closed outcome of a zero-config
@@ -192,9 +193,28 @@ func (r Resolver) WithProvider(p *Provider) Resolver {
 	return Resolver{provide: func(context.Context) (*Provider, error) { return p, nil }}
 }
 
-// defaultBootstrap is the empty production trust set: A0 ships no production
-// bundle and no hardcoded relay address, so zero-config resolution fails
-// closed. Ratified material (issue #45) will back this function.
+// defaultBootstrap is the production trust set: the embedded signed
+// bootstrap bundle is verified against the pinned production root and
+// parsed into a Provider. Fail-closed on corrupt/missing/expired/not-yet-
+// valid/unpinned/wrong-role/wrong-peer bundle.
 func defaultBootstrap(context.Context) (*Provider, error) {
-	return nil, ErrNoBootstrapBundle
+	raw := bundle.MustProductionBundle()
+	roots := bundle.ProductionRoots()
+	b, err := bundle.ParseVerify(raw, roots, time.Now())
+	if err != nil {
+		return nil, fmt.Errorf("reachability: production bundle: %w", err)
+	}
+	addrs := make([]ma.Multiaddr, 0, len(b.Addresses))
+	for _, addr := range b.Addresses {
+		maddr, err := ma.NewMultiaddr(addr)
+		if err != nil {
+			return nil, fmt.Errorf("reachability: invalid address in bundle: %w", err)
+		}
+		addrs = append(addrs, maddr)
+	}
+	peerID, err := peer.Decode(b.PeerID)
+	if err != nil {
+		return nil, fmt.Errorf("reachability: invalid peer ID in bundle: %w", err)
+	}
+	return New(peer.AddrInfo{ID: peerID, Addrs: addrs}), nil
 }

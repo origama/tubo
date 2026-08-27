@@ -28,6 +28,14 @@ A context pins:
 - cluster authority public key;
 - namespace discovery key material for collaborative discovery.
 
+### Bootstrap trust root (issue #45, Step 10A)
+
+A dedicated Ed25519 bootstrap root (`tubo-bootstrap-root-2026-01`) is used exclusively for L1 Reachability bootstrap bundle signing. This root has role `tubo.bootstrap.v1` and is NEVER used for Exact/Scope Authority, node identity, relay identity, or membership signing. The private key was generated outside the repository, used to sign the production bundle, and permanently deleted from the build environment. Only the public key (32 bytes) is embedded in the binary.
+
+### Identity stability policy
+
+Relay/bootstrap nodes have stable PeerIDs derived from their persistent Ed25519 key files. The relay at `relay.tubo.click` (PeerID `12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME`) currently runs prototype code with a private swarm PSK. When upgraded to A0-compatible code (plain libp2p without swarm key), the relay will get a new PeerID. The production bundle references the prototype PeerID; a new bundle signed by the same bootstrap root will be required when the relay is upgraded.
+
 A token may refer to an already trusted public authority. It may introduce a private authority only through an explicit scope-join/TOFU operation. A public token cannot define a new public trust root.
 
 ## Pipe identity

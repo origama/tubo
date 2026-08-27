@@ -183,7 +183,14 @@ func TestReachabilityBundleCarrierThroughSession(t *testing.T) {
 // and no production trust material, zero-config resolution fails closed with
 // the deterministic ErrNoBootstrapBundle — no overlay fallback, no hardcoded
 // address, no host opened.
-func TestOpenOverlayHostZeroConfigFailsClosed(t *testing.T) {
+// TestOpenOverlayHostZeroConfigResolutionSucceedsDialMayFail verifies
+// that the zero-config path now resolves the production bootstrap bundle
+// successfully. The overall host open may fail because the relay at
+// relay.tubo.click runs prototype code with swarm PSK (not A0-compatible), so
+// ConnectRelay will fail. The critical assertion is that resolution no longer
+// returns ErrNoBootstrapBundle — the production trust material is embedded and
+// verified.
+func TestOpenOverlayHostZeroConfigResolutionSucceedsDialMayFail(t *testing.T) {
 	t.Setenv("TUBO_HOME", t.TempDir())
 	ctx := context.Background()
 	state, err := store.Open(ctx)
@@ -191,7 +198,16 @@ func TestOpenOverlayHostZeroConfigFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	if _, _, err := OpenOverlayHost(ctx, state, "zero-config"); err == nil || !errors.Is(err, reachability.ErrNoBootstrapBundle) {
-		t.Fatalf("expected deterministic ErrNoBootstrapBundle, got %v", err)
+	_, _, err = OpenOverlayHost(ctx, state, "zero-config")
+	// The resolution step should succeed (bundle is embedded and valid).
+	// The error comes from ConnectRelay dialing the prototype relay, which is
+	// expected to fail with a swarm-key mismatch or dial failure.
+	if err == nil {
+		t.Fatal("expected host open to fail (prototype relay is not A0-compatible)")
 	}
+	// Verify it's NOT a bundle resolution error
+	if errors.Is(err, reachability.ErrNoBootstrapBundle) {
+		t.Fatal("bundle resolution should no longer fail with ErrNoBootstrapBundle")
+	}
+	t.Logf("openOverlayHost failed as expected: %v", err)
 }

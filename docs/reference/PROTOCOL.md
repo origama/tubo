@@ -8,6 +8,16 @@ Step 8A makes **no wire-format change**: the L4 use-case boundary (`internal/use
 
 There is intentionally no negotiation or fallback to previous Tubo protocols.
 
+### Bootstrap bundle (production, issue #45)
+
+A signed bootstrap bundle (`version=1, kind=bootstrap`) is embedded in the binary
+and verified against the pinned `tubo-bootstrap-root-2026-01` Ed25519 root. The
+bundle contains the relay identity (`12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME`),
+public addresses (`/dns4/relay.tubo.click/tcp/4001`, `/ip4/172.232.189.160/tcp/4001`),
+and a 180-day validity window. The bundle format is defined in
+`internal/reachability/bundle/bundle.go`. The private key never enters the
+repository; only the public key and signed bundle bytes are embedded.
+
 ## Protocol IDs
 
 ```text

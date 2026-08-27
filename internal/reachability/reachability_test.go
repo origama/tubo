@@ -139,15 +139,22 @@ func TestProviderNoAddressesFailsClosed(t *testing.T) {
 	}
 }
 
-// TestResolverNoProductionTrustFailsClosed is the canonical zero-config
-// negative: no production trust material exists in this slice, so resolution
-// fails closed deterministically with no overlay / hardcoded / temporary
-// provider fallback.
-func TestResolverNoProductionTrustFailsClosed(t *testing.T) {
+// TestResolverProductionBundleResolves verifies that the embedded production
+// bootstrap bundle resolves to a Provider with the expected relay identity
+// and addresses. This is the canonical zero-config positive case: production
+// trust material is now embedded and verified.
+func TestResolverProductionBundleResolves(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, err := ResolveDefault(ctx); !errors.Is(err, ErrNoBootstrapBundle) {
-		t.Fatalf("zero-config without production trust did not fail closed: %v", err)
+	provider, err := ResolveDefault(ctx)
+	if err != nil {
+		t.Fatalf("production bundle resolution failed: %v", err)
+	}
+	if provider.ID().String() != "12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME" {
+		t.Fatalf("unexpected relay peer ID: %s", provider.ID())
+	}
+	if len(provider.AddrInfo().Addrs) == 0 {
+		t.Fatal("production bundle has no addresses")
 	}
 	// Injected provider resolver is the deterministic test seam.
 	if _, err := DefaultResolver().WithProvider(New(peer.AddrInfo{})).Resolve(ctx); err != nil {
