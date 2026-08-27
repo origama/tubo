@@ -1,0 +1,205 @@
+# A0 Architecture dependency-edge rules
+# Each rule defines constraints on imports between packages.
+# Rule types:
+#   stdlib-only:    package must have zero non-stdlib transitive deps
+#   forbidden-target: package(s) must not depend on target package(s) or zone(s)
+#   allowed-only:    package(s) may only depend on specific named packages
+#   file-guard:     specific source file must not import certain packages
+
+# Package zones for grouping rules
+zones:
+  pure-core:
+    - internal/domain
+    - internal/accesslease
+    - internal/localkey
+  host-reachability:
+    - internal/node
+    - internal/reachability
+    - internal/reachability/bundle
+  secure-connectivity:
+    - internal/engine
+    - internal/openauth
+  coordination-security:
+    - internal/exactauthority
+  application-usecase:
+    - internal/usecase
+  outer-adapter-composition:
+    - internal/runtime
+    - internal/store
+    - internal/cli
+    - internal/discovery
+    - internal/authority
+    - internal/protocol
+
+rules:
+  # R1: pure-core packages must be stdlib-only
+  - id: R1
+    description: "L0 pure-core must have zero non-stdlib transitive dependencies"
+    type: stdlib-only
+    targets: [internal/domain, internal/accesslease, internal/localkey]
+
+  # R2: exactauthority restricted deps (only accesslease, localkey, self)
+  - id: R2
+    description: "exactauthority may only depend on accesslease, localkey, and self"
+    type: forbidden-target
+    targets: [internal/exactauthority]
+    forbid:
+      - internal/domain
+      - internal/node
+      - internal/reachability
+      - internal/reachability/bundle
+      - internal/engine
+      - internal/openauth
+      - internal/usecase
+      - internal/runtime
+      - internal/store
+      - internal/cli
+      - internal/discovery
+      - internal/authority
+      - internal/protocol
+    kind: transitive
+
+  # R3: node must not depend on outer-adapter-composition
+  - id: R3
+    description: "host-integration adapter must not depend on outer-adapter-composition"
+    type: forbidden-target
+    targets: [internal/node]
+    forbid:
+      - internal/runtime
+      - internal/authority
+      - internal/discovery
+      - internal/store
+      - internal/cli
+    kind: transitive
+
+  # R4: reachability must not depend on outer-adapter-composition
+  - id: R4
+    description: "L1 reachability must not depend on runtime/authority/discovery/store/CLI"
+    type: forbidden-target
+    targets: [internal/reachability]
+    forbid:
+      - internal/runtime
+      - internal/authority
+      - internal/discovery
+      - internal/store
+      - internal/cli
+    kind: transitive
+
+  # R5: bundle must be maximally isolated
+  - id: R5
+    description: "bundle must not depend on node, runtime, authority, discovery, store, CLI, or reachability root"
+    type: forbidden-target
+    targets: [internal/reachability/bundle]
+    forbid:
+      - internal/node
+      - internal/runtime
+      - internal/authority
+      - internal/discovery
+      - internal/store
+      - internal/cli
+      - internal/reachability
+    kind: transitive
+
+  # R6: engine connectivity-only (no store/discovery/authority/CLI/exactauthority/localkey/accesslease/openauth)
+  - id: R6
+    description: "Pipe Engine must not depend on store/discovery/authority/CLI/exactauthority/localkey/accesslease/openauth"
+    type: forbidden-target
+    targets: [internal/engine]
+    forbid:
+      - internal/store
+      - internal/discovery
+      - internal/authority
+      - internal/cli
+      - internal/exactauthority
+      - internal/localkey
+      - internal/accesslease
+      - internal/openauth
+    kind: transitive
+
+  # R7: openauth must be stdlib-only
+  - id: R7
+    description: "openauth must be stdlib-only with no repo deps"
+    type: stdlib-only
+    targets: [internal/openauth]
+
+  # R8: usecase must not depend on outer-adapter-composition, host-reachability, or engine
+  - id: R8
+    description: "L4 usecase must not depend on store/runtime/discovery/authority/CLI/node/engine/reachability/bundle"
+    type: forbidden-target
+    targets: [internal/usecase]
+    forbid:
+      - internal/store
+      - internal/runtime
+      - internal/discovery
+      - internal/authority
+      - internal/cli
+      - internal/node
+      - internal/engine
+      - internal/reachability
+      - internal/reachability/bundle
+    kind: transitive
+
+# File-level guards for mixed packages
+file_guards:
+  # R9: serve.go must not import concrete authority/store/discovery
+  - rule: R9
+    description: "receiving boundary must not import concrete authority/store/discovery"
+    path: internal/runtime/serve.go
+    forbidden_imports:
+      - "github.com/origama/tubo-rebuilt/internal/authority"
+      - "github.com/origama/tubo-rebuilt/internal/store"
+      - "github.com/origama/tubo-rebuilt/internal/discovery"
+
+  # R10: session.go must not import libp2p host/network/peer/protocol or store
+  - rule: R10
+    description: "Session file must not import concrete libp2p host/network/peer/protocol or store"
+    path: internal/runtime/session.go
+    forbidden_imports:
+      - "github.com/libp2p/go-libp2p/core/host"
+      - "github.com/libp2p/go-libp2p/core/network"
+      - "github.com/libp2p/go-libp2p/core/peer"
+      - "github.com/libp2p/go-libp2p/core/protocol"
+      - "github.com/origama/tubo-rebuilt/internal/store"
+
+# Semantic pattern checks (source-level scans)
+semantic_checks:
+  # R11: no global dispatch symbols in runtime
+  - rule: R11
+    description: "forbidden package-global Session dispatch symbols in internal/runtime"
+    path_glob: internal/runtime/*.go
+    forbid_patterns:
+      - instanceRegistry
+      - SetInstanceRegistry
+      - HandleResumeStreamID
+
+  # Openauth must not carry Scope or arbitrary metadata map
+  - rule: R12
+    description: "openauth contract must not carry Scope or map[string]any"
+    path_glob: internal/openauth/*.go
+    forbid_patterns:
+      - 'Scope.*json:"scope'
+      - map[string]any
+
+  # Accesslease/localkey/exactauthority must not carry Scope or arbitrary metadata map
+  - rule: R13
+    description: "pure L3 packages must not carry Scope or map[string]any"
+    path_glob: internal/(accesslease|localkey|exactauthority)/*.go
+    forbid_patterns:
+      - 'Scope.*json:"scope'
+      - map[string]any
+
+  # Usecase must not expose *store.Store
+  - rule: R14
+    description: "usecase must not expose *store.Store"
+    path_glob: internal/usecase/*.go
+    forbid_patterns:
+      - store\.Store
+      - \*store\.Store
+
+  # Usecase must not define generic repository framework
+  - rule: R15
+    description: "usecase must define narrow consumer-owned ports only"
+    path_glob: internal/usecase/*.go
+    forbid_patterns:
+      - Repository\[
+      - UnitOfWork

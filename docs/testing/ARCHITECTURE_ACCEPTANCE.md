@@ -148,9 +148,20 @@ After two independent review cycles reach the same phase-blocking conclusion, ch
 
 Phase-advancement items carry a required Phase Advancement (or explicit current-phase-mandatory exemption) section naming exact exit criteria advanced, predecessor commits/slices, successor slices, deferred debt, and the governance record (epic issue #18). Example: the executed fail-closed session-resume quarantine (issue #39) was the enabling predecessor for A0 exit criterion 4; it removed the defective prototype resume surface from the A0 path. None of the A0 exit criteria 1-12 require resume, epoch, or no-replay evidence, so those remain deferred post-A0 debt (#32) — evidentiary docs must not claim them as supported A0 evidence.
 
+## Implemented evidence: A0 issue #64 (Step 9 — dependency-edge architecture harness)
+
+`go test ./tests/archcheck`, `go run ./tests/archcheck`, and `make archcheck` prove the deterministic `go list -deps`-based architecture dependency-edge harness:
+
+- **Declarative rules:** `tests/archcheck/rules.yaml` defines 6 semantic zones (pure-core, host-reachability, secure-connectivity, coordination-security, application-usecase, outer-adapter-composition), 8 dependency-edge rules (R1-R8), 2 file-level guards (R9-R10), and 5 semantic pattern checks (R11-R15).
+- **12 self-tests pass:** allowed direct import, forbidden direct, transitive closure pass/fail, error naming, malformed rule fail-closed, unknown protected package, real graph passes, synthetic engine->store transitive, synthetic usecase->runtime, pure package gaining third-party dep, self non-trigger.
+- **File guards:** `internal/runtime/serve.go` imports no concrete authority/store/discovery (R9). `internal/runtime/session.go` imports no libp2p host/network/peer/protocol or store (R10).
+- **Semantic checks:** global dispatch symbols (`instanceRegistry`, `SetInstanceRegistry`, `HandleResumeStreamID`) absent from `internal/runtime` (R11). `internal/openauth` carries no Scope/map shape (R12). Pure L3 packages carry no Scope/map shape (R13). `internal/usecase` exposes no `*store.Store` (R14) or generic repository framework (R15).
+- **Architecture effect:** `tests/verify-architecture.sh` is now a thin wrapper calling `go run ./tests/archcheck`. `Makefile` has `archcheck` target. Real repo graph passes all rules.
+- **Exit criterion 11 status:** IMPLEMENTED. `go list -deps`-based harness proves documented edges. Criterion 11 is satisfied.
+
 ## Dependency-check plan
 
-A0 defines actual packages first. Then small reviewed script invokes `go list -deps` and rejects explicit forbidden internal edges. It must test semantic boundaries, remain deterministic, and avoid dependency on exact file layout. No heavyweight framework.
+A0 Step 9 implemented the plan: a small deterministic Go program (`tests/archcheck/`) runs `go list -deps` for each protected package and checks every resolved non-stdlib dependency against declarative YAML rules. It tests semantic boundaries, remains deterministic, and avoids dependency on exact file layout. No heavyweight framework.
 
 ## Shared safety expectations
 
