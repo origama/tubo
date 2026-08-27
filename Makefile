@@ -1,12 +1,15 @@
 E2E_SCENARIO ?= private-http
 
-.PHONY: fmt architecture test race build contract integration hygiene verify verify-local e2e-three-machine e2e-three-machine-preflight clean
+.PHONY: fmt architecture archcheck test race build contract integration hygiene verify verify-local e2e-three-machine e2e-three-machine-preflight clean
 
 fmt:
 	@test -z "$$(gofmt -l $$(find cmd internal -name '*.go' -type f) | tee /dev/stderr)"
 
+archcheck:
+	go run ./tests/archcheck
+
 architecture:
-	./tests/verify-architecture.sh
+	go run ./tests/archcheck
 
 test:
 	go test ./...
