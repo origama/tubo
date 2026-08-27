@@ -15,12 +15,24 @@
 //   - Validity: 2026-08-27T00:00:00Z to 2027-02-23T00:00:00Z (180 days)
 //   - Signature: Ed25519 / tubo-bootstrap-root-2026-01
 //
-// Governance: issue #45, Step 10A. The bundle references relay.tubo.click
-// which currently runs prototype code with a private swarm PSK. The relay
-// software must be upgraded to A0-compatible code (plain libp2p without
-// swarm key) before the bundle can be used in production. When the relay is
-// upgraded, its PeerID will change, requiring a new bundle signed by the
-// same root key.
+// Governance: issue #45, Step 10A.
+//
+// Trust policy for root tubo-bootstrap-root-2026-01:
+//   - SINGLE-USE signing root: the private signing key was generated outside
+//     the repository, used to sign this bundle, and permanently deleted.
+//   - The current bundle CANNOT be renewed or reissued under this root.
+//   - Preserving the relay identity (PeerID, addresses) avoids re-signing
+//     for Step 10B; if provider identity/address material must change, a NEW
+//     root+bundle release is required under the current A0 model.
+//   - Runtime trust-root and bundle rotation remains A2 work.
+//   - The embedded bundle expires 2027-02-23.
+//
+// The bundle references relay.tubo.click which currently runs prototype code
+// with a private swarm PSK. The relay software must be upgraded to
+// A0-compatible code (plain libp2p without swarm key) before the bundle can
+// be used in production. The prototype does NOT "reject the A0 bundle": the
+// bundle is locally verifiable; the connectivity failure is the prototype
+// private-network/swarm-PSK handshake incompatibility.
 package bundle
 
 import (

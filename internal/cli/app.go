@@ -448,10 +448,7 @@ func (a App) relay(ctx context.Context, state *store.Store, args []string) error
 	if err != nil {
 		return err
 	}
-	swarmKey, err := f.required("swarm-key")
-	if err != nil {
-		return err
-	}
+	swarmKey := f.values["swarm-key"]
 	if err := reserveForeground(ctx, state, "relay/default", "relay"); err != nil {
 		return err
 	}
