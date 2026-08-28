@@ -5,10 +5,12 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo-rebuilt/internal/localkey"
 )
 
 // ConnectExact decodes and verifies an exact invite, acquires a carrier via
@@ -41,13 +43,14 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 	}
 	// Recipient identity is durable and deterministic per invite audience, so
 	// a re-connect reuses the same identity across restarts. A friendly --name
-	// overrides the deterministic name; the owner key path stays derived from
-	// the final ref so reuse remains stable.
+	// names the local Pipe resource only: the identity key stays the canonical
+	// per-audience path that redemption and the detached runtime expect.
 	recipientRef, err := recipientRefFor(invite.AudiencePipeID, in.Name)
 	if err != nil {
 		return ConnectExactResult{}, fmt.Errorf("invalid_input: %w", err)
 	}
-	recipient, recipientKeyFile, err := u.ownerKey(recipientRef)
+	recipientKeyFile := filepath.Join(u.Secrets, "pipes", "connect-"+invite.AudiencePipeID+".key")
+	recipient, err := localkey.Provision(recipientKeyFile)
 	if err != nil {
 		return ConnectExactResult{}, persistenceError("recipient identity key", err)
 	}
@@ -97,8 +100,14 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	// Preserve the durable identity of an existing local definition.
+	// Preserve the durable identity of an existing local definition, but only
+	// when it targets the same remote Pipe. Reusing a friendly name across
+	// different remote Pipes would silently rebind the identity, which is
+	// never what an operator intends.
 	if existing, existingKey, existingErr := u.Pipes.Get(ctx, recipientRef.String()); existingErr == nil {
+		if existing.Target.Kind == domain.KindPipe && existing.Target.Name != invite.AudiencePipeID {
+			return ConnectExactResult{}, fmt.Errorf("conflict: %s already targets a different remote pipe; remove it first or choose another --name", recipientRef)
+		}
 		spec.PipeID = existing.PipeID
 		spec.CreatedAt = existing.CreatedAt
 		spec.UpdatedAt = existing.UpdatedAt
