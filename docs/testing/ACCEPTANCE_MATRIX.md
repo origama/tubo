@@ -4,6 +4,27 @@
 
 Implementation status is tracked in GitHub Issues, not here.
 
+## A0 exit criteria 1-12 status (Step 10B reconciliation — all COMPLETE)
+
+Canonical A0 architecture acceptance lives in [`ARCHITECTURE_ACCEPTANCE.md`](ARCHITECTURE_ACCEPTANCE.md). This mirror table records the final A0 status with implementation PR/SHA, test evidence, architecture evidence, and distributed (three-machine, real `relay.tubo.click`) evidence. Criterion #12 is satisfied by the real distributed proof, not the private-http-only integration. Evidence root: `/tmp/a0-10b-final/evidence`; sanitized summary: `A0_STEP10B_EVIDENCE.md`.
+
+| # | Criterion | Status | Implementation | Test / architecture evidence | Distributed evidence |
+|---|---|---|---|---|---|
+| 1 | No remote Pipe open bypasses successful `OpenAuthorizer`-style result before local target open | COMPLETE | #48 (openauth seam), #49/#47 (Exact Pipe Authority + Access Lease), #70 merge `c031185c1cd45bf4e58fdbad16f64df2fd76999b` | `TestExactOpenAuthorizerFailsClosedForInvalidLease` (8), `TestExactOpenAuthorizerRejectsInvalidProof`, `TestExactOpenAuthorizerChecksRevocation`, `TestExactOpenAuthorizerNoRevocationState`, `TestAuthorizeOpenDenialNeverDialsTarget` (7), `TestAuthorizeOpenZeroExpiryNeverOk`; receive-side serve imports no concrete authority/store (R9) | Tampered invite → `authorization_denied`, no Session, no fixture hit; valid path re-run after negative succeeds |
+| 2 | Exact Pipe Authority redemption + Scope-less share same lease contract via L2; L2 imports no concrete L3 | COMPLETE | #49/#47, #61/#63 (8B), #70 | `TestRedemptionAtomicity`, `TestLeaseWrongSubject/WrongPipeAudience/TamperedSignature/Expired`, `TestInviteTamperedBinding`, `TestInviteNonBoundSigner`; openauth neutral, R12 | Invite redemption → canonical AccessLease → possession proof → ExactOpenAuthorizer → local target open → Session on real machines |
+| 3 | Signed bundle verifies trust/identity/version/validity/signature fail closed; zero-config `relay.tubo.click` resolution | COMPLETE | #44; PR #66 merge `6dd60e1c7113da726b6c39567b72da454a919e3a`; PR #67 merge `277e4366de4feb58e473308b0967d9bea9164dab` (relay no PSK) | 12 trust-material tests incl. `Test4SignatureVerifies`, `Test5AddressPeerIDMatches`, `Test12NoPrivateKeyEmbedded`, `TestResolverProductionBundleResolves`; reachability imports only node + bundle | config.yaml ABSENT both machines; relay resolved only via embedded signed bundle; relay PeerID `12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME` |
+| 4 | Session depends on Carrier contract, not libp2p stream/host/store | COMPLETE | #28 | Carrier full-duplex + exact half-close tests; session.go import guard R10 | Real relayed byte flow: B bytes_in == A bytes_out == 7341674 (symmetry) |
+| 5 | Explicit runtime ownership; no package-global dispatch state | COMPLETE | #26/#27 (`7b6c06f`), #57 | Ownership/cancellation/fencing tests (race); R11 semantic check (instanceRegistry absent) | Fresh homes on A/B; Journey-D restart new PID, same PipeID + node identity |
+| 6 | Reachability testable as carrier provider without policy decision | COMPLETE | #44 | `TestProviderDirectThenFallbackInitialSelection`, bundle→Provider→Carrier→Session pump | Direct-first evidenced as component-only; real path = relay circuit (both NAT'd; environmental limitation documented, no direct-path claim) |
+| 7 | Pipe Engine composes Service/Pipe targets; loop/hop rules | COMPLETE | #57 | Engine TraversalState loop/hop tests; engine import guard | Recipient ingress Pipe target = `pipe/pip_vtxitat5nt3mbparbkdds7ewa62ltqo7` composed over real tunnel |
+| 8 | Durable Service/Pipe distinct from PipeRuntime/Session; persistence/ownership basis | COMPLETE | #59 (PR62 `7722fa6`), #61 (PR63 `75f44051`) | Structural asserts; identity survives repo restart; transient writes never mutate definitions | Journey-D: clean stop/start → PipeID `pip_vtxitat5nt3mbparbkdds7ewa62ltqo7` UNCHANGED, node identity UNCHANGED, PID changed |
+| 9 | CLI invokes use cases, not storage/runtime choreography | COMPLETE | #59/#61/#63, #70 | `tests/contracts/cli.sh` PASS; `TestZeroConfigShareEmbedsCanonicalRunningOwnerLocator`, `TestShareRuntimeUnavailableEmitsNoInvite` (12) | Real `attach`/`share`/`connect`; share exit 0, invite len 1604, mode 0600 |
+| 10 | Persistence consumers use narrow ports; failure fails closed | COMPLETE | #59, #61/#63 | Store adapters; `runtime_unavailable` fail-closed before invite; R14/R15 | Tamper home rejected before durable state; state.db 0600 |
+| 11 | `go list -deps` architecture harness proves edges | COMPLETE | #64 | 12 archcheck self-tests; R1-R15; `make architecture` PASS | `make verify-local` PASS on exact head (verify-local.log) |
+| 12 | Unit/component, in-process, local CLI, and distributed proof cover Journey A; no shortcut | COMPLETE | #70 merge `c031185c…` + this acceptance slice | 20 named exact-head component tests PASS; private-http integration PASS; no-shortcut audit (12 checks) PASS | REAL distributed proof: A=oripi, B=macb, R=relay.tubo.click; small 200/`tubo-a0-final`, 3x sequential 200/13B, 7 MiB (7340032 B) sha256 `67560affd1…51e17`, post-large OK; path=relayed both ends, byte symmetry 7341674/880; relay-side sockets; tampered-invite negative; zero Scope/discovery/membership; Journey-D stable PipeID |
+
+Notation: all criteria text verbatim from ROADMAP A0 exit criteria; no criterion redefinition.
+
 Legend for evidence classes:
 
 - U: deterministic unit test;

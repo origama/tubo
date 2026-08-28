@@ -34,9 +34,9 @@ A dedicated Ed25519 bootstrap root (`tubo-bootstrap-root-2026-01`) is used exclu
 
 ### Identity stability policy
 
-Relay/bootstrap nodes have stable PeerIDs derived from their persistent Ed25519 key files. The relay at `relay.tubo.click` (PeerID `12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME`) currently runs prototype code with a private swarm PSK. When upgraded to A0-compatible code (plain libp2p without swarm key), the relay will get a new PeerID if the key file changes; if the key file is preserved the PeerID remains stable. Preserving the relay identity avoids re-signing for Step 10B.
+Relay/bootstrap nodes have stable PeerIDs derived from their persistent Ed25519 key files. The relay at `relay.tubo.click` (PeerID `12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME`) runs A0-compatible relay code with NO swarm PSK (public no-PSK relay, PR #67 merge `277e4366de4feb58e473308b0967d9bea9164dab`). The upgrade preserved the key file, so the PeerID remained stable and the embedded signed bundle stayed valid — no re-signing was required for the Step 10B distributed proof ([`A0_STEP10B_EVIDENCE.md`](../testing/A0_STEP10B_EVIDENCE.md)). A future relay key-file change WOULD change the PeerID and require a new bundle.
 
-The production bundle references the current prototype PeerID. If the relay PeerID/addresses must change, a NEW bundle under a NEW bootstrap root will be required (the `tubo-bootstrap-root-2026-01` private signing key was SINGLE-USE and permanently destroyed after signing). Runtime trust-root and bundle rotation remains A2 work. The current embedded bundle expires 2027-02-23.
+The production bundle references the current relay PeerID above. If the relay PeerID/addresses must change, a NEW bundle under a NEW bootstrap root will be required (the `tubo-bootstrap-root-2026-01` private signing key was SINGLE-USE and permanently destroyed after signing). Runtime trust-root and bundle rotation remains A2 work. The current embedded bundle expires 2027-02-23.
 
 A token may refer to an already trusted public authority. It may introduce a private authority only through an explicit scope-join/TOFU operation. A public token cannot define a new public trust root.
 
