@@ -1,13 +1,12 @@
 package cli
 
 import (
-	"errors"
 	"strings"
 )
 
 // cliError carries a user-facing message plus an optional one-line next-action
-// hint. The hint renders as "Try: <hint>" on stderr by the top-level command
-// entry; normal errors render as their plain message.
+// hint. The hint renders as "Try: <hint>" on stderr by the command entry
+// point; plain errors render as their message only.
 type cliError struct {
 	msg string
 	try string
@@ -15,7 +14,23 @@ type cliError struct {
 
 func (e cliError) Error() string { return e.msg }
 
-func (e cliError) tryHint() string { return e.try }
+// asCliError finds the nearest cliError in an unwrap chain.
+func asCliError(err error) (cliError, bool) {
+	for err != nil {
+		if v, ok := err.(cliError); ok {
+			return v, true
+		}
+		if v, ok := err.(*cliError); ok {
+			return *v, true
+		}
+		unwrapped, ok := err.(interface{ Unwrap() error })
+		if !ok {
+			return cliError{}, false
+		}
+		err = unwrapped.Unwrap()
+	}
+	return cliError{}, false
+}
 
 // withTry attaches a concise one-line next action to err. Existing cliError
 // values keep their hint.
@@ -23,22 +38,19 @@ func withTry(err error, try string) error {
 	if err == nil {
 		return nil
 	}
-	var existing cliError
-	if errors.As(err, &existing) {
+	if existing, ok := asCliError(err); ok {
 		if existing.try != "" {
 			return err
 		}
 		return cliError{msg: existing.msg, try: try}
 	}
-	wrapped := &cliError{msg: err.Error(), try: try}
-	return wrapped
+	return cliError{msg: err.Error(), try: try}
 }
 
-// tryHint returns the "Try:" line for an error, if any.
-func tryHint(err error) string {
-	var e cliError
-	if errors.As(err, &e) {
-		return e.try
+// Hint returns the "Try:" action for an error, if any.
+func Hint(err error) string {
+	if value, ok := asCliError(err); ok {
+		return value.try
 	}
 	return ""
 }

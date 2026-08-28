@@ -339,6 +339,76 @@ func (a App) start(ctx context.Context, state *store.Store, f flags) error {
 	return runPipeForeground(ctx, state, ref)
 }
 
+// statusWord renders created/reused for a mutation result.
+func statusWord(created bool) string {
+	if created {
+		return "created"
+	}
+	return "reused"
+}
+
+// emitAttach renders the attach result. run != nil means the Pipe is known
+// ready (detached start); otherwise only the durable definitions are shown.
+func (a App) emitAttach(jsonOutput bool, result usecase.AttachResult, run *store.Run) error {
+	serviceStatus := statusWord(result.Created)
+	pipeStatus := statusWord(result.PipeCreated)
+	if jsonOutput {
+		value := map[string]any{
+			"service_ref":    result.ServiceRef.String(),
+			"service_status": serviceStatus,
+			"pipe_ref":       result.PipeRef.String(),
+			"pipe_id":        result.PipeID,
+			"pipe_status":    pipeStatus,
+		}
+		if run != nil {
+			value["status"] = "ready"
+			value["pid"] = run.PID
+		}
+		return json.NewEncoder(a.Out).Encode(value)
+	}
+	if _, err := fmt.Fprintf(a.Out, "service/%s %s\n", result.ServiceRef.Name, serviceStatus); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(a.Out, "pipe/%s %s\n", result.PipeRef.Name, pipeStatus); err != nil {
+		return err
+	}
+	if run != nil {
+		if _, err := fmt.Fprintf(a.Out, "pipe/%s ready (pid %d)\n", result.PipeRef.Name, run.PID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// emitConnect renders the connect result. run != nil means the local Pipe is
+// known ready (detached start).
+func (a App) emitConnect(jsonOutput bool, result usecase.ConnectExactResult, local string, run *store.Run) error {
+	ready := run != nil
+	if jsonOutput {
+		value := map[string]any{
+			"ref":       result.PipeRef.String(),
+			"id":        result.PipeID,
+			"local":     local,
+			"target_id": result.TargetPipeID,
+		}
+		if ready {
+			value["status"] = "ready"
+			value["pid"] = run.PID
+		}
+		return json.NewEncoder(a.Out).Encode(value)
+	}
+	if ready {
+		if _, err := fmt.Fprintf(a.Out, "%s ready (pid %d)\n", result.PipeRef.String(), run.PID); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintf(a.Out, "%s created (local listen: %s)\n", result.PipeRef.String(), local); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // attach defines a Service and a Pipe for a local target, then runs the Pipe.
 func (a App) attach(ctx context.Context, state *store.Store, f flags) error {
 	name := f.values["name"]
@@ -347,49 +417,22 @@ func (a App) attach(ctx context.Context, state *store.Store, f flags) error {
 	if err != nil {
 		return err
 	}
-	serviceStatus := "reused"
-	if result.Created {
-		serviceStatus = "created"
-	}
-	pipeStatus := "reused"
-	if result.PipeCreated {
-		pipeStatus = "created"
-	}
-	a.progressf("service/%s %s\n", result.ServiceRef.Name, serviceStatus)
 	if f.bools["d"] {
 		a.progressf("starting pipe/%s...\n", result.PipeRef.Name)
 		run, err := a.startDetached(ctx, state, result.PipeRef.String())
 		if err != nil {
 			return err
 		}
-		if f.bools["json"] {
-			return json.NewEncoder(a.Out).Encode(map[string]any{
-				"service_ref":    result.ServiceRef.String(),
-				"service_status": serviceStatus,
-				"pipe_ref":       result.PipeRef.String(),
-				"pipe_id":        result.PipeID,
-				"status":         "ready",
-				"pid":            run.PID,
-			})
+		if err := a.emitAttach(f.bools["json"], result, &run); err != nil {
+			return err
 		}
-		fmt.Fprintf(a.Out, "service/%s %s\n", result.ServiceRef.Name, serviceStatus)
-		fmt.Fprintf(a.Out, "pipe/%s %s\n", result.PipeRef.Name, pipeStatus)
-		fmt.Fprintf(a.Out, "pipe/%s ready (pid %d)\n", result.PipeRef.Name, run.PID)
 		a.progressf("share it: tubo share pipe/%s\n", result.PipeRef.Name)
 		return nil
 	}
-	if f.bools["json"] {
-		if err := json.NewEncoder(a.Out).Encode(map[string]any{
-			"service_ref":    result.ServiceRef.String(),
-			"service_status": serviceStatus,
-			"pipe_ref":       result.PipeRef.String(),
-			"pipe_id":        result.PipeID,
-		}); err != nil {
-			return err
-		}
+	if err := a.emitAttach(f.bools["json"], result, nil); err != nil {
+		return err
 	}
-	fmt.Fprintf(a.Out, "service/%s %s\n", result.ServiceRef.Name, serviceStatus)
-	a.progressf("starting pipe/%s\n", result.PipeRef.Name)
+	a.progressf("starting pipe/%s...\n", result.PipeRef.Name)
 	a.progressf("Ctrl-C to stop\n")
 	return runPipeForeground(ctx, state, result.PipeRef.String())
 }
@@ -441,34 +484,17 @@ func (a App) connect(ctx context.Context, state *store.Store, f flags) error {
 		if err != nil {
 			return err
 		}
-		if f.bools["json"] {
-			return json.NewEncoder(a.Out).Encode(map[string]any{
-				"ref":       result.PipeRef.String(),
-				"id":        result.PipeID,
-				"local":     local,
-				"status":    "ready",
-				"pid":       run.PID,
-				"target_id": result.TargetPipeID,
-			})
+		if err := a.emitConnect(f.bools["json"], result, local, &run); err != nil {
+			return err
 		}
-		fmt.Fprintf(a.Out, "%s ready (pid %d)\n", result.PipeRef.String(), run.PID)
-		fmt.Fprintf(a.Out, "local listen: %s\n", local)
 		a.progressf("stop:  tubo stop %s\n", result.PipeRef.String())
 		a.progressf("remove: tubo rm %s\n", result.PipeRef.String())
 		return nil
 	}
-	if f.bools["json"] {
-		if err := json.NewEncoder(a.Out).Encode(map[string]any{
-			"ref":       result.PipeRef.String(),
-			"id":        result.PipeID,
-			"local":     local,
-			"target_id": result.TargetPipeID,
-		}); err != nil {
-			return err
-		}
+	if err := a.emitConnect(f.bools["json"], result, local, nil); err != nil {
+		return err
 	}
-	fmt.Fprintf(a.Out, "%s created (local listen: %s)\n", result.PipeRef.String(), local)
-	a.progressf("starting %s\n", result.PipeRef.String())
+	a.progressf("starting %s...\n", result.PipeRef.String())
 	a.progressf("Ctrl-C to stop\n")
 	return runPipeForeground(ctx, state, result.PipeRef.String())
 }
