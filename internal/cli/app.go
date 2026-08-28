@@ -147,7 +147,15 @@ func (a App) Run(ctx context.Context, args []string) error {
 	if a.Verbosity > 0 && !a.Quiet {
 		fmt.Fprintf(a.Err, "debug: command=%s home=%s\n", spec.id(), state.Home())
 	}
-	return a.dispatch(ctx, state, spec, f)
+	err = a.dispatch(ctx, state, spec, f)
+	if err != nil {
+		// Attach a deterministic next-action hint unless the error already
+		// carries one (handlers set concrete ones where the ref is known).
+		if _, ok := asCliError(err); !ok {
+			return hintForClass(err)
+		}
+	}
+	return err
 }
 
 // dispatch routes a validated command to its handler. Every leaf commandSpec
@@ -875,7 +883,7 @@ func reserveForeground(ctx context.Context, state *store.Store, ref, kind string
 		if existing.Status == "ready" {
 			identity, identityErr := store.ProcessIdentity(existing.PID)
 			if identityErr == nil && identity == existing.ProcessIdentity {
-				return fmt.Errorf("conflict: %s is already running", ref)
+				return withTry(fmt.Errorf("conflict: %s is already running", ref), "stop it first: tubo stop "+ref)
 			}
 		}
 		if existing.Status == "starting" {

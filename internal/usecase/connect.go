@@ -33,6 +33,9 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 	if strings.TrimSpace(in.LocalListen) == "" {
 		return ConnectExactResult{}, errors.New("invalid_input: connect requires a local listen address")
 	}
+	if strings.TrimSpace(u.Secrets) == "" {
+		return ConnectExactResult{}, errors.New("invalid_input: secrets directory is not configured")
+	}
 	now := u.now()
 	invite, err := accesslease.DecodeInvite(in.Invite)
 	if err != nil {

@@ -618,3 +618,27 @@ func TestHintForClassAttachesTry(t *testing.T) {
 		t.Fatal("authorization_denied hint missing")
 	}
 }
+
+func TestReserveForegroundAlreadyRunningHasStopHint(t *testing.T) {
+	t.Setenv("TUBO_HOME", t.TempDir())
+	ctx := context.Background()
+	state, err := store.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	identity, err := store.ProcessIdentity(os.Getpid())
+	if err != nil {
+		t.Skipf("process identity unavailable: %v", err)
+	}
+	if err := state.PutRun(ctx, store.Run{PrimaryRef: "pipe/x", Kind: "pipe", PID: os.Getpid(), ProcessIdentity: identity, Status: "ready"}); err != nil {
+		t.Fatal(err)
+	}
+	err = reserveForeground(ctx, state, "pipe/x", "pipe")
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("already-running error = %v", err)
+	}
+	if Hint(err) == "" {
+		t.Fatal("already-running error lacks stop-first hint")
+	}
+}
