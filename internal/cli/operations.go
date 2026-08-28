@@ -387,6 +387,9 @@ func maskedConfig(value store.ConfigView) map[string]any {
 func (a App) configValidate(ctx context.Context, state *store.Store, f flags) error {
 	value, err := state.ValidateConfig()
 	if err != nil {
+		if os.IsNotExist(err) {
+			return errors.New("invalid_input: config: no overlay configured; run 'tubo join overlay --relay <multiaddr> --swarm-key <file>'")
+		}
 		return fmt.Errorf("invalid_input: config: %w", err)
 	}
 	return a.emit(f.bools["json"], map[string]any{"status": "valid", "config": maskedConfig(value)}, "config valid")
@@ -425,6 +428,9 @@ func (a App) doctor(ctx context.Context, state *store.Store, f flags) error {
 		}
 	}
 	_, configErr := state.ValidateConfig()
+	if os.IsNotExist(configErr) {
+		configErr = errors.New("no overlay configured; run 'tubo join overlay --relay <multiaddr> --swarm-key <file>'")
+	}
 	add("config", configErr)
 	for _, path := range []string{state.Home(), filepath.Join(state.Home(), "state.db"), filepath.Join(state.Home(), "secrets")} {
 		info, err := os.Stat(path)

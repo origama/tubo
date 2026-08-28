@@ -367,6 +367,7 @@ The following historical spellings were resolved deliberately:
 | --- | --- | --- |
 | `describe` | `inspect` | one command for detailed views |
 | `get processes` / `get runs` | `ps` | one runtime overview |
+| `connect <pipe-name>` (legacy scope direct connect) | `connect --token <invite> --local <host:port>` | the A0 CLI connects through exact redemption only; the legacy scope-based direct connect was never rewired through L4 and is not part of the surface |
 | `join overlay` (reachability) vs `scope join` (membership) | both retained | distinct concepts, distinct verbs |
 | `authority start` vs generic `start` | both retained | infrastructure verb; generic `start` stays Pipe-scoped |
 | `inspect peer/<id>` vs `peers alias` vs `get peers` | all three | inspect = one alias; peers alias = mutation; get peers = inventory |

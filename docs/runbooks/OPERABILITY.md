@@ -30,7 +30,7 @@ Authority/origin:
 ```bash
 tubo join overlay --relay <relay-multiaddr> --swarm-key ./swarm.key
 tubo scope create solar/default
-tubo authority start solar --scope solar/default -d
+tubo supervise install authority/solar --scope solar/default --json
 tubo service create lmstudio --target http://127.0.0.1:1234
 tubo pipe create lmstudio-team --ingress tubo --target service/lmstudio \
   --scope solar/default --visibility discoverable --access members
@@ -44,7 +44,9 @@ Consumer:
 tubo join overlay --relay <relay-multiaddr> --swarm-key ./swarm.key
 tubo scope join --token <membership-invite>
 tubo get pipes
-tubo connect lmstudio --local 127.0.0.1:51234 -d
+# The exact invite is minted by the Pipe owner on the origin machine:
+invite="$(tubo share pipe/lmstudio-team)"
+tubo connect --token "$invite" --local 127.0.0.1:51234 -d
 curl http://127.0.0.1:51234/
 ```
 
