@@ -120,7 +120,9 @@ env TUBO_HOME="$HOST_B" "$T" join overlay --relay "$RELAY" --swarm-key "$WORK/sw
 echo "OK: Host B joined overlay"
 
 # Connect redeems invite, creates local pipe, starts daemon.
-OUTPUT="$(env TUBO_HOME="$HOST_B" "$T" connect --token "$INVITE" --local "127.0.0.1:$CLIENT_PORT" -d --json 2>&1 || true)"
+# stderr (progress/hints) is captured separately: --json stdout must be exactly
+# one parseable JSON value.
+OUTPUT="$(env TUBO_HOME="$HOST_B" "$T" connect --token "$INVITE" --local "127.0.0.1:$CLIENT_PORT" -d --json 2>"$WORK/connect-hb.err" || true)"
 if [[ -z "$OUTPUT" ]]; then
   echo "FAIL: connect produced no output" >&2
   ls -la "$HOST_B/logs/" 2>/dev/null >&2 || true

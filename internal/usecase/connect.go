@@ -40,8 +40,10 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 		return ConnectExactResult{}, authorizationDenied(err)
 	}
 	// Recipient identity is durable and deterministic per invite audience, so
-	// a re-connect reuses the same identity across restarts.
-	recipientRef, err := recipientRefFor(invite.AudiencePipeID)
+	// a re-connect reuses the same identity across restarts. A friendly --name
+	// overrides the deterministic name; the owner key path stays derived from
+	// the final ref so reuse remains stable.
+	recipientRef, err := recipientRefFor(invite.AudiencePipeID, in.Name)
 	if err != nil {
 		return ConnectExactResult{}, fmt.Errorf("invalid_input: %w", err)
 	}
@@ -126,5 +128,5 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 			return ConnectExactResult{}, persistenceError("exact connection state", err)
 		}
 	}
-	return ConnectExactResult{PipeRef: spec.Ref, PipeID: spec.PipeID}, nil
+	return ConnectExactResult{PipeRef: spec.Ref, PipeID: spec.PipeID, TargetPipeID: invite.AudiencePipeID}, nil
 }

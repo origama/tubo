@@ -2,6 +2,8 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -199,45 +201,60 @@ func buildPipeViews(ctx context.Context, state *store.Store, scopeFilter string,
 	return items, nil
 }
 
-func renderPipeViews(out io.Writer, items []pipeView) error {
+func shortPipeID(id string) string {
+	if len(id) > 20 {
+		return id[:17] + "..."
+	}
+	return id
+}
+
+// renderPipeViews renders the pipe table. The default (compact) form fits a
+// normal terminal: name, truncated ID, status, source, path, access, scope.
+// --wide adds the full ID plus ingress, target, sessions, freshness, record
+// age and path source.
+func renderPipeViews(out io.Writer, items []pipeView, wide bool) error {
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NAME\tID\tSOURCE\tFRESHNESS\tRECORD AGE\tSCOPE\tINGRESS\tTARGET\tACCESS\tSTATUS\tSESSIONS\tPATH\tPATH SOURCE"); err != nil {
+	if wide {
+		if _, err := fmt.Fprintln(w, "NAME\tID\tSTATUS\tSOURCE\tPATH\tINGRESS\tTARGET\tACCESS\tSCOPE\tSESSIONS\tFRESHNESS\tRECORD AGE\tPATH SOURCE"); err != nil {
+			return err
+		}
+		for _, item := range items {
+			if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n", item.Name, item.ID, item.Status, item.Source, item.Path, dash(item.Ingress), dash(item.Target), dash(item.Access), dash(item.Scope), item.Sessions, dash(item.Freshness), dash(item.RecordAge), dash(item.PathSource)); err != nil {
+				return err
+			}
+		}
+		return w.Flush()
+	}
+	if _, err := fmt.Fprintln(w, "NAME\tID\tSTATUS\tSOURCE\tPATH\tACCESS\tSCOPE"); err != nil {
 		return err
 	}
 	for _, item := range items {
-		scope := item.Scope
-		if scope == "" {
-			scope = "-"
-		}
-		ingress := string(item.Ingress)
-		if ingress == "" {
-			ingress = "-"
-		}
-		target := item.Target
-		if target == "" {
-			target = "-"
-		}
-		access := string(item.Access)
-		if access == "" {
-			access = "-"
-		}
-		pathSource := item.PathSource
-		if pathSource == "" {
-			pathSource = "-"
-		}
-		freshness := item.Freshness
-		if freshness == "" {
-			freshness = "-"
-		}
-		recordAge := item.RecordAge
-		if recordAge == "" {
-			recordAge = "-"
-		}
-		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", item.Name, item.ID, item.Source, freshness, recordAge, scope, ingress, target, access, item.Status, item.Sessions, item.Path, pathSource); err != nil {
+		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", item.Name, shortPipeID(item.ID), item.Status, item.Source, item.Path, dash(item.Access), dash(item.Scope)); err != nil {
 			return err
 		}
 	}
 	return w.Flush()
+}
+
+func dash(value any) string {
+	switch v := value.(type) {
+	case string:
+		if v == "" {
+			return "-"
+		}
+		return v
+	case domain.IngressKind:
+		if v == "" {
+			return "-"
+		}
+		return string(v)
+	case domain.AccessPolicy:
+		if v == "" {
+			return "-"
+		}
+		return string(v)
+	}
+	return "-"
 }
 
 func transportSummary(ctx context.Context, state *store.Store, spec domain.PipeSpec, sessions []store.Session) map[string]any {
@@ -260,4 +277,308 @@ func transportSummary(ctx context.Context, state *store.Store, spec domain.PipeS
 		result["current"] = "unknown"
 	}
 	return result
+}
+
+const pipeCacheFreshTTL = 5 * time.Minute
+
+type pipeRefreshError struct {
+	Class string `json:"class"`
+}
+
+type pipeScopeStatus struct {
+	Scope            string            `json:"scope"`
+	CacheState       string            `json:"cache_state"`
+	Source           string            `json:"source,omitempty"`
+	LastSuccess      *time.Time        `json:"last_success,omitempty"`
+	RefreshAttempted bool              `json:"refresh_attempted"`
+	RefreshError     *pipeRefreshError `json:"refresh_error,omitempty"`
+}
+
+func pipeCacheStatus(value store.ScopeFreshness, found bool, now time.Time) pipeScopeStatus {
+	status := pipeScopeStatus{Scope: value.Scope, CacheState: "missing", Source: value.Source, LastSuccess: value.LastSuccess}
+	if !found {
+		return status
+	}
+	status.Scope = value.Scope
+	if value.Complete && value.Source == store.SnapshotSourcePinnedAuthority && value.LastSuccess != nil && !value.LastSuccess.After(now) && now.Sub(*value.LastSuccess) < pipeCacheFreshTTL {
+		status.CacheState = "fresh"
+	} else {
+		status.CacheState = "stale"
+	}
+	return status
+}
+
+func pipeRefreshErrorClass(err error) string {
+	message := err.Error()
+	for _, class := range []string{"invalid_input", "not_found", "authorization_denied", "authority_unreachable", "discovery_unreachable", "discovery_retry_after", "persistence_failed", "partial_snapshot", "invalid_snapshot"} {
+		if strings.Contains(message, class) {
+			return class
+		}
+	}
+	return "discovery_unreachable"
+}
+
+func (a App) refreshPipeRecords(ctx context.Context, state *store.Store, scope string, force bool) error {
+	options := appRuntime.FetchRecordsOptions{Force: force, NetworkOperationObserver: a.networkOperationObserver}
+	if a.fetchRecords != nil {
+		return a.fetchRecords(ctx, state, scope, options)
+	}
+	_, err := appRuntime.FetchRecordsWithOptions(ctx, state, scope, options)
+	return err
+}
+
+// getPipes lists local Pipe definitions plus verified network records,
+// cache-first. The human table is compact by default; --wide adds detail.
+func (a App) getPipes(ctx context.Context, state *store.Store, f flags) error {
+	if f.bools["refresh"] && f.bools["cached-only"] {
+		return errors.New("invalid_input: --refresh and --cached-only cannot be used together")
+	}
+	scope := f.values["scope"]
+	memberships, err := state.Memberships(ctx)
+	if err != nil {
+		return err
+	}
+	statuses := make([]pipeScopeStatus, 0, len(memberships))
+	statusByScope := make(map[string]string, len(memberships))
+	now := a.currentTime()
+	for _, membership := range memberships {
+		if scope != "" && membership.Scope != scope {
+			continue
+		}
+		freshness, freshnessErr := state.ScopeFreshness(ctx, membership.Scope)
+		found := freshnessErr == nil
+		if freshnessErr != nil && !errors.Is(freshnessErr, domain.ErrNotFound) {
+			return fmt.Errorf("persistence_failed: discovery freshness: %w", freshnessErr)
+		}
+		if !found {
+			freshness.Scope = membership.Scope
+		}
+		status := pipeCacheStatus(freshness, found, now)
+		if !f.bools["cached-only"] && (f.bools["refresh"] || status.CacheState != "fresh") {
+			status.RefreshAttempted = true
+			if refreshErr := a.refreshPipeRecords(ctx, state, membership.Scope, f.bools["refresh"]); refreshErr != nil {
+				status.RefreshError = &pipeRefreshError{Class: pipeRefreshErrorClass(refreshErr)}
+				updated, updatedErr := state.ScopeFreshness(ctx, membership.Scope)
+				if updatedErr == nil {
+					status = pipeCacheStatus(updated, true, a.currentTime())
+					status.RefreshAttempted = true
+					status.RefreshError = &pipeRefreshError{Class: pipeRefreshErrorClass(refreshErr)}
+				}
+			} else if updated, updatedErr := state.ScopeFreshness(ctx, membership.Scope); updatedErr == nil {
+				status = pipeCacheStatus(updated, true, a.currentTime())
+				status.RefreshAttempted = true
+			}
+		}
+		statuses = append(statuses, status)
+		statusByScope[membership.Scope] = status.CacheState
+	}
+	items, err := buildPipeViews(ctx, state, scope, statusByScope)
+	if err != nil {
+		return err
+	}
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(map[string]any{"items": items, "scopes": statuses})
+	}
+	if err := renderPipeViews(a.Out, items, f.bools["wide"]); err != nil {
+		return err
+	}
+	for _, status := range statuses {
+		if status.RefreshError != nil {
+			fmt.Fprintf(a.Err, "warning: discovery scope=%s cache=%s error_class=%s; showing verified cache\n", status.Scope, status.CacheState, status.RefreshError.Class)
+		}
+	}
+	return nil
+}
+
+// pipeWatchEvent is one NDJSON record emitted by `tubo watch pipes --json`.
+// It contains only a projection of verified local state; watch never opens a
+// discovery socket or accepts an unverified remote event.
+type pipeWatchEvent struct {
+	EventType  string    `json:"event_type"`
+	Scope      string    `json:"scope"`
+	PipeID     string    `json:"pipe_id"`
+	Name       string    `json:"name"`
+	Changed    []string  `json:"changed,omitempty"`
+	Item       *pipeView `json:"item,omitempty"`
+	Previous   *pipeView `json:"previous,omitempty"`
+	ObservedAt time.Time `json:"observed_at"`
+}
+
+func (a App) watchPipesCmd(ctx context.Context, state *store.Store, f flags) error {
+	interval := 2 * time.Second
+	if raw := f.values["interval"]; raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed < 500*time.Millisecond {
+			return errors.New("invalid_input: --interval must be a duration of at least 500ms")
+		}
+		interval = parsed
+	}
+	return a.watchPipes(ctx, state, f.values["scope"], interval, f.bools["json"])
+}
+
+// watchPipes polls the transactional local projection. Output is synchronous:
+// a slow writer backpressures polling instead of accumulating a goroutine or
+// an unbounded event queue.
+func (a App) watchPipes(ctx context.Context, state *store.Store, scope string, interval time.Duration, jsonOutput bool) error {
+	previous := map[string]pipeView{}
+	poll := func() error {
+		freshness, err := a.watchPipeFreshness(ctx, state, scope)
+		if err != nil {
+			return err
+		}
+		items, err := buildPipeViews(ctx, state, scope, freshness)
+		if err != nil {
+			return err
+		}
+		current := make(map[string]pipeView, len(items))
+		for _, item := range items {
+			current[pipeWatchKey(item)] = item
+		}
+		events := diffPipeViews(previous, current, a.currentTime())
+		for _, event := range events {
+			if err := a.emitPipeWatchEvent(jsonOutput, event); err != nil {
+				return err
+			}
+		}
+		previous = current
+		return nil
+	}
+	if err := poll(); err != nil {
+		if errors.Is(err, context.Canceled) {
+			return nil
+		}
+		return err
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := poll(); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				return err
+			}
+		}
+	}
+}
+
+func (a App) watchPipeFreshness(ctx context.Context, state *store.Store, scopeFilter string) (map[string]string, error) {
+	memberships, err := state.Memberships(ctx)
+	if err != nil {
+		return nil, err
+	}
+	freshness := make(map[string]string, len(memberships))
+	for _, membership := range memberships {
+		if scopeFilter != "" && membership.Scope != scopeFilter {
+			continue
+		}
+		value, err := state.ScopeFreshness(ctx, membership.Scope)
+		if err != nil && !errors.Is(err, domain.ErrNotFound) {
+			return nil, fmt.Errorf("persistence_failed: discovery freshness: %w", err)
+		}
+		if err != nil {
+			value.Scope = membership.Scope
+		}
+		freshness[membership.Scope] = pipeCacheStatus(value, err == nil, a.currentTime()).CacheState
+	}
+	return freshness, nil
+}
+
+func pipeWatchKey(item pipeView) string { return item.Scope + "\x00" + item.ID }
+
+func diffPipeViews(previous, current map[string]pipeView, observedAt time.Time) []pipeWatchEvent {
+	keys := make([]string, 0, len(previous)+len(current))
+	seen := make(map[string]bool, len(previous)+len(current))
+	for key := range previous {
+		seen[key] = true
+		keys = append(keys, key)
+	}
+	for key := range current {
+		if !seen[key] {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	events := make([]pipeWatchEvent, 0, len(keys))
+	for _, key := range keys {
+		before, beforeOK := previous[key]
+		after, afterOK := current[key]
+		switch {
+		case !beforeOK && afterOK:
+			value := after
+			events = append(events, pipeWatchEvent{EventType: "added", Scope: after.Scope, PipeID: after.ID, Name: after.Name, Item: &value, ObservedAt: observedAt})
+		case beforeOK && !afterOK:
+			value := before
+			eventType := "removed"
+			if before.ExpiresAt != nil && !before.ExpiresAt.After(observedAt) {
+				eventType = "expired"
+			}
+			events = append(events, pipeWatchEvent{EventType: eventType, Scope: before.Scope, PipeID: before.ID, Name: before.Name, Previous: &value, ObservedAt: observedAt})
+		case beforeOK && afterOK:
+			changed := changedPipeViewFields(before, after)
+			if len(changed) == 0 {
+				continue
+			}
+			oldValue, newValue := before, after
+			events = append(events, pipeWatchEvent{EventType: pipeWatchChangeType(before, after, observedAt), Scope: after.Scope, PipeID: after.ID, Name: after.Name, Changed: changed, Item: &newValue, Previous: &oldValue, ObservedAt: observedAt})
+		}
+	}
+	return events
+}
+
+// pipeWatchChangeType preserves distinct degraded/recovered observations while
+// keeping unrelated projection changes as updated. Status is local verified
+// runtime state; source and freshness remain available in Changed as evidence.
+func pipeWatchChangeType(before, after pipeView, observedAt time.Time) string {
+	switch {
+	case before.ExpiresAt != nil && !before.ExpiresAt.After(observedAt) && pipeViewHasNetworkSource(before) && !pipeViewHasNetworkSource(after):
+		return "expired"
+	case before.Status != "degraded" && after.Status == "degraded":
+		return "degraded"
+	case before.Status == "degraded" && after.Status != "degraded":
+		return "recovered"
+	default:
+		return "updated"
+	}
+}
+
+func pipeViewHasNetworkSource(item pipeView) bool {
+	return item.Source == "network" || item.Source == "local+network"
+}
+
+func changedPipeViewFields(before, after pipeView) []string {
+	changed := make([]string, 0, 3)
+	if before.Status != after.Status {
+		changed = append(changed, "status")
+	}
+	if before.Source != after.Source {
+		changed = append(changed, "source")
+	}
+	if before.Freshness != after.Freshness {
+		changed = append(changed, "freshness")
+	}
+	return changed
+}
+
+func (a App) emitPipeWatchEvent(jsonOutput bool, event pipeWatchEvent) error {
+	if jsonOutput {
+		return json.NewEncoder(a.Out).Encode(event)
+	}
+	item := event.Item
+	if item == nil {
+		item = event.Previous
+	}
+	if item == nil { // defensive: each event must contain its current or prior view.
+		return errors.New("internal error: pipe watch event without view")
+	}
+	line := fmt.Sprintf("%s scope=%s pipe_id=%s name=%s status=%s source=%s freshness=%s", event.EventType, event.Scope, event.PipeID, event.Name, item.Status, item.Source, item.Freshness)
+	if len(event.Changed) > 0 {
+		line += " changed=" + strings.Join(event.Changed, ",")
+	}
+	_, err := fmt.Fprintln(a.Out, line)
+	return err
 }

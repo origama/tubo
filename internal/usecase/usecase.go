@@ -125,13 +125,17 @@ func redemptionAddress(invite accesslease.ExactInvite) (string, error) {
 }
 
 // recipientRefFor derives the deterministic local Pipe ref for a remote
-// invite audience. The name is bounded to the domain resource-name pattern.
-func recipientRefFor(pipeID string) (domain.Ref, error) {
-	name := "connect-" + pipeID
-	if len(name) > 63 {
-		name = name[:63]
+// invite audience, or the friendly name when one is given. The name is
+// bounded to the domain resource-name pattern.
+func recipientRefFor(pipeID, name string) (domain.Ref, error) {
+	if name != "" {
+		return domain.NewRef(domain.KindPipe, name)
 	}
-	return domain.NewRef(domain.KindPipe, name)
+	refName := "connect-" + pipeID
+	if len(refName) > 63 {
+		refName = refName[:63]
+	}
+	return domain.NewRef(domain.KindPipe, refName)
 }
 
 func persistenceError(what string, err error) error {

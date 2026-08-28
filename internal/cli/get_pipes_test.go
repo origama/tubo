@@ -109,7 +109,7 @@ func TestGetPipesFreshAndCachedOnlySkipNetworkOperation(t *testing.T) {
 			}
 			operations++
 		}}
-		if err := app.get(ctx, state, args); err != nil {
+		if err := app.runCommandForTest(t, ctx, state, append([]string{"get"}, args...)); err != nil {
 			t.Fatal(err)
 		}
 		if operations != 0 {
@@ -146,7 +146,7 @@ func TestGetPipesRefreshModesAndFailureFallback(t *testing.T) {
 		}
 		return nil
 	}}
-	if err := app.get(ctx, state, []string{"pipes", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 1 || calls["mars/default"].Force {
@@ -175,7 +175,7 @@ func TestGetPipesRefreshModesAndFailureFallback(t *testing.T) {
 	out.Reset()
 	errOut.Reset()
 	calls = map[string]appRuntime.FetchRecordsOptions{}
-	if err := app.get(ctx, state, []string{"pipes", "--refresh"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--refresh"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(calls) != 2 || !calls["solar/default"].Force || !calls["mars/default"].Force {
@@ -194,7 +194,7 @@ func TestGetPipesCachedOnlyNoMembershipAndFlagConflict(t *testing.T) {
 		calls++
 		return nil
 	}}
-	if err := app.get(ctx, state, []string{"pipes", "--cached-only", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--cached-only", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 0 {
@@ -204,7 +204,7 @@ func TestGetPipesCachedOnlyNoMembershipAndFlagConflict(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &value); err != nil || len(value) != 2 {
 		t.Fatalf("JSON stdout must contain one typed value: %v %q", err, out.String())
 	}
-	if err := app.get(ctx, state, []string{"pipes", "--refresh", "--cached-only"}); err == nil || !strings.Contains(err.Error(), "cannot be used together") {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--refresh", "--cached-only"}); err == nil || !strings.Contains(err.Error(), "cannot be used together") {
 		t.Fatalf("flag conflict: %v", err)
 	}
 }
@@ -221,7 +221,7 @@ func TestGetPipesCachedOnlySkipsRetryCooldown(t *testing.T) {
 		calls++
 		return nil
 	}}
-	if err := app.get(ctx, state, []string{"pipes", "--cached-only"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--cached-only"}); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 0 {
@@ -240,7 +240,7 @@ func TestGetPipesCachedOnlyExcludesUnverifiableCache(t *testing.T) {
 		t.Fatal("cached-only attempted refresh")
 		return nil
 	}}
-	if err := app.get(ctx, state, []string{"pipes", "--cached-only", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--cached-only", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	var value struct {
@@ -258,7 +258,7 @@ func TestGetPipesRefreshFailureKeepsVerifiedCache(t *testing.T) {
 	app := App{Out: &out, Err: &bytes.Buffer{}, fetchRecords: func(context.Context, *store.Store, string, appRuntime.FetchRecordsOptions) error {
 		return errors.New("authority_unreachable: test outage")
 	}}
-	if err := app.get(ctx, state, []string{"pipes", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	var value struct {
@@ -285,7 +285,7 @@ func TestGetPipesLocalRowsSurviveRefreshFailure(t *testing.T) {
 	app := App{Out: &out, Err: &errOut, fetchRecords: func(context.Context, *store.Store, string, appRuntime.FetchRecordsOptions) error {
 		return errors.New("authority_unreachable: test outage")
 	}}
-	if err := app.get(ctx, state, []string{"pipes", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	var value struct {
@@ -317,7 +317,7 @@ func TestGetPipesExactFreshnessBoundaryRefreshes(t *testing.T) {
 			return errors.New("authority_unreachable: test outage")
 		},
 	}
-	if err := app.get(ctx, state, []string{"pipes", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 1 {
@@ -342,14 +342,14 @@ func TestGetPipesForcedRefreshReachesOverlayBoundaryPastCooldown(t *testing.T) {
 		}
 		operations++
 	}}
-	if err := app.get(ctx, state, []string{"pipes", "--cached-only", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--cached-only", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	if operations != 0 {
 		t.Fatalf("stale cached-only reached overlay-host boundary: %d", operations)
 	}
 	started := time.Now()
-	if err := app.get(ctx, state, []string{"pipes", "--refresh", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--refresh", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	if operations != 1 {
@@ -368,7 +368,7 @@ func TestGetPipesCachedOnlyExcludesExpiredRecord(t *testing.T) {
 	app := App{Out: &out, Err: &bytes.Buffer{}, networkOperationObserver: func(string) {
 		t.Fatal("cached-only reached overlay-host boundary")
 	}}
-	if err := app.get(ctx, state, []string{"pipes", "--cached-only", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--cached-only", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	var value struct {
@@ -404,7 +404,7 @@ func TestGetPipesScopeFilterKeepsOnlySelectedScopedAndUnscopedLocalRows(t *testi
 	}
 	var out bytes.Buffer
 	app := App{Out: &out, Err: &bytes.Buffer{}}
-	if err := app.get(ctx, state, []string{"pipes", "--scope", "solar/default", "--json"}); err != nil {
+	if err := app.runCommandForTest(t, ctx, state, []string{"get", "pipes", "--scope", "solar/default", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	var value struct {
@@ -420,8 +420,12 @@ func TestGetPipesScopeFilterKeepsOnlySelectedScopedAndUnscopedLocalRows(t *testi
 
 func TestGetPipesRejectsObsoleteLiveFlag(t *testing.T) {
 	state, ctx := openPipeViewState(t)
-	for _, args := range [][]string{{"pipes", "--live"}, {"pipes", "--live", "ignored"}, {"pipes", "--live=ignored"}} {
-		if err := (App{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}).get(ctx, state, args); err == nil || err.Error() != "invalid_input: --live is obsolete; use --refresh" {
+	for _, args := range [][]string{
+		{"get", "pipes", "--live"},
+		{"get", "pipes", "--live", "ignored"},
+		{"get", "pipes", "--live=ignored"},
+	} {
+		if err := (App{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}).runCommandForTest(t, ctx, state, args); err == nil || err.Error() != "invalid_input: --live is obsolete; use --refresh" {
 			t.Fatalf("%v error = %v", args, err)
 		}
 	}

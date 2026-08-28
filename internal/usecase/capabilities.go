@@ -60,7 +60,10 @@ type AttachResult struct {
 	ServiceRef domain.Ref
 	PipeRef    domain.Ref
 	PipeID     string
-	Created    bool
+	// Created is true when the Service definition was newly created.
+	Created bool
+	// PipeCreated is true when the Pipe definition was newly created.
+	PipeCreated bool
 }
 
 // ShareExactInput carries the parameters for minting an ExactInvite from an
@@ -82,12 +85,17 @@ type ShareExactResult struct {
 type ConnectExactInput struct {
 	Invite      string // canonical base64url ExactInvite
 	LocalListen string // host:port for the local ingress
+	// Name is an optional friendly name for the local Pipe. When empty, a
+	// deterministic name derived from the remote Pipe ID is used.
+	Name string
 }
 
 // ConnectExactResult carries the durable refs of the local ingress Pipe.
 type ConnectExactResult struct {
 	PipeRef domain.Ref
 	PipeID  string
+	// TargetPipeID is the remote Pipe the local Pipe targets.
+	TargetPipeID string
 }
 
 // StartPipeInput carries the Pipe ref to start.

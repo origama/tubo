@@ -253,10 +253,10 @@ func TestWatchPipesSlowConsumerBackpressuresWithoutQueue(t *testing.T) {
 func TestWatchPipesCLIValidation(t *testing.T) {
 	state, ctx := openPipeViewState(t)
 	app := App{Out: &bytes.Buffer{}, Err: &bytes.Buffer{}}
-	if err := app.watch(ctx, state, []string{"pipes", "--interval", "499ms"}); err == nil || !strings.Contains(err.Error(), "at least 500ms") {
+	if err := app.runCommandForTest(t, ctx, state, []string{"watch", "pipes", "--interval", "499ms"}); err == nil || !strings.Contains(err.Error(), "at least 500ms") {
 		t.Fatalf("minimum interval error = %v", err)
 	}
-	if err := app.watch(ctx, state, []string{"services"}); err == nil || !strings.Contains(err.Error(), "usage:") {
+	if err := app.runCommandForTest(t, ctx, state, []string{"watch", "services"}); err == nil || !strings.Contains(err.Error(), "unknown subcommand") {
 		t.Fatalf("watch routing error = %v", err)
 	}
 }
