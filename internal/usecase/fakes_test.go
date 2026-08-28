@@ -16,6 +16,10 @@ import (
 
 var errConflict = errors.New("conflict: resource already exists with different specification")
 
+// errPipeIDDuplicate mirrors the Store's UNIQUE(pipe_id) constraint: a new
+// ref may never reuse an identity another ref already owns.
+var errPipeIDDuplicate = errors.New("pipe_id duplicate")
+
 // ---- Service repo fake ----
 
 type memoryServiceRepo struct {
@@ -143,6 +147,13 @@ func (r *memoryPipeRepo) Upsert(_ context.Context, spec domain.PipeSpec, ownerKe
 			r.ownerKeys[ref] = ownerKeyFile
 		}
 		return false, nil
+	}
+	// Mirror the Store's UNIQUE(pipe_id) constraint: a new ref may not reuse
+	// an identity another ref already owns.
+	if spec.PipeID != "" {
+		if ownerRef, taken := r.pipeIDs[spec.PipeID]; taken && ownerRef != ref {
+			return false, errPipeIDDuplicate
+		}
 	}
 	r.specs[ref] = spec
 	if ownerKeyFile != "" {

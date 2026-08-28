@@ -81,15 +81,15 @@ run_private_http() {
   [[ "$viewer_found" == 1 ]] || fail 'viewer could not discover origin pipe'
   printf '%s\n' "$viewer_pipes" >"$ARTIFACTS/viewer-pipes.json"
   if printf '%s' "$viewer_pipes" | grep -F '127.0.0.1:' >/dev/null; then fail 'viewer listing leaked a local service target'; fi
-  if env TUBO_HOME="$VIEWER_HOME" "$CLIENT_BIN" connect "pipe/$origin_pipe_id" --local "127.0.0.1:$VIEWER_PORT" -d --json >"$ARTIFACTS/viewer-connect.json" 2>"$ARTIFACTS/viewer-connect.err"; then
-    viewer_pid="$(json_get "value['pid']" <"$ARTIFACTS/viewer-connect.json")"
-    record_local_runner viewer "$viewer_pid" '_run-pipe'
+  if env TUBO_HOME="$VIEWER_HOME" "$CLIENT_BIN" connect --token "forged-invite-token" --local "127.0.0.1:$VIEWER_PORT" -d --json >"$ARTIFACTS/viewer-connect.json" 2>"$ARTIFACTS/viewer-connect.err"; then
     fail 'viewer connect unexpectedly succeeded'
   fi
   grep -F 'authorization_denied' "$ARTIFACTS/viewer-connect.err" >/dev/null || fail 'viewer connect failed without authorization_denied class'
 
-  log 'creating local consumer pipe through connect preset'
-  client_sh "$CLIENT_BIN" connect "pipe/$origin_pipe_id" --local "127.0.0.1:$CLIENT_PORT" -d --json >"$ARTIFACTS/client-connect.json"
+  log 'creating local consumer pipe through exact invite connect preset'
+  exact_invite="$(remote "$PUBLISHER_HOST" "env TUBO_HOME='$REMOTE_ROOT/home' '$REMOTE_ROOT/bin/tubo' share pipe/echo-team")"
+  validate_generated_value "$exact_invite"
+  client_sh "$CLIENT_BIN" connect --token "$exact_invite" --local "127.0.0.1:$CLIENT_PORT" -d --json >"$ARTIFACTS/client-connect.json"
   client_pid="$(json_get "value['pid']" <"$ARTIFACTS/client-connect.json")"
   client_pipe_ref="$(json_get "value['ref']" <"$ARTIFACTS/client-connect.json")"
   record_local_runner client "$client_pid" "_run-pipe $client_pipe_ref"

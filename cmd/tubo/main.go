@@ -23,6 +23,11 @@ func main() {
 	app := cli.App{Out: os.Stdout, Err: os.Stderr, ProductVersion: productVersion, ProtocolVersion: protocolVersion, CommitSHA: commitSHA, BuildDate: buildDate}
 	if err := app.Run(ctx, os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "tubo:", err)
+		if try := cli.Hint(err); try != "" {
+			fmt.Fprintln(os.Stderr)
+			fmt.Fprintln(os.Stderr, "Try:")
+			fmt.Fprintln(os.Stderr, "  "+try)
+		}
 		os.Exit(1)
 	}
 }

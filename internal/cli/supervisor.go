@@ -169,31 +169,13 @@ func waitSupervisorReady(ctx context.Context, state *store.Store, ref string) (s
 	return store.Run{}, errors.New("readiness_failed: launchd service did not become ready")
 }
 
-func (a App) supervise(ctx context.Context, state *store.Store, args []string) error {
-	f, err := parse(args)
+func (a App) superviseInstall(ctx context.Context, state *store.Store, f flags) error {
+	ref, err := domain.ParseRef(f.args[0])
 	if err != nil {
 		return err
 	}
-	if len(f.args) != 2 {
-		return errors.New("usage: tubo supervise <install|status|uninstall> <pipe/name|authority/cluster> [--scope cluster/namespace] [--json]")
-	}
-	ref, err := domain.ParseRef(f.args[1])
-	if err != nil {
-		return err
-	}
-	switch f.args[0] {
-	case "install":
-		return a.superviseInstall(ctx, state, ref, f.values["scope"], f.bools["json"])
-	case "status":
-		return a.superviseStatus(ctx, state, ref, f.bools["json"])
-	case "uninstall":
-		return a.superviseUninstall(ctx, state, ref, f.bools["json"])
-	default:
-		return errors.New("usage: tubo supervise <install|status|uninstall> <pipe/name|authority/cluster> [--scope cluster/namespace] [--json]")
-	}
-}
-
-func (a App) superviseInstall(ctx context.Context, state *store.Store, ref domain.Ref, scope string, jsonOutput bool) error {
+	scope := f.values["scope"]
+	jsonOutput := f.bools["json"]
 	if goruntime.GOOS != "darwin" {
 		return errors.New("unsupported: launchd supervision requires macOS")
 	}
@@ -206,7 +188,7 @@ func (a App) superviseInstall(ctx context.Context, state *store.Store, ref domai
 			return err
 		}
 	} else {
-		return errors.New("supervision supports pipe/<name> or authority/<cluster>")
+		return errors.New("invalid_input: supervision supports pipe/<name> or authority/<cluster>")
 	}
 	if _, err := state.Supervisor(ctx, ref.String()); err == nil {
 		return fmt.Errorf("conflict: %s already has a supervisor", ref)
@@ -288,7 +270,12 @@ func (a App) superviseInstall(ctx context.Context, state *store.Store, ref domai
 	return a.emit(jsonOutput, map[string]any{"ref": ref.String(), "manager": "launchd", "label": plan.Label, "status": "ready", "pid": run.PID}, ref.String()+" launchd ready")
 }
 
-func (a App) superviseStatus(ctx context.Context, state *store.Store, ref domain.Ref, jsonOutput bool) error {
+func (a App) superviseStatus(ctx context.Context, state *store.Store, f flags) error {
+	ref, err := domain.ParseRef(f.args[0])
+	if err != nil {
+		return err
+	}
+	jsonOutput := f.bools["json"]
 	supervisor, err := state.Supervisor(ctx, ref.String())
 	if err != nil {
 		return err
@@ -318,7 +305,12 @@ func (a App) superviseStatus(ctx context.Context, state *store.Store, ref domain
 	return a.emit(jsonOutput, value, ref.String()+" supervisor "+status)
 }
 
-func (a App) superviseUninstall(ctx context.Context, state *store.Store, ref domain.Ref, jsonOutput bool) error {
+func (a App) superviseUninstall(ctx context.Context, state *store.Store, f flags) error {
+	ref, err := domain.ParseRef(f.args[0])
+	if err != nil {
+		return err
+	}
+	jsonOutput := f.bools["json"]
 	supervisor, err := state.Supervisor(ctx, ref.String())
 	if err != nil {
 		return err

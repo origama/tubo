@@ -39,10 +39,10 @@ func runScopeStatus(t *testing.T, app App, ctx context.Context, state *store.Sto
 	var out bytes.Buffer
 	app.Out = &out
 	if get {
-		if err := app.get(ctx, state, []string{"scopes", "--json"}); err != nil {
+		if err := app.runCommandForTest(t, ctx, state, []string{"get", "scopes", "--json"}); err != nil {
 			t.Fatal(err)
 		}
-	} else if err := app.inspect(ctx, state, []string{"scope/solar/default", "--json"}); err != nil {
+	} else if err := app.runCommandForTest(t, ctx, state, []string{"inspect", "scope/solar/default", "--json"}); err != nil {
 		t.Fatal(err)
 	}
 	return decodeScopeSync(t, out.Bytes(), get), out.String()

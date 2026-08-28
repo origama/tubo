@@ -15,7 +15,7 @@
 
 ## Contracts — current prototype/reference unless superseded by HLD
 
-- [`reference/CLI.md`](reference/CLI.md)
+- [`reference/CLI.md`](reference/CLI.md) — **post-A0 normative human CLI contract** (the other contract files below remain prototype-reference until superseded)
 - [`reference/PROTOCOL.md`](reference/PROTOCOL.md)
 - [`reference/STATE.md`](reference/STATE.md)
 - [`reference/VERSIONING.md`](reference/VERSIONING.md)

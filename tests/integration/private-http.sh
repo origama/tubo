@@ -119,8 +119,11 @@ mkdir -p "$HOST_B"
 env TUBO_HOME="$HOST_B" "$T" join overlay --relay "$RELAY" --swarm-key "$WORK/swarm.key" --force-reachability private --json >/dev/null
 echo "OK: Host B joined overlay"
 
-# Connect redeems invite, creates local pipe, starts daemon.
-OUTPUT="$(env TUBO_HOME="$HOST_B" "$T" connect --token "$INVITE" --local "127.0.0.1:$CLIENT_PORT" -d --json 2>&1 || true)"
+# Connect redeems invite with a friendly local Pipe name, creates local
+# pipe, starts daemon.
+# stderr (progress/hints) is captured separately: --json stdout must be exactly
+# one parseable JSON value.
+OUTPUT="$(env TUBO_HOME="$HOST_B" "$T" connect --token "$INVITE" --local "127.0.0.1:$CLIENT_PORT" --name west -d --json 2>"$WORK/connect-hb.err" || true)"
 if [[ -z "$OUTPUT" ]]; then
   echo "FAIL: connect produced no output" >&2
   ls -la "$HOST_B/logs/" 2>/dev/null >&2 || true
@@ -135,7 +138,13 @@ if ! printf '%s' "$OUTPUT" | python3 -c 'import json,sys; json.load(sys.stdin)' 
 fi
 CONNECT_PID="$(printf '%s' "$OUTPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["pid"])')"
 PIDS+=("$CONNECT_PID")
-echo "OK: Host B connect daemon pid=$CONNECT_PID"
+# The friendly name must produce a stable local Pipe ref.
+ref="$(printf '%s' "$OUTPUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["ref"])')"
+if [[ "$ref" != "pipe/west" ]]; then
+  echo "FAIL: connect --name ref = $ref, want pipe/west" >&2; exit 1
+fi
+wait_json "$HOST_B" "'$T' inspect pipe/west --json" "value['status']=='ready'" >/dev/null
+echo "OK: Host B connect daemon pid=$CONNECT_PID ref=$ref"
 
 # Wait for the local listener to be ready.
 wait_port "$CLIENT_PORT" "client listener" || {

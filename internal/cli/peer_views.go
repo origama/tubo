@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"sort"
@@ -96,6 +97,18 @@ func buildPeerViews(ctx context.Context, state *store.Store) ([]peerView, error)
 		return out[i].Name < out[j].Name
 	})
 	return out, nil
+}
+
+// getPeers lists aliases plus peers observed by live local runtimes.
+func (a App) getPeers(ctx context.Context, state *store.Store, f flags) error {
+	values, err := buildPeerViews(ctx, state)
+	if err != nil {
+		return err
+	}
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(map[string]any{"items": values})
+	}
+	return renderPeerViews(a.Out, values)
 }
 
 func renderPeerViews(out io.Writer, items []peerView) error {

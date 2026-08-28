@@ -20,9 +20,12 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	appRuntime "github.com/origama/tubo-rebuilt/internal/runtime"
 	"github.com/origama/tubo-rebuilt/internal/store"
 )
 
+// extractGlobalFlags consumes the global flags anywhere in the argument list
+// and returns the remaining args plus parsed values.
 func extractGlobalFlags(args []string) ([]string, bool, int, string, error) {
 	quiet, verbosity, level := false, 0, ""
 	clean := make([]string, 0, len(args))
@@ -37,7 +40,7 @@ func extractGlobalFlags(args []string) ([]string, bool, int, string, error) {
 			level = strings.TrimPrefix(arg, "--log-level=")
 		case arg == "--log-level":
 			if i+1 >= len(args) {
-				return nil, false, 0, "", errors.New("--log-level requires value")
+				return nil, false, 0, "", errors.New("invalid_input: --log-level requires value")
 			}
 			i++
 			level = args[i]
@@ -49,20 +52,13 @@ func extractGlobalFlags(args []string) ([]string, bool, int, string, error) {
 		switch level {
 		case "error", "warn", "info", "debug", "trace":
 		default:
-			return nil, false, 0, "", errors.New("--log-level must be error, warn, info, debug, or trace")
+			return nil, false, 0, "", errors.New("invalid_input: --log-level must be error, warn, info, debug, or trace")
 		}
 	}
 	return clean, quiet, verbosity, level, nil
 }
 
-func (a App) scopeUse(ctx context.Context, state *store.Store, args []string) error {
-	f, err := parse(args)
-	if err != nil {
-		return err
-	}
-	if len(f.args) != 1 {
-		return errors.New("usage: tubo scope use cluster/namespace")
-	}
+func (a App) scopeUse(ctx context.Context, state *store.Store, f flags) error {
 	if _, err := parseScope(f.args[0]); err != nil {
 		return err
 	}
@@ -100,94 +96,186 @@ func scopeSyncProjection(ctx context.Context, state *store.Store, scope string) 
 	return value, nil
 }
 
-func (a App) getLocal(ctx context.Context, state *store.Store, f flags) error {
-	kind := f.args[0]
-	var items any
-	var refs []string
-	switch kind {
-	case "services":
-		values, err := state.Services(ctx)
-		if err != nil {
-			return err
-		}
-		rows := make([]map[string]any, 0, len(values))
-		for _, value := range values {
-			rows = append(rows, map[string]any{"ref": value.Ref.String(), "name": value.Ref.Name, "kind": value.Kind})
-			refs = append(refs, value.Ref.String())
-		}
-		items = rows
-	case "scopes":
-		current, _ := state.CurrentScope(ctx)
-		local, err := state.Scopes(ctx)
-		if err != nil {
-			return err
-		}
-		memberships, err := state.Memberships(ctx)
-		if err != nil {
-			return err
-		}
-		rows := []map[string]any{}
-		seen := map[string]int{}
-		for _, value := range local {
-			sync, err := scopeSyncProjection(ctx, state, value.Name)
-			if err != nil {
-				return err
-			}
-			seen[value.Name] = len(rows)
-			rows = append(rows, map[string]any{"ref": "scope/" + value.Name, "name": value.Name, "authority": true, "current": value.Name == current, "sync": sync})
-			refs = append(refs, "scope/"+value.Name)
-		}
-		for _, value := range memberships {
-			if index, ok := seen[value.Scope]; ok {
-				rows[index]["role"] = value.Role
-				continue
-			}
-			sync, err := scopeSyncProjection(ctx, state, value.Scope)
-			if err != nil {
-				return err
-			}
-			rows = append(rows, map[string]any{"ref": "scope/" + value.Scope, "name": value.Scope, "authority": false, "role": value.Role, "current": value.Scope == current, "sync": sync})
-			refs = append(refs, "scope/"+value.Scope)
-		}
-		items = rows
-	case "processes", "runs":
-		values, err := runtimeViews(ctx, state)
-		if err != nil {
-			return err
-		}
-		items = values
-		for _, value := range values {
-			refs = append(refs, value.PrimaryRef)
-		}
-	case "peers":
-		values, err := buildPeerViews(ctx, state)
-		if err != nil {
-			return err
-		}
-		if f.bools["json"] {
-			return json.NewEncoder(a.Out).Encode(map[string]any{"items": values})
-		}
-		return renderPeerViews(a.Out, values)
-	case "overlays":
-		value, err := state.Config()
-		if err != nil {
-			return err
-		}
-		row := map[string]any{"ref": "overlay/" + value.CurrentContext, "relays": value.Relays, "force_reachability": value.ForceReachability, "current_scope": value.CurrentScope}
-		items = []any{row}
-		refs = []string{"overlay/" + value.CurrentContext}
-	default:
-		return errors.New("usage: tubo get <pipes|services|scopes|processes|peers|overlays>")
-	}
-	if f.bools["json"] {
-		return json.NewEncoder(a.Out).Encode(map[string]any{"items": items})
-	}
-	if len(refs) == 0 {
-		_, err := fmt.Fprintln(a.Out, "No resources.")
+func (a App) getServices(ctx context.Context, state *store.Store, f flags) error {
+	values, err := state.Services(ctx)
+	if err != nil {
 		return err
 	}
-	_, err := fmt.Fprintln(a.Out, strings.Join(refs, "\n"))
+	rows := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		rows = append(rows, map[string]any{"ref": value.Ref.String(), "name": value.Ref.Name, "kind": value.Kind, "target": value.Target})
+	}
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(map[string]any{"items": rows})
+	}
+	if len(rows) == 0 {
+		_, err := fmt.Fprintln(a.Out, "No services. Define one with: tubo service create <name> --target <url>")
+		return err
+	}
+	return renderServiceTable(a.Out, rows)
+}
+
+func (a App) getScopes(ctx context.Context, state *store.Store, f flags) error {
+	current, _ := state.CurrentScope(ctx)
+	local, err := state.Scopes(ctx)
+	if err != nil {
+		return err
+	}
+	memberships, err := state.Memberships(ctx)
+	if err != nil {
+		return err
+	}
+	rows := []map[string]any{}
+	seen := map[string]int{}
+	for _, value := range local {
+		sync, err := scopeSyncProjection(ctx, state, value.Name)
+		if err != nil {
+			return err
+		}
+		seen[value.Name] = len(rows)
+		rows = append(rows, map[string]any{"ref": "scope/" + value.Name, "name": value.Name, "authority": true, "current": value.Name == current, "sync": sync})
+	}
+	for _, value := range memberships {
+		if index, ok := seen[value.Scope]; ok {
+			rows[index]["role"] = value.Role
+			continue
+		}
+		sync, err := scopeSyncProjection(ctx, state, value.Scope)
+		if err != nil {
+			return err
+		}
+		rows = append(rows, map[string]any{"ref": "scope/" + value.Scope, "name": value.Scope, "authority": false, "role": value.Role, "current": value.Scope == current, "sync": sync})
+	}
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(map[string]any{"items": rows})
+	}
+	if len(rows) == 0 {
+		_, err := fmt.Fprintln(a.Out, "No scopes. Create one with: tubo scope create <cluster/namespace>")
+		return err
+	}
+	return renderScopeTable(a.Out, rows)
+}
+
+func (a App) getOverlays(ctx context.Context, state *store.Store, f flags) error {
+	value, err := state.Config()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return noOverlayResult(a, f)
+		}
+		return err
+	}
+	row := map[string]any{"ref": "overlay/" + value.CurrentContext, "relays": value.Relays, "force_reachability": value.ForceReachability, "current_scope": value.CurrentScope}
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(map[string]any{"items": []any{row}})
+	}
+	return renderOverlayTable(a.Out, row)
+}
+
+// noOverlayResult is the deterministic empty-state for overlay views: no
+// config file exists yet. JSON stays a valid empty projection; the human form
+// teaches the next action.
+func noOverlayResult(a App, f flags) error {
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(map[string]any{"items": []any{}})
+	}
+	_, err := fmt.Fprintln(a.Out, "No overlay configured. Run: tubo join overlay --relay <multiaddr> --swarm-key <file>")
 	return err
+}
+
+// inspect is the detailed human (or --json) view of one resource.
+func (a App) inspect(ctx context.Context, state *store.Store, f flags) error {
+	raw := f.args[0]
+	if strings.HasPrefix(raw, "service/") || strings.HasPrefix(raw, "scope/") || strings.HasPrefix(raw, "overlay/") || strings.HasPrefix(raw, "session/") || strings.HasPrefix(raw, "peer/") {
+		return a.inspectLocal(ctx, state, raw, f.bools["json"])
+	}
+	run, runErr := state.Run(ctx, raw)
+	if strings.HasPrefix(raw, "relay/") || strings.HasPrefix(raw, "authority/") {
+		if runErr != nil {
+			return withTry(fmt.Errorf("not_found: %s has no live runtime", raw), "check 'tubo ps' and the resource's config")
+		}
+		if f.bools["json"] {
+			return json.NewEncoder(a.Out).Encode(run)
+		}
+		return renderInspectRun(a.Out, run)
+	}
+	identifier := strings.TrimPrefix(raw, "pipe/")
+	spec, _, _, localErr := state.Pipe(ctx, raw)
+	if localErr != nil {
+		spec, _, _, localErr = state.Pipe(ctx, identifier)
+	}
+	if localErr == nil {
+		return a.inspectPipe(ctx, state, f, spec)
+	}
+	stored, err := state.Record(ctx, identifier)
+	if err != nil {
+		return err
+	}
+	record, err := appRuntime.ParseVerifiedRecord(ctx, state, stored)
+	if err != nil {
+		return err
+	}
+	path, candidates := advertisedPath(record.Addresses)
+	value := inspectRemotePipeView{
+		Ref:               "pipe/" + record.PipeID,
+		ID:                record.PipeID,
+		Name:              record.DisplayName,
+		Kind:              "pipe",
+		Scope:             record.Scope,
+		PeerID:            record.RuntimePeerID,
+		Status:            "available",
+		LogicalPath:       []string{"pipe/" + record.PipeID},
+		AuthorizationPath: []any{map[string]any{"scope": record.Scope.String(), "operation": "connect.access", "pipe_id": record.PipeID}},
+		TransportSummary:  map[string]any{"current": path, "source": "advertised", "advertised_path": path, "advertised_candidates": candidates},
+		Sessions:          []store.Session{},
+		RecordAge:         recordAge(record, a.currentTime()),
+		RecordFresh:       recordFresh(record, a.currentTime()),
+	}
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(value)
+	}
+	return renderInspectRemotePipe(a.Out, value)
+}
+
+func (a App) inspectPipe(ctx context.Context, state *store.Store, f flags, spec domain.PipeSpec) error {
+	run, runErr := state.Run(ctx, spec.Ref.String())
+	sessions, _ := state.Sessions(ctx, spec.Ref.String())
+	authorizationPath := []any{}
+	if spec.Scope != nil {
+		authorizationPath = append(authorizationPath, map[string]any{"scope": spec.Scope.String(), "operation": "pipe.publish"})
+	} else if record, ok := localAdvertisedRecord(ctx, state, spec); ok {
+		authorizationPath = append(authorizationPath, map[string]any{"scope": record.Scope.String(), "operation": "connect.access", "pipe_id": record.PipeID})
+	}
+	status := localPipeStatus(run, runErr)
+	value := inspectPipeView{
+		Ref:               spec.Ref.String(),
+		ID:                spec.PipeID,
+		Kind:              "pipe",
+		Ingress:           spec.Ingress,
+		Target:            spec.Target.String(),
+		Status:            status,
+		Scope:             scopeString(spec.Scope),
+		Visibility:        spec.Visibility,
+		Access:            spec.Access,
+		LogicalPath:       []string{spec.Ref.String(), spec.Target.String()},
+		AuthorizationPath: authorizationPath,
+		TransportSummary:  transportSummary(ctx, state, spec, sessions),
+		Sessions:          sessions,
+	}
+	if record, ok := localAdvertisedRecord(ctx, state, spec); ok {
+		value.RecordAge = recordAge(record, a.currentTime())
+		value.RecordFresh = recordFresh(record, a.currentTime())
+	}
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(value)
+	}
+	return renderInspectPipe(a.Out, value)
+}
+
+func scopeString(scope *domain.Scope) string {
+	if scope == nil {
+		return ""
+	}
+	return scope.String()
 }
 
 func (a App) inspectLocal(ctx context.Context, state *store.Store, raw string, jsonOutput bool) error {
@@ -201,7 +289,10 @@ func (a App) inspectLocal(ctx context.Context, state *store.Store, raw string, j
 		if err != nil {
 			return err
 		}
-		return a.emit(jsonOutput, value, fmt.Sprintf("%s %s %s", value.Ref, value.Kind, value.Target))
+		if jsonOutput {
+			return json.NewEncoder(a.Out).Encode(value)
+		}
+		return renderInspectService(a.Out, value)
 	case strings.HasPrefix(raw, "scope/"):
 		name := strings.TrimPrefix(raw, "scope/")
 		if _, err := parseScope(name); err != nil {
@@ -228,7 +319,10 @@ func (a App) inspectLocal(ctx context.Context, state *store.Store, raw string, j
 			return err
 		}
 		value["sync"] = sync
-		return a.emit(jsonOutput, value, raw)
+		if jsonOutput {
+			return json.NewEncoder(a.Out).Encode(value)
+		}
+		return renderInspectScope(a.Out, value)
 	case strings.HasPrefix(raw, "overlay/"):
 		value, err := state.Config()
 		if err != nil {
@@ -238,49 +332,51 @@ func (a App) inspectLocal(ctx context.Context, state *store.Store, raw string, j
 			return fmt.Errorf("%w: %s", domain.ErrNotFound, raw)
 		}
 		view := map[string]any{"ref": raw, "relays": value.Relays, "force_reachability": value.ForceReachability, "current_scope": value.CurrentScope, "swarm_key": "configured"}
-		return a.emit(jsonOutput, view, raw)
+		if jsonOutput {
+			return json.NewEncoder(a.Out).Encode(view)
+		}
+		return renderInspectOverlay(a.Out, view)
 	case strings.HasPrefix(raw, "session/"):
 		value, err := state.Session(ctx, strings.TrimPrefix(raw, "session/"))
 		if err != nil {
 			return err
 		}
-		return a.emit(jsonOutput, value, fmt.Sprintf("session/%s %s", value.ID, value.InitialTransportPath))
+		if jsonOutput {
+			return json.NewEncoder(a.Out).Encode(value)
+		}
+		return renderInspectSession(a.Out, value)
 	case strings.HasPrefix(raw, "peer/"):
 		value, err := state.PeerAlias(ctx, strings.TrimPrefix(raw, "peer/"))
 		if err != nil {
 			return err
 		}
-		return a.emit(jsonOutput, value, fmt.Sprintf("peer/%s %s", value.PeerID, value.Name))
+		if jsonOutput {
+			return json.NewEncoder(a.Out).Encode(value)
+		}
+		return renderInspectPeer(a.Out, value)
 	}
-	return fmt.Errorf("unsupported resource %q", raw)
+	return fmt.Errorf("invalid_input: unsupported resource %q", raw)
 }
 
-func (a App) peers(ctx context.Context, state *store.Store, args []string) error {
-	f, err := parse(args)
-	if err != nil {
-		return err
-	}
-	if len(f.args) != 2 || f.args[0] != "alias" {
-		return errors.New("usage: tubo peers alias <peer-id> --name <label> [--note <note>]")
-	}
-	if _, err := peer.Decode(f.args[1]); err != nil {
-		return fmt.Errorf("invalid peer ID: %w", err)
+func (a App) peersAlias(ctx context.Context, state *store.Store, f flags) error {
+	if _, err := peer.Decode(f.args[0]); err != nil {
+		return fmt.Errorf("invalid_input: invalid peer ID: %w", err)
 	}
 	name, err := f.required("name")
 	if err != nil {
 		return err
 	}
 	if len(name) > 63 || len(f.values["note"]) > 512 {
-		return errors.New("alias name or note exceeds limit")
+		return errors.New("invalid_input: alias name or note exceeds limit")
 	}
 	if strings.IndexFunc(name+f.values["note"], unicode.IsControl) >= 0 {
-		return errors.New("alias name and note must not contain control characters")
+		return errors.New("invalid_input: alias name and note must not contain control characters")
 	}
-	value := store.PeerAlias{PeerID: f.args[1], Name: name, Note: f.values["note"]}
+	value := store.PeerAlias{PeerID: f.args[0], Name: name, Note: f.values["note"]}
 	if err := state.PutPeerAlias(ctx, value); err != nil {
 		return err
 	}
-	return a.emit(f.bools["json"], map[string]any{"ref": "peer/" + value.PeerID, "name": value.Name, "status": "saved"}, "peer/"+value.PeerID+" saved")
+	return a.emit(f.bools["json"], map[string]any{"ref": "peer/" + value.PeerID, "name": value.Name, "status": "saved"}, "peer/"+value.PeerID+" saved as "+name)
 }
 
 func maskedConfig(value store.ConfigView) map[string]any {
@@ -291,39 +387,32 @@ func maskedConfig(value store.ConfigView) map[string]any {
 	return map[string]any{"version": value.Version, "current_context": value.CurrentContext, "current_scope": value.CurrentScope, "relays": value.Relays, "swarm_key_file": key, "force_reachability": value.ForceReachability}
 }
 
-func (a App) config(_ context.Context, state *store.Store, args []string) error {
-	f, err := parse(args)
+func (a App) configValidate(ctx context.Context, state *store.Store, f flags) error {
+	value, err := state.ValidateConfig()
+	if err != nil {
+		if os.IsNotExist(err) {
+			return errors.New("invalid_input: config: no overlay configured; run 'tubo join overlay --relay <multiaddr> --swarm-key <file>'")
+		}
+		return fmt.Errorf("invalid_input: config: %w", err)
+	}
+	return a.emit(f.bools["json"], map[string]any{"status": "valid", "config": maskedConfig(value)}, "config valid")
+}
+
+func (a App) configPrint(ctx context.Context, state *store.Store, f flags) error {
+	value, err := state.Config()
 	if err != nil {
 		return err
 	}
-	if len(f.args) != 1 {
-		return errors.New("usage: tubo config <validate|print> [--json]")
+	masked := maskedConfig(value)
+	if f.bools["json"] {
+		return json.NewEncoder(a.Out).Encode(masked)
 	}
-	switch f.args[0] {
-	case "validate":
-		value, err := state.ValidateConfig()
-		if err != nil {
-			return fmt.Errorf("invalid_input: config: %w", err)
-		}
-		return a.emit(f.bools["json"], map[string]any{"status": "valid", "config": maskedConfig(value)}, "config valid")
-	case "print":
-		value, err := state.Config()
-		if err != nil {
-			return err
-		}
-		masked := maskedConfig(value)
-		if f.bools["json"] {
-			return json.NewEncoder(a.Out).Encode(masked)
-		}
-		data, err := yaml.Marshal(masked)
-		if err != nil {
-			return err
-		}
-		_, err = a.Out.Write(data)
+	data, err := yaml.Marshal(masked)
+	if err != nil {
 		return err
-	default:
-		return errors.New("usage: tubo config <validate|print> [--json]")
 	}
+	_, err = a.Out.Write(data)
+	return err
 }
 
 type doctorCheck struct {
@@ -332,14 +421,7 @@ type doctorCheck struct {
 	Detail string `json:"detail,omitempty"`
 }
 
-func (a App) doctor(ctx context.Context, state *store.Store, args []string) error {
-	f, err := parse(args)
-	if err != nil {
-		return err
-	}
-	if len(f.args) > 0 {
-		return errors.New("usage: tubo doctor [--json]")
-	}
+func (a App) doctor(ctx context.Context, state *store.Store, f flags) error {
 	checks := []doctorCheck{}
 	add := func(name string, err error) {
 		if err != nil {
@@ -349,6 +431,9 @@ func (a App) doctor(ctx context.Context, state *store.Store, args []string) erro
 		}
 	}
 	_, configErr := state.ValidateConfig()
+	if os.IsNotExist(configErr) {
+		configErr = errors.New("no overlay configured; run 'tubo join overlay --relay <multiaddr> --swarm-key <file>'")
+	}
 	add("config", configErr)
 	for _, path := range []string{state.Home(), filepath.Join(state.Home(), "state.db"), filepath.Join(state.Home(), "secrets")} {
 		info, err := os.Stat(path)
@@ -423,14 +508,14 @@ func resourceLogPath(state *store.Store, raw string) (string, error) {
 	switch ref.Kind {
 	case domain.KindPipe, domain.KindAuthority, domain.KindRelay, domain.KindGateway:
 	default:
-		return "", errors.New("logs require pipe, authority, relay, or gateway resource")
+		return "", errors.New("invalid_input: logs require pipe, authority, relay, or gateway resource")
 	}
 	return filepath.Join(state.Home(), "logs", strings.ReplaceAll(ref.String(), "/", "-")+".log"), nil
 }
 
 func readTail(path string, count int) ([]string, error) {
 	if count < 0 || count > 10000 {
-		return nil, errors.New("tail must be between 0 and 10000")
+		return nil, errors.New("invalid_input: tail must be between 0 and 10000")
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -460,14 +545,7 @@ func readTail(path string, count int) ([]string, error) {
 	return lines, scanner.Err()
 }
 
-func (a App) logs(ctx context.Context, state *store.Store, args []string) error {
-	f, err := parse(args)
-	if err != nil {
-		return err
-	}
-	if len(f.args) != 1 {
-		return errors.New("usage: tubo logs <resource> [--tail N] [-f|--follow] [--json]")
-	}
+func (a App) logs(ctx context.Context, state *store.Store, f flags) error {
 	path, err := resourceLogPath(state, f.args[0])
 	if err != nil {
 		return err
@@ -476,12 +554,20 @@ func (a App) logs(ctx context.Context, state *store.Store, args []string) error 
 	if raw := f.values["tail"]; raw != "" {
 		tail, err = strconv.Atoi(raw)
 		if err != nil {
-			return err
+			return fmt.Errorf("invalid_input: --tail: %w", err)
 		}
 	}
 	lines, err := readTail(path, tail)
 	if err != nil {
-		return fmt.Errorf("not_found: log for %s: %w", f.args[0], err)
+		if os.IsNotExist(err) {
+			return withTry(fmt.Errorf("not_found: no log for %s yet", f.args[0]), "start it first: tubo start "+f.args[0])
+		}
+		return fmt.Errorf("invalid_input: cannot read log for %s: %v", f.args[0], err)
+	}
+	if f.bools["follow"] {
+		if f.bools["json"] {
+			return errors.New("invalid_input: --json cannot be combined with -f/--follow; 'watch pipes --json' provides NDJSON instead")
+		}
 	}
 	if f.bools["json"] {
 		return json.NewEncoder(a.Out).Encode(map[string]any{"ref": f.args[0], "lines": lines})
@@ -489,7 +575,7 @@ func (a App) logs(ctx context.Context, state *store.Store, args []string) error 
 	for _, line := range lines {
 		fmt.Fprintln(a.Out, line)
 	}
-	if !f.bools["f"] && !f.bools["follow"] {
+	if !f.bools["follow"] {
 		return nil
 	}
 	file, err := os.Open(path)
@@ -558,39 +644,34 @@ func stopRunAndWait(ctx context.Context, state *store.Store, ref string) error {
 	return errors.New("readiness_failed: process did not stop")
 }
 
-func (a App) restart(ctx context.Context, state *store.Store, args []string) error {
-	f, err := parse(args)
-	if err != nil {
+func (a App) restart(ctx context.Context, state *store.Store, f flags) error {
+	ref := f.args[0]
+	parsed, err := domain.ParseRef(ref)
+	if err != nil || parsed.Kind != domain.KindPipe {
+		return fmt.Errorf("invalid_input: restart requires a pipe ref like pipe/<name>; see 'tubo restart --help'")
+	}
+	if _, _, _, err := state.Pipe(ctx, ref); err != nil {
 		return err
 	}
-	if len(f.args) != 1 {
-		return errors.New("usage: tubo restart pipe/<name> [--json]")
-	}
-	ref, err := domain.ParseRef(f.args[0])
-	if err != nil || ref.Kind != domain.KindPipe {
-		return errors.New("restart requires pipe/<name>")
-	}
-	if _, _, _, err := state.Pipe(ctx, ref.String()); err != nil {
+	if err := supervisorAllowsCurrentSource(ctx, state, ref); err != nil {
 		return err
 	}
-	if err := supervisorAllowsCurrentSource(ctx, state, ref.String()); err != nil {
-		return err
-	}
-	if run, err := state.Run(ctx, ref.String()); err == nil {
+	if run, err := state.Run(ctx, ref); err == nil {
 		identity, identityErr := store.ProcessIdentity(run.PID)
 		if identityErr == nil && identity == run.ProcessIdentity {
-			if err := stopRunAndWait(ctx, state, ref.String()); err != nil {
+			if err := stopRunAndWait(ctx, state, ref); err != nil {
 				return err
 			}
-		} else if err := state.DeleteRun(ctx, ref.String()); err != nil {
+		} else if err := state.DeleteRun(ctx, ref); err != nil {
 			return err
 		}
 	}
-	run, err := a.startDetached(ctx, state, ref.String())
+	a.progressf("restarting %s...\n", ref)
+	run, err := a.startDetached(ctx, state, ref)
 	if err != nil {
 		return err
 	}
-	return a.emit(f.bools["json"], map[string]any{"ref": ref.String(), "status": "running", "pid": run.PID}, ref.String()+" restarted")
+	return a.emit(f.bools["json"], map[string]any{"ref": ref, "status": "ready", "pid": run.PID}, fmt.Sprintf("%s ready (pid %d)", ref, run.PID))
 }
 
 func staleRuns(ctx context.Context, state *store.Store) ([]string, error) {
@@ -621,23 +702,16 @@ func staleRuns(ctx context.Context, state *store.Store) ([]string, error) {
 	return removed, nil
 }
 
-func (a App) remove(ctx context.Context, state *store.Store, args []string) error {
-	f, err := parse(args)
-	if err != nil {
-		return err
+func (a App) remove(ctx context.Context, state *store.Store, f flags) error {
+	if len(f.args) == 0 {
+		return errors.New("invalid_input: rm requires a resource ref or --stale; see 'tubo rm --help'")
 	}
 	if f.bools["stale"] {
-		if len(f.args) > 0 {
-			return errors.New("usage: tubo rm --stale [--json]")
-		}
 		refs, err := staleRuns(ctx, state)
 		if err != nil {
 			return err
 		}
 		return a.emit(f.bools["json"], map[string]any{"removed": refs, "count": len(refs)}, fmt.Sprintf("removed %d stale runs", len(refs)))
-	}
-	if len(f.args) != 1 {
-		return errors.New("usage: tubo rm <service/name|pipe/name> [--force] [--json]")
 	}
 	ref, err := domain.ParseRef(f.args[0])
 	if err != nil {
@@ -651,7 +725,7 @@ func (a App) remove(ctx context.Context, state *store.Store, args []string) erro
 			identity, identityErr := store.ProcessIdentity(run.PID)
 			live := identityErr == nil && identity == run.ProcessIdentity
 			if live && !f.bools["force"] {
-				return fmt.Errorf("conflict: %s is running", ref)
+				return withTry(fmt.Errorf("conflict: %s is running", ref), "stop it first: tubo stop "+ref.String())
 			}
 			if live {
 				if err := stopRunAndWait(ctx, state, ref.String()); err != nil {
@@ -678,5 +752,31 @@ func (a App) remove(ctx context.Context, state *store.Store, args []string) erro
 		}
 		return a.emit(f.bools["json"], map[string]any{"ref": ref.String(), "status": "removed"}, ref.String()+" removed")
 	}
-	return errors.New("rm supports service/name or pipe/name")
+	return fmt.Errorf("invalid_input: rm supports service/<name> or pipe/<name>; see 'tubo rm --help'")
+}
+
+func (a App) stop(ctx context.Context, state *store.Store, f flags) error {
+	ref := f.args[0]
+	if err := supervisorAllowsCurrentSource(ctx, state, ref); err != nil {
+		return err
+	}
+	run, err := state.Run(ctx, ref)
+	if err != nil {
+		return withTry(fmt.Errorf("not_found: %s is not running", ref), "start it first: tubo start "+ref)
+	}
+	identity, err := store.ProcessIdentity(run.PID)
+	if err != nil {
+		return fmt.Errorf("not_found: process for %s is not running", ref)
+	}
+	if run.ProcessIdentity == "" || identity != run.ProcessIdentity {
+		return errors.New("conflict: stale process identity; refusing to signal PID")
+	}
+	process, err := os.FindProcess(run.PID)
+	if err != nil {
+		return err
+	}
+	if err := process.Signal(os.Interrupt); err != nil {
+		return err
+	}
+	return a.emit(f.bools["json"], map[string]any{"ref": ref, "status": "stopping"}, ref+" stopping")
 }

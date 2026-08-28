@@ -75,14 +75,16 @@ func (u UseCases) Attach(ctx context.Context, in AttachInput) (AttachResult, err
 		return AttachResult{}, u.pipesGetError(existingErr)
 	}
 	// Step 3: durable Pipe definition.
-	if _, err := u.Pipes.Upsert(ctx, spec, ownerKeyFile); err != nil {
+	pipeCreated, err := u.Pipes.Upsert(ctx, spec, ownerKeyFile)
+	if err != nil {
 		return AttachResult{}, persistenceError("pipe", err)
 	}
 	return AttachResult{
-		ServiceRef: service.Ref,
-		PipeRef:    pipeRef,
-		PipeID:     spec.PipeID,
-		Created:    created,
+		ServiceRef:  service.Ref,
+		PipeRef:     pipeRef,
+		PipeID:      spec.PipeID,
+		Created:     created,
+		PipeCreated: pipeCreated,
 	}, nil
 }
 
