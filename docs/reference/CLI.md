@@ -91,7 +91,7 @@ tubo revoke pipe-access <pipe-id>
 tubo revoke pipe-publish <pipe-id>
 ```
 
-Invites target exact `pipe_id`; display name is only a hint. Invite carries published pipe peer/address/protocol endpoint, never local service endpoint. One-time means one successful lease redemption, idempotent only for same client key/JTI retry. Access leases last 10 minutes; refresh leases last 48 hours and refresh later sessions only.
+Invites target exact `pipe_id`; display name is only a hint. On the A0 exact path, `share` succeeds only for the current ready, live owner Pipe runtime. It derives one canonical owner exact-redemption circuit locator from that runtime's PeerID plus the configured relay or verified default provider, then confirms the derived locator matches current runtime state. Missing, stopped, stale, malformed, or mismatched runtime state fails as `runtime_unavailable` before invite output. The owner binding carries this reachability locator and redemption protocol, never the local Service target, Scope, discovery, or application metadata. Locator and invite possession do not authorize Pipe open; recipient still redeems the invite for a short-lived exact-Pipe Access Lease. One-time means one successful lease redemption, idempotent only for same client key/JTI retry. Access leases last 10 minutes; refresh leases last 48 hours and refresh later sessions only.
 
 ## Runtime views
 

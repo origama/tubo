@@ -3,10 +3,10 @@ package node
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
@@ -104,9 +104,86 @@ func loadOrCreateIdentity(path string) (crypto.PrivKey, error) {
 func RelayInfo(address string) (*peer.AddrInfo, error) {
 	value, err := ma.NewMultiaddr(address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid relay address: %w", err)
 	}
-	return peer.AddrInfoFromP2pAddr(value)
+	p2pCount := 0
+	hasCircuit := false
+	ma.ForEach(value, func(component ma.Component) bool {
+		switch component.Protocol().Code {
+		case ma.P_P2P:
+			p2pCount++
+		case ma.P_CIRCUIT:
+			hasCircuit = true
+		}
+		return true
+	})
+	if p2pCount != 1 || hasCircuit {
+		return nil, errors.New("invalid relay address: require one terminal relay peer and no circuit")
+	}
+	info, err := peer.AddrInfoFromP2pAddr(value)
+	if err != nil {
+		return nil, fmt.Errorf("invalid relay address: %w", err)
+	}
+	if len(info.Addrs) != 1 {
+		return nil, errors.New("invalid relay address: missing relay transport")
+	}
+	return info, nil
+}
+
+// RelayAddress renders one canonical relay multiaddr from transport facts.
+// Input addresses may be a bare transport address or already end in the
+// matching relay /p2p component; output always contains that component once.
+func RelayAddress(info peer.AddrInfo) (string, error) {
+	if err := info.ID.Validate(); err != nil {
+		return "", fmt.Errorf("invalid relay peer: %w", err)
+	}
+	for _, address := range info.Addrs {
+		base, err := relayBase(address, info.ID)
+		if err != nil {
+			return "", err
+		}
+		if base == nil {
+			continue
+		}
+		relayPeer, err := ma.NewComponent("p2p", info.ID.String())
+		if err != nil {
+			return "", fmt.Errorf("invalid relay peer component: %w", err)
+		}
+		return base.Encapsulate(relayPeer).String(), nil
+	}
+	return "", errors.New("relay has no address")
+}
+
+func relayBase(address ma.Multiaddr, expected peer.ID) (ma.Multiaddr, error) {
+	p2pCount := 0
+	hasCircuit := false
+	ma.ForEach(address, func(component ma.Component) bool {
+		switch component.Protocol().Code {
+		case ma.P_P2P:
+			p2pCount++
+		case ma.P_CIRCUIT:
+			hasCircuit = true
+		}
+		return true
+	})
+	if hasCircuit {
+		return nil, nil
+	}
+	switch p2pCount {
+	case 0:
+		return address, nil
+	case 1:
+		parsed, err := peer.AddrInfoFromP2pAddr(address)
+		if err != nil {
+			return nil, fmt.Errorf("invalid relay address: %w", err)
+		}
+		if parsed.ID != expected || len(parsed.Addrs) != 1 {
+			return nil, errors.New("invalid relay address: relay identity mismatch")
+		}
+		return parsed.Addrs[0], nil
+	default:
+		return nil, errors.New("invalid relay address: duplicate peer components")
+	}
 }
 func ConnectRelay(ctx context.Context, h host.Host, address string, reserve bool) (*peer.AddrInfo, error) {
 	info, err := RelayInfo(address)
@@ -158,22 +235,30 @@ func ReserveRelay(ctx context.Context, h host.Host, info peer.AddrInfo) error {
 }
 
 func CircuitAddress(relay string, target peer.ID) (string, error) {
+	if err := target.Validate(); err != nil {
+		return "", fmt.Errorf("invalid circuit target peer: %w", err)
+	}
 	info, err := RelayInfo(relay)
 	if err != nil {
 		return "", err
 	}
-	var base string
-	for _, addr := range info.Addrs {
-		if strings.Contains(addr.String(), "/p2p-circuit") {
-			continue
-		}
-		base = addr.String()
-		break
+	canonicalRelay, err := RelayAddress(*info)
+	if err != nil {
+		return "", err
 	}
-	if base == "" {
-		return "", fmt.Errorf("relay has no address")
+	value, err := ma.NewMultiaddr(canonicalRelay)
+	if err != nil {
+		return "", fmt.Errorf("invalid canonical relay address: %w", err)
 	}
-	return fmt.Sprintf("%s/p2p/%s/p2p-circuit/p2p/%s", base, info.ID, target), nil
+	circuit, err := ma.NewComponent("p2p-circuit", "")
+	if err != nil {
+		return "", fmt.Errorf("build circuit component: %w", err)
+	}
+	targetPeer, err := ma.NewComponent("p2p", target.String())
+	if err != nil {
+		return "", fmt.Errorf("build circuit target component: %w", err)
+	}
+	return value.Encapsulate(circuit).Encapsulate(targetPeer).String(), nil
 }
 func DialPeer(ctx context.Context, h host.Host, address string) (peer.ID, error) {
 	value, err := ma.NewMultiaddr(address)

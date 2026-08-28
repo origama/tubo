@@ -156,6 +156,17 @@ func TestResolverProductionBundleResolves(t *testing.T) {
 	if len(provider.AddrInfo().Addrs) == 0 {
 		t.Fatal("production bundle has no addresses")
 	}
+	primary, err := provider.PrimaryAddress()
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantPrimary = "/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME"
+	if primary != wantPrimary {
+		t.Fatalf("production primary address = %q, want %q", primary, wantPrimary)
+	}
+	if strings.Count(primary, "/p2p/") != 1 {
+		t.Fatalf("production primary address duplicates relay peer: %q", primary)
+	}
 	// Injected provider resolver is the deterministic test seam.
 	if _, err := DefaultResolver().WithProvider(New(peer.AddrInfo{})).Resolve(ctx); err != nil {
 		t.Fatalf("injected provider resolver failed: %v", err)

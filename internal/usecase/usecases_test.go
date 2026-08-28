@@ -3,6 +3,10 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -26,7 +30,6 @@ func TestCase7_AttachCreatesServiceThenPipe(t *testing.T) {
 	u := New(services, pipes)
 	u.Secrets = secretsDir
 	u.Now = fixedClock(now)
-	u.RedemptionAddress = "relay.tubo.click:4001"
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
 
 	result, err := u.Attach(ctx, AttachInput{Name: "myservice", Target: "http://127.0.0.1:8080"})
@@ -107,7 +110,7 @@ func TestCase9_ShareExactProvisionsKeyOnce(t *testing.T) {
 	u := New(services, pipes)
 	u.Secrets = secretsDir
 	u.Now = fixedClock(now)
-	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
 
 	attachResult, err := u.Attach(ctx, AttachInput{Name: "sharetest", Target: "http://127.0.0.1:8080"})
@@ -169,6 +172,107 @@ func TestCase9_ShareExactProvisionsKeyOnce(t *testing.T) {
 	}
 }
 
+func TestShareExactRequiresReachableOwnerLocatorBeforeMint(t *testing.T) {
+	ctx := context.Background()
+	services := newMemoryServiceRepo()
+	pipes := newMemoryPipeRepo()
+	secretsDir := t.TempDir()
+	u := New(services, pipes)
+	u.Secrets = secretsDir
+	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	attached, err := u.Attach(ctx, AttachInput{Name: "locator-required", Target: "http://127.0.0.1:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attached.PipeRef.String()})
+	if err == nil || result.Invite != "" {
+		t.Fatalf("missing locator result=%+v err=%v", result, err)
+	}
+
+	locatorErr := errors.New("runtime_unavailable: owner runtime is not reachable")
+	u.OwnerLocator = &fakeOwnerLocator{err: locatorErr}
+	result, err = u.ShareExact(ctx, ShareExactInput{PipeRef: attached.PipeRef.String()})
+	if !errors.Is(err, locatorErr) || result.Invite != "" {
+		t.Fatalf("unreachable locator result=%+v err=%v", result, err)
+	}
+
+	u.OwnerLocator = &fakeOwnerLocator{}
+	result, err = u.ShareExact(ctx, ShareExactInput{PipeRef: attached.PipeRef.String()})
+	if err == nil || result.Invite != "" {
+		t.Fatalf("empty locator result=%+v err=%v", result, err)
+	}
+	keyPath := filepath.Join(secretsDir, "exact-authorities", attached.PipeID+".key")
+	if _, statErr := os.Stat(keyPath); !os.IsNotExist(statErr) {
+		t.Fatalf("locator failure provisioned authority key: %v", statErr)
+	}
+}
+
+func TestShareExactEmbedsExactLocatorAndTamperingFails(t *testing.T) {
+	const locator = "/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME/p2p-circuit/p2p/12D3KooWRJCtSj2fWsnyHYdpcmQoHwDzVzr39VmFrRwmJrwwW57G"
+	ctx := context.Background()
+	services := newMemoryServiceRepo()
+	pipes := newMemoryPipeRepo()
+	u := New(services, pipes)
+	u.Secrets = t.TempDir()
+	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	locatorCapability := &fakeOwnerLocator{address: locator}
+	u.OwnerLocator = locatorCapability
+	attached, err := u.Attach(ctx, AttachInput{Name: "canonical-locator", Target: "http://127.0.0.1:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attached.PipeRef.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared.Invite == "" || locatorCapability.calls != 1 || locatorCapability.ref != attached.PipeRef || locatorCapability.pipeID != attached.PipeID {
+		t.Fatalf("locator capability/result mismatch: result=%+v locator=%+v", shared, locatorCapability)
+	}
+	invite, err := accesslease.DecodeInvite(shared.Invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding, err := accesslease.DecodeOwnerBinding(invite.Binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.RedemptionPeers != locator || binding.RedemptionProtocol != "/tubo/exact-redemption/1" {
+		t.Fatalf("binding locator mismatch: %+v", binding)
+	}
+	extracted, err := redemptionAddress(invite)
+	if err != nil || extracted != locator {
+		t.Fatalf("recipient extracted %q, err=%v", extracted, err)
+	}
+	for name, credential := range map[string]any{"owner binding": binding, "exact invite": invite} {
+		body, err := json.Marshal(credential)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"service", "service_ref", "target", "scope", "namespace", "discovery", "membership", "pipe_record", "descriptor", "application"} {
+			if _, ok := fields[forbidden]; ok {
+				t.Fatalf("%s leaked forbidden field %q", name, forbidden)
+			}
+		}
+	}
+	if binding.RedemptionPeers == "http://127.0.0.1:8080" {
+		t.Fatal("owner binding leaked local Service target")
+	}
+
+	binding.RedemptionPeers += "/tampered"
+	invite.Binding, err = accesslease.EncodeOwnerBinding(binding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := invite.Verify(time.Now().UTC(), invite.AudiencePipeID); err == nil {
+		t.Fatal("tampered owner locator retained valid ExactInvite")
+	}
+}
+
 func TestCase10_ShareExactNegative(t *testing.T) {
 	ctx := context.Background()
 	services := newMemoryServiceRepo()
@@ -179,7 +283,7 @@ func TestCase10_ShareExactNegative(t *testing.T) {
 	u := New(services, pipes)
 	u.Secrets = secretsDir
 	u.Now = fixedClock(now)
-	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
 
 	// a) Share non-existent pipe -> not_found.
@@ -230,12 +334,14 @@ func TestCase11_ConnectExactNoScopeNoDiscovery(t *testing.T) {
 	services := newMemoryServiceRepo()
 	pipes := newMemoryPipeRepo()
 	secretsDir := t.TempDir()
+	const locator = "/dns4/relay.tubo.click/tcp/4001/p2p/12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME/p2p-circuit/p2p/12D3KooWRJCtSj2fWsnyHYdpcmQoHwDzVzr39VmFrRwmJrwwW57G"
 
 	u := New(services, pipes)
 	u.Secrets = secretsDir
-	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.OwnerLocator = &fakeOwnerLocator{address: locator}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
-	u.Reach = newFakeReachability()
+	reach := newFakeReachability()
+	u.Reach = reach
 	u.Redemption = newFakeRedemptionService(secretsDir)
 
 	// Step 1: Attach (creates owned pipe and provisions owner key).
@@ -276,6 +382,12 @@ func TestCase11_ConnectExactNoScopeNoDiscovery(t *testing.T) {
 	if localPipe.Ingress.Kind != domain.IngressLocal {
 		t.Fatalf("connect pipe must be local ingress, got %q", localPipe.Ingress.Kind)
 	}
+	reach.mu.Lock()
+	_, acquiredExactLocator := reach.conn[locator]
+	reach.mu.Unlock()
+	if !acquiredExactLocator {
+		t.Fatalf("ConnectExact did not extract unchanged locator %q", locator)
+	}
 	// The connect operation never referenced Scope, discovery, or membership:
 	// the crafted path above used only the invite plus injected reachability.
 }
@@ -292,7 +404,7 @@ func TestCase15_ConnectExactPersistsExactConnectionState(t *testing.T) {
 
 	u := New(services, pipes)
 	u.Secrets = secretsDir
-	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
 	u.Reach = newFakeReachability()
 	u.Redemption = newFakeRedemptionService(secretsDir)
@@ -350,7 +462,7 @@ func TestCase16_ConnectExactExpiredLeaseFailsClosed(t *testing.T) {
 
 	u := New(services, pipes)
 	u.Secrets = secretsDir
-	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
 	u.Reach = newFakeReachability()
 	u.Redemption = newFakeRedemptionService(secretsDir)
@@ -401,7 +513,7 @@ func TestCase17_ConnectExactNoExactConnectionsRepoIsGraceful(t *testing.T) {
 
 	u := New(services, pipes)
 	u.Secrets = secretsDir
-	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
 	u.Reach = newFakeReachability()
 	u.Redemption = newFakeRedemptionService(secretsDir)
@@ -438,7 +550,7 @@ func TestCase18_DetachedStartConsumesExactConnectionState(t *testing.T) {
 
 	u := New(services, pipes)
 	u.Secrets = secretsDir
-	u.RedemptionAddress = "relay.tubo.click:4001"
+	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
 	u.Reach = newFakeReachability()
 	u.Redemption = newFakeRedemptionService(secretsDir)

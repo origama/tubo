@@ -178,19 +178,10 @@ func TestReachabilityBundleCarrierThroughSession(t *testing.T) {
 	}
 }
 
-// TestOpenOverlayHostZeroConfigFailsClosed verifies the wiring in the host
-// acquisition seam (openOverlayHost -> relayOrBootstrap): with no user overlay
-// and no production trust material, zero-config resolution fails closed with
-// the deterministic ErrNoBootstrapBundle — no overlay fallback, no hardcoded
-// address, no host opened.
-// TestOpenOverlayHostZeroConfigResolutionSucceedsDialMayFail verifies
-// that the zero-config path now resolves the production bootstrap bundle
-// successfully. The overall host open may fail because the relay at
-// relay.tubo.click runs prototype code with swarm PSK (not A0-compatible), so
-// ConnectRelay will fail. The critical assertion is that resolution no longer
-// returns ErrNoBootstrapBundle — the production trust material is embedded and
-// verified.
-func TestOpenOverlayHostZeroConfigResolutionSucceedsDialMayFail(t *testing.T) {
+// TestOpenOverlayHostZeroConfigResolutionSucceeds verifies that zero-config
+// host acquisition resolves the production bundle. Dial may still fail for an
+// ordinary external-network reason; it must never fail as missing trust data.
+func TestOpenOverlayHostZeroConfigResolutionSucceeds(t *testing.T) {
 	t.Setenv("TUBO_HOME", t.TempDir())
 	ctx := context.Background()
 	state, err := store.Open(ctx)
@@ -198,16 +189,14 @@ func TestOpenOverlayHostZeroConfigResolutionSucceedsDialMayFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	_, _, err = OpenOverlayHost(ctx, state, "zero-config")
-	// The resolution step should succeed (bundle is embedded and valid).
-	// The error comes from ConnectRelay dialing the prototype relay, which is
-	// expected to fail with a swarm-key mismatch or dial failure.
-	if err == nil {
-		t.Fatal("expected host open to fail (prototype relay is not A0-compatible)")
+	h, _, err := OpenOverlayHost(ctx, state, "zero-config")
+	if h != nil {
+		_ = h.Close()
 	}
-	// Verify it's NOT a bundle resolution error
 	if errors.Is(err, reachability.ErrNoBootstrapBundle) {
-		t.Fatal("bundle resolution should no longer fail with ErrNoBootstrapBundle")
+		t.Fatal("bundle resolution should not fail with ErrNoBootstrapBundle")
 	}
-	t.Logf("openOverlayHost failed as expected: %v", err)
+	if err != nil {
+		t.Logf("external relay dial unavailable after verified resolution: %v", err)
+	}
 }

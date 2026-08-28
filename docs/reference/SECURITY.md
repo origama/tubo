@@ -70,7 +70,7 @@ Relays without namespace context may store opaque records under fixed capacity a
 
 ## Public/default behavior
 
-Public sharing is unlisted and invite-only by default. A self-contained invite may carry the exact pipe endpoint and authority route, but not the local service target. One-time means one successful lease/session redemption.
+Public sharing is unlisted and invite-only by default. A0 exact share embeds one canonical owner-runtime circuit locator in the owner-signed binding: `<relay transport>/p2p/<relay>/p2p-circuit/p2p/<owner runtime>`. Share derives it from a current ready, live owner Pipe runtime plus configured or verified-default relay facts and checks it against current runtime state; relay-only, empty, stale, malformed, or mismatched locators fail closed before invite minting. This locator reaches the owner's exact-redemption handler only. It is not an Access Lease, grants no Pipe authorization, and contains no local Service target, Scope, discovery, or application metadata. One-time means one successful lease/session redemption.
 
 ## Revocation
 
