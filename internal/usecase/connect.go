@@ -103,23 +103,58 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	// Preserve the durable identity of an existing local definition, but only
-	// when it targets the same remote Pipe. Anything else under the chosen
-	// name (a different remote Pipe, a Service target, a local passthrough)
-	// must never be silently rebound by a connect operation.
-	if existing, existingKey, existingErr := u.Pipes.Get(ctx, recipientRef.String()); existingErr == nil {
-		if existing.Target.Kind != domain.KindPipe || existing.Target.Name != invite.AudiencePipeID {
+	// The recipient identity key is canonical per remote Pipe ID, so the
+	// derived local Pipe ID is canonical too, and the Store enforces Pipe ID
+	// uniqueness. Before any durable write, resolve both the requested ref and
+	// the canonical Pipe ID: a connection may already exist under a different
+	// ref (a previous friendly --name). That must never surface as a storage
+	// uniqueness failure, and it must not be silently renamed or duplicated.
+	// noUpsert means the durable local Pipe already exists byte-compatibly;
+	// only the exact connection state (fresh lease) is persisted below.
+	noUpsert := false
+	existingByRef, existingKeyByRef, errRef := u.Pipes.Get(ctx, recipientRef.String())
+	switch {
+	case errRef == nil:
+		// The requested ref already owns a definition. Reuse it only when it
+		// is a compatible local connection to this exact remote Pipe;
+		// anything else must fail rather than silently rebind.
+		if existingByRef.Target.Kind != domain.KindPipe || existingByRef.Target.Name != invite.AudiencePipeID {
 			return ConnectExactResult{}, fmt.Errorf("conflict: %s already exists with a different target; remove it first or choose another --name", recipientRef)
 		}
-		spec.PipeID = existing.PipeID
-		spec.CreatedAt = existing.CreatedAt
-		spec.UpdatedAt = existing.UpdatedAt
-		recipientKeyFile = existingKey
-	} else if !errors.Is(existingErr, domain.ErrNotFound) {
-		return ConnectExactResult{}, persistenceError("pipe", existingErr)
+		spec.PipeID = existingByRef.PipeID
+		spec.CreatedAt = existingByRef.CreatedAt
+		spec.UpdatedAt = existingByRef.UpdatedAt
+		recipientKeyFile = existingKeyByRef
+	case errors.Is(errRef, domain.ErrNotFound):
+		// The requested ref is free; check whether this canonical identity is
+		// already represented by another local Pipe.
+		existingByID, existingKeyByID, errID := u.Pipes.Get(ctx, spec.PipeID)
+		switch {
+		case errID == nil:
+			// This canonical identity is already a durable local Pipe under
+			// another ref. An explicit different name is a conflict; without
+			// an explicit name we reuse that exact existing definition (no
+			// durable mutation, no rename) instead of creating a
+			// deterministic ref that would collide.
+			if in.Name != "" {
+				return ConnectExactResult{}, fmt.Errorf("conflict: %s already connects this remote pipe; reuse it ('tubo start %s') or remove it before choosing a different name", existingByID.Ref, existingByID.Ref)
+			}
+			recipientRef = existingByID.Ref
+			spec = existingByID
+			recipientKeyFile = existingKeyByID
+			noUpsert = true
+		case errors.Is(errID, domain.ErrNotFound):
+			// Fresh connection; no local Pipe owns this identity yet.
+		default:
+			return ConnectExactResult{}, persistenceError("pipe", errID)
+		}
+	default:
+		return ConnectExactResult{}, persistenceError("pipe", errRef)
 	}
-	if _, err := u.Pipes.Upsert(ctx, spec, recipientKeyFile); err != nil {
-		return ConnectExactResult{}, persistenceError("local pipe", err)
+	if !noUpsert {
+		if _, err := u.Pipes.Upsert(ctx, spec, recipientKeyFile); err != nil {
+			return ConnectExactResult{}, persistenceError("local pipe", err)
+		}
 	}
 	// Persist the exact connection state for detached-start consumption.
 	// Expired state fails closed on read; this is not a generic credential

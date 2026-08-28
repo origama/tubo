@@ -61,21 +61,47 @@ Tubo's CLI is organized into three command families plus infrastructure:
 * **Resource refs** are `<kind>/<name>`: `pipe/origin`, `service/echo`,
   `scope/<cluster>/<namespace>`, `overlay/default`, `session/<id>`,
   `peer/<peer-id>`, `relay/default`, `authority/<cluster>`.
-* **Flags** accept both `--name value` and `--name=value`.
-  Boolean flags (`--json`, `-d`, `-f`, `--refresh`, …) take no value and may
-  also be written `--flag=true` / `--flag=false`.
+* **Command paths are contiguous and flags come after the leaf.** The
+  command/subcommand path must be a contiguous prefix of the invocation;
+  command-local flags may only follow the resolved leaf:
+
+  ```
+  tubo get pipes --wide --json      # ok
+  tubo get --wide pipes             # fails: flag before subcommand
+  tubo scope --json create solar/default   # fails: flag before subcommand
+  ```
+
+  Misplaced flags fail clearly (`get: flag --wide before subcommand; see
+  'get --help'`) instead of being silently dropped. Global flags
+  (`-q`, `-v`, `--log-level`) are exception: they are stripped before
+  resolution and may appear anywhere.
+* **Flag syntax is explicit for long and short forms.**
+
+  ```text
+  --long          long boolean flag
+  --long=value    value flag (or --bool=true/false)
+  -x              single-letter short alias, only when declared as short
+  ```
+
+  A single-dash token with more than one character (`-json`, `-name foo`,
+  `-scope x`) is never a long flag and is rejected. Short aliases exist
+  only where declared: `-d` = `--detach`, `-f` = `--follow`, plus `-q`,
+  `-v`, `-h`. Accidental long forms of shorts (`--d`, `--f`) are rejected.
 * **Unknown flags fail.** A typo is never silently ignored:
   `tubo get pipes --scpoe solar/default` fails with
   `invalid_input: get pipes: unknown flag --scpoe; see 'get pipes --help'`.
 * **Required flags fail clearly**: `invalid_input: connect: --local is
-  required; see 'connect --help'`.
+  required; see 'connect --help'`. An empty `--name=` fails the same way.
+* **A value flag followed by another flag fails as “requires a value”**
+  instead of consuming the flag: `--name --json` is rejected, never
+  interpreted as the name `--json`.
 * **Extra or missing positionals fail clearly** with the offending argument.
+* **Duplicate flags are rejected** for both value and boolean flags
+  (`--json --json`, `-d -d`, `-d --detach` all fail).
 * **Obsolete flags fail with a replacement hint**: `--live` is rejected with
   `invalid_input: --live is obsolete; use --refresh`.
 * **Global flags** (`-q`/`--quiet`, `-v/-vv/-vvv`, `--log-level <level>`)
   are accepted anywhere in the argument list.
-* **Short flags exist only where deliberately defined**: `-d` (detach),
-  `-f` (follow logs), `-q`, `-v`, `-h`. Everything else is rejected.
 * Errors identify the command: `tubo: invalid_input: attach: unknown flag
   --detail; see 'attach --help'`.
 
@@ -150,9 +176,23 @@ local listen: 127.0.0.1:51234
 ```
 
 `connect` accepts an optional friendly `--name`; without it the local Pipe
-gets a deterministic name derived from the remote Pipe ID
-(`connect-<pipe_id>`, bounded to 63 chars) so lifecycle commands stay stable
-across reconnects.
+uses the canonical deterministic name derived from the remote Pipe ID
+(`connect-<pipe_id>`, bounded to 63 chars), so lifecycle commands stay stable
+across reconnects. The recipient identity key (and therefore the derived
+local Pipe ID) is canonical per remote Pipe ID, never per name. Reconnects
+to the same remote therefore resolve one durable local Pipe definition:
+
+* same name, same remote — compatible reuse;
+* reconnect without `--name` — the existing connection's ref is returned
+  (no duplicate identity, no rename);
+* explicit different name for an already-connected remote — `conflict`
+  naming the ref that already owns the connection, suggesting reuse or
+  remove-before-renaming;
+* same name, different remote — `conflict` (different target).
+
+The identity conflict is resolved before any durable write; it never
+surfaces as a storage uniqueness failure, and `connect` never performs an
+implicit rename.
 
 ## Resource lifecycle vs operation result
 
@@ -249,7 +289,7 @@ sessions) without changing what human users see.
 * `connect` – redeems the invite over an acquired carrier, verifies the
   resulting short-lived Access Lease binds this recipient to the exact Pipe,
   persists exact connection state for detached start, and runs the local
-  ingress Pipe.
+  ingress Pipe. See “connect identity” below for reuse and rename rules.
 * `service create` / `pipe create` – durable definitions; the Pipe needs
   `start` (or `attach`/`connect -d`) to run. Recreating identical definitions
   reports `reused`; conflicts fail.

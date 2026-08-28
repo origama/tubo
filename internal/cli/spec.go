@@ -37,13 +37,23 @@ type commandSpec struct {
 	hidden   bool
 }
 
-// flag returns the declared flagSpec for a long or short name, if any.
-func (s *commandSpec) flag(name string) *flagSpec {
+// longFlag returns the declared flagSpec for a long flag name (without the
+// leading --), or nil.
+func (s *commandSpec) longFlag(name string) *flagSpec {
 	for i := range s.flags {
 		if s.flags[i].name == name {
 			return &s.flags[i]
 		}
-		if s.flags[i].short != "" && s.flags[i].short == name {
+	}
+	return nil
+}
+
+// shortFlag returns the declared flagSpec for a single-letter short alias, or
+// nil. Short flags are only honored via the explicit short field; a
+// single-dash handwritten "long" form like -json is never a long flag.
+func (s *commandSpec) shortFlag(ch string) *flagSpec {
+	for i := range s.flags {
+		if s.flags[i].short != "" && s.flags[i].short == ch {
 			return &s.flags[i]
 		}
 	}
@@ -83,7 +93,7 @@ var commands = []*commandSpec{
 		maxArgs: 1,
 		flags: []flagSpec{
 			{name: "name", value: true, required: true, help: "friendly name for the Service and Pipe"},
-			{name: "d", help: "run the Pipe detached; print readiness"},
+			{name: "detach", short: "d", help: "run the Pipe detached; print readiness"},
 			{name: "json", help: "emit one JSON object on stdout"},
 		},
 		detail: `attach defines a local Service for <target> (http://…, tcp://host:port,
@@ -100,7 +110,7 @@ definitions. Share a ready Pipe with: tubo share pipe/<name>.`,
 			{name: "token", value: true, required: true, help: "exact invite produced by tubo share"},
 			{name: "local", value: true, required: true, help: "local listen address (host:port)"},
 			{name: "name", value: true, help: "friendly name for the local Pipe (default: deterministic name from the remote Pipe ID)"},
-			{name: "d", help: "run the Pipe detached; print readiness"},
+			{name: "detach", short: "d", help: "run the Pipe detached; print readiness"},
 			{name: "json", help: "emit one JSON object on stdout"},
 		},
 		detail: `connect redeems a one-time exact invite, verifies the resulting Access
@@ -162,7 +172,7 @@ owned local Pipe. Behavioral notes and next steps go to stderr.`,
 		minArgs: 1,
 		maxArgs: 1,
 		flags: []flagSpec{
-			{name: "d", help: "run detached; print readiness"},
+			{name: "detach", short: "d", help: "run detached; print readiness"},
 			{name: "json", help: "emit one JSON object on stdout"},
 		},
 	},
@@ -210,8 +220,7 @@ owned local Pipe. Behavioral notes and next steps go to stderr.`,
 		maxArgs: 1,
 		flags: []flagSpec{
 			{name: "tail", value: true, help: "number of trailing lines (default 200)"},
-			{name: "f", short: "f", help: "follow the log"},
-			{name: "follow", help: "follow the log"},
+			{name: "follow", short: "f", help: "follow the log"},
 			{name: "json", help: "emit one JSON object on stdout"},
 		},
 	},
@@ -410,7 +419,7 @@ byte metrics belong to top.`,
 		maxArgs: 1,
 		flags: []flagSpec{
 			{name: "scope", value: true, required: true, help: "authority scope"},
-			{name: "d", help: "unused; use tubo supervise install authority/<cluster>"},
+			{name: "detach", short: "d", help: "unused; use tubo supervise install authority/<cluster>"},
 			{name: "json", help: "emit one JSON object on stdout"},
 		},
 		detail: `authority start runs a scope authority in the foreground. Detached
@@ -574,6 +583,14 @@ func init() { buildGroups() }
 // resolveCommand walks args and returns the deepest matching commandSpec plus
 // the remaining args after the command path. Flags are skipped while walking;
 // non-flag words that do not extend the path stop the walk.
+// resolveCommand walks args and returns the deepest matching commandSpec plus
+// the remaining args after the command path.
+//
+// Grammar (deliberately simple and strict): the command/subcommand path must
+// be contiguous from args[0]; command-local flags may only follow the resolved
+// leaf. A flag appearing before a group's subcommand word is a misplaced flag
+// and fails instead of being skipped. Global flags (-q/-v/--log-level) are
+// removed earlier by extractGlobalFlags, so they may appear anywhere.
 func resolveCommand(args []string) (*commandSpec, []string, error) {
 	if len(args) == 0 {
 		return nil, nil, fmt.Errorf("missing command; run `tubo help`")
@@ -584,7 +601,7 @@ func resolveCommand(args []string) (*commandSpec, []string, error) {
 	}
 	// Prefer the exact one-word spec for the base; fall back to the longest
 	// declared path starting with base (covers a base whose group node is not
-	// declared). Word specs always have an exact [base] group or leaf node.
+	// declared).
 	matched := specFor(base)
 	if matched == nil {
 		for _, spec := range commands {
@@ -596,21 +613,27 @@ func resolveCommand(args []string) (*commandSpec, []string, error) {
 	if matched == nil {
 		return nil, nil, fmt.Errorf("invalid_input: unknown command %q; run `tubo help`", base)
 	}
-	depth := len(matched.path)
 	consumed := 1
-	// Extend the match by consecutive non-flag words that equal a deeper path
-	// word of some candidate.
-	for i := 1; i < len(args); i++ {
-		arg := args[i]
+	for consumed < len(args) {
+		arg := args[consumed]
 		if strings.HasPrefix(arg, "-") {
-			continue
+			// -h/--help stops the walk at any depth so contextual help can be
+			// rendered by the caller; it is never a misplaced command-local
+			// flag.
+			if arg == "-h" || arg == "--help" {
+				break
+			}
+			// All other flags may only follow the resolved leaf. While the
+			// path still expects a subcommand word, a flag is misplaced and
+			// must fail rather than be silently consumed.
+			if matched.isGroup() {
+				return nil, nil, fmt.Errorf("invalid_input: %s: flag %s before subcommand; see '%s --help'", matched.id(), arg, matched.id())
+			}
+			break
 		}
 		var next *commandSpec
 		for _, spec := range commands {
-			if spec.path[0] != base {
-				continue
-			}
-			if len(spec.path) > depth && spec.path[depth] == arg && (next == nil || len(next.path) < len(spec.path)) {
+			if spec.path[0] == base && len(spec.path) > len(matched.path) && spec.path[len(matched.path)] == arg && (next == nil || len(next.path) < len(spec.path)) {
 				next = spec
 			}
 		}
@@ -618,8 +641,7 @@ func resolveCommand(args []string) (*commandSpec, []string, error) {
 			break
 		}
 		matched = next
-		depth = len(next.path)
-		consumed = i + 1
+		consumed++
 	}
 	return matched, args[consumed:], nil
 }

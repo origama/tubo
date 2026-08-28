@@ -564,7 +564,7 @@ func (a App) logs(ctx context.Context, state *store.Store, f flags) error {
 		}
 		return fmt.Errorf("invalid_input: cannot read log for %s: %v", f.args[0], err)
 	}
-	if f.bools["f"] || f.bools["follow"] {
+	if f.bools["follow"] {
 		if f.bools["json"] {
 			return errors.New("invalid_input: --json cannot be combined with -f/--follow; 'watch pipes --json' provides NDJSON instead")
 		}
@@ -575,7 +575,7 @@ func (a App) logs(ctx context.Context, state *store.Store, f flags) error {
 	for _, line := range lines {
 		fmt.Fprintln(a.Out, line)
 	}
-	if !f.bools["f"] && !f.bools["follow"] {
+	if !f.bools["follow"] {
 		return nil
 	}
 	file, err := os.Open(path)

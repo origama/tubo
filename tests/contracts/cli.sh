@@ -60,6 +60,36 @@ grep -F -- 'unexpected argument "pipe/b"' "$WORK_DIR/extra-arg.out" >/dev/null
 if "$BIN" get pipes --scpoe solar --refresh >"$WORK_DIR/typo2.out" 2>&1; then
   echo 'typo flag with valid neighbor accepted' >&2; exit 1
 fi
+# Command path must be contiguous; a flag before the subcommand fails instead
+# of being silently dropped.
+if "$BIN" get --wide pipes >"$WORK_DIR/misplaced1.out" 2>&1; then
+  echo 'flag before subcommand accepted' >&2; exit 1
+fi
+grep -F -- 'flag --wide before subcommand' "$WORK_DIR/misplaced1.out" >/dev/null
+if "$BIN" scope --json create solar/default >"$WORK_DIR/misplaced2.out" 2>&1; then
+  echo 'flag before scope subcommand accepted' >&2; exit 1
+fi
+grep -F -- 'flag --json before subcommand' "$WORK_DIR/misplaced2.out" >/dev/null
+# Single-dash long forms are never long flags.
+if "$BIN" get pipes -json >"$WORK_DIR/shortlong.out" 2>&1; then
+  echo '-json accepted as long flag' >&2; exit 1
+fi
+grep -F -- 'unknown flag -json' "$WORK_DIR/shortlong.out" >/dev/null
+# A value flag must not consume another flag as its value.
+if "$BIN" attach http://127.0.0.1:1 --name --json >"$WORK_DIR/flagvalue.out" 2>&1; then
+  echo '--name --json accepted' >&2; exit 1
+fi
+grep -F -- '--name requires a value' "$WORK_DIR/flagvalue.out" >/dev/null
+# Duplicate flags are rejected.
+if "$BIN" attach http://127.0.0.1:1 --name y -d -d >"$WORK_DIR/dupflags.out" 2>&1; then
+  echo 'duplicate -d -d accepted' >&2; exit 1
+fi
+grep -F -- 'duplicate flag -d' "$WORK_DIR/dupflags.out" >/dev/null
+# Accidental long forms of short flags are rejected.
+if "$BIN" attach http://127.0.0.1:1 --name y --d >"$WORK_DIR/dlong.out" 2>&1; then
+  echo '--d accepted as long flag' >&2; exit 1
+fi
+grep -F -- 'unknown flag --d' "$WORK_DIR/dlong.out" >/dev/null
 
 # ---- Version / keygen / overlay ----
 "$BIN" version --json >"$WORK_DIR/version.json"

@@ -9,7 +9,7 @@ import (
 // flag values by long name, bools are present boolean flags, and args are the
 // positional arguments. Parsing is strict: unknown flags fail, required flags
 // are enforced, extra positionals fail, obsolete flags fail with a hint, and
-// --name=value is accepted wherever --name value is.
+// --name=value is accepted wherever --name value is. Duplicate flags fail.
 type flags struct {
 	values map[string]string
 	bools  map[string]bool
@@ -32,97 +32,150 @@ func (f flags) bool(name string) bool { return f.bools[name] }
 // parseCommand validates args against a command spec and returns the parsed
 // flags. It is the one place flag spelling, requiredness, obsolete-flag hints,
 // duplicate rejection, and positional-arity checks are enforced.
+//
+// Flag syntax is explicit and strict:
+//
+//	--long          long boolean flag
+//	--long=value    long flag with inline value or explicit boolean
+//	-x              single-letter short alias, only when declared as short
+//
+// A single-dash token with more than one character (-json, -name, -scope) is
+// never a long flag and is rejected. A value flag whose value token is another
+// flag fails as "requires a value" instead of consuming the flag.
 func parseCommand(spec *commandSpec, args []string) (flags, error) {
 	f := flags{values: map[string]string{}, bools: map[string]bool{}}
 	if spec.isGroup() {
-		for _, arg := range args {
-			if strings.HasPrefix(arg, "-") {
-				name, _, _ := strings.Cut(arg, "=")
-				if spec.flag(strings.TrimLeft(name, "-")) == nil {
-					return flags{}, fmt.Errorf("invalid_input: %s: unknown flag %s; see '%s --help'", spec.id(), name, spec.id())
-				}
-				continue
-			}
-			return flags{}, fmt.Errorf("invalid_input: %s: unknown subcommand %q; see '%s --help'", spec.id(), arg, spec.id())
-		}
-		return flags{}, fmt.Errorf("invalid_input: %s requires a subcommand; see '%s --help'", spec.id(), spec.id())
+		return parseCommandGroup(spec, args)
 	}
+	seenBools := map[string]bool{}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if !strings.HasPrefix(arg, "-") {
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
 			f.args = append(f.args, arg)
 			continue
 		}
-		name, inline, hasInline := strings.Cut(arg, "=")
-		fs := spec.flag(strings.TrimLeft(name, "-"))
-		if fs == nil {
-			return flags{}, fmt.Errorf("invalid_input: %s: unknown flag %s; see '%s --help'", spec.id(), name, spec.id())
-		}
-		if fs.obsolete != "" {
-			return flags{}, fmt.Errorf("invalid_input: %s is obsolete; %s", name, fs.obsolete)
-		}
-		if fs.value {
-			value := inline
-			if !hasInline {
-				if i+1 >= len(args) {
-					return flags{}, fmt.Errorf("invalid_input: %s: %s requires a value; see '%s --help'", spec.id(), name, spec.id())
+		if strings.HasPrefix(arg, "--") {
+			body := arg[2:]
+			if body == "" {
+				return flags{}, unknownFlagError(spec, arg)
+			}
+			name, inline, hasInline := strings.Cut(body, "=")
+			if name == "" {
+				return flags{}, unknownFlagError(spec, arg)
+			}
+			fs := spec.longFlag(name)
+			if fs == nil {
+				return flags{}, unknownFlagError(spec, "--"+name)
+			}
+			if fs.obsolete != "" {
+				return flags{}, obsoleteFlagError("--"+name, fs.obsolete)
+			}
+			if fs.value {
+				if hasInline {
+					if _, dup := f.values[fs.name]; dup {
+						return flags{}, duplicateFlagError(spec, "--"+name)
+					}
+					f.values[fs.name] = inline
+					continue
+				}
+				if i+1 >= len(args) || strings.HasPrefix(args[i+1], "-") {
+					return flags{}, fmt.Errorf("invalid_input: %s: --%s requires a value; see '%s --help'", spec.id(), fs.name, spec.id())
 				}
 				i++
-				value = args[i]
+				if _, dup := f.values[fs.name]; dup {
+					return flags{}, duplicateFlagError(spec, "--"+name)
+				}
+				f.values[fs.name] = args[i]
+				continue
 			}
-			if _, dup := f.values[fs.name]; dup {
-				return flags{}, fmt.Errorf("invalid_input: %s: duplicate flag %s", spec.id(), name)
-			}
-			f.values[fs.name] = value
-			continue
-		}
-		if hasInline {
-			switch inline {
-			case "true":
+			// Boolean long flag.
+			if hasInline {
+				switch inline {
+				case "true":
+					f.bools[fs.name] = true
+				case "false":
+					f.bools[fs.name] = false
+				default:
+					return flags{}, fmt.Errorf("invalid_input: %s: --%s expects true or false; see '%s --help'", spec.id(), fs.name, spec.id())
+				}
+			} else {
 				f.bools[fs.name] = true
-			case "false":
-				f.bools[fs.name] = false
-			default:
-				return flags{}, fmt.Errorf("invalid_input: %s: %s expects true or false", spec.id(), name)
 			}
+			if seenBools[fs.name] {
+				return flags{}, duplicateFlagError(spec, "--"+name)
+			}
+			seenBools[fs.name] = true
 			continue
 		}
+		// Short flag: single dash, exactly one character, only when that
+		// character is a declared short alias.
+		body := arg[1:]
+		if len(body) != 1 {
+			return flags{}, unknownFlagError(spec, arg)
+		}
+		fs := spec.shortFlag(body)
+		if fs == nil {
+			return flags{}, unknownFlagError(spec, arg)
+		}
+		if fs.obsolete != "" {
+			return flags{}, obsoleteFlagError("-"+body, fs.obsolete)
+		}
+		if fs.value {
+			return flags{}, fmt.Errorf("invalid_input: %s: short flag -%s does not take a value; use --%s; see '%s --help'", spec.id(), body, fs.name, spec.id())
+		}
+		if seenBools[fs.name] {
+			return flags{}, duplicateFlagError(spec, "-"+body)
+		}
+		seenBools[fs.name] = true
 		f.bools[fs.name] = true
 	}
-	for i := range spec.flags {
-		fs := &spec.flags[i]
-		if fs.required {
-			if _, ok := f.values[fs.name]; !ok {
-				return flags{}, fmt.Errorf("invalid_input: %s: --%s is required; see '%s --help'", spec.id(), fs.name, spec.id())
-			}
-		}
+	if err := enforceRequired(spec, f); err != nil {
+		return flags{}, err
 	}
 	if len(f.args) < spec.minArgs || (spec.maxArgs >= 0 && len(f.args) > spec.maxArgs) {
 		return flags{}, positionalError(spec, f.args)
 	}
-	requiredEmpty := false
-	for i := range spec.flags {
-		if spec.flags[i].required {
-			if value, ok := f.values[spec.flags[i].name]; !ok || value == "" {
-				requiredEmpty = true
-			}
-		}
-	}
-	if requiredEmpty {
-		return flags{}, fmt.Errorf("invalid_input: %s: --%s is required; see '%s --help'", spec.id(), requiredFlagName(spec), spec.id())
-	}
 	return f, nil
 }
 
-// requiredFlagName returns the first missing required flag name, for error
-// messaging; required flags are enforced by the requiredEmpty pass above.
-func requiredFlagName(spec *commandSpec) string {
+// parseCommandGroup validates a group invocation: after a group path is
+// resolved, no flags or positionals may remain (subcommand required), and any
+// flag token is a misplacement error.
+func parseCommandGroup(spec *commandSpec, args []string) (flags, error) {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") {
+			return flags{}, fmt.Errorf("invalid_input: %s: flag %s before subcommand; see '%s --help'", spec.id(), arg, spec.id())
+		}
+		return flags{}, fmt.Errorf("invalid_input: %s: unknown subcommand %q; see '%s --help'", spec.id(), arg, spec.id())
+	}
+	return flags{}, fmt.Errorf("invalid_input: %s requires a subcommand; see '%s --help'", spec.id(), spec.id())
+}
+
+// enforceRequired checks that every required value flag is present and
+// non-empty (--name= is rejected rather than silently accepted).
+func enforceRequired(spec *commandSpec, f flags) error {
 	for i := range spec.flags {
-		if spec.flags[i].required {
-			return spec.flags[i].name
+		fs := &spec.flags[i]
+		if !fs.required {
+			continue
+		}
+		if value, ok := f.values[fs.name]; !ok || value == "" {
+			return fmt.Errorf("invalid_input: %s: --%s is required; see '%s --help'", spec.id(), fs.name, spec.id())
 		}
 	}
-	return ""
+	return nil
+}
+
+func unknownFlagError(spec *commandSpec, flagToken string) error {
+	return fmt.Errorf("invalid_input: %s: unknown flag %s; see '%s --help'", spec.id(), flagToken, spec.id())
+}
+
+func obsoleteFlagError(flagToken, hint string) error {
+	return fmt.Errorf("invalid_input: %s is obsolete; %s", flagToken, hint)
+}
+
+func duplicateFlagError(spec *commandSpec, flagToken string) error {
+	return fmt.Errorf("invalid_input: %s: duplicate flag %s", spec.id(), flagToken)
 }
 
 // positionalError gives a concrete missing/unexpected-argument message.

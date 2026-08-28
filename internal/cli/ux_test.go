@@ -154,11 +154,11 @@ func TestParseObsoleteFlagHint(t *testing.T) {
 
 func TestParseShortFlags(t *testing.T) {
 	f, err := parseCommandForTest(t, []string{"logs", "pipe/a", "-f"})
-	if err != nil || !f.bools["f"] {
+	if err != nil || !f.bools["follow"] {
 		t.Fatalf("-f: %v %#v", err, f.bools)
 	}
 	f, err = parseCommandForTest(t, []string{"attach", "http://x", "--name", "y", "-d"})
-	if err != nil || !f.bools["d"] {
+	if err != nil || !f.bools["detach"] {
 		t.Fatalf("-d: %v %#v", err, f.bools)
 	}
 }
@@ -734,8 +734,151 @@ func TestGroupLevelUnknownFlagRejected(t *testing.T) {
 		{"get", "pipes", "--bogus"},
 	} {
 		_, err := parseCommandForTest(t, args)
-		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		if err == nil || (!strings.Contains(err.Error(), "unknown flag") && !strings.Contains(err.Error(), "flag --bogus")) {
 			t.Fatalf("%v accepted: %v", args, err)
 		}
+	}
+}
+
+// ---- Resolution: no flag token may disappear ----
+
+func TestMisplacedFlagsFailDuringResolution(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"get", "--wide", "pipes"}, "--wide"},
+		{[]string{"scope", "--json", "create", "solar/default"}, "--json"},
+		{[]string{"join", "--relay", "x", "overlay"}, "--relay"},
+		{[]string{"service", "--json", "create", "x"}, "--json"},
+		{[]string{"get", "--scpoe", "solar/default"}, "--scpoe"},
+	}
+	for _, tc := range cases {
+		_, err := parseCommandForTest(t, tc.args)
+		if err == nil || !strings.Contains(err.Error(), "before subcommand") || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("%v: want misplaced-flag error naming %q, got %v", tc.args, tc.want, err)
+		}
+	}
+}
+
+func TestFlagsAfterLeafNeverDisappear(t *testing.T) {
+	cases := []struct {
+		args        []string
+		wantSpec    string
+		wantRemains []string
+	}{
+		{[]string{"attach", "--name", "y", "-d", "http://x"}, "attach", []string{"--name", "y", "-d", "http://x"}},
+		{[]string{"peers", "alias", "peer1", "--name", "label"}, "peers alias", []string{"peer1", "--name", "label"}},
+		{[]string{"get", "pipes", "--wide", "--json"}, "get pipes", []string{"--wide", "--json"}},
+		{[]string{"logs", "pipe/a", "-f", "--tail", "5"}, "logs", []string{"pipe/a", "-f", "--tail", "5"}},
+	}
+	for _, tc := range cases {
+		spec, rest, err := resolveCommand(tc.args)
+		if err != nil {
+			t.Fatalf("%v resolve failed: %v", tc.args, err)
+		}
+		if spec.id() != tc.wantSpec {
+			t.Fatalf("%v spec = %q, want %q", tc.args, spec.id(), tc.wantSpec)
+		}
+		if strings.Join(rest, " ") != strings.Join(tc.wantRemains, " ") {
+			t.Fatalf("%v remaining = %v, want %v", tc.args, rest, tc.wantRemains)
+		}
+		f, err := parseCommandForTest(t, tc.args)
+		if err != nil {
+			t.Fatalf("%v parse failed: %v", tc.args, err)
+		}
+		// Every flag token in the original args must have been parsed into
+		// the flag maps, never dropped silently.
+		if len(f.values) == 0 && len(f.bools) == 0 {
+			// A command may legitimately have none; check no stray
+			// flag-looking token remains in positionals.
+			for _, arg := range f.args {
+				if strings.HasPrefix(arg, "-") && arg != "-" {
+					t.Fatalf("%v: flag token %q landed in positionals", tc.args, arg)
+				}
+			}
+		}
+	}
+}
+
+// ---- Strict short/long syntax ----
+
+func TestSingleDashLongFormsRejected(t *testing.T) {
+	for _, args := range [][]string{
+		{"get", "pipes", "-json"},
+		{"attach", "http://x", "-name", "y"},
+		{"scope", "invite", "solar/default", "-scope", "solar/default", "--role", "member"},
+		{"get", "pipes", "-d"},
+		{"attach", "http://x", "--name", "y", "-detach"},
+	} {
+		_, err := parseCommandForTest(t, args)
+		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Fatalf("%v: single-dash long form accepted: %v", args, err)
+		}
+	}
+}
+
+func TestAccidentalDoubleDashShortsRejected(t *testing.T) {
+	for _, args := range [][]string{
+		{"attach", "http://x", "--name", "y", "--d"},
+		{"logs", "pipe/a", "--f"},
+	} {
+		_, err := parseCommandForTest(t, args)
+		if err == nil || !strings.Contains(err.Error(), "unknown flag --d") && !strings.Contains(err.Error(), "unknown flag --f") {
+			t.Fatalf("%v: --d/--f accepted as long flags: %v", args, err)
+		}
+	}
+}
+
+func TestShortEqualsFormRejected(t *testing.T) {
+	_, err := parseCommandForTest(t, []string{"attach", "http://x", "--name", "y", "-d=true"})
+	if err == nil || !strings.Contains(err.Error(), "unknown flag -d=true") {
+		t.Fatalf("-d=true accepted: %v", err)
+	}
+}
+
+func TestValueFlagFollowedByFlagFails(t *testing.T) {
+	for _, args := range [][]string{
+		{"attach", "http://x", "--name", "--json"},
+		{"logs", "pipe/a", "--tail", "-f"},
+		{"join", "overlay", "--relay=1", "--swarm-key", "--json"},
+	} {
+		_, err := parseCommandForTest(t, args)
+		if err == nil || !strings.Contains(err.Error(), "requires a value") {
+			t.Fatalf("%v: flag consumed as value: %v", args, err)
+		}
+	}
+}
+
+func TestDuplicateFlagsRejected(t *testing.T) {
+	for _, args := range [][]string{
+		{"get", "pipes", "--json", "--json"},
+		{"attach", "http://x", "--name", "y", "-d", "-d"},
+		{"attach", "http://x", "--name", "y", "-d", "--detach"},
+		{"logs", "pipe/a", "--tail", "1", "--tail=2"},
+	} {
+		_, err := parseCommandForTest(t, args)
+		if err == nil || !strings.Contains(err.Error(), "duplicate flag") {
+			t.Fatalf("%v: duplicate accepted: %v", args, err)
+		}
+	}
+}
+
+func TestDetachCanonicalLongForm(t *testing.T) {
+	f, err := parseCommandForTest(t, []string{"attach", "http://x", "--name", "y", "--detach"})
+	if err != nil || !f.bools["detach"] {
+		t.Fatalf("--detach: %v %#v", err, f.bools)
+	}
+	f, err = parseCommandForTest(t, []string{"attach", "http://x", "--name", "y", "-d"})
+	if err != nil || !f.bools["detach"] {
+		t.Fatalf("-d alias: %v %#v", err, f.bools)
+	}
+	f, err = parseCommandForTest(t, []string{"logs", "pipe/a", "-f"})
+	if err != nil || !f.bools["follow"] {
+		t.Fatalf("-f alias for --follow: %v %#v", err, f.bools)
+	}
+	f, err = parseCommandForTest(t, []string{"logs", "pipe/a", "--follow"})
+	if err != nil || !f.bools["follow"] {
+		t.Fatalf("--follow: %v %#v", err, f.bools)
 	}
 }

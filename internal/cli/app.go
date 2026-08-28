@@ -337,7 +337,7 @@ func (a App) start(ctx context.Context, state *store.Store, f flags) error {
 		return errors.New("invalid_input: start requires a pipe ref; see 'tubo start --help'")
 	}
 	ref := f.args[0]
-	if f.bools["d"] {
+	if f.bools["detach"] {
 		a.progressf("starting %s...\n", ref)
 		run, err := a.startDetached(ctx, state, ref)
 		if err != nil {
@@ -434,7 +434,7 @@ func (a App) attach(ctx context.Context, state *store.Store, f flags) error {
 	if err != nil {
 		return err
 	}
-	if f.bools["d"] {
+	if f.bools["detach"] {
 		a.progressf("starting pipe/%s...\n", result.PipeRef.Name)
 		run, err := a.startDetached(ctx, state, result.PipeRef.String())
 		if err != nil {
@@ -495,7 +495,7 @@ func (a App) connect(ctx context.Context, state *store.Store, f flags) error {
 		return err
 	}
 	local := f.values["local"]
-	if f.bools["d"] {
+	if f.bools["detach"] {
 		a.progressf("starting %s...\n", result.PipeRef.String())
 		run, err := a.startDetached(ctx, state, result.PipeRef.String())
 		if err != nil {
@@ -784,7 +784,7 @@ func (a App) scopeJoin(ctx context.Context, state *store.Store, f flags) error {
 }
 
 func (a App) authorityStart(ctx context.Context, state *store.Store, f flags) error {
-	if f.bools["d"] {
+	if f.bools["detach"] {
 		return errors.New("invalid_input: detached authority start is not supported; use 'tubo supervise install authority/<cluster>'")
 	}
 	ref := "authority/" + f.args[0]
