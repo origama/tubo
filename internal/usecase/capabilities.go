@@ -96,6 +96,9 @@ type ConnectExactResult struct {
 	PipeID  string
 	// TargetPipeID is the remote Pipe the local Pipe targets.
 	TargetPipeID string
+	// LocalListen is the effective persisted local listener; on compatible
+	// reuse this is the existing listener, never the input echo.
+	LocalListen string
 }
 
 // StartPipeInput carries the Pipe ref to start.

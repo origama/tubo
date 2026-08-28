@@ -495,18 +495,18 @@ func TestEmitAttachCreatedVsReused(t *testing.T) {
 
 func TestEmitConnectShapes(t *testing.T) {
 	pipeRef, _ := domain.NewRef(domain.KindPipe, "west")
-	result := usecase.ConnectExactResult{PipeRef: pipeRef, PipeID: "pip_1", TargetPipeID: "pip_remote"}
+	result := usecase.ConnectExactResult{PipeRef: pipeRef, PipeID: "pip_1", TargetPipeID: "pip_remote", LocalListen: "127.0.0.1:5555"}
 
 	var out, errOut bytes.Buffer
 	app := App{Out: &out, Err: &errOut}
-	if err := app.emitConnect(false, result, "127.0.0.1:5555", nil); err != nil {
+	if err := app.emitConnect(false, result, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := out.String(), "pipe/west created (local listen: 127.0.0.1:5555)\n"; got != want {
 		t.Fatalf("human = %q, want %q", got, want)
 	}
 	out.Reset()
-	if err := app.emitConnect(true, result, "127.0.0.1:5555", &store.Run{PID: 9}); err != nil {
+	if err := app.emitConnect(true, result, &store.Run{PID: 9}); err != nil {
 		t.Fatal(err)
 	}
 	var value map[string]any
@@ -515,6 +515,20 @@ func TestEmitConnectShapes(t *testing.T) {
 	}
 	if value["ref"] != "pipe/west" || value["local"] != "127.0.0.1:5555" || value["target_id"] != "pip_remote" || value["status"] != "ready" || value["pid"] != float64(9) {
 		t.Fatalf("json shape: %v", value)
+	}
+	// Human and JSON local must always equal the effective persisted listener
+	// from the result; presentation never echoes a requested input.
+	out.Reset()
+	silent := result
+	silent.LocalListen = "127.0.0.1:7777" // what an effective reuse might carry
+	if err := app.emitConnect(true, silent, &store.Run{PID: 9}); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out.Bytes(), &value); err != nil {
+		t.Fatal(err)
+	}
+	if value["local"] != "127.0.0.1:7777" {
+		t.Fatalf("local = %v, want effective persisted listener", value["local"])
 	}
 }
 

@@ -180,19 +180,30 @@ uses the canonical deterministic name derived from the remote Pipe ID
 (`connect-<pipe_id>`, bounded to 63 chars), so lifecycle commands stay stable
 across reconnects. The recipient identity key (and therefore the derived
 local Pipe ID) is canonical per remote Pipe ID, never per name. Reconnects
-to the same remote therefore resolve one durable local Pipe definition:
+to the same remote therefore resolve one durable local Pipe definition, and
+an existing definition is reusable only when every relevant durable semantic
+matches the request:
 
-* same name, same remote — compatible reuse;
-* reconnect without `--name` — the existing connection's ref is returned
-  (no duplicate identity, no rename);
+* same name, same remote, same local listener — compatible reuse;
+* reconnect without `--name` on the same local listener — the existing
+  connection's ref is returned (no duplicate identity, no rename);
+* reconnect with a **different local listener** — `conflict` naming the
+  effective persisted listener and the requested one, e.g.
+  `conflict: pipe/west already connects this remote pipe on
+  127.0.0.1:9004; reuse that listener or remove the pipe before
+  reconnecting on 127.0.0.1:9005`;
 * explicit different name for an already-connected remote — `conflict`
   naming the ref that already owns the connection, suggesting reuse or
   remove-before-renaming;
-* same name, different remote — `conflict` (different target).
+* same name, different remote — `conflict` (different target);
+* an existing non-local-ingress or differently-owned Pipe under the
+  requested ref — `conflict` (incompatible shape/identity).
 
-The identity conflict is resolved before any durable write; it never
+The compatibility check is resolved before any durable write; it never
 surfaces as a storage uniqueness failure, and `connect` never performs an
-implicit rename.
+implicit mutation, rebind, or rename. Connect output (human `local listen`
+and JSON `local`) always reports the effective persisted listener from the
+application result, never an echo of the requested input.
 
 ## Resource lifecycle vs operation result
 

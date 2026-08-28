@@ -396,8 +396,11 @@ func (a App) emitAttach(jsonOutput bool, result usecase.AttachResult, run *store
 
 // emitConnect renders the connect result. run != nil means the local Pipe is
 // known ready (detached start).
-func (a App) emitConnect(jsonOutput bool, result usecase.ConnectExactResult, local string, run *store.Run) error {
+func (a App) emitConnect(jsonOutput bool, result usecase.ConnectExactResult, run *store.Run) error {
 	ready := run != nil
+	// local is always the effective persisted listener from the application
+	// result, never an echo of the requested input.
+	local := result.LocalListen
 	if jsonOutput {
 		value := map[string]any{
 			"ref":       result.PipeRef.String(),
@@ -494,21 +497,20 @@ func (a App) connect(ctx context.Context, state *store.Store, f flags) error {
 	if err != nil {
 		return err
 	}
-	local := f.values["local"]
 	if f.bools["detach"] {
 		a.progressf("starting %s...\n", result.PipeRef.String())
 		run, err := a.startDetached(ctx, state, result.PipeRef.String())
 		if err != nil {
 			return err
 		}
-		if err := a.emitConnect(f.bools["json"], result, local, &run); err != nil {
+		if err := a.emitConnect(f.bools["json"], result, &run); err != nil {
 			return err
 		}
 		a.progressf("stop:  tubo stop %s\n", result.PipeRef.String())
 		a.progressf("remove: tubo rm %s\n", result.PipeRef.String())
 		return nil
 	}
-	if err := a.emitConnect(f.bools["json"], result, local, nil); err != nil {
+	if err := a.emitConnect(f.bools["json"], result, nil); err != nil {
 		return err
 	}
 	a.progressf("starting %s...\n", result.PipeRef.String())

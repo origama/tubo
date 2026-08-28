@@ -191,16 +191,149 @@ func TestConnectIdentityRefCollisionSameNameDifferentRemote(t *testing.T) {
 	if pipeCount(pipes) != 4 {
 		t.Fatalf("pipes = %d, want 4", pipeCount(pipes))
 	}
-	// Now west owns remote A and north owns remote B. A nameless reconnect to
-	// remote B must reuse north (identity lookup), not fail or duplicate.
-	reused, err := u.ConnectExact(ctx, ConnectExactInput{Invite: inviteB, LocalListen: "127.0.0.1:9005"})
+	// Now west owns remote A and north owns remote B (listener 9004). A
+	// nameless reconnect to remote B with a DIFFERENT listener must conflict
+	// (no silent reuse, no durable mutation): the identity is already owned by
+	// pipe/north listening on 9004.
+	_, err = u.ConnectExact(ctx, ConnectExactInput{Invite: inviteB, LocalListen: "127.0.0.1:9005"})
+	if err == nil || !strings.Contains(err.Error(), "conflict") || !strings.Contains(err.Error(), "on 127.0.0.1:9004") {
+		t.Fatalf("nameless remote-b reconnect with different listener accepted: %v", err)
+	}
+	if pipeCount(pipes) != 4 {
+		t.Fatalf("pipes = %d, want 4", pipeCount(pipes))
+	}
+	north, _, err := u.Pipes.Get(ctx, "pipe/north")
 	if err != nil {
-		t.Fatalf("nameless remote-b reconnect failed: %v", err)
+		t.Fatal(err)
+	}
+	if north.Ingress.Listen != "127.0.0.1:9004" {
+		t.Fatalf("pipe/north listener mutated to %q", north.Ingress.Listen)
+	}
+	// A nameless reconnect with the SAME listener is compatible reuse of
+	// pipe/north (the identity owner), reporting the effective listener.
+	reused, err := u.ConnectExact(ctx, ConnectExactInput{Invite: inviteB, LocalListen: "127.0.0.1:9004"})
+	if err != nil {
+		t.Fatalf("nameless remote-b reconnect on same listener failed: %v", err)
 	}
 	if reused.PipeRef.String() != "pipe/north" {
 		t.Fatalf("nameless remote-b reconnect ref = %q, want pipe/north", reused.PipeRef)
 	}
+	if reused.LocalListen != "127.0.0.1:9004" {
+		t.Fatalf("effective listener = %q, want 127.0.0.1:9004", reused.LocalListen)
+	}
 	if pipeCount(pipes) != 4 {
 		t.Fatalf("pipes = %d, want 4", pipeCount(pipes))
+	}
+}
+
+// TestConnectCompatibilitySameNameDifferentLocal covers: named connect, same
+// name + same remote but a different local listener must conflict before any
+// durable write, reporting the effective persisted listener.
+func TestConnectCompatibilitySameNameDifferentLocal(t *testing.T) {
+	ctx := context.Background()
+	u, pipes, invite := newCollisionHarness(t, "remote-a")
+
+	if _, err := u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9101", Name: "west"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9102", Name: "west"})
+	if err == nil {
+		t.Fatal("same-name different-local reconnect succeeded")
+	}
+	if !strings.Contains(err.Error(), "conflict") || !strings.Contains(err.Error(), "on 127.0.0.1:9101") || !strings.Contains(err.Error(), "9102") {
+		t.Fatalf("error does not name both listeners: %v", err)
+	}
+	if errors.Is(err, errPipeIDDuplicate) || strings.Contains(err.Error(), "persistence_failed") {
+		t.Fatalf("listener conflict surfaced as storage error: %v", err)
+	}
+	if pipeCount(pipes) != 2 {
+		t.Fatalf("pipes = %d, want 2", pipeCount(pipes))
+	}
+	west, _, err := u.Pipes.Get(ctx, "pipe/west")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if west.Ingress.Listen != "127.0.0.1:9101" {
+		t.Fatalf("pipe/west listener mutated to %q", west.Ingress.Listen)
+	}
+}
+
+// TestConnectCompatibilityNamedNamelessDifferentLocal covers: named connect,
+// then a nameless reconnect with a different local listener must conflict by
+// identity lookup, leaving the durable definition untouched.
+func TestConnectCompatibilityNamedNamelessDifferentLocal(t *testing.T) {
+	ctx := context.Background()
+	u, pipes, invite := newCollisionHarness(t, "remote-a")
+
+	if _, err := u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9201", Name: "west"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9202"})
+	if err == nil || !strings.Contains(err.Error(), "conflict") || !strings.Contains(err.Error(), "pipe/west") || !strings.Contains(err.Error(), "9201") {
+		t.Fatalf("nameless reconnect with different listener accepted: %v", err)
+	}
+	if pipeCount(pipes) != 2 {
+		t.Fatalf("pipes = %d, want 2", pipeCount(pipes))
+	}
+	west, _, err := u.Pipes.Get(ctx, "pipe/west")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if west.Ingress.Listen != "127.0.0.1:9201" {
+		t.Fatalf("pipe/west listener mutated to %q", west.Ingress.Listen)
+	}
+}
+
+// TestConnectCompatibilityDefaultNameDifferentLocal covers: default-name
+// connect, then a reconnect (same deterministic ref) with a different local
+// listener must conflict and leave the durable definition unchanged.
+func TestConnectCompatibilityDefaultNameDifferentLocal(t *testing.T) {
+	ctx := context.Background()
+	u, pipes, invite := newCollisionHarness(t, "remote-a")
+
+	first, err := u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9301"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ownerRef := first.PipeRef.String()
+	_, err = u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9302"})
+	if err == nil || !strings.Contains(err.Error(), "conflict") || !strings.Contains(err.Error(), ownerRef) || !strings.Contains(err.Error(), "9301") {
+		t.Fatalf("default-name reconnect with different listener accepted: %v", err)
+	}
+	if pipeCount(pipes) != 2 {
+		t.Fatalf("pipes = %d, want 2", pipeCount(pipes))
+	}
+	spec, _, err := u.Pipes.Get(ctx, ownerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Ingress.Listen != "127.0.0.1:9301" {
+		t.Fatalf("%s listener mutated to %q", ownerRef, spec.Ingress.Listen)
+	}
+}
+
+// TestConnectCompatibilityReuseReportsEffectiveListener covers: the result's
+// LocalListen always reflects the persisted listener, which on compatible
+// reuse is the existing listener (never the input echo).
+func TestConnectCompatibilityReuseReportsEffectiveListener(t *testing.T) {
+	ctx := context.Background()
+	u, pipes, invite := newCollisionHarness(t, "remote-a")
+
+	first, err := u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9401", Name: "west"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.LocalListen != "127.0.0.1:9401" {
+		t.Fatalf("fresh LocalListen = %q", first.LocalListen)
+	}
+	second, err := u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9401", Name: "west"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.LocalListen != "127.0.0.1:9401" {
+		t.Fatalf("reused LocalListen = %q, want 127.0.0.1:9401", second.LocalListen)
+	}
+	if pipeCount(pipes) != 2 {
+		t.Fatalf("pipes = %d, want 2", pipeCount(pipes))
 	}
 }
