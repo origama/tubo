@@ -17,13 +17,13 @@ export TUBO_HOME="$WORK_DIR/home"
 "$BIN" help >"$WORK_DIR/help.out"
 for value in \
   'tubo — private connectivity through composable pipes' \
-  'attach     create or reuse a Service and its Pipe' \
-  'connect    redeem an exact invite' \
-  'share      mint a one-time invite' \
+  'attach     create or reuse a Service and its Pipe, then run it' \
+  'connect    redeem an exact invite and run a local Pipe' \
+  'share      mint a one-time invite for an owned Pipe' \
   'get        list resources' \
   'inspect    inspect one resource in detail' \
-  'ps         compact runtime overview' \
-  'top        live runtime and network metrics' \
+  'ps         show a compact runtime overview' \
+  'top        show live runtime and network metrics' \
   '--quiet'; do
   grep -F -- "$value" "$WORK_DIR/help.out" >/dev/null
 done
@@ -140,6 +140,10 @@ grep -F -- 'Target' "$WORK_DIR/inspect-pipe.out" >/dev/null
 mkdir -p "$TUBO_HOME/logs"
 printf 'runtime marker\n' >"$TUBO_HOME/logs/pipe-local-echo.log"
 "$BIN" logs pipe/local-echo --tail 1 >"$WORK_DIR/logs.out"
+if "$BIN" logs pipe/local-echo --json -f >"$WORK_DIR/logs-json-follow.out" 2>&1; then
+  echo 'logs --json -f unexpectedly succeeded' >&2; exit 1
+fi
+grep -F -- '--json cannot be combined with -f' "$WORK_DIR/logs-json-follow.out" >/dev/null
 "$BIN" -v ps --json >"$WORK_DIR/verbose-ps.json" 2>"$WORK_DIR/verbose.err"
 python3 - "$WORK_DIR/services.json" "$WORK_DIR/scopes.json" "$WORK_DIR/inspect-service.json" "$WORK_DIR/config-valid.json" "$WORK_DIR/peers.json" "$WORK_DIR/doctor.json" <<'PY'
 import json, sys
@@ -211,6 +215,14 @@ for path in sys.argv[1:]: assert json.load(open(path))["status"] == "removed"
 PY
 
 # ---- Empty-state hints ----
+if "$BIN" rm >"$WORK_DIR/rm-noargs.out" 2>&1; then
+  echo 'bare rm succeeded' >&2; exit 1
+fi
+grep -F -- 'rm requires a resource ref or --stale' "$WORK_DIR/rm-noargs.out" >/dev/null
+if "$BIN" start "pipe/x" --json >"$WORK_DIR/start-json.out" 2>&1; then
+  echo 'foreground start --json succeeded' >&2; exit 1
+fi
+grep -F -- 'requires -d' "$WORK_DIR/start-json.out" >/dev/null
 "$BIN" get services >"$WORK_DIR/services-empty.out"
 grep -F -- 'No services.' "$WORK_DIR/services-empty.out" >/dev/null
 

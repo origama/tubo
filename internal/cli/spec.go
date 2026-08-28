@@ -57,14 +57,6 @@ func (s *commandSpec) id() string { return joinPath(s.path) }
 
 func joinPath(path []string) string { return strings.Join(path, " ") }
 
-// nameArg renders a positional-name list ("<target>") or nothing.
-func (s *commandSpec) usageArgs() string {
-	if s.maxArgs != 0 || len(s.args) > 0 {
-		return " " + strings.Join(s.args, " ")
-	}
-	return ""
-}
-
 // commands is the single, declarative command spec tree. All parsing, help,
 // and validation derive from it. Keep it flat: group specs are prefixes of
 // their children.

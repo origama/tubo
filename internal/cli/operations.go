@@ -189,7 +189,10 @@ func (a App) inspect(ctx context.Context, state *store.Store, f flags) error {
 		return a.inspectLocal(ctx, state, raw, f.bools["json"])
 	}
 	run, runErr := state.Run(ctx, raw)
-	if runErr == nil && (strings.HasPrefix(raw, "relay/") || strings.HasPrefix(raw, "authority/")) {
+	if strings.HasPrefix(raw, "relay/") || strings.HasPrefix(raw, "authority/") {
+		if runErr != nil {
+			return withTry(fmt.Errorf("not_found: %s has no live runtime", raw), "check 'tubo ps' and the resource's config")
+		}
 		if f.bools["json"] {
 			return json.NewEncoder(a.Out).Encode(run)
 		}
@@ -556,7 +559,15 @@ func (a App) logs(ctx context.Context, state *store.Store, f flags) error {
 	}
 	lines, err := readTail(path, tail)
 	if err != nil {
-		return fmt.Errorf("not_found: log for %s: %w", f.args[0], err)
+		if os.IsNotExist(err) {
+			return withTry(fmt.Errorf("not_found: no log for %s yet", f.args[0]), "start it first: tubo start "+f.args[0])
+		}
+		return fmt.Errorf("invalid_input: cannot read log for %s: %v", f.args[0], err)
+	}
+	if f.bools["f"] || f.bools["follow"] {
+		if f.bools["json"] {
+			return errors.New("invalid_input: --json cannot be combined with -f/--follow; 'watch pipes --json' provides NDJSON instead")
+		}
 	}
 	if f.bools["json"] {
 		return json.NewEncoder(a.Out).Encode(map[string]any{"ref": f.args[0], "lines": lines})
@@ -692,6 +703,9 @@ func staleRuns(ctx context.Context, state *store.Store) ([]string, error) {
 }
 
 func (a App) remove(ctx context.Context, state *store.Store, f flags) error {
+	if len(f.args) == 0 {
+		return errors.New("invalid_input: rm requires a resource ref or --stale; see 'tubo rm --help'")
+	}
 	if f.bools["stale"] {
 		refs, err := staleRuns(ctx, state)
 		if err != nil {

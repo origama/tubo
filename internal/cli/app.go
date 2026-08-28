@@ -333,6 +333,9 @@ func (a App) runPipeInternal(ctx context.Context, state *store.Store, f flags) e
 
 // start runs the pipe runtime in the foreground and returns when it stops.
 func (a App) start(ctx context.Context, state *store.Store, f flags) error {
+	if len(f.args) == 0 {
+		return errors.New("invalid_input: start requires a pipe ref; see 'tubo start --help'")
+	}
 	ref := f.args[0]
 	if f.bools["d"] {
 		a.progressf("starting %s...\n", ref)
@@ -341,6 +344,9 @@ func (a App) start(ctx context.Context, state *store.Store, f flags) error {
 			return err
 		}
 		return a.emit(f.bools["json"], map[string]any{"ref": ref, "status": "ready", "pid": run.PID}, fmt.Sprintf("%s ready (pid %d)", ref, run.PID))
+	}
+	if f.bools["json"] {
+		return errors.New("invalid_input: start --json requires -d (foreground start has no JSON result); see 'tubo start --help'")
 	}
 	a.progressf("starting %s...\n", ref)
 	a.progressf("Ctrl-C to stop\n")
@@ -407,6 +413,9 @@ func (a App) emitConnect(jsonOutput bool, result usecase.ConnectExactResult, loc
 	}
 	if ready {
 		if _, err := fmt.Fprintf(a.Out, "%s ready (pid %d)\n", result.PipeRef.String(), run.PID); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(a.Out, "local listen: %s\n", local); err != nil {
 			return err
 		}
 	} else {
@@ -949,7 +958,7 @@ func loadOrGeneratePrivate(path string) (ed25519.PrivateKey, error) {
 func parseScope(raw string) (*domain.Scope, error) {
 	parts := strings.Split(raw, "/")
 	if len(parts) != 2 {
-		return nil, errors.New("scope must be cluster/namespace")
+		return nil, errors.New("invalid_input: scope must be cluster/namespace")
 	}
 	value := &domain.Scope{Cluster: parts[0], Namespace: parts[1]}
 	return value, value.Validate()

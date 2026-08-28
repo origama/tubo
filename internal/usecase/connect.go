@@ -104,12 +104,12 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 		UpdatedAt:  now,
 	}
 	// Preserve the durable identity of an existing local definition, but only
-	// when it targets the same remote Pipe. Reusing a friendly name across
-	// different remote Pipes would silently rebind the identity, which is
-	// never what an operator intends.
+	// when it targets the same remote Pipe. Anything else under the chosen
+	// name (a different remote Pipe, a Service target, a local passthrough)
+	// must never be silently rebound by a connect operation.
 	if existing, existingKey, existingErr := u.Pipes.Get(ctx, recipientRef.String()); existingErr == nil {
-		if existing.Target.Kind == domain.KindPipe && existing.Target.Name != invite.AudiencePipeID {
-			return ConnectExactResult{}, fmt.Errorf("conflict: %s already targets a different remote pipe; remove it first or choose another --name", recipientRef)
+		if existing.Target.Kind != domain.KindPipe || existing.Target.Name != invite.AudiencePipeID {
+			return ConnectExactResult{}, fmt.Errorf("conflict: %s already exists with a different target; remove it first or choose another --name", recipientRef)
 		}
 		spec.PipeID = existing.PipeID
 		spec.CreatedAt = existing.CreatedAt

@@ -642,3 +642,100 @@ func TestReserveForegroundAlreadyRunningHasStopHint(t *testing.T) {
 		t.Fatal("already-running error lacks stop-first hint")
 	}
 }
+
+func TestRmWithoutArgsIsInvalidInputNotPanic(t *testing.T) {
+	state, ctx := openPipeViewState(t)
+	var out bytes.Buffer
+	app := App{Out: &out, Err: &bytes.Buffer{}}
+	err := app.runCommandForTest(t, ctx, state, []string{"rm"})
+	if err == nil || !strings.Contains(err.Error(), "invalid_input: rm requires a resource ref or --stale") {
+		t.Fatalf("bare rm error = %v", err)
+	}
+	err = app.runCommandForTest(t, ctx, state, []string{"rm", "--json"})
+	if err == nil || !strings.Contains(err.Error(), "requires a resource ref") {
+		t.Fatalf("rm --json error = %v", err)
+	}
+}
+
+func TestLogsRejectsJSONWithFollow(t *testing.T) {
+	state, ctx := openPipeViewState(t)
+	if err := seedLogFile(t, state, "pipe/x", "line1\n"); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	app := App{Out: &out, Err: &bytes.Buffer{}}
+	err := app.runCommandForTest(t, ctx, state, []string{"logs", "pipe/x", "--json", "-f"})
+	if err == nil || !strings.Contains(err.Error(), "--json cannot be combined with -f") {
+		t.Fatalf("logs --json -f error = %v", err)
+	}
+}
+
+func TestStartJSONForegroundRejects(t *testing.T) {
+	state, ctx := openPipeViewState(t)
+	ref, _ := domain.NewRef(domain.KindPipe, "origin")
+	target, _ := domain.NewRef(domain.KindPipe, "pip_remote")
+	if _, err := state.PutPipe(ctx, domain.PipeSpec{Ref: ref, PipeID: "pip_local", Ingress: domain.PipeIngress{Kind: domain.IngressLocal, Listen: "127.0.0.1:1"}, Target: target, Visibility: domain.VisibilityPrivate, Access: domain.AccessMembers, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	app := App{Out: &out, Err: &bytes.Buffer{}}
+	err := app.start(ctx, state, flags{values: map[string]string{}, bools: map[string]bool{"json": true}, args: []string{"pipe/origin"}})
+	if err == nil || !strings.Contains(err.Error(), "requires -d") {
+		t.Fatalf("foreground start --json error = %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("foreground start --json emitted stdout: %q", out.String())
+	}
+}
+
+func seedLogFile(t *testing.T, state *store.Store, ref, content string) error {
+	t.Helper()
+	path, err := resourceLogPath(state, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+func TestParseEmptyValueForRequiredFlagFails(t *testing.T) {
+	_, err := parseCommandForTest(t, []string{"attach", "http://x", "--name="})
+	if err == nil || !strings.Contains(err.Error(), "--name is required") {
+		t.Fatalf("--name= accepted: %v", err)
+	}
+}
+
+func TestLogsHumanKeepsRawLines(t *testing.T) {
+	state, ctx := openPipeViewState(t)
+	ref, _ := domain.NewRef(domain.KindPipe, "runner")
+	target, _ := domain.NewRef(domain.KindPipe, "pip_remote")
+	if _, err := state.PutPipe(ctx, domain.PipeSpec{Ref: ref, PipeID: "pip_local", Ingress: domain.PipeIngress{Kind: domain.IngressLocal, Listen: "127.0.0.1:1"}, Target: target, Visibility: domain.VisibilityPrivate, Access: domain.AccessMembers, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := seedLogFile(t, state, "pipe/runner", "first line\nsecond line\n"); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	app := App{Out: &out, Err: &bytes.Buffer{}}
+	if err := app.runCommandForTest(t, ctx, state, []string{"logs", "pipe/runner", "--tail", "10"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out.String(), "first line\nsecond line\n"; got != want {
+		t.Fatalf("logs human = %q, want %q", got, want)
+	}
+}
+
+func TestGroupLevelUnknownFlagRejected(t *testing.T) {
+	for _, args := range [][]string{
+		{"get", "--bogus"},
+		{"scope", "--bogus"},
+		{"get", "pipes", "--bogus"},
+	} {
+		_, err := parseCommandForTest(t, args)
+		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Fatalf("%v accepted: %v", args, err)
+		}
+	}
+}

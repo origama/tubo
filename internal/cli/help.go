@@ -10,54 +10,15 @@ import (
 // so the described surface cannot drift from the implemented one. No Store,
 // network, or side effect is touched.
 func (a App) helpTop() {
-	model := commands
-	_ = model
 	out := a.Out
 	fmt.Fprintln(out, "tubo — private connectivity through composable pipes")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Usage: tubo <command> [args]")
 	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Workflows:")
-	printGroup(out, [][]string{
-		{"attach", "create or reuse a Service and its Pipe, then run it"},
-		{"connect", "redeem an exact invite and run a local Pipe"},
-		{"share", "mint a one-time invite for an owned Pipe"},
-	})
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Resource operations:")
-	printGroup(out, [][]string{
-		{"get", "list resources"},
-		{"inspect", "inspect one resource in detail"},
-		{"start", "start a Pipe runtime"},
-		{"stop", "stop a running runtime"},
-		{"restart", "restart a Pipe runtime"},
-		{"rm", "remove a resource or stale runs"},
-		{"logs", "show runtime logs"},
-		{"ps", "compact runtime overview"},
-		{"top", "live runtime and network metrics"},
-		{"watch", "watch resource events"},
-		{"doctor", "run local health checks"},
-	})
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Resources:")
-	printGroup(out, [][]string{
-		{"service", "define local Services"},
-		{"pipe", "define Pipes"},
-		{"scope", "create, invite, join, or use Scopes"},
-		{"peers", "manage peer aliases"},
-		{"config", "validate or print configuration"},
-		{"supervise", "install, inspect, or remove launchd supervision"},
-	})
-	fmt.Fprintln(out)
-	fmt.Fprintln(out, "Infrastructure:")
-	printGroup(out, [][]string{
-		{"join", "configure overlay reachability"},
-		{"relay", "run a relay in the foreground"},
-		{"authority", "scope authority administration"},
-		{"revoke", "revoke an invite, session, access, or publish grant"},
-		{"keygen", "generate keys"},
-		{"version", "print version information"},
-	})
+	printTopGroup(out, "Workflows:", []string{"attach", "connect", "share"})
+	printTopGroup(out, "Resource operations:", []string{"get", "inspect", "start", "stop", "restart", "rm", "logs", "ps", "top", "watch", "doctor"})
+	printTopGroup(out, "Resources:", []string{"service", "pipe", "scope", "peers", "config", "supervise"})
+	printTopGroup(out, "Infrastructure:", []string{"join", "relay", "authority", "revoke", "keygen", "version"})
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Global flags:")
 	fmt.Fprintln(out, "  -q, --quiet       suppress progress/hint output on stderr")
@@ -69,6 +30,20 @@ func (a App) helpTop() {
 	fmt.Fprintln(out, "(watch --json emits NDJSON).")
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Run 'tubo <command> --help' for command details.")
+}
+
+// printTopGroup renders one help section using each command's summary from
+// the spec tree, so the top-level help cannot drift from the real surface.
+func printTopGroup(out io.Writer, heading string, names []string) {
+	fmt.Fprintln(out, heading)
+	for _, name := range names {
+		spec := specFor(name)
+		if spec == nil {
+			continue
+		}
+		fmt.Fprintf(out, "  %-10s %s\n", name, spec.summary)
+	}
+	fmt.Fprintln(out)
 }
 
 func printGroup(out io.Writer, rows [][]string) {

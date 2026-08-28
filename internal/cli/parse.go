@@ -37,6 +37,10 @@ func parseCommand(spec *commandSpec, args []string) (flags, error) {
 	if spec.isGroup() {
 		for _, arg := range args {
 			if strings.HasPrefix(arg, "-") {
+				name, _, _ := strings.Cut(arg, "=")
+				if spec.flag(strings.TrimLeft(name, "-")) == nil {
+					return flags{}, fmt.Errorf("invalid_input: %s: unknown flag %s; see '%s --help'", spec.id(), name, spec.id())
+				}
 				continue
 			}
 			return flags{}, fmt.Errorf("invalid_input: %s: unknown subcommand %q; see '%s --help'", spec.id(), arg, spec.id())
@@ -96,7 +100,29 @@ func parseCommand(spec *commandSpec, args []string) (flags, error) {
 	if len(f.args) < spec.minArgs || (spec.maxArgs >= 0 && len(f.args) > spec.maxArgs) {
 		return flags{}, positionalError(spec, f.args)
 	}
+	requiredEmpty := false
+	for i := range spec.flags {
+		if spec.flags[i].required {
+			if value, ok := f.values[spec.flags[i].name]; !ok || value == "" {
+				requiredEmpty = true
+			}
+		}
+	}
+	if requiredEmpty {
+		return flags{}, fmt.Errorf("invalid_input: %s: --%s is required; see '%s --help'", spec.id(), requiredFlagName(spec), spec.id())
+	}
 	return f, nil
+}
+
+// requiredFlagName returns the first missing required flag name, for error
+// messaging; required flags are enforced by the requiredEmpty pass above.
+func requiredFlagName(spec *commandSpec) string {
+	for i := range spec.flags {
+		if spec.flags[i].required {
+			return spec.flags[i].name
+		}
+	}
+	return ""
 }
 
 // positionalError gives a concrete missing/unexpected-argument message.
