@@ -215,6 +215,23 @@ func (c *fakeCarrier) Write(p []byte) (int, error) {
 
 func (c *fakeCarrier) Close() error { return nil }
 
+// ---- Fake owner locator ----
+
+type fakeOwnerLocator struct {
+	address string
+	err     error
+	calls   int
+	ref     domain.Ref
+	pipeID  string
+}
+
+func (l *fakeOwnerLocator) LocateOwner(_ context.Context, ref domain.Ref, pipeID string) (string, error) {
+	l.calls++
+	l.ref = ref
+	l.pipeID = pipeID
+	return l.address, l.err
+}
+
 // ---- Fake reachability ----
 
 type fakeReachability struct {

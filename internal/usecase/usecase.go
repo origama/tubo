@@ -40,10 +40,10 @@ type UseCases struct {
 	// Now is the injected wall clock; default is time.Now().UTC().
 	Now func() time.Time
 
-	// RedemptionAddress is the neutral redemption peer address embedded in
-	// minted OwnerBindings. The 8B composition root wires the real serving
-	// address; 8A tests inject a deterministic in-memory address.
-	RedemptionAddress string
+	// OwnerLocator resolves current owner runtime reachability before ShareExact
+	// provisions authority state or mints an invite. A missing capability fails
+	// closed; static relay or run addresses cannot bypass live locator resolution.
+	OwnerLocator OwnerRedemptionLocator
 
 	// RedemptionProtocol is the neutral redemption protocol id embedded in
 	// minted OwnerBindings (e.g. "/tubo/exact-redemption/1").

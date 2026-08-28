@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/domain"
@@ -21,6 +22,8 @@ import (
 //   - Owner key unreadable -> persistence_failed, no state change.
 //   - Owner key does not derive the PipeID -> authorization_denied. A foreign
 //     or non-owned Pipe can never be shared.
+//   - Owner runtime locator unavailable -> runtime_unavailable, no Exact
+//     Authority provisioning and no invite.
 //   - Exact Authority provisioning failure -> persistence_failed, no invite.
 //
 // Repeated shares provision the same dedicated authority key (create-or-load)
@@ -41,6 +44,20 @@ func (u UseCases) ShareExact(ctx context.Context, in ShareExactInput) (ShareExac
 	if accesslease.PipeIDFromOwner(ownerPublic) != spec.PipeID {
 		return ShareExactResult{}, errors.New("authorization_denied: pipe is not owned by this identity")
 	}
+	if u.OwnerLocator == nil {
+		return ShareExactResult{}, errors.New("runtime_unavailable: owner exact-redemption locator is unavailable")
+	}
+	redemptionAddress, err := u.OwnerLocator.LocateOwner(ctx, spec.Ref, spec.PipeID)
+	if err != nil {
+		return ShareExactResult{}, err
+	}
+	redemptionAddress = strings.TrimSpace(redemptionAddress)
+	if redemptionAddress == "" {
+		return ShareExactResult{}, errors.New("runtime_unavailable: owner exact-redemption locator is unavailable")
+	}
+	if strings.TrimSpace(u.RedemptionProtocol) == "" {
+		return ShareExactResult{}, errors.New("runtime_unavailable: owner exact-redemption protocol is unavailable")
+	}
 	keyPath, err := exactauthority.KeyPath(u.Secrets, spec.PipeID)
 	if err != nil {
 		return ShareExactResult{}, persistenceError("exact authority path", err)
@@ -49,7 +66,7 @@ func (u UseCases) ShareExact(ctx context.Context, in ShareExactInput) (ShareExac
 		KeyPath:            keyPath,
 		PipeID:             spec.PipeID,
 		Epoch:              1, // 8B wires the revocation authorization epoch.
-		RedemptionPeers:    u.RedemptionAddress,
+		RedemptionPeers:    redemptionAddress,
 		RedemptionProtocol: u.RedemptionProtocol,
 	}
 	auth, err := workflow.Provision(owner)

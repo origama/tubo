@@ -86,12 +86,11 @@ func (p *Provider) AddrInfo() peer.AddrInfo {
 // full p2p multiaddr string, suitable for round-tripping through callers that
 // consume single-address relay strings.
 func (p *Provider) PrimaryAddress() (string, error) {
-	info := p.AddrInfo()
-	values, err := peer.AddrInfoToP2pAddrs(&info)
-	if err != nil || len(values) == 0 {
-		return "", fmt.Errorf("reachability: no primary address")
+	address, err := node.RelayAddress(p.AddrInfo())
+	if err != nil {
+		return "", fmt.Errorf("reachability: no primary address: %w", err)
 	}
-	return values[0].String(), nil
+	return address, nil
 }
 
 // hasCircuit reports whether an address carries a p2p-circuit relay hop.

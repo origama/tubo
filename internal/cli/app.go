@@ -19,13 +19,12 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
 	"github.com/origama/tubo-rebuilt/internal/authority"
 	"github.com/origama/tubo-rebuilt/internal/discovery"
 	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/node"
+	"github.com/origama/tubo-rebuilt/internal/reachability"
 	appRuntime "github.com/origama/tubo-rebuilt/internal/runtime"
 	"github.com/origama/tubo-rebuilt/internal/store"
 	"github.com/origama/tubo-rebuilt/internal/usecase"
@@ -40,6 +39,7 @@ type App struct {
 	UseCases                                              usecase.UseCases
 	fetchRecords                                          func(context.Context, *store.Store, string, appRuntime.FetchRecordsOptions) error
 	networkOperationObserver                              appRuntime.NetworkOperationObserver
+	resolveDefault                                        func(context.Context) (*reachability.Provider, error)
 	now                                                   func() time.Time
 }
 type flags struct {
@@ -129,14 +129,7 @@ func (a App) Run(ctx context.Context, args []string) error {
 		store.NewPipeRepoAdapter(state),
 	)
 	a.UseCases.Secrets = state.SecretPath()
-	// Set the redemption address from the overlay relay config, if available.
-	// This is the address that will be embedded in invites so the connector
-	// can reach the redemption handler on the pipe's libp2p host.
-	if relay, _, _, overlayErr := state.Overlay(ctx); overlayErr == nil && relay != "" {
-		a.UseCases.RedemptionAddress = relay
-	} else {
-		a.UseCases.RedemptionAddress = ""
-	}
+	a.UseCases.OwnerLocator = newOwnerRedemptionLocator(state, a.resolveDefault)
 	a.UseCases.RedemptionProtocol = "/tubo/exact-redemption/1"
 	a.UseCases.Redemption = nil // not wired for CLI-only commands
 	a.UseCases.Reach = nil
@@ -715,34 +708,13 @@ func (a App) startDetached(ctx context.Context, state *store.Store, ref string) 
 	return store.Run{}, errors.New("readiness_failed: child did not become ready")
 }
 
-func (a App) share(ctx context.Context, state *store.Store, args []string) error {
+func (a App) share(ctx context.Context, _ *store.Store, args []string) error {
 	f, err := parse(args)
 	if err != nil {
 		return err
 	}
 	if len(f.args) != 1 || !strings.HasPrefix(f.args[0], "pipe/") {
 		return errors.New("usage: tubo share pipe/<name> [--json]")
-	}
-	// Look up the pipe's run record to get the peer ID for the redemption
-	// address. The pipe must be running to serve the redemption handler.
-	// Use the circuit address (relay + pipe host peer ID) so the
-	// connector can reach the redemption handler through the relay.
-	if run, runErr := state.Run(ctx, f.args[0]); runErr == nil && run.PeerID != "" {
-		if relay, _, _, overlayErr := state.Overlay(ctx); overlayErr == nil && relay != "" {
-			pipePeerID, pidErr := peer.Decode(run.PeerID)
-			if pidErr == nil {
-				circuitAddr, addrErr := node.CircuitAddress(relay, pipePeerID)
-				if addrErr == nil {
-					a.UseCases.RedemptionAddress = circuitAddr
-				}
-			}
-		}
-	}
-	// If no run record, fall back to the overlay relay address.
-	if a.UseCases.RedemptionAddress == "" {
-		if relay, _, _, overlayErr := state.Overlay(ctx); overlayErr == nil && relay != "" {
-			a.UseCases.RedemptionAddress = relay
-		}
 	}
 	result, err := a.UseCases.ShareExact(ctx, usecase.ShareExactInput{
 		PipeRef: f.args[0],

@@ -31,6 +31,13 @@ type RedemptionService interface {
 	Redeem(ctx context.Context, carrier Carrier, invite accesslease.ExactInvite, recipientPublic string) (accesslease.AccessLease, error)
 }
 
+// OwnerRedemptionLocator resolves the current reachable exact-redemption
+// locator for one running owner Pipe. It returns reachability metadata only;
+// successful resolution never authorizes a remote Pipe open.
+type OwnerRedemptionLocator interface {
+	LocateOwner(ctx context.Context, pipeRef domain.Ref, pipeID string) (string, error)
+}
+
 // PipeStarter launches the runtime for a durable PipeSpec. 8B wires the real
 // PipeRuntime; 8A tests inject fakes. The durable definition is never
 // modified by starting or stopping.
