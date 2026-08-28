@@ -1,206 +1,386 @@
 # CLI contract
 
-**Prototype reference contract:** This command surface documents `prototype-v2-final`. Future L4 use cases make CLI a parsing/presentation adapter; this surface is not automatic compatibility target. See [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) and [`../implementation/ROADMAP.md`](../implementation/ROADMAP.md).
+Normative human CLI contract for Tubo. The command surface, parsing rules,
+help text, output discipline, and JSON shapes described here are the current
+post-A0 behavior and the compatibility target for scripts and future
+releases. The CLI is a thin L5 parsing/presentation adapter over L4 use
+cases; it owns no connectivity, authorization, or runtime semantics.
 
-Implementation status: private-HTTP/WebSocket/raw-TCP vertical slice supports `keygen swarm`, `join overlay`, scope create/invite/join/use, remote publisher grants and announcements, foreground relay/authority/published pipes, service/pipe create, `attach`, detached `connect`, one-time share invites, revocation, local inventory/inspection, peer aliases, masked config validation/printing, `doctor`, `logs`, detached pipe restart/removal/stale cleanup, `ps`, `top`, and identity-safe `stop`.
+## Mental model
 
-**A0 Step 8 status:** Step 8A (issue #59, `internal/usecase`) lands the L4 Journey-A use-case contracts (`Attach`, `ShareExact`, `ConnectExact`, `StartPipe`) and narrow persistence ports with zero CLI change. The CLI surface above is therefore still the prototype-orchestrated surface until Step 8B (issue #61) rewires these commands to invoke the use cases and defines the final Journey-A contract shapes: `tubo attach http://127.0.0.1:8080`, `tubo share pipe/<name-or-ref>`, `tubo connect --token <exact-invite> --local <listen>` (optionally `service create`/`pipe create`/`start`). Output contract for the rewired commands: stable resource refs plus a useful next action; never authority key paths, Store IDs, relay internals, or a local Service target inside an invite. `attach` and `connect` are L4 presets, not runtime resource kinds.
+Tubo's CLI is organized into three command families plus infrastructure:
 
-## Output
+**Workflows** — ergonomic presets, not resource kinds:
+
+| Command | Purpose |
+| --- | --- |
+| `tubo attach <target> --name <name>` | create/reuse a Service and its Pipe for a local endpoint, then run it |
+| `tubo connect --token <invite> --local <host:port>` | redeem an exact invite and run a local Pipe |
+| `tubo share <pipe-ref>` | mint a one-time invite for an owned, running Pipe |
+
+**Generic resource operations** — apply to resource refs consistently:
+
+| Command | Purpose |
+| --- | --- |
+| `tubo get <collection>` | compact inventory tables (`pipes`, `services`, `scopes`, `peers`, `overlays`) |
+| `tubo inspect <resource>` | labeled detail for one resource |
+| `tubo start <pipe-ref>` | start a Pipe runtime (foreground, or `-d` detached) |
+| `tubo stop <ref>` | stop a running runtime |
+| `tubo restart <pipe-ref>` | restart a Pipe runtime detached |
+| `tubo rm <ref>` | remove a Service or Pipe (with `--force` for a running Pipe), or `--stale` runs |
+| `tubo logs <ref>` | show runtime logs (`--tail N`, `-f`) |
+| `tubo ps` | compact lifecycle/runtime overview |
+| `tubo top` | live runtime and network metrics (`--once`, `--interval`) |
+| `tubo watch pipes` | stream verified Pipe projection events |
+| `tubo doctor` | local health checks |
+
+**Resource-specific administration** — subcommand trees:
+
+| Command | Purpose |
+| --- | --- |
+| `tubo service create <name> --target <url>` | define a local Service |
+| `tubo pipe create <name> --ingress <kind> --target <ref>` | define a Pipe |
+| `tubo scope create|invite|join|use ...` | Scope administration |
+| `tubo peers alias <peer-id> --name <label>` | label a peer |
+| `tubo config validate|print` | configuration checks |
+| `tubo supervise install|status|uninstall <ref>` | launchd supervision |
+
+**Infrastructure** — deliberately distinct verbs, not resource operations:
+
+| Command | Purpose |
+| --- | --- |
+| `tubo join overlay --relay <multiaddr> --swarm-key <file>` | configure overlay reachability |
+| `tubo relay --listen <addr> --public-addr <addr>` | run a relay in the foreground |
+| `tubo authority start <cluster> --scope <scope>` | run a Scope authority in the foreground |
+| `tubo revoke <type> <id>` | revoke invites, sessions, access or publish grants |
+| `tubo keygen swarm --out <file>` | generate a swarm key |
+| `tubo version` | version information |
+
+## Command grammar
+
+* **Resource refs** are `<kind>/<name>`: `pipe/origin`, `service/echo`,
+  `scope/<cluster>/<namespace>`, `overlay/default`, `session/<id>`,
+  `peer/<peer-id>`, `relay/default`, `authority/<cluster>`.
+* **Flags** accept both `--name value` and `--name=value`.
+  Boolean flags (`--json`, `-d`, `-f`, `--refresh`, …) take no value and may
+  also be written `--flag=true` / `--flag=false`.
+* **Unknown flags fail.** A typo is never silently ignored:
+  `tubo get pipes --scpoe solar/default` fails with
+  `invalid_input: get pipes: unknown flag --scpoe; see 'get pipes --help'`.
+* **Required flags fail clearly**: `invalid_input: connect: --local is
+  required; see 'connect --help'`.
+* **Extra or missing positionals fail clearly** with the offending argument.
+* **Obsolete flags fail with a replacement hint**: `--live` is rejected with
+  `invalid_input: --live is obsolete; use --refresh`.
+* **Global flags** (`-q`/`--quiet`, `-v/-vv/-vvv`, `--log-level <level>`)
+  are accepted anywhere in the argument list.
+* **Short flags exist only where deliberately defined**: `-d` (detach),
+  `-f` (follow logs), `-q`, `-v`, `-h`. Everything else is rejected.
+* Errors identify the command: `tubo: invalid_input: attach: unknown flag
+  --detail; see 'attach --help'`.
+
+## Contextual help
+
+Help is available at every level of the command tree and requires no
+initialized Store, config, or network access:
+
+```bash
+tubo --help
+tubo attach --help
+tubo get --help
+tubo get pipes --help
+tubo scope --help
+tubo scope invite --help
+tubo supervise install --help
+tubo help <command> [<subcommand>]   # same output
+```
+
+Help is generated from the same declarative command specification that drives
+parsing and validation, so described flags, requiredness and the real surface
+cannot drift apart. The top-level help lists the full public command surface;
+hidden internal commands (e.g. `_run-pipe`, used by detached children) are
+not advertised.
+
+## stdout / stderr discipline
 
 ```text
-stdout = primary command result
-stderr = progress, warning, hint, diagnostics
+stdout = primary command result (machine-friendly)
+stderr = progress, warnings, hints, diagnostics
 ```
 
-`--json` prints exactly one parseable JSON value to stdout. Detached children and implicit authorization/discovery work must not contaminate it.
+* Mutations print their result to stdout: which resource was affected and
+  what happened (`created` / `reused` / `removed`), plus readiness when it is
+  actually known (detached starts).
+* Progress (`starting pipe/origin...`), warnings (refresh failures), and next
+  actions (`share it: tubo share pipe/origin`) go to stderr.
+* `--json` prints **exactly one parseable JSON value** to stdout; stderr stays
+  clean for normal listing commands.
+* `watch --json` is the explicit exception: it emits NDJSON (one JSON object
+  per event).
+* Detached child output is redirected to per-resource log files and never
+  leaks into structured stdout.
 
-## Ergonomic commands
+### Happy path
 
-```bash
-tubo attach http://127.0.0.1:1234 --name lmstudio -d
-tubo attach tcp://127.0.0.1:8443 --name tlsdemo -d
-tubo connect lmstudio --local 127.0.0.1:51234 -d
-tubo connect --token <share-invite> --local 127.0.0.1:51234 -d
+Publisher:
+
+```console
+$ tubo attach http://127.0.0.1:8080 --name origin -d
+service/origin created
+pipe/origin created
+pipe/origin ready (pid 5021)
+$ INVITE="$(tubo share pipe/origin)"
 ```
 
-Semantics:
+`share` keeps the raw invite as the **only** stdout line so command
+substitution works unchanged; expiry, one-time semantics and the recipient
+command are printed to stderr:
+
+```console
+$ tubo share pipe/origin
+eyJ2ZXJzaW9uIjoxLCJ0eXBlIjoicGlwZS5vcGVuLmludml0ZSI...
+```
+
+Recipient:
+
+```console
+$ tubo connect --token "$INVITE" --local 127.0.0.1:51234 --name west -d
+pipe/west ready (pid 7244)
+local listen: 127.0.0.1:51234
+```
+
+`connect` accepts an optional friendly `--name`; without it the local Pipe
+gets a deterministic name derived from the remote Pipe ID
+(`connect-<pipe_id>`, bounded to 63 chars) so lifecycle commands stay stable
+across reconnects.
+
+## Resource lifecycle vs operation result
+
+Two distinct concepts are never conflated:
+
+**Operation result** — what the command just did:
+
+* `created`, `reused`, `removed`, `joined`, `configured`, `saved`,
+  `current`, `stopping`, `ready` (a detached start that reached readiness).
+
+**Runtime lifecycle** — the durable resource's state:
+
+* Service: always `defined` (a Service has no runtime).
+* Pipe: `defined` (never started), `starting`, `ready`, `degraded`,
+  `stopped`, `stale` (run record exists but the process identity no longer
+  matches).
+
+**Remote availability** — verified network records:
+
+* `available` for remote Pipe records projected by discovery.
+
+Mapping: `attach` prints result semantics (`service/origin created`,
+`pipe/origin reused`); `get pipes` and `inspect pipe/<name>` print runtime
+status (`defined`, `ready`, `available`). `ps` and `top` print run records
+only — resources that are defined but not running do not appear there.
+
+## View commands
+
+### `get` — compact inventory
+
+| Command | Columns |
+| --- | --- |
+| `tubo get pipes` | NAME, ID (truncated), STATUS, SOURCE, PATH, ACCESS, SCOPE |
+| `tubo get pipes --wide` | adds INGRESS, TARGET, SESSIONS, FRESHNESS, RECORD AGE, PATH SOURCE, full ID |
+| `tubo get services` | NAME, KIND, TARGET |
+| `tubo get scopes` | SCOPE, ROLE (authority/member/...), CURRENT |
+| `tubo get peers` | PEER ID, ALIAS, SOURCE, CONNECTED, OBSERVED BY, ADDRESSES, LAST SEEN |
+| `tubo get overlays` | REF, RELAY, REACHABILITY, CURRENT SCOPE |
+
+`get pipes` is cache-first (see Discovery below) and shows local definitions
+plus verified network records. Empty inventories print a short hint teaching
+the next action (`No services. Define one with: tubo service create
+<name> --target <url>`) instead of a bare header. `--json` prints a
+structured projection for every collection (`{"items": [...]}`; `get pipes`
+adds a typed `{"scopes": [...]}` refresh-status array).
+
+### `inspect` — labeled detail
+
+`inspect` is the detailed view of exactly one resource. The human form is
+labeled plain text, not a collapsed JSON line:
+
+```console
+$ tubo inspect pipe/origin
+Pipe:
+Ref       pipe/origin
+ID        pip_3bgpjcjak67vx5xj3zw4wftpwztqdnn7
+Status    ready
+Ingress   tubo
+Target    service/origin
+Scope     -
+Access    invite-only
+Path      relayed (last_session)
+Sessions  2
+Record    -
+```
+
+Resources: `pipe/<name>`, `service/<name>`, `scope/<cluster>/<namespace>`,
+`overlay/default`, `session/<id>`, `peer/<peer-id>`, `relay/default`,
+`authority/<cluster>`. A remote record is shown as `Status available` with
+peer, scope, advertised path, and record age/freshness. `--json` emits the
+full structured view (logical path, authorization path, transport summary,
+sessions) without changing what human users see.
+
+### `ps` vs `top`
+
+* **`ps`** — compact lifecycle overview: REF, KIND, STATUS, PID, SOURCE,
+  SESS, PATH, ADDRESS. It answers *what is running and is it healthy*, with
+  no telemetry columns.
+* **`top`** — live runtime/network metrics: adds APP RX/TX, NET RX/TX,
+  RX/s, TX/s, PEERS, CONNS, refreshed every second (`--interval 1s`,
+  `--once` for a single snapshot). `--json` emits `observed_at` plus items.
+
+## Workflow and administration semantics
+
+* `attach` – create-if-missing, reuse-if-compatible, fail-if-conflicting.
+  Detached (`-d`) reports real readiness before returning; foreground runs
+  until Ctrl-C.
+* `share` – succeeds only for a current, ready, live owned Pipe runtime; it
+  derives one canonical exact-redemption circuit locator and confirms it
+  matches runtime state. Missing/stopped/stale/mismatched state fails as
+  `runtime_unavailable` before any invite output. Invites target the exact
+  `pipe_id`, are one-time (one successful lease redemption; idempotent only
+  for the same client key/JTI retry), and expire after 10 minutes.
+* `connect` – redeems the invite over an acquired carrier, verifies the
+  resulting short-lived Access Lease binds this recipient to the exact Pipe,
+  persists exact connection state for detached start, and runs the local
+  ingress Pipe.
+* `service create` / `pipe create` – durable definitions; the Pipe needs
+  `start` (or `attach`/`connect -d`) to run. Recreating identical definitions
+  reports `reused`; conflicts fail.
+* `authority start` – foreground only; detached authority launch is provided
+  by supervision (`tubo supervise install authority/<cluster> --scope ...`).
+  `-d` is rejected with that hint.
+* `supervise install` (macOS) writes a user-owned launchd plist under
+  `~/Library/LaunchAgents`, bootstraps the exact label, waits for a
+  `source=launchd` ready run, and registers it transactionally. `uninstall`
+  boots out the exact label, waits for the recorded process identity to exit,
+  then removes registry and plist. `stop`, `restart` and `rm` reject a
+  supervised resource; uninstall/disable supervision first.
+
+## Status, errors, and hints
+
+Errors carry stable classes, lower layers first:
 
 ```text
-attach  = create/reuse service + create/reuse/start published pipe
-connect = resolve exact pipe_id + create/reuse/start local pipe
+invalid_input          unknown command/flag/argument or malformed value
+not_found              resource does not exist
+conflict               already exists / already running / ambiguous match
+authorization_denied   invalid, expired, tampered or mis-bound credential
+authority_unreachable  scope authority not ready
+discovery_unreachable  discovery refresh failed (verified cache still shown)
+pipe_unreachable       carrier acquisition failed
+runtime_unavailable    required runtime state missing or mismatched
+persistence_failed     storage write failed
+readiness_failed       detached start did not become ready
 ```
 
-Both use `create-if-missing, reuse-if-compatible, fail-if-conflicting`.
+Where a deterministic next action exists, the top-level error presentation
+adds a concise `Try:` hint on stderr:
 
-## Explicit resources
+```console
+$ tubo stop pipe/nope
+tubo: not_found: pipe/nope is not running
 
-```bash
-tubo service create lmstudio --target http://127.0.0.1:1234
-tubo get services                   # local services only
-tubo get scopes|processes|peers|overlays
-tubo describe service/lmstudio
-tubo rm service/lmstudio
-
-tubo pipe create lmstudio-team \
-  --ingress tubo \
-  --target service/lmstudio \
-  --scope solar/default \
-  --visibility discoverable \
-  --access members
-
-tubo pipe create lmstudio-local \
-  --ingress local://127.0.0.1:51234 \
-  --target pipe/pip_...
-
-tubo get pipes                      # local definitions + verified network records
-tubo describe pipe/lmstudio-team
-tubo inspect pipe/lmstudio-team --json
-tubo start|restart|stop|rm pipe/lmstudio-team
+Try:
+  start it first: tubo start pipe/nope
 ```
 
-A service may not be started. Only a pipe has a connectivity runtime.
+Hints never echo credentials, tokens, key paths or private addresses.
 
-## Overlay and scope
+## Discovery and caches (`get pipes`, `watch pipes`)
 
-```bash
-tubo join overlay --relay <multiaddr> --swarm-key <file> [--force-reachability private|public]
-tubo scope create solar/default
-tubo authority start solar --scope solar/default -d
-tubo scope invite solar/default --role member --expires 24h --json
-tubo scope invite solar/default --role viewer --expires 24h --json
-tubo scope join --token <membership-invite>
-tubo scope use solar/default
-tubo scope rotate-discovery-key solar/default --grace 24h
-```
+`get pipes` is cache-first. A scope cache is `fresh` only after a complete
+pinned-authority snapshot success strictly less than five minutes old. The
+default listing opens no discovery socket for fresh scopes; stale or missing
+selected memberships receive one bounded synchronous refresh before verified
+cached/local projection. `--refresh` refreshes every selected membership and
+bypasses the freshness window and persisted retry cooldown, without bypassing
+request bounds or verification. `--cached-only` never refreshes or opens
+discovery sockets. The flags are mutually exclusive.
 
-Roles:
+* Rows: local definitions (`source=local`), verified network records
+  (`source=network`, `status=available`), and merged rows (`local+network`).
+  Unscoped local pipes are local-only and remain visible under any `--scope`
+  filter.
+* `--scope cluster/namespace` filters both network rows and scoped local
+  definitions to that scope.
+* JSON stdout is one object: `items` plus typed `scopes` entries with
+  `scope`, `cache_state` (`fresh`/`stale`/`missing`), optional
+  `source`/`last_success`, `refresh_attempted`, and optional
+  `refresh_error.class`. Refresh warnings go only to stderr; verified
+  unexpired cache stays visible.
 
-- member: discover and connect; publish only if policy grants it;
-- viewer: discover/list but cannot connect;
-- publisher: may request/receive pipe publication authority;
-- forwarder: may re-export a pipe when explicitly granted.
+`watch pipes` polls only the locally persisted, verified pipe projection; it
+never opens a discovery socket and never treats a remote event as trusted
+input. Events: `added`, `updated`, `expired`, `removed`, `degraded`,
+`recovered`. Human stdout has one stable key/value line per event; `--json`
+writes NDJSON with `event_type`, `scope`, `pipe_id`, `name`, `observed_at`,
+and `item`/`previous`/`changed` per event type. Default interval 2s, minimum
+500ms.
 
-## Sharing and revocation
+## Peers and configuration
 
-```bash
-tubo share pipe/lmstudio-team --json
-tubo revoke invite <jti>
-tubo revoke session <session-id>
-tubo revoke pipe-access <pipe-id>
-tubo revoke pipe-publish <pipe-id>
-```
+`get peers` returns the union of local aliases and peers currently observed
+by live local libp2p runtimes; `SOURCE` is `alias`, `observed`, or
+`alias+observed`; `OBSERVED BY` names the local primary runs. This is a local
+network view, not a synchronized roster. Peer aliases are operator-only
+metadata, never authorization input.
 
-Invites target exact `pipe_id`; display name is only a hint. On the A0 exact path, `share` succeeds only for the current ready, live owner Pipe runtime. It derives one canonical owner exact-redemption circuit locator from that runtime's PeerID plus the configured relay or verified default provider, then confirms the derived locator matches current runtime state. Missing, stopped, stale, malformed, or mismatched runtime state fails as `runtime_unavailable` before invite output. The owner binding carries this reachability locator and redemption protocol, never the local Service target, Scope, discovery, or application metadata. Locator and invite possession do not authorize Pipe open; recipient still redeems the invite for a short-lived exact-Pipe Access Lease. One-time means one successful lease redemption, idempotent only for same client key/JTI retry. Access leases last 10 minutes; refresh leases last 48 hours and refresh later sessions only.
+`config validate` and `config print` present the static overlay
+configuration. `config print` masks secret paths (`<configured>`); JSON and
+YAML forms never expose key paths, tokens, or private addresses.
+`get scopes --json` and `inspect scope/<scope> --json` expose a `sync`
+projection (owner_ref, lease_expires_at, last_success, next_retry,
+error_class) but never fencing tokens, process identity, membership material,
+or service targets.
 
-## Runtime views
+## JSON reference
 
-```bash
-tubo ps
-tubo top [--interval 1s]
-tubo top --once
-tubo top --json
-tubo logs pipe/lmstudio-team [--tail 200] [-f]
-tubo inspect pipe/lmstudio-team --json
-tubo supervise install pipe/lmstudio-team --json
-tubo supervise install authority/solar --scope solar/default --json
-tubo supervise status pipe/lmstudio-team --json
-tubo supervise uninstall pipe/lmstudio-team --json
-tubo inspect session/ses_... --json
-```
-
-`ps` displays primary resources and capabilities, never `attach` or `connect` as kinds. JSON includes `source`: `foreground`, `detached`, `launchd`, or `systemd`.
-
-Suggested compact columns:
-
-```text
-NAME  KIND  INGRESS  TARGET  CAPS  STATUS  AUTH  SESSIONS  PATH
-```
-
-A pipe's `PATH` is an aggregate summary. `PATH SOURCE=advertised` describes verified record candidates; `last_session` describes most recent concrete traversal. Per-session direct/relay data belongs in session inspection. Application counters are completed-session totals. `NET RX/TX`, `RX/s`, `TX/s`, `PEERS`, and `CONNS` come from each runtime's libp2p bandwidth/network telemetry, including relay traffic; active/error application-session counters remain pending.
-
-## Local operations
-
-```bash
-tubo peers alias <peer-id> --name <label> [--note <text>]
-tubo config validate
-tubo config print
-tubo doctor
-tubo rm --stale
-tubo --quiet|-v|-vv|-vvv|--log-level <level> <command>
-tubo supervise install|status|uninstall <pipe/name|authority/cluster> [--scope cluster/namespace]
-```
-
-On macOS, `supervise install` writes one user-owned `launchd` plist under `~/Library/LaunchAgents`, bootstraps its exact label, waits for a `source=launchd` ready run, and registers it transactionally. It supports only pipe and authority primary resources. `uninstall` bootouts the exact registered label, waits for the recorded process identity to exit, then removes registry and plist. `stop`, `restart`, and `rm` reject a supervised resource; uninstall/disable supervision first so `KeepAlive` cannot create duplicate runs. Linux templates are documented under `deploy/systemd/` and are never installed by Tubo.
-
-`get peers` returns the union of local aliases and peers currently observed by live local libp2p runtimes. `SOURCE=alias`, `observed`, or `alias+observed` distinguishes them; `OBSERVED BY` names local primary runs. This is a local network view, not a synchronized membership roster, so different machines normally report different peers. Peer aliases remain operator-only metadata, are not synchronized, and never become authorization input. `config print` masks secret paths. Verbose diagnostics use stderr and never contaminate JSON stdout.
-
-`get scopes --json` and `inspect scope/<scope> --json` expose a `sync` projection with optional `owner_ref`, `lease_expires_at`, `last_success`, `next_retry`, and stable `error_class`. It never exposes fencing tokens, process identity, membership material, or service targets. Only membership-backed published/local pipe runtimes contend for periodic sync; a local authority never self-syncs.
-
-## Discovery
-
-```bash
-tubo get pipes [--scope cluster/namespace] [--refresh|--cached-only]
-tubo get pipe/<pipe-id>
-tubo watch pipes [--scope cluster/namespace] [--interval 2s] [--json]
-```
-
-`get services` is local-only. Remote connectivity is represented by verified pipes.
-
-`watch pipes` polls only the locally persisted, verified pipe projection; it never opens a discovery socket and never treats a remote event as trusted input. It emits the initial projection as `added` events. Later events have an explicit `event_type`: `added` for a verified pipe first observed locally, `updated` for source/freshness or other non-health projection changes, `expired` when a previously verified record expires (including a `local+network` row that becomes local-only), `removed` when a non-expiry projection disappears, `degraded` when a local verified pipe status becomes degraded, and `recovered` when that status leaves degraded. The default interval is two seconds and the minimum is 500ms. Without `--scope`, every scope for which the local state has a membership is aggregated; scope remains part of each event identity (`scope` + `pipe_id`), so same-name and same-ID records in distinct authorized scopes remain distinct. A scoped watch includes only that authorized membership's network projection; records from a scope with no local membership are never exposed.
-
-Human stdout has exactly one stable key/value line per event. `--json` writes NDJSON (one JSON object per event, no enclosing array), with `event_type`, `scope`, `pipe_id`, `name`, `observed_at`, and either `item` (`added`), `previous` (`expired`/`removed`), or both plus ordered `changed` fields (`updated`/`degraded`/`recovered`). A slow stdout consumer applies backpressure to polling; Tubo retains no event queue or writer goroutine. Human `get pipes` output includes stable ID, source, scope, ingress, target ref, access, status, session count, path, and path source. A local definition and its verified network record are merged as `local+network`; re-exports into distinct scopes remain separate rows. JSON exposes the same fields plus peer, capabilities, and record expiry.
-
-Current implementation advertises only relay circuit addresses, so network rows report `relayed`. `direct` and `mixed` are reserved for verified direct candidates once direct dialing/hole punching is implemented. Network rows include `record_age`, a non-negative Go-duration string measured from signed `issued_at`; the human table exposes it as `RECORD AGE`. `inspect pipe/... --json` includes `record_age` when a verified record exists and `record_fresh`, which is true only while its signed record is strictly younger than five minutes.
-
-`get pipes` is cache-first. A scope cache is `fresh` only after a complete pinned-authority 2.1 snapshot success strictly less than five minutes old. Default listing opens no discovery network socket for fresh scopes; stale or missing selected memberships receive one bounded synchronous refresh before verified cached/local projection. `--refresh` refreshes every selected membership and bypasses this freshness window plus persisted discovery retry cooldown, without bypassing request bounds or verification. `--cached-only` never refreshes or opens discovery network sockets. Flags are mutually exclusive. `--live` is obsolete and rejected with `invalid_input`; use `--refresh`. No selected membership is local-only and opens no discovery network socket.
-
-A running local pipe re-resolves its exact remote `pipe_id` from the pinned authority snapshot every five minutes. One classified transient dial/stream/handshake failure before `OpenOK` can trigger one cooldown-bounded resolution and retry using a newer verified endpoint; authorization/protocol failures and any post-`OpenOK` tunnel never trigger a retry or application-byte replay.
-
-`--scope` filters both network rows and scoped local pipe definitions to that exact scope. Unscoped local pipes have no discovery scope and remain visible under every `--scope` filter; they are local-only rows and never cause a network operation.
-
-JSON stdout remains one object: `items` plus typed `scopes` entries with `scope`, `cache_state` (`fresh`, `stale`, or `missing`), optional pinned snapshot `source`/`last_success`, `refresh_attempted`, and optional `refresh_error.class`. Refresh errors are scope-local structured classes and do not include tokens, keys, service targets, addresses, or private routes. Human table keeps pipe-row `SOURCE` semantics and adds `FRESHNESS`; refresh warnings go only to stderr. On refresh failure, verified unexpired cache and local rows remain visible.
-
-## Infrastructure
-
-```bash
-tubo relay --listen /ip4/0.0.0.0/tcp/4001 --public-addr <addr> -d
-tubo gateway --listen :8443 -d
-```
-
-Relay and authority remain primary infrastructure resources in `ps`; they are not pipes.
-
-## Common JSON requirements
-
-Mutation output includes:
+Mutation outputs:
 
 ```json
-{"ref":"pipe/lmstudio-team","id":"pip_...","status":"running"}
+{"ref":"pipe/lmstudio-team","id":"pip_...","status":"created"}
+{"service_ref":"service/origin","service_status":"created","pipe_ref":"pipe/origin","pipe_id":"pip_...","pipe_status":"created"}
+{"ref":"pipe/origin","id":"pip_...","local":"127.0.0.1:51234","target_id":"pip_...","status":"ready","pid":7244}
 ```
 
-Pipe inspection distinguishes:
+`share --json`:
 
 ```json
-{
-  "logical_path": [],
-  "authorization_path": [],
-  "transport_summary": {},
-  "sessions": []
-}
+{"pipe_id":"pip_...","invite":"eyJ2ZXJzaW9uIjox...","expires_at":"2026-08-28T16:41:46.379485Z"}
 ```
 
-Errors have stable classes, for example:
+`attach -d --json` adds `"status":"ready"` and `"pid"` only when readiness is
+known; the non-detached JSON form carries no fabricated state.
 
-```text
-invalid_input
-not_found
-conflict
-authorization_denied
-authority_unreachable
-discovery_unreachable
-discovery_retry_after
-pipe_unreachable
-relay_unavailable
-persistence_failed
-readiness_failed
-```
+## Canonical commands and retained aliases
+
+The following historical spellings were resolved deliberately:
+
+| Resolved | Final form | Reason |
+| --- | --- | --- |
+| `describe` | `inspect` | one command for detailed views |
+| `get processes` / `get runs` | `ps` | one runtime overview |
+| `join overlay` (reachability) vs `scope join` (membership) | both retained | distinct concepts, distinct verbs |
+| `authority start` vs generic `start` | both retained | infrastructure verb; generic `start` stays Pipe-scoped |
+| `inspect peer/<id>` vs `peers alias` vs `get peers` | all three | inspect = one alias; peers alias = mutation; get peers = inventory |
+| `--live` | `--refresh` | obsolete; rejected with hint |
+
+Retained aliases with real UX value: `-f` for `--follow` on `logs`
+(tail-style muscle memory), `-d` for detach across `attach`, `connect`,
+`start`, `-q`/`-v` for global verbosity. Everything else is canonical only.
+
+## Global flags
+
+| Flag | Effect |
+| --- | --- |
+| `-q`, `--quiet` | suppress stderr progress/hints |
+| `-v`, `-vv`, `-vvv` | increase verbosity (debug lines on stderr) |
+| `--log-level error\|warn\|info\|debug\|trace` | set embedded runtime log level |
+| `-h`, `--help` | contextual help at any command level |
