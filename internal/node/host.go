@@ -215,23 +215,30 @@ func EnsureRelay(ctx context.Context, h host.Host, info peer.AddrInfo, reserve b
 		}
 	}
 	if reserve {
-		return ReserveRelay(ctx, h, info)
+		_, err := ReserveRelay(ctx, h, info)
+		return err
 	}
 	return nil
 }
 
-func ReserveRelay(ctx context.Context, h host.Host, info peer.AddrInfo) error {
+// ReserveRelay acquires a Circuit Relay v2 slot and returns the reservation.
+// The returned Reservation carries the relay-provided expiration time, which is
+// the L1 scheduling fact for renewal: Tubo renews before that expiration, never
+// merely before an assumed relay TTL. Reserve fails closed when the relay
+// returns a past or overflowing expiration.
+func ReserveRelay(ctx context.Context, h host.Host, info peer.AddrInfo) (*circuitclient.Reservation, error) {
 	if !PeerConnected(h, info.ID) {
 		if err := EnsureRelay(ctx, h, info, false); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	reservationCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	if _, err := circuitclient.Reserve(reservationCtx, h, info); err != nil {
-		return fmt.Errorf("reserve relay circuit: %w", err)
+	reservation, err := circuitclient.Reserve(reservationCtx, h, info)
+	if err != nil {
+		return nil, fmt.Errorf("reserve relay circuit: %w", err)
 	}
-	return nil
+	return reservation, nil
 }
 
 func CircuitAddress(relay string, target peer.ID) (string, error) {
