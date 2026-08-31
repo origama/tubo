@@ -203,3 +203,16 @@ semantic_checks:
     forbid_patterns:
       - Repository\[
       - UnitOfWork
+
+  # Relay reservation policy must not live in the published-Pipe runtime.
+  # Reservation timing/liveness decisions (when to renew, when connectedness is
+  # insufficient) are an L1 Reachability responsibility, owned entirely by
+  # internal/reachability.RelayReservation.
+  - rule: R16
+    description: "published-Pipe runtime must not contain relay reservation policy; timing/liveness decisions are L1 reachability"
+    path_glob: internal/runtime/pipe.go
+    forbid_patterns:
+      - EnsureRelay
+      - PeerConnected
+      - ReserveRelay
+      - lastRenewed

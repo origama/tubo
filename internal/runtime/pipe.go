@@ -29,6 +29,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/node"
 	"github.com/origama/tubo-rebuilt/internal/openauth"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
+	"github.com/origama/tubo-rebuilt/internal/reachability"
 	"github.com/origama/tubo-rebuilt/internal/store"
 )
 
@@ -91,18 +92,26 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 			return err
 		}
 	}
-	relay, swarm, reachability, err := relayOrBootstrap(ctx, state)
+	relay, swarm, transport, err := relayOrBootstrap(ctx, state)
 	if err != nil {
 		return err
 	}
 	bandwidth := coremetrics.NewBandwidthCounter()
-	h, err := node.Open(ctx, node.Options{KeyFile: state.SecretPath("nodes", strings.ReplaceAll(spec.Ref.String(), "/", "-")+".key"), SwarmKeyFile: swarm, Private: reachability == "private", BandwidthReporter: bandwidth})
+	h, err := node.Open(ctx, node.Options{KeyFile: state.SecretPath("nodes", strings.ReplaceAll(spec.Ref.String(), "/", "-")+".key"), SwarmKeyFile: swarm, Private: transport == "private", BandwidthReporter: bandwidth})
 	if err != nil {
 		return err
 	}
 	defer h.Close()
-	relayInfo, err := node.ConnectRelay(ctx, h, relay, true)
+	relayInfo, err := node.RelayInfo(relay)
 	if err != nil {
+		return err
+	}
+	// L1 RelayReservation owns the relay connection and Circuit Relay v2
+	// reservation lifecycle (initial acquisition, periodic renewal, reconnect,
+	// reacquisition, failure/recovery). The initial reservation must succeed
+	// before this pipe exposes a circuit locator (fail closed).
+	reservation := reachability.NewRelayReservation(h, *relayInfo, 0)
+	if err := reservation.Acquire(ctx); err != nil {
 		return err
 	}
 	address, err := node.CircuitAddress(relay, h.ID())
@@ -251,39 +260,52 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 		return err
 	}
 	defer stopSync()
-	lastRenewed := time.Now()
-	return waitSignalRenew(ctx, 5*time.Second, func() error {
-		disconnected := !node.PeerConnected(h, relayInfo.ID)
-		recovery := disconnected || run.Status == "degraded"
-		full := time.Since(lastRenewed) >= 5*time.Minute
-		if !disconnected && !full {
-			return nil
-		}
-		if err := node.EnsureRelay(ctx, h, *relayInfo, true); err != nil {
-			return err
-		}
+	// Relay reservation maintenance is an L1 Reachability responsibility
+	// (internal/reachability.RelayReservation). The runtime only maps
+	// maintenance outcomes onto the Run lifecycle and runs its scoped record
+	// publication on each successful maintenance; it no longer decides when a
+	// reservation is due.
+	onReady, onFailure := publishedPipeLifecycle(state, &run, spec.Ref.String(), relayInfo.ID.String(), func() error {
 		now := time.Now().UTC()
 		if err := refreshGrant(now); err != nil {
 			return err
 		}
-		if err := publish(now); err != nil {
-			return err
-		}
-		lastRenewed = time.Now()
-		run.Status = "ready"
-		_ = state.PutRun(context.Background(), run)
-		if recovery {
-			runtimeInfof("recovered %s relay=%s", spec.Ref, relayInfo.ID)
-		}
-		return nil
-	}, func(err error) {
+		return publish(now)
+	})
+	return reservation.Serve(ctx, onReady, onFailure)
+}
+
+// publishedPipeLifecycle maps an L1 RelayReservation's maintenance outcomes
+// onto the existing Run degraded/ready lifecycle. It is the single status
+// transition both scoped and scope-less published pipes consume: a maintenance
+// failure marks degraded; a later successful maintenance restores ready. This
+// centralizes the degraded/recovery translation beside the consumer so L2 holds
+// no reservation timing or validity policy. A nil publish runs no record
+// publication (Journey A scope-less).
+func publishedPipeLifecycle(state *store.Store, run *store.Run, ref, relayID string, publish func() error) (onReady func(), onFailure func(error)) {
+	onFailure = func(err error) {
 		first := run.Status != "degraded"
 		run.Status = "degraded"
-		_ = state.PutRun(context.Background(), run)
+		_ = state.PutRun(context.Background(), *run)
 		if first {
-			runtimeWarnf("degraded %s reason=relay_or_authority_unavailable detail=%s", spec.Ref, safeLogError(err))
+			runtimeWarnf("degraded %s reason=relay_unavailable detail=%s", ref, safeLogError(err))
 		}
-	})
+	}
+	onReady = func() {
+		if publish != nil {
+			if err := publish(); err != nil {
+				onFailure(err)
+				return
+			}
+		}
+		recovered := run.Status == "degraded"
+		run.Status = "ready"
+		_ = state.PutRun(context.Background(), *run)
+		if recovered {
+			runtimeInfof("recovered %s relay=%s", ref, relayID)
+		}
+	}
+	return onReady, onFailure
 }
 
 // errInitialCarrierTransferred signals that the tunnel data plane transferred
@@ -968,7 +990,7 @@ func runScopeLessPublishedPipe(
 	}
 
 	// Open baseline L1 host using configured overlay or bootstrap.
-	relay, swarm, reachability, err := relayOrBootstrap(ctx, state)
+	relay, swarm, transport, err := relayOrBootstrap(ctx, state)
 	if err != nil {
 		return err
 	}
@@ -976,7 +998,7 @@ func runScopeLessPublishedPipe(
 	h, err := node.Open(ctx, node.Options{
 		KeyFile:           state.SecretPath("nodes", strings.ReplaceAll(spec.Ref.String(), "/", "-")+".key"),
 		SwarmKeyFile:      swarm,
-		Private:           reachability == "private",
+		Private:           transport == "private",
 		BandwidthReporter: bandwidth,
 	})
 	if err != nil {
@@ -984,8 +1006,16 @@ func runScopeLessPublishedPipe(
 	}
 	defer h.Close()
 
-	relayInfo, err := node.ConnectRelay(ctx, h, relay, true)
+	relayInfo, err := node.RelayInfo(relay)
 	if err != nil {
+		return err
+	}
+	// L1 RelayReservation owns the relay connection and Circuit Relay v2
+	// reservation lifecycle (initial acquisition, periodic renewal, reconnect,
+	// reacquisition, failure/recovery). The initial reservation must succeed
+	// before this pipe exposes a circuit locator (fail closed).
+	reservation := reachability.NewRelayReservation(h, *relayInfo, 0)
+	if err := reservation.Acquire(ctx); err != nil {
 		return err
 	}
 	address, err := node.CircuitAddress(relay, h.ID())
@@ -1038,22 +1068,11 @@ func runScopeLessPublishedPipe(
 	}()
 
 	// No discovery, no publish grant, no membership, no scope sync, no record
-	// announcement. Just periodic relay recovery.
-	return waitSignalRenew(ctx, 5*time.Second, func() error {
-		if !node.PeerConnected(h, relayInfo.ID) {
-			if err := node.EnsureRelay(ctx, h, *relayInfo, true); err != nil {
-				return err
-			}
-		}
-		return nil
-	}, func(err error) {
-		first := run.Status != "degraded"
-		run.Status = "degraded"
-		_ = state.PutRun(context.Background(), run)
-		if first {
-			runtimeWarnf("degraded %s reason=relay_unavailable detail=%s", spec.Ref, safeLogError(err))
-		}
-	})
+	// announcement. Relay reservation maintenance is the sole L1 responsibility,
+	// owned by the RelayReservation primitive; the runtime shares the same
+	// degraded/ready lifecycle mapping as the scoped path (no record publication).
+	onReady, onFailure := publishedPipeLifecycle(state, &run, spec.Ref.String(), relayInfo.ID.String(), nil)
+	return reservation.Serve(ctx, onReady, onFailure)
 }
 
 // runLocalPipeExact runs the Journey A exact connect path for a local ingress
