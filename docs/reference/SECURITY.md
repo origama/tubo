@@ -37,9 +37,17 @@ AcceptedBinding does not define an ingress
   behavior).
 - Every renewal fails closed on unavailable revocation state, invalid
   signatures, subject mismatch, Pipe mismatch, missing authoritative
-  accepted state, or stale authorization epoch. Owner revocation (pipe-access
-  epoch or originating invite) invalidates further lease issuance; live
-  sessions keep the existing short-lease/session expiry fencing.
+  accepted state, or a stale authorization epoch. The authoritative accepted
+  relationship is exactly one current row per `(pipe_id, recipient_public)`
+  carrying the backing invite JTI and the accepted epoch; resolving it is
+  deterministic. The invite epochs, accepted relationship epoch, and every
+  AccessLease epoch are equal at acceptance; a pipe-access revocation
+  advances the epoch, previous accepted relationships become stale (renewal
+  denied), and a fresh share+accept at the new epoch re-authorizes — never a
+  permanent kill switch. Revoking an obsolete invite's JTI never affects a
+  newer current relationship; revoking the current one denies renewal. Live
+  sessions keep the existing short-lease/session expiry fencing, and the L2
+  receiving boundary keeps the final stale-epoch denial.
 
 Exact Pipe Authority and Scope Authority converge on same exact-Pipe lease. L2 receiving boundary invokes consumer-side/neutral open-authorization contract and fails closed on unsuccessful result; it opens no local target. L3 owns concrete signature/lease validation, issuer trust, revocation, stale-epoch, policy, and refresh implementation. L2 must not import concrete L3 authority/revocation implementations.
 

@@ -140,7 +140,13 @@ Layer ownership (unchanged dependencies, new L3/L4 responsibility):
 - **L2** (`engine`/`openauth`/`session`): receives a valid short-lived
   AccessLease and opens/forwards the Pipe; the receiving boundary keeps
   enforcing authorization through the neutral `openauth` seam. L2 does not
-  know about invites, bindings, or renewal (arch rules R6/R17).
+  know about invites, bindings, or renewal. The exact downstream open path
+  consumes only the injected neutral `openauth.AccessAcquirer` capability
+  (returns `openauth.AcquiredAccess`: Pipe, locator, encoded short-lived
+  lease, expiry); the only runtime file that wires the L4 use case behind it
+  is the composition adapter `internal/runtime/exact_access.go`. Arch guards
+  R6/R17/R19-R22 keep both the engine and the exact-open execution files
+  (`pipe.go`, `exact_downstream.go`) free of L4 imports and symbols.
 - **L3** (`exactauthority`): accepted-binding validation, renewal/reissuance
   ordering (`RenewAcceptedAccess`), recipient binding, revocation/epoch
   checks, short-lived lease minting under the owner-bound Exact Authority.

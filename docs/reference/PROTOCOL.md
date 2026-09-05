@@ -200,19 +200,46 @@ Server-side mandatory ordering (mirrors redemption's fail-closed discipline):
    match (the binding the durable relationship carries anchors issuer trust);
 3. `Loader` load of the EXISTING dedicated exact authority key only;
 4. binding authority key equals the loaded key;
-5. accepted relationship exists for exactly this recipient + Pipe
-   (authoritative redemption state);
-6. revocation/epoch validity (originating invite JTI not revoked, pipe-access
-   epoch not advanced) — any failure denies issuance;
+5. accepted relationship exists for exactly this recipient + Pipe — the ONE
+   authoritative current relationship `(pipe_id, recipient_public)`
+   (`accepted_exact_relationships`), resolved deterministically (never a LIMIT
+   guess over the one-time redemption history);
+6. revocation/epoch validity — the originating/current invite JTI is not
+   revoked AND the current pipe-access epoch equals the accepted
+   relationship's epoch; any read failure or mismatch denies issuance;
 7. fresh server challenge possession proof under the renew proof purpose;
-8. mint fresh short-lived lease under the bound issuer.
+8. mint fresh short-lived lease under the bound issuer carrying the accepted
+   relationship's authorization epoch.
 
 The remote caller can never provision authority keys, create arbitrary
 accepted bindings, switch subject or Pipe, bypass revocation, or renew a
-relationship that never existed. Wire reuse: same stream discipline as
+relationship that never existed.
+
+**Epoch lifecycle.** The ExactInvite is minted at the current pipe-access
+epoch (ShareExact reads it via the L4 `ExactAccessEpochReader` port).
+Redemption requires `currentEpoch == invite.access_epoch` (fail closed: an
+invite minted before a revocation is stale, and a future-epoch invite is
+refused). The accepted relationship persists the accepted epoch; the initial
+and every renewed AccessLease carry it. A `revoke pipe-access` advances the
+epoch by one (monotonic): previous accepted relationships become stale and
+renewal is denied, while a fresh share+accept at the new epoch
+re-authorizes. A `revoke invite <jti>` revokes only the referenced invite's
+JTI under the `exact.invite` subject type (which redemption and renewal
+check); revoking an obsolete invite never affects a newer current
+relationship, and revoking the current one denies renewal. The L2 receiving
+boundary keeps enforcing `currentEpoch > lease.access_epoch` as a final
+stale-lease denial.
+
+Wire reuse: same stream discipline as
 `/tubo/exact-redemption/1`; frame bound `MaxFrame`; strict decoders. The
-initial redemption flow (steps 11-12 in the redemption section) does not
-change; the forwarded lease lifetime is the server-authoritative short TTL
+`/tubo/exact-redemption/1`; frame bound `MaxFrame`; strict decoders. The
+initial redemption flow (steps 11-12 in the redemption section) now also
+atomically records the authoritative accepted relationship
+(`RedeemInviteAndAccept`: one-time redemption insert + relationship upsert in
+one transaction); a newer valid invite acceptance for the same Pipe+recipient
+replaces the current relationship, and an idempotent same-recipient retry
+never regresses it. The forwarded lease lifetime is the
+server-authoritative short TTL
 (`TUBO_EXACT_LEASE_TTL` bounds to `MaxTTL`, default `MaxTTL`). See
 `internal/exactauthority/renew.go` and `internal/runtime/renewal_handler.go`.
 

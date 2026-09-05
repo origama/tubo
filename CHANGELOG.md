@@ -11,6 +11,20 @@
 
 ### Added (A0)
 
+- Review fixes (PR #74 blockers): the exact downstream open path now consumes
+  the injected neutral `openauth.AccessAcquirer` contract instead of importing
+  L4 (`internal/runtime/exact_access.go` is the sole composition adapter;
+  arch rules R19-R22 guard the execution files). The authoritative accepted
+  relationship is exactly one deterministic `accepted_exact_relationships`
+  row per `(pipe_id, recipient_public)` (backing invite JTI + accepted epoch),
+  committed atomically with one-time redemption
+  (`RedeemInviteAndAccept`). Pipe-access epochs now flow: invite minted at
+  current epoch, redemption requires equality, the accepted relationship and
+  every lease carry the accepted epoch, renewal compares
+  `current == accepted`, and `revoke pipe-access` advances the epoch so a
+  fresh share+accept re-authorizes after revocation (no permanent kill
+  switch); `revoke invite` uses the `exact.invite` subject type.
+
 - Durable accepted remote-Pipe binding + post-acceptance renewal (Journey A
   durable lifecycle). The one-time exact invite is bootstrap only: acceptance
   persists a durable, recipient-bound `RemotePipeBinding` (exact PipeID,

@@ -51,7 +51,7 @@ func (s *fakeAcceptedStore) AcceptedRelationship(_ context.Context, pipeID, clie
 	if s.err != nil {
 		return "", 0, false, s.err
 	}
-	key := pipeID+"/"+clientPublic
+	key := pipeID + "/" + clientPublic
 	jti, ok := s.accepted[key]
 	if !ok {
 		return "", 0, false, nil
@@ -60,7 +60,7 @@ func (s *fakeAcceptedStore) AcceptedRelationship(_ context.Context, pipeID, clie
 }
 
 func (s *fakeAcceptedStore) accept(pipeID, clientPublic, jti string, epoch uint64) {
-	key := pipeID+"/"+clientPublic
+	key := pipeID + "/" + clientPublic
 	s.accepted[key] = jti
 	s.epochs[key] = epoch
 }

@@ -24,8 +24,8 @@ import (
 // lazily on first use via the injected factory so a plain (non-exact or
 // scoped) pipe run never opens an extra libp2p host.
 type useCaseAccessAcquirer struct {
-	mu    sync.Mutex
-	uc    usecase.UseCases
+	mu        sync.Mutex
+	uc        usecase.UseCases
 	makeReach func() (usecase.ReachabilityAcquirer, error)
 }
 

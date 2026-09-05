@@ -264,5 +264,3 @@ echo "OK: obsolete invite revocation harmless; current invite revocation denies 
 
 echo ""
 echo "[integration] Journey A durable binding PASS (expiry + restart + owner restart + revoke + re-authorize + multi-invite determinism)"
-echo ""
-echo "[integration] Journey A durable binding PASS (lease expiry + restart + owner restart + revocation)"
