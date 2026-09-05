@@ -70,44 +70,90 @@ func (r *memoryServiceRepo) Delete(_ context.Context, ref domain.Ref) error {
 	return nil
 }
 
-// ---- Pipe repo fake ----
+// ---- RemotePipeBinding fake ----
 
-// memoryExactConnectionRepo is an in-memory fake for ExactConnectionStateRepo.
-type memoryExactConnectionRepo struct {
+// memoryRemotePipeBindingRepo is an in-memory fake for RemotePipeBindingRepo.
+type memoryRemotePipeBindingRepo struct {
 	mu    sync.Mutex
-	items map[string]domain.ExactConnectionState
+	items map[string]domain.RemotePipeBinding
 }
 
-func newMemoryExactConnectionRepo() *memoryExactConnectionRepo {
-	return &memoryExactConnectionRepo{items: make(map[string]domain.ExactConnectionState)}
+func newMemoryRemotePipeBindingRepo() *memoryRemotePipeBindingRepo {
+	return &memoryRemotePipeBindingRepo{items: make(map[string]domain.RemotePipeBinding)}
 }
 
-func (r *memoryExactConnectionRepo) Get(_ context.Context, remotePipeID string) (domain.ExactConnectionState, error) {
+func (r *memoryRemotePipeBindingRepo) Get(_ context.Context, remotePipeID string) (domain.RemotePipeBinding, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	state, ok := r.items[remotePipeID]
+	b, ok := r.items[remotePipeID]
 	if !ok {
-		return domain.ExactConnectionState{}, domain.ErrNotFound
+		return domain.RemotePipeBinding{}, domain.ErrNotFound
 	}
-	// Expired material fails closed.
-	if !state.ExpiresAt.IsZero() && !state.ExpiresAt.After(time.Now().UTC()) {
-		delete(r.items, remotePipeID)
-		return domain.ExactConnectionState{}, domain.ErrNotFound
-	}
-	return state, nil
+	return b, nil
 }
 
-func (r *memoryExactConnectionRepo) Put(_ context.Context, state domain.ExactConnectionState) error {
+func (r *memoryRemotePipeBindingRepo) Put(_ context.Context, b domain.RemotePipeBinding) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if state.RemotePipeID == "" || state.AccessLease == "" || state.Locator == "" {
-		return errors.New("invalid exact connection state: missing required fields")
+	if err := b.Validate(); err != nil {
+		return err
 	}
-	r.items[state.RemotePipeID] = state
+	// Accepting twice must not create a second competing binding row.
+	r.items[b.RemotePipeID] = b
 	return nil
 }
 
-func (r *memoryExactConnectionRepo) Delete(_ context.Context, remotePipeID string) error {
+func (r *memoryRemotePipeBindingRepo) Delete(_ context.Context, remotePipeID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.items, remotePipeID)
+	return nil
+}
+
+// memoryAccessLeaseCacheRepo is an in-memory fake for AccessLeaseCacheRepo.
+// Expired cached material fails closed (treated as absent) exactly like the
+// Store adapter; the cache is never the source of truth for the relationship.
+type memoryAccessLeaseCacheRepo struct {
+	mu    sync.Mutex
+	items map[string]domain.AccessLeaseCache
+	now   func() time.Time
+}
+
+func newMemoryAccessLeaseCacheRepo() *memoryAccessLeaseCacheRepo {
+	return &memoryAccessLeaseCacheRepo{items: make(map[string]domain.AccessLeaseCache), now: time.Now}
+}
+
+func (r *memoryAccessLeaseCacheRepo) setNow(now func() time.Time) {
+	r.mu.Lock()
+	r.now = now
+	r.mu.Unlock()
+}
+
+func (r *memoryAccessLeaseCacheRepo) Get(_ context.Context, remotePipeID string) (domain.AccessLeaseCache, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.items[remotePipeID]
+	if !ok {
+		return domain.AccessLeaseCache{}, domain.ErrNotFound
+	}
+	if !c.ExpiresAt.After(r.now().UTC()) {
+		delete(r.items, remotePipeID)
+		return domain.AccessLeaseCache{}, domain.ErrNotFound
+	}
+	return c, nil
+}
+
+func (r *memoryAccessLeaseCacheRepo) Put(_ context.Context, c domain.AccessLeaseCache) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c.RemotePipeID == "" || c.AccessLease == "" || c.ExpiresAt.IsZero() {
+		return errors.New("invalid access lease cache: missing required fields")
+	}
+	r.items[c.RemotePipeID] = c
+	return nil
+}
+
+func (r *memoryAccessLeaseCacheRepo) Delete(_ context.Context, remotePipeID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.items, remotePipeID)
@@ -262,29 +308,121 @@ func (r *fakeReachability) Acquire(_ context.Context, address string) (Carrier, 
 	return c, nil
 }
 
-// ---- Fake redemption service ----
+// errInviteRedeemed mirrors the store's one-winner redemption denial: a
+// different recipient can never consume an already-accepted invite.
+var errInviteRedeemed = errors.New("invite already redeemed by another client")
 
 // fakeRedemptionService mints an AccessLease by loading the authority key
-// that ShareExact already provisioned at the canonical key path.
+// that ShareExact already provisioned at the canonical key path. It enforces
+// the one-winner atomic redemption contract: first recipient wins; a different
+// recipient is denied; same-recipient retry is idempotent (mints a fresh
+// lease).
 type fakeRedemptionService struct {
 	secretsDir string
+	mu         sync.Mutex
+	winners    map[string]string // jti/pipe -> recipientPublic
+	calls      int
+	now        func() time.Time
 }
 
 func newFakeRedemptionService(secretsDir string) *fakeRedemptionService {
-	return &fakeRedemptionService{secretsDir: secretsDir}
+	return &fakeRedemptionService{secretsDir: secretsDir, winners: make(map[string]string), now: time.Now}
+}
+
+func (s *fakeRedemptionService) setNow(now func() time.Time) {
+	s.mu.Lock()
+	s.now = now
+	s.mu.Unlock()
 }
 
 func (s *fakeRedemptionService) Redeem(_ context.Context, _ Carrier, invite accesslease.ExactInvite, recipientPublic string) (accesslease.AccessLease, error) {
+	key := invite.JTI + "/" + invite.AudiencePipeID
+	s.mu.Lock()
+	s.calls++
+	if winner, ok := s.winners[key]; ok && winner != recipientPublic {
+		s.mu.Unlock()
+		return accesslease.AccessLease{}, errInviteRedeemed
+	}
+	s.winners[key] = recipientPublic
+	now := s.now
+	s.mu.Unlock()
 	keyPath := filepath.Join(s.secretsDir, "exact-authorities", invite.AudiencePipeID+".key")
 	authPrivate, err := localkey.Provision(keyPath)
 	if err != nil {
 		return accesslease.AccessLease{}, err
 	}
-	lease, err := accesslease.NewAccessLease(authPrivate, recipientPublic, invite.AudiencePipeID, time.Now().UTC(), 10*time.Minute)
+	lease, err := accesslease.NewAccessLease(authPrivate, recipientPublic, invite.AudiencePipeID, now().UTC(), 10*time.Minute)
 	if err != nil {
 		return accesslease.AccessLease{}, err
 	}
 	return lease, nil
+}
+
+// ---- Fake renewal service ----
+
+// fakeRenewalService mints a fresh short-lived lease from the same authority
+// key as redemption (post-acceptance reissuance). Tests inject failures via
+// err to cover revocation/epoch/possession failures at the use-case boundary.
+type fakeRenewalService struct {
+	secretsDir string
+	mu         sync.Mutex
+	err        error
+	calls      map[string]int
+	leaseTTL   time.Duration
+	now        func() time.Time
+	// subjectOverride, when non-empty, mints leases for a different subject
+	// than requested (tests the local verification fail-closed path).
+	subjectOverride string
+}
+
+func newFakeRenewalService(secretsDir string) *fakeRenewalService {
+	return &fakeRenewalService{secretsDir: secretsDir, calls: make(map[string]int), leaseTTL: 10 * time.Minute, now: time.Now}
+}
+
+func (s *fakeRenewalService) setNow(now func() time.Time) {
+	s.mu.Lock()
+	s.now = now
+	s.mu.Unlock()
+}
+
+func (s *fakeRenewalService) fail(err error) {
+	s.mu.Lock()
+	s.err = err
+	s.mu.Unlock()
+}
+
+func (s *fakeRenewalService) callCount(pipeID string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[pipeID]
+}
+
+func (s *fakeRenewalService) setTTL(ttl time.Duration) {
+	s.mu.Lock()
+	s.leaseTTL = ttl
+	s.mu.Unlock()
+}
+
+func (s *fakeRenewalService) Renew(_ context.Context, _ Carrier, req RenewalRequest) (accesslease.AccessLease, error) {
+	s.mu.Lock()
+	s.calls[req.PipeID]++
+	err := s.err
+	ttl := s.leaseTTL
+	subject := s.subjectOverride
+	now := s.now
+	s.mu.Unlock()
+	if err != nil {
+		return accesslease.AccessLease{}, err
+	}
+	if subject == "" {
+		subject = req.RecipientPublic
+	}
+	keyPath := filepath.Join(s.secretsDir, "exact-authorities", req.PipeID+".key")
+	authPrivate, err := localkey.Provision(keyPath)
+	if err != nil {
+		return accesslease.AccessLease{}, err
+	}
+	return accesslease.NewAccessLease(authPrivate, subject, req.PipeID, now().UTC(), ttl)
 }
 
 // ---- Fake pipe starter ----

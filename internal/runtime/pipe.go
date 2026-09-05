@@ -31,6 +31,7 @@ import (
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 	"github.com/origama/tubo-rebuilt/internal/reachability"
 	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo-rebuilt/internal/usecase"
 )
 
 // baseSessionCapabilities is the only capability set advertised on the A0
@@ -355,12 +356,15 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 	pipeEngine := newPipeEngine(state)
 
 	// Check if this is a Journey A exact connect path (Scope-less, no discovery).
-	// The target pipe ID is derived from the spec.Target.Name.
-	// This check must happen BEFORE ResolvePath because the target pipe
-	// (remote Pipe ID) is not stored locally; the exact connection state
-	// provides the authorization material directly.
-	if connState, connErr := state.GetExactConnectionState(ctx, spec.Target.Name); connErr == nil && connState.AccessLease != "" {
-		return runLocalPipeExact(ctx, state, spec, connState, nodeRuntime, pipeRuntime, pipeEngine)
+	// The target pipe ID is derived from the spec.Target.Name. A durable
+	// accepted remote-Pipe binding provides relationship + reachability state;
+	// the actual short-lived AccessLease is reacquired per open through the
+	// binding (AcquireAcceptedPipeAccess), so an expired initial lease never
+	// blocks reconnection.
+	if _, bindErr := state.GetRemotePipeBinding(ctx, spec.Target.Name); bindErr == nil {
+		return runLocalPipeExact(ctx, state, spec, nodeRuntime, pipeRuntime, pipeEngine)
+	} else if !errors.Is(bindErr, domain.ErrNotFound) {
+		return fmt.Errorf("persistence_failed: remote pipe binding: %w", bindErr)
 	}
 
 	if _, err := pipeEngine.ResolvePath(spec.Ref, domain.DefaultMaxPipeHops); err != nil {
@@ -1040,7 +1044,10 @@ func runScopeLessPublishedPipe(
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
 
 	// Install the exact redemption handler.
-	h.SetStreamHandler(protocol.ID("/tubo/exact-redemption/1"), newExactRedemptionHandler(state, spec.PipeID).handle)
+	h.SetStreamHandler(protocol.ID(wire.ExactRedemptionID), newExactRedemptionHandler(state, spec.PipeID, exactLeaseTTL()).handle)
+
+	// Install the exact renewal handler (durable accepted-binding reissuance).
+	h.SetStreamHandler(protocol.ID(wire.ExactRenewalID), newExactRenewalHandler(state, spec.PipeID, exactLeaseTTL()).handle)
 
 	// Record the run.
 	run := store.Run{
@@ -1076,14 +1083,16 @@ func runScopeLessPublishedPipe(
 }
 
 // runLocalPipeExact runs the Journey A exact connect path for a local ingress
-// Pipe that targets a remote Pipe. It uses the exact connection state (no
-// discovery, no Scope, no membership, no PipeRecord) to open the remote
-// tunnel when a local connection arrives.
+// Pipe that targets a remote Pipe. The remote Pipe must have an accepted
+// durable binding (the one-time invite is never required again). Every local
+// connection acquires verified current/fresh short-lived access material
+// through the L4 AcquireAcceptedPipeAccess use case (ephemeral lease cache or
+// post-acceptance renewal over the runtime's own host), then opens the remote
+// tunnel. No discovery, no Scope, no membership, no PipeRecord.
 func runLocalPipeExact(
 	ctx context.Context,
 	state *store.Store,
 	spec domain.PipeSpec,
-	connState domain.ExactConnectionState,
 	nodeRuntime *NodeRuntime,
 	pipeRuntime *PipeRuntime,
 	pipeEngine *engine.Engine,
@@ -1130,9 +1139,24 @@ func runLocalPipeExact(
 		case <-ctx.Done():
 		}
 	}()
+	// Compose the L4 acquisition use case with narrow store adapters and the
+	// renewal client. Reachability reuses this runtime's own host so no second
+	// libp2p host is opened for renewal.
+	uc := usecase.New(
+		store.NewServiceRepoAdapter(state),
+		store.NewPipeRepoAdapter(state),
+	)
+	uc.Secrets = state.SecretPath()
+	uc.Bindings = store.NewRemotePipeBindingAdapter(state)
+	uc.LeaseCache = store.NewAccessLeaseCacheAdapter(state)
+	uc.Renewal = NewExactRenewalClient(state.SecretPath())
+	uc.Reach = newHostCarrierAcquirer(h, protocol.ID(wire.ExactRenewalID))
+	acquire := func(openCtx context.Context) (usecase.AcceptedPipeAccess, error) {
+		return uc.AcquireAcceptedPipeAccess(openCtx, spec.Target.Name)
+	}
 	// Use the exact downstream opener to establish the remote tunnel.
-	// Each local connection triggers a new tunnel open.
-	exactOpener := newExactDownstreamPipeOpener(state, h, pipeRuntime, spec.Target.Name)
+	// Each local connection triggers a new tunnel open with fresh access.
+	exactOpener := newExactDownstreamPipeOpener(state, h, spec.Target.Name, acquire)
 	for {
 		local, err := listener.Accept()
 		if err != nil {

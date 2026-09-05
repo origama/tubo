@@ -36,6 +36,13 @@ func (a *ExactAuthorityRevocationState) RedeemInvite(ctx context.Context, jti, p
 	return a.state.RedeemInvite(ctx, jti, pipeID, sessionID, clientPublic)
 }
 
+// AcceptedRedemption implements exactauthority.AcceptedBindingStore: it
+// returns the originating invite JTI when recipient was validly accepted for
+// the pipe, or ok=false when the relationship never existed.
+func (a *ExactAuthorityRevocationState) AcceptedRedemption(ctx context.Context, pipeID, clientPublic string) (string, bool, error) {
+	return a.state.AcceptedRedemption(ctx, pipeID, clientPublic)
+}
+
 // NewExactAuthorityRevocationStateFromOwner creates an adapter from a store
 // and the owner private key (to derive the PipeID scope).
 func NewExactAuthorityRevocationStateFromOwner(
@@ -49,6 +56,7 @@ func NewExactAuthorityRevocationStateFromOwner(
 // Ensure compile-time interface compliance.
 var _ RevocationStateInterface = (*ExactAuthorityRevocationState)(nil)
 var _ RedemptionStoreInterface = (*ExactAuthorityRevocationState)(nil)
+var _ AcceptedBindingStoreInterface = (*ExactAuthorityRevocationState)(nil)
 
 // RevocationStateInterface duplicates the exactauthority.RevocationState contract
 // so internal/store does not import exactauthority. Consumers satisfy both.
@@ -61,4 +69,10 @@ type RevocationStateInterface interface {
 // so internal/store does not import exactauthority.
 type RedemptionStoreInterface interface {
 	RedeemInvite(ctx context.Context, jti, pipeID, sessionID, clientPublic string) (bool, error)
+}
+
+// AcceptedBindingStoreInterface duplicates the exactauthority.AcceptedBindingStore
+// contract so internal/store does not import exactauthority.
+type AcceptedBindingStoreInterface interface {
+	AcceptedRedemption(ctx context.Context, pipeID, clientPublic string) (jti string, ok bool, err error)
 }

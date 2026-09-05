@@ -1,13 +1,17 @@
 // Package runtime owns the Journey A exact downstream adapter. This is a
-// concrete DownstreamOpener implementation that uses exact connection state
-// (no discovery, no Scope, no membership, no PipeRecord) to open a remote
-// Pipe via the tunnel handshake. It coexists with the scoped
-// newDownstreamPipeOpener; selection is at composition/adaptor only.
+// concrete DownstreamOpener implementation that opens a remote Pipe through
+// the durable accepted-binding lifecycle (no discovery, no Scope, no
+// membership, no PipeRecord, no invite): every downstream open obtains
+// verified current/fresh short-lived access material (from the ephemeral
+// lease cache or a post-acceptance renewal) and performs the tunnel handshake.
+// It coexists with the scoped newDownstreamPipeOpener; selection is at
+// composition/adaptor only. The Pipe Engine stays neutral.
 package runtime
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -21,42 +25,48 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/node"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo-rebuilt/internal/usecase"
 )
 
-// newExactDownstreamPipeOpener creates a DownstreamOpener that uses the exact
-// connection state (no discovery, no Scope, no membership) to open a remote
-// Pipe. It reads the AccessLease and locator from the exact connection state
-// repository, performs the tunnel handshake, and returns the established
-// carrier.
-//
-// This adapter is used by the Journey A scope-less connect path ONLY.
-// The scoped newDownstreamPipeOpener remains for prototype scope paths.
+// newExactDownstreamPipeOpener creates a DownstreamOpener that opens a remote
+// Pipe via the durable accepted-binding lifecycle. acquire returns verified
+// current/fresh access material (cached short-lived AccessLease or post-
+// acceptance renewal) for the remote Pipe; the opener dials the bound locator
+// and performs the tunnel handshake with that lease. No invite is ever
+// required again after acceptance, and an expired lease simply causes
+// reacquisition.
 func newExactDownstreamPipeOpener(
 	state *store.Store,
 	h host.Host,
-	pipeRuntime *PipeRuntime,
 	pipeID string,
+	acquire func(ctx context.Context) (usecase.AcceptedPipeAccess, error),
 ) engine.DownstreamOpener {
 	return func(ctx context.Context, nextSpec domain.PipeSpec, traversal engine.TraversalState) (node.Carrier, string, error) {
-		// Load exact connection state for the remote Pipe.
-		connState, err := state.GetExactConnectionState(ctx, pipeID)
+		access, err := acquire(ctx)
 		if err != nil {
 			return nil, "", err
 		}
-		// Decode the AccessLease.
-		lease, err := accesslease.Decode(connState.AccessLease)
-		if err != nil {
-			return nil, "", errors.New("exact_connection: invalid stored access lease")
+		if access.RemotePipeID != pipeID {
+			return nil, "", fmt.Errorf("exact_connection: acquired access for wrong pipe %s", access.RemotePipeID)
 		}
-		// Verify the lease is not expired.
 		now := time.Now().UTC()
-		if !lease.ExpiresAt.After(now) {
-			return nil, "", errors.New("exact_connection: access lease expired")
+		if !access.AccessLease.ExpiresAt.After(now) {
+			// The acquired material already expired (defense in depth against
+			// a tiny cache/return race); reacquire once.
+			access, err = acquire(ctx)
+			if err != nil {
+				return nil, "", err
+			}
 		}
-		// Dial the locator peer.
+		encodedLease, err := accesslease.Encode(access.AccessLease)
+		if err != nil {
+			return nil, "", errors.New("exact_connection: encode access lease")
+		}
+
+		// Dial the bound locator (L1 reachability; never authorizes).
 		setup, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		remotePeerID, err := node.DialPeer(setup, h, connState.Locator)
+		remotePeerID, err := node.DialPeer(setup, h, access.Locator)
 		if err != nil {
 			return nil, "", err
 		}
@@ -72,8 +82,7 @@ func newExactDownstreamPipeOpener(
 		}()
 		_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
 
-		// Client public key is the lease subject (recipient identity).
-		clientPublic := lease.Subject
+		clientPublic := access.AccessLease.Subject
 
 		// Perform the tunnel handshake.
 		if err := wire.WriteFrame(stream, wire.ClientHello{Version: "2.0", ClientPublic: clientPublic, Capabilities: baseSessionCapabilities()}); err != nil {
@@ -87,23 +96,21 @@ func newExactDownstreamPipeOpener(
 			return nil, "", errors.New("tunnel_handshake_failed: pipe or version mismatch")
 		}
 
-		// Sign the challenge proof using the recipient private key.
-		// The recipient key is stored at <secrets>/pipes/connect-<pipeID>.key.
+		// Sign the challenge proof with the accepted recipient identity key.
+		// Load only: provisioning a fresh key would change identity and is
+		// never done after acceptance.
 		keyPath := state.SecretPath("pipes", "connect-"+pipeID+".key")
 		recipientPrivate, keyErr := localkey.Load(keyPath)
 		if keyErr != nil {
-			// Try Provision if the key doesn't exist yet.
-			recipientPrivate, keyErr = localkey.Provision(keyPath)
-			if keyErr != nil {
-				return nil, "", errors.New("exact_connection: recipient key unavailable")
-			}
+			return nil, "", errors.New("exact_connection: accepted recipient key unavailable")
 		}
+
 		challengeProof := accesslease.SignProof(recipientPrivate, accesslease.OpenProofPurpose, server.Challenge, pipeID)
 
 		open := wire.OpenPipe{
 			PipeID:         pipeID,
 			ChallengeProof: challengeProof,
-			AccessLease:    connState.AccessLease,
+			AccessLease:    encodedLease,
 			VisitedPipeIDs: traversal.VisitedIDs,
 			HopLimit:       traversal.MaxHops,
 		}

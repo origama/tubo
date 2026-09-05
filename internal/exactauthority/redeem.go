@@ -46,6 +46,7 @@ func RedeemExactInvite(
 	loader Loader,
 	state RevocationState,
 	redemption RedemptionStore,
+	leaseLifetime time.Duration,
 ) (accesslease.AccessLease, error) {
 	var zero accesslease.AccessLease
 
@@ -150,12 +151,18 @@ func RedeemExactInvite(
 		}
 	}
 
-	// Step 11: Mint canonical AccessLease.
-	leaseLifetime := 10 * time.Minute
+	// Step 11: Mint canonical AccessLease. The server-authoritative lifetime
+	// (leaseLifetime, bounded to MaxTTL) is further capped by the remaining
+	// invite lifetime so the bootstrap lease never outlives the credential
+	// that authorized it. Post-acceptance access no longer depends on this
+	// initial lease: renewal through the durable binding mints fresh ones.
+	if leaseLifetime <= 0 || leaseLifetime > accesslease.MaxTTL {
+		leaseLifetime = accesslease.MaxTTL
+	}
 	if lifetime := invite.ExpiresAt.Sub(now); lifetime < leaseLifetime && lifetime > 0 {
 		leaseLifetime = lifetime
 	}
-	if leaseLifetime <= 0 || leaseLifetime > accesslease.MaxTTL {
+	if leaseLifetime <= 0 {
 		leaseLifetime = accesslease.MaxTTL
 	}
 	lease, err := accesslease.NewAccessLease(

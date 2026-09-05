@@ -15,7 +15,8 @@ import (
 // Compile-time bridge: the store adapters satisfy the consumer-owned usecase ports.
 var _ usecase.ServiceRepository = (*ServiceRepoAdapter)(nil)
 var _ usecase.PipeRepository = (*PipeRepoAdapter)(nil)
-var _ usecase.ExactConnectionStateRepo = (*ExactConnectionStateAdapter)(nil)
+var _ usecase.RemotePipeBindingRepo = (*RemotePipeBindingAdapter)(nil)
+var _ usecase.AccessLeaseCacheRepo = (*AccessLeaseCacheAdapter)(nil)
 
 func TestStoreCase3_DeletePipeDoesNotRemoveRuns(t *testing.T) {
 	t.Setenv("TUBO_HOME", t.TempDir())

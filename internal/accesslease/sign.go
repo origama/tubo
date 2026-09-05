@@ -73,6 +73,10 @@ const (
 	// purpose cannot be reused for another.
 	OpenProofPurpose            = "tubo-open-v2"
 	RedeemProofPurpose          = "tubo-exact-redeem-v2"
+	// RenewProofPurpose proves recipient possession during post-acceptance
+	// exact renewal. It is domain-separated from redemption and open proofs so
+	// a proof minted for one exchange can never authorize another.
+	RenewProofPurpose = "tubo-exact-renew-v2"
 	MaxRedemptionAddresses      = 8
 	OwnerBindingMaxAddressBytes = MaxRedemptionAddrLen
 )

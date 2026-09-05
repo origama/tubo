@@ -15,3 +15,15 @@ type RevocationState interface {
 type RedemptionStore interface {
 	RedeemInvite(ctx context.Context, jti, pipeID, sessionID, clientPublic string) (bool, error)
 }
+
+// AcceptedBindingStore is the narrow persistence port for the authority-side
+// accepted exact relationship: authoritative knowledge that recipient X was
+// validly accepted for Pipe P under the current revocation state. Renewal
+// requires an existing accepted relationship; a missing authoritative row must
+// never mint a lease.
+type AcceptedBindingStore interface {
+	// AcceptedRedemption returns the originating invite JTI when an accepted
+	// redemption exists for this recipient and Pipe; ok=false when the
+	// relationship never existed. Persistence errors fail closed (err != nil).
+	AcceptedRedemption(ctx context.Context, pipeID, clientPublic string) (jti string, ok bool, err error)
+}

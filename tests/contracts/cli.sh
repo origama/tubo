@@ -17,8 +17,9 @@ export TUBO_HOME="$WORK_DIR/home"
 "$BIN" help >"$WORK_DIR/help.out"
 for value in \
   'tubo — private connectivity through composable pipes' \
+  'accept     accept an exact invite and persist the durable access relationship' \
   'attach     create or reuse a Service and its Pipe, then run it' \
-  'connect    redeem an exact invite and run a local Pipe' \
+  'connect    redeem an exact invite (or reuse an accepted binding) and run a local Pipe' \
   'share      mint a one-time invite for an owned Pipe' \
   'get        list resources' \
   'inspect    inspect one resource in detail' \

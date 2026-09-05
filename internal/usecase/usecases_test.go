@@ -3,15 +3,19 @@ package usecase
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo-rebuilt/internal/localkey"
 )
 
 // Case 7: Attach creates Service then Pipe (all-or-nothing order).
@@ -343,6 +347,9 @@ func TestCase11_ConnectExactNoScopeNoDiscovery(t *testing.T) {
 	reach := newFakeReachability()
 	u.Reach = reach
 	u.Redemption = newFakeRedemptionService(secretsDir)
+	u.Renewal = newFakeRenewalService(secretsDir)
+	u.Bindings = newMemoryRemotePipeBindingRepo()
+	u.LeaseCache = newMemoryAccessLeaseCacheRepo()
 
 	// Step 1: Attach (creates owned pipe and provisions owner key).
 	attachResult, err := u.Attach(ctx, AttachInput{Name: "connectexact", Target: "http://127.0.0.1:8080"})
@@ -392,289 +399,382 @@ func TestCase11_ConnectExactNoScopeNoDiscovery(t *testing.T) {
 	// the crafted path above used only the invite plus injected reachability.
 }
 
-// TestCase15_ConnectExactPersistsExactConnectionState verifies that
-// ConnectExact persists the exact connection state through the injected
-// ExactConnectionStateRepo for detached-start consumption.
-func TestCase15_ConnectExactPersistsExactConnectionState(t *testing.T) {
-	ctx := context.Background()
+
+
+// ---------------------------------------------------------------------------
+// Durable exact remote-Pipe binding lifecycle tests (schema 12)
+// ---------------------------------------------------------------------------
+
+// exactFixture is the L4 test composition: real localkey secrets in a temp
+// dir, in-memory narrow repos, one-winner fake redemption and fake renewal.
+type exactFixture struct {
+	services   *memoryServiceRepo
+	pipes      *memoryPipeRepo
+	bindings   *memoryRemotePipeBindingRepo
+	leaseCache *memoryAccessLeaseCacheRepo
+	redemption *fakeRedemptionService
+	renewal    *fakeRenewalService
+	u          UseCases
+	secrets    string
+}
+
+func newExactFixture(t *testing.T) *exactFixture {
+	t.Helper()
 	services := newMemoryServiceRepo()
 	pipes := newMemoryPipeRepo()
-	exactConn := newMemoryExactConnectionRepo()
-	secretsDir := t.TempDir()
-
+	bindings := newMemoryRemotePipeBindingRepo()
+	leaseCache := newMemoryAccessLeaseCacheRepo()
+	secrets := t.TempDir()
+	redemption := newFakeRedemptionService(secrets)
+	renewal := newFakeRenewalService(secrets)
 	u := New(services, pipes)
-	u.Secrets = secretsDir
-	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
+	u.Secrets = secrets
+	u.OwnerLocator = &fakeOwnerLocator{address: "/dns4/relay.test/tcp/4001/p2p/12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME/p2p-circuit/p2p/12D3KooWRJCtSj2fWsnyHYdpcmQoHwDzVzr39VmFrRwmJrwwW57G"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	u.Redemption = redemption
+	u.Renewal = renewal
 	u.Reach = newFakeReachability()
-	u.Redemption = newFakeRedemptionService(secretsDir)
-	u.ExactConnections = exactConn
-
-	// Attach + Share.
-	attachResult, err := u.Attach(ctx, AttachInput{Name: "persisttest", Target: "http://127.0.0.1:8080"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	shareResult, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attachResult.PipeRef.String()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Connect.
-	connectResult, err := u.ConnectExact(ctx, ConnectExactInput{
-		Invite:      shareResult.Invite,
-		LocalListen: "127.0.0.1:9998",
-	})
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-
-	// Verify exact connection state was persisted.
-	state, err := exactConn.Get(ctx, shareResult.PipeID)
-	if err != nil {
-		t.Fatalf("exact connection state should be persisted: %v", err)
-	}
-	if state.RemotePipeID != shareResult.PipeID {
-		t.Fatalf("remote pipe ID mismatch: %s vs %s", state.RemotePipeID, shareResult.PipeID)
-	}
-	if state.Locator == "" {
-		t.Fatal("locator must be non-empty")
-	}
-	if state.AccessLease == "" {
-		t.Fatal("access lease must be non-empty")
-	}
-	if state.LocalPipeRef != connectResult.PipeRef.String() {
-		t.Fatalf("local pipe ref mismatch: %s vs %s", state.LocalPipeRef, connectResult.PipeRef)
-	}
-	if state.ExpiresAt.IsZero() {
-		t.Fatal("expiry must be non-zero")
+	u.Bindings = bindings
+	u.LeaseCache = leaseCache
+	return &exactFixture{
+		services: services, pipes: pipes, bindings: bindings, leaseCache: leaseCache,
+		redemption: redemption, renewal: renewal, u: u, secrets: secrets,
 	}
 }
 
-// TestCase16_ConnectExactExpiredLeaseFailsClosed verifies that an expired
-// exact connection state returns ErrNotFound from the repo (fail closed).
-func TestCase16_ConnectExactExpiredLeaseFailsClosed(t *testing.T) {
+// makeShare attaches a test service/pipe on the owner side and mints an exact
+// invite through the same UseCases composition.
+func (f *exactFixture) makeShare(t *testing.T) (pipeID, invite string) {
+	t.Helper()
+	att, err := f.u.Attach(context.Background(), AttachInput{Name: "origin", Target: "http://127.0.0.1:8080"})
+	if err != nil {
+		t.Fatalf("attach: %v", err)
+	}
+	share, err := f.u.ShareExact(context.Background(), ShareExactInput{PipeRef: att.PipeRef.String()})
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	return share.PipeID, share.Invite
+}
+
+// pinClock drives the use case and both credential-minting fakes off the same
+// deterministic clock so lease verification never races real time.
+func (f *exactFixture) pinClock(at time.Time) {
+	f.u.Now = fixedClock(at)
+	f.redemption.setNow(fixedClock(at))
+	f.renewal.setNow(fixedClock(at))
+	f.leaseCache.setNow(fixedClock(at))
+}
+
+func TestAcceptExactInviteCreatesExactlyOneDurableBinding(t *testing.T) {
+	f := newExactFixture(t)
 	ctx := context.Background()
-	services := newMemoryServiceRepo()
-	pipes := newMemoryPipeRepo()
-	exactConn := newMemoryExactConnectionRepo()
-	secretsDir := t.TempDir()
+	pipeID, invite := f.makeShare(t)
 
-	u := New(services, pipes)
-	u.Secrets = secretsDir
-	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
-	u.RedemptionProtocol = "/tubo/exact-redemption/1"
-	u.Reach = newFakeReachability()
-	u.Redemption = newFakeRedemptionService(secretsDir)
-	u.ExactConnections = exactConn
-
-	// Attach + Share + Connect.
-	attachResult, err := u.Attach(ctx, AttachInput{Name: "expiretest", Target: "http://127.0.0.1:8080"})
+	result, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite})
+	if err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if result.RemotePipeID != pipeID {
+		t.Fatalf("accepted pipe %s != %s", result.RemotePipeID, pipeID)
+	}
+	b, err := f.bindings.Get(ctx, pipeID)
+	if err != nil {
+		t.Fatalf("binding must persist: %v", err)
+	}
+	if b.RemotePipeID != pipeID || b.RecipientPublic == "" || b.AuthorityPublic == "" || b.OwnerBinding == "" || b.Locator == "" {
+		t.Fatalf("binding missing required fields: %#v", b)
+	}
+	if b.Source != "invite" {
+		t.Fatalf("binding source = %q", b.Source)
+	}
+	if len(f.bindings.items) != 1 {
+		t.Fatalf("expected exactly one binding row, got %d", len(f.bindings.items))
+	}
+	// Recipient identity key persisted and reusable.
+	keyFile := filepath.Join(f.secrets, "pipes", "connect-"+pipeID+".key")
+	if _, err := os.Stat(keyFile); err != nil {
+		t.Fatalf("recipient key not persisted: %v", err)
+	}
+	private, err := localkey.Load(keyFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shareResult, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attachResult.PipeRef.String()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = u.ConnectExact(ctx, ConnectExactInput{
-		Invite:      shareResult.Invite,
-		LocalListen: "127.0.0.1:9997",
-	})
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-
-	// Manually expire the stored state.
-	state, err := exactConn.Get(ctx, shareResult.PipeID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Set expiry to the past.
-	state.ExpiresAt = time.Now().UTC().Add(-time.Hour)
-	if err := exactConn.Put(ctx, state); err != nil {
-		t.Fatal(err)
-	}
-
-	// Get should fail with ErrNotFound.
-	_, err = exactConn.Get(ctx, shareResult.PipeID)
-	if err != domain.ErrNotFound {
-		t.Fatalf("expired state must return ErrNotFound, got %v", err)
+	if accesslease.PublicString(private.Public().(ed25519.PublicKey)) != b.RecipientPublic {
+		t.Fatal("recipient key does not match binding recipient")
 	}
 }
 
-// TestCase17_ConnectExactNoExactConnectionsRepoIsGraceful verifies that
-// ConnectExact succeeds even when no ExactConnectionStateRepo is wired.
-func TestCase17_ConnectExactNoExactConnectionsRepoIsGraceful(t *testing.T) {
+func TestAcceptExactInviteSameRecipientRetryDeterministic(t *testing.T) {
+	f := newExactFixture(t)
 	ctx := context.Background()
-	services := newMemoryServiceRepo()
-	pipes := newMemoryPipeRepo()
-	secretsDir := t.TempDir()
+	_, invite := f.makeShare(t)
 
-	u := New(services, pipes)
-	u.Secrets = secretsDir
-	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
-	u.RedemptionProtocol = "/tubo/exact-redemption/1"
-	u.Reach = newFakeReachability()
-	u.Redemption = newFakeRedemptionService(secretsDir)
-	// ExactConnections is nil — no persistence.
-
-	attachResult, err := u.Attach(ctx, AttachInput{Name: "norepotest", Target: "http://127.0.0.1:8080"})
+	first, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("accept: %v", err)
 	}
-	shareResult, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attachResult.PipeRef.String()})
+	second, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("same-recipient retry must be deterministic: %v", err)
 	}
-
-	// Connect must still succeed.
-	_, err = u.ConnectExact(ctx, ConnectExactInput{
-		Invite:      shareResult.Invite,
-		LocalListen: "127.0.0.1:9996",
-	})
-	if err != nil {
-		t.Fatalf("connect must succeed without exact connections repo: %v", err)
+	if first.RemotePipeID != second.RemotePipeID || first.RecipientPublic != second.RecipientPublic {
+		t.Fatal("retry must reuse the same accepted recipient identity")
+	}
+	b, _ := f.bindings.Get(ctx, first.RemotePipeID)
+	if b.RecipientPublic != first.RecipientPublic {
+		t.Fatal("binding must reuse the original recipient")
+	}
+	if len(f.bindings.items) != 1 {
+		t.Fatalf("no duplicate binding rows, got %d", len(f.bindings.items))
 	}
 }
 
-// TestCase18_DetachedStartConsumesExactConnectionState verifies that
-// persisted exact connection state can be consumed by a detached start
-// (simulating runLocalPipeExact lookup).
-func TestCase18_DetachedStartConsumesExactConnectionState(t *testing.T) {
+func TestAcceptExactInviteDifferentRecipientCannotConsume(t *testing.T) {
+	f := newExactFixture(t)
 	ctx := context.Background()
-	services := newMemoryServiceRepo()
-	pipes := newMemoryPipeRepo()
-	exactConn := newMemoryExactConnectionRepo()
-	secretsDir := t.TempDir()
+	_, invite := f.makeShare(t)
 
-	u := New(services, pipes)
-	u.Secrets = secretsDir
-	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
-	u.RedemptionProtocol = "/tubo/exact-redemption/1"
-	u.Reach = newFakeReachability()
-	u.Redemption = newFakeRedemptionService(secretsDir)
-	u.ExactConnections = exactConn
-
-	// Attach + Share + Connect.
-	attachResult, err := u.Attach(ctx, AttachInput{Name: "detachedtest", Target: "http://127.0.0.1:8080"})
-	if err != nil {
-		t.Fatal(err)
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite}); err != nil {
+		t.Fatalf("first accept: %v", err)
 	}
-	shareResult, err := u.ShareExact(ctx, ShareExactInput{PipeRef: attachResult.PipeRef.String()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	connectResult, err := u.ConnectExact(ctx, ConnectExactInput{
-		Invite:      shareResult.Invite,
-		LocalListen: "127.0.0.1:9995",
-	})
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-
-	// Simulate detached start: load exact connection state by remote PipeID.
-	// The remote PipeID is the invite audience (= shareResult.PipeID).
-	state, err := exactConn.Get(ctx, shareResult.PipeID)
-	if err != nil {
-		t.Fatalf("detached start must find exact connection state: %v", err)
-	}
-
-	// Verify all fields needed by runLocalPipeExact are present.
-	if state.RemotePipeID != shareResult.PipeID {
-		t.Fatalf("remote pipe ID mismatch: %s vs %s", state.RemotePipeID, shareResult.PipeID)
-	}
-	if state.Locator == "" {
-		t.Fatal("locator required for downstream dial")
-	}
-	if state.AccessLease == "" {
-		t.Fatal("access lease required for open auth")
-	}
-	if state.LocalPipeRef != connectResult.PipeRef.String() {
-		t.Fatalf("local pipe ref mismatch: %s vs %s", state.LocalPipeRef, connectResult.PipeRef)
+	// A second machine has its own recipient key but shares the authority-side
+	// one-winner redemption contract.
+	other := newExactFixture(t)
+	other.u.Redemption = f.redemption
+	other.u.Renewal = f.renewal
+	if _, err := other.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite}); err == nil {
+		t.Fatal("different recipient must be denied")
+	} else if !strings.Contains(err.Error(), "authorization_denied") {
+		t.Fatalf("expected authorization_denied, got %v", err)
 	}
 }
 
-// TestCase19_ExactConnectionStateExpiryDeterministic verifies the expiry
-// check is deterministic (no sleeps). Uses a fixed clock past expiry.
-func TestCase19_ExactConnectionStateExpiryDeterministic(t *testing.T) {
-	exactConn := newMemoryExactConnectionRepo()
+func TestAcceptExactInviteRejectsMalformedExpiredTampered(t *testing.T) {
+	f := newExactFixture(t)
 	ctx := context.Background()
+	_, invite := f.makeShare(t)
 
-	// Insert state with expiry in the past.
-	pastState := domain.ExactConnectionState{
-		RemotePipeID: "pip_expired",
-		Locator:      "/ip4/127.0.0.1/tcp/4001",
-		AccessLease:  "dGVzdA",
-		ExpiresAt:    time.Now().UTC().Add(-time.Hour),
-		LocalPipeRef: "pipe/expired",
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite[:len(invite)-1] + "X"}); err == nil {
+		t.Fatal("tampered invite accepted")
 	}
-	if err := exactConn.Put(ctx, pastState); err != nil {
-		t.Fatal(err)
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: "not-an-invite"}); err == nil {
+		t.Fatal("malformed invite accepted")
+	}
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: ""}); err == nil {
+		t.Fatal("empty invite accepted")
 	}
 
-	// Get must fail with ErrNotFound.
-	_, err := exactConn.Get(ctx, "pip_expired")
-	if err != domain.ErrNotFound {
-		t.Fatalf("expired state must return ErrNotFound, got %v", err)
+	// Expired before accept: share at real time, then advance the accept clock
+	// past the 10-minute invite TTL.
+	f2 := newExactFixture(t)
+	t0 := time.Now().UTC()
+	_, invite2 := f2.makeShare(t)
+	f2.pinClock(t0.Add(20 * time.Minute))
+	if _, err := f2.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite2}); err == nil {
+		t.Fatal("expired-before-accept invite accepted")
+	} else if !strings.Contains(err.Error(), "authorization_denied") {
+		t.Fatalf("expected authorization_denied, got %v", err)
 	}
 }
 
-// TestCase20_ExactConnectionStateNoExpiryIsValid verifies that a state
-// with zero expiry is valid (no expiry check).
-func TestCase20_ExactConnectionStateNoExpiryIsValid(t *testing.T) {
-	exactConn := newMemoryExactConnectionRepo()
+func TestAcquireAcceptedPipeAccessUsesUnexpiredCachedLease(t *testing.T) {
+	f := newExactFixture(t)
 	ctx := context.Background()
-
-	noExpiryState := domain.ExactConnectionState{
-		RemotePipeID: "pip_no_expiry",
-		Locator:      "/ip4/127.0.0.1/tcp/4001",
-		AccessLease:  "dGVzdA",
-		LocalPipeRef: "pipe/no_expiry",
-	}
-	if err := exactConn.Put(ctx, noExpiryState); err != nil {
+	pipeID, invite := f.makeShare(t)
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite}); err != nil {
 		t.Fatal(err)
 	}
-
-	state, err := exactConn.Get(ctx, "pip_no_expiry")
+	access, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID)
 	if err != nil {
-		t.Fatalf("state without expiry must be retrievable: %v", err)
+		t.Fatalf("acquire: %v", err)
 	}
-	if state.RemotePipeID != "pip_no_expiry" {
-		t.Fatalf("pipe ID mismatch")
+	if f.renewal.callCount(pipeID) != 0 {
+		t.Fatalf("unexpired cached lease must not renew, calls=%d", f.renewal.callCount(pipeID))
+	}
+	issuer, _ := accesslease.PublicFromString(access.AuthorityPublic)
+	if err := access.AccessLease.Verify(issuer, access.AccessLease.Subject, pipeID, time.Now().UTC()); err != nil {
+		t.Fatalf("acquired lease does not verify: %v", err)
+	}
+	if access.AccessLease.Subject == "" || access.AccessLease.AudiencePipeID != pipeID {
+		t.Fatalf("lease subject/audience wrong: %#v", access.AccessLease)
 	}
 }
 
-// TestCase21_ExactConnectionStateInvalidRejectedByPut verifies that the
-// fake repo rejects invalid state (missing required fields).
-func TestCase21_ExactConnectionStateInvalidRejectedByPut(t *testing.T) {
-	exactConn := newMemoryExactConnectionRepo()
+// TestAcquireAcceptedPipeAccessRenewsAfterCacheExpiry drives a deterministic
+// clock past the cached lease expiry; renewal mints a fresh short-lived lease
+// and the durable binding survives the cache churn (no sleep).
+func TestAcquireAcceptedPipeAccessRenewsAfterCacheExpiry(t *testing.T) {
+	f := newExactFixture(t)
 	ctx := context.Background()
+	t0 := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	f.pinClock(t0)
+	pipeID, invite := f.makeShare(t)
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite}); err != nil {
+		t.Fatal(err)
+	}
+	// Advance well past the 10-minute lease; the expired cache fails closed.
+	f.pinClock(t0.Add(time.Hour))
+	access, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID)
+	if err != nil {
+		t.Fatalf("acquire after cache expiry: %v", err)
+	}
+	if f.renewal.callCount(pipeID) != 1 {
+		t.Fatalf("expired cache must renew exactly once, calls=%d", f.renewal.callCount(pipeID))
+	}
+	if !access.AccessLease.ExpiresAt.After(f.u.now()) {
+		t.Fatal("renewed lease must be fresh")
+	}
+	cached, err := f.leaseCache.Get(ctx, pipeID)
+	if err != nil {
+		t.Fatalf("renewed lease must be cached: %v", err)
+	}
+	if cached.ExpiresAt.Before(f.u.now()) {
+		t.Fatal("cache must hold the fresh lease")
+	}
+	// The durable binding survives lease cache churn and carries no ingress.
+	b, err := f.bindings.Get(ctx, pipeID)
+	if err != nil {
+		t.Fatal("binding must survive cache expiry")
+	}
+	if b.Locator == "" || b.RecipientPublic == "" {
+		t.Fatal("binding independent of lease cache")
+	}
+}
 
-	// Missing RemotePipeID.
-	err := exactConn.Put(ctx, domain.ExactConnectionState{
-		Locator:     "/ip4/127.0.0.1/tcp/4001",
-		AccessLease: "dGVzdA",
-	})
+func TestAcquireAcceptedPipeAccessWithoutBindingFails(t *testing.T) {
+	f := newExactFixture(t)
+	ctx := context.Background()
+	_, err := f.u.AcquireAcceptedPipeAccess(ctx, "pip_never_accepted")
 	if err == nil {
-		t.Fatal("expected error for missing remote pipe ID")
+		t.Fatal("acquire without accepted binding must fail")
+	}
+	if !strings.HasPrefix(err.Error(), "authorization_denied") {
+		t.Fatalf("expected authorization_denied, got %v", err)
+	}
+}
+
+// TestAcquireAcceptedPipeAccessRenewalFailuresFailClosed covers revoked /
+// epoch-stale / persistence failures and a renewed-lease subject mismatch at
+// the L4 boundary: every one denies acquisition (fail closed).
+func TestAcquireAcceptedPipeAccessRenewalFailuresFailClosed(t *testing.T) {
+	ctx := context.Background()
+
+	for _, failure := range []string{"revoked", "epoch stale", "accepted state unavailable"} {
+		f := newExactFixture(t)
+		pipeID, invite := f.makeShare(t)
+		if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite}); err != nil {
+			t.Fatal(err)
+		}
+		if err := f.leaseCache.Delete(ctx, pipeID); err != nil {
+			t.Fatal(err)
+		}
+		f.renewal.fail(errors.New(failure))
+		if _, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID); err == nil {
+			t.Fatalf("renewal failure %q must fail closed", failure)
+		}
 	}
 
-	// Missing Locator.
-	err = exactConn.Put(ctx, domain.ExactConnectionState{
-		RemotePipeID: "pip_test",
-		AccessLease:  "dGVzdA",
-	})
-	if err == nil {
-		t.Fatal("expected error for missing locator")
+	// Renewal returning a lease bound to a different subject must fail closed.
+	f := newExactFixture(t)
+	pipeID, invite := f.makeShare(t)
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite}); err != nil {
+		t.Fatal(err)
+	}
+	_ = f.leaseCache.Delete(ctx, pipeID)
+	_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
+	otherPub := accesslease.PublicString(otherPriv.Public().(ed25519.PublicKey))
+	f.renewal.subjectOverride = otherPub
+	if _, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID); err == nil {
+		t.Fatal("renewed lease with mismatched subject must fail verification")
+	}
+}
+
+// TestConnectCompatibilityTokenThenRemoteRefactor proves the legacy connect
+// path consumes the new foundation: --token persists the binding and caches
+// the initial lease; --remote reuses the accepted binding with no redemption.
+func TestConnectCompatibilityTokenThenRemoteRefactor(t *testing.T) {
+	ctx := context.Background()
+
+	// Token path: connect --token <invite>.
+	f := newExactFixture(t)
+	pipeID, invite := f.makeShare(t)
+	res, err := f.u.ConnectExact(ctx, ConnectExactInput{Invite: invite, LocalListen: "127.0.0.1:9991"})
+	if err != nil {
+		t.Fatalf("connect --token: %v", err)
+	}
+	if res.TargetPipeID != pipeID {
+		t.Fatalf("target %s != %s", res.TargetPipeID, pipeID)
+	}
+	if _, err := f.bindings.Get(ctx, pipeID); err != nil {
+		t.Fatal("token connect must persist the durable binding")
+	}
+	if _, err := f.leaseCache.Get(ctx, pipeID); err != nil {
+		t.Fatal("token connect must cache the initial lease")
+	}
+	if _, _, err := f.pipes.Get(ctx, res.PipeRef.String()); err != nil {
+		t.Fatal("token connect must create the legacy local Pipe")
+	}
+	if f.redemption.calls != 1 {
+		t.Fatalf("expected exactly one redemption, got %d", f.redemption.calls)
 	}
 
-	// Missing AccessLease.
-	err = exactConn.Put(ctx, domain.ExactConnectionState{
-		RemotePipeID: "pip_test",
-		Locator:      "/ip4/127.0.0.1/tcp/4001",
-	})
+	// Remote path (e.g. after restart): no invite, no re-redemption, same
+	// listener (one local connect Pipe per remote Pipe under current
+	// compatibility semantics).
+	res2, err := f.u.ConnectExact(ctx, ConnectExactInput{RemotePipeID: pipeID, LocalListen: "127.0.0.1:9991"})
+	if err != nil {
+		t.Fatalf("connect --remote: %v", err)
+	}
+	if res2.TargetPipeID != pipeID {
+		t.Fatalf("remote target %s != %s", res2.TargetPipeID, pipeID)
+	}
+	if f.redemption.calls != 1 {
+		t.Fatalf("remote reconnect must not re-commit redemption, calls=%d", f.redemption.calls)
+	}
+	if f.renewal.callCount(pipeID) != 0 {
+		t.Fatalf("unexpired cached lease must be reused on remote reconnect, calls=%d", f.renewal.callCount(pipeID))
+	}
+}
+
+func TestConnectExactRequiresExactlyOneOfTokenOrRemote(t *testing.T) {
+	f := newExactFixture(t)
+	ctx := context.Background()
+	if _, err := f.u.ConnectExact(ctx, ConnectExactInput{LocalListen: "127.0.0.1:9989"}); err == nil {
+		t.Fatal("connect without token or remote must fail")
+	}
+	if _, err := f.u.ConnectExact(ctx, ConnectExactInput{Invite: "x", RemotePipeID: "pip_x", LocalListen: "127.0.0.1:9988"}); err == nil {
+		t.Fatal("connect with both token and remote must fail")
+	}
+}
+
+func TestConnectRemoteWithoutBindingFailsClosed(t *testing.T) {
+	f := newExactFixture(t)
+	ctx := context.Background()
+	_, err := f.u.ConnectExact(ctx, ConnectExactInput{RemotePipeID: "pip_unknown", LocalListen: "127.0.0.1:9987"})
 	if err == nil {
-		t.Fatal("expected error for missing access lease")
+		t.Fatal("connect --remote without binding must fail")
+	}
+	if !strings.Contains(err.Error(), "authorization_denied") {
+		t.Fatalf("expected authorization_denied, got %v", err)
+	}
+}
+
+// TestRenewalAfterInviteExpiryFailsNoInvite proves the invite is bootstrap
+// only: after acceptance the bond renews with the clock past invite expiry.
+func TestRenewalAfterInviteExpirySucceeds(t *testing.T) {
+	f := newExactFixture(t)
+	ctx := context.Background()
+	t0 := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	f.pinClock(t0)
+	pipeID, invite := f.makeShare(t)
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite}); err != nil {
+		t.Fatal(err)
+	}
+	// Invite expires 10 min after issue; acquire 20 min later through the
+	// binding. Renewal must succeed (no invite involved).
+	f.pinClock(t0.Add(20 * time.Minute))
+	if _, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID); err != nil {
+		t.Fatalf("renewal after invite expiry: %v", err)
 	}
 }

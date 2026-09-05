@@ -27,6 +27,11 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/usecase"
 )
 
+const (
+	usecaseRedemptionProtocol = "/tubo/exact-redemption/1"
+	usecaseRenewalProtocol    = "/tubo/exact-renewal/1"
+)
+
 // App is the thin L5 parsing/presentation adapter over L4 use cases and the
 // transactional local store. It owns no connectivity, authorization, or
 // runtime semantics: command specs (spec.go) drive parsing and help, handlers
@@ -139,10 +144,16 @@ func (a App) Run(ctx context.Context, args []string) error {
 	)
 	a.UseCases.Secrets = state.SecretPath()
 	a.UseCases.OwnerLocator = newOwnerRedemptionLocator(state, a.resolveDefault)
-	a.UseCases.RedemptionProtocol = "/tubo/exact-redemption/1"
-	a.UseCases.Redemption = nil // not wired for CLI-only commands
+	a.UseCases.RedemptionProtocol = usecaseRedemptionProtocol
+	a.UseCases.Redemption = appRuntime.NewExactRedemptionClient(state.SecretPath())
+	a.UseCases.Renewal = appRuntime.NewExactRenewalClient(state.SecretPath())
 	a.UseCases.Reach = nil
 	a.UseCases.Starter = nil
+	// Narrow durable/exact persistence ports (schema 12): the accepted
+	// remote-Pipe binding is durable relationship knowledge; the lease cache
+	// is ephemeral and fails closed on expiry.
+	a.UseCases.Bindings = store.NewRemotePipeBindingAdapter(state)
+	a.UseCases.LeaseCache = store.NewAccessLeaseCacheAdapter(state)
 
 	if a.Verbosity > 0 && !a.Quiet {
 		fmt.Fprintf(a.Err, "debug: command=%s home=%s\n", spec.id(), state.Home())
@@ -164,6 +175,8 @@ func (a App) dispatch(ctx context.Context, state *store.Store, spec *commandSpec
 	switch spec.id() {
 	case "attach":
 		return a.attach(ctx, state, f)
+	case "accept":
+		return a.accept(ctx, state, f)
 	case "connect":
 		return a.connect(ctx, state, f)
 	case "share":
@@ -475,22 +488,54 @@ func (a App) share(ctx context.Context, _ *store.Store, f flags) error {
 	}
 	a.progressf("sharing %s\n", pipeRef)
 	a.progressf("one-time invite; expires in %s\n", expiresIn.Round(time.Second))
-	a.progressf("recipient runs: tubo connect --token <invite> --local 127.0.0.1:PORT\n")
+	a.progressf("recipient runs: tubo accept --token <invite> (redeems once)\n")
+	a.progressf("then, anytime: tubo connect --remote %s --local 127.0.0.1:PORT\n", result.PipeID)
 	return a.emit(f.bools["json"], map[string]any{"pipe_id": result.PipeID, "invite": result.Invite, "expires_at": result.ExpiresAt}, result.Invite)
 }
 
-// connect redeems an exact invite and runs a local ingress Pipe.
-func (a App) connect(ctx context.Context, state *store.Store, f flags) error {
-	reach, reachErr := appRuntime.NewExactReachabilityAcquirer(ctx, state, protocol.ID(a.UseCases.RedemptionProtocol))
+// accept redeems a one-time exact invite once and persists the durable
+// accepted remote-Pipe binding. It creates no local Pipe, no ingress, and
+// starts no runtime: acceptable access is reacquired later through the
+// durable binding (tubo connect --remote <pipe-id>).
+func (a App) accept(ctx context.Context, state *store.Store, f flags) error {
+	reach, reachErr := appRuntime.NewExactReachabilityAcquirer(ctx, state, protocol.ID(usecaseRedemptionProtocol))
 	if reachErr != nil {
 		return fmt.Errorf("reachability_unavailable: %w", reachErr)
 	}
 	a.UseCases.Reach = reach
-	a.UseCases.Redemption = appRuntime.NewExactRedemptionClient(state.SecretPath())
-	a.UseCases.ExactConnections = store.NewExactConnectionStateAdapter(state)
+	result, err := a.UseCases.AcceptExactInvite(ctx, usecase.AcceptExactInviteInput{
+		Invite: f.values["token"],
+	})
+	if err != nil {
+		return err
+	}
+	a.progressf("accepted remote pipe %s\n", result.RemotePipeID)
+	a.progressf("invite no longer needed; connect later: tubo connect --remote %s --local 127.0.0.1:PORT\n", result.RemotePipeID)
+	return a.emit(f.bools["json"], map[string]any{"remote_pipe_id": result.RemotePipeID, "recipient_public": result.RecipientPublic, "lease_expires_at": result.LeaseExpiresAt}, result.RemotePipeID)
+}
+
+// connect redeems an exact invite (or uses an already-accepted durable
+// binding) and runs a local ingress Pipe.
+func (a App) connect(ctx context.Context, state *store.Store, f flags) error {
+	token, remote := f.values["token"], f.values["remote"]
+	if token != "" && remote != "" {
+		return errors.New("invalid_input: connect accepts exactly one of --token or --remote; see 'tubo connect --help'")
+	}
+	// The carrier protocol depends on the exchange: redemption for a fresh
+	// invite, renewal for an already-accepted remote Pipe.
+	proto := usecaseRenewalProtocol
+	if token != "" {
+		proto = usecaseRedemptionProtocol
+	}
+	reach, reachErr := appRuntime.NewExactReachabilityAcquirer(ctx, state, protocol.ID(proto))
+	if reachErr != nil {
+		return fmt.Errorf("reachability_unavailable: %w", reachErr)
+	}
+	a.UseCases.Reach = reach
 
 	result, err := a.UseCases.ConnectExact(ctx, usecase.ConnectExactInput{
-		Invite:      f.values["token"],
+		Invite:      token,
+		RemotePipeID: remote,
 		LocalListen: f.values["local"],
 		Name:        f.values["name"],
 	})
@@ -850,17 +895,42 @@ func (a App) revoke(ctx context.Context, state *store.Store, f flags) error {
 	if typeName != "share.invite" && typeName != "session" && typeName != "pipe-access" && typeName != "pipe-publish" {
 		return fmt.Errorf("invalid_input: revoke type must be invite, session, pipe-access, or pipe-publish")
 	}
-	scope, err := state.CurrentScope(ctx)
-	if err != nil {
-		return err
-	}
-	if strings.HasPrefix(id, "pipe/") {
+	// Scope resolution. Scope-less exact Pipes (Journey A) revoke under a
+	// scope equal to the exact Pipe ID, matching the store adapter used by the
+	// ExactOpenAuthorizer and the renewal handler. An invited JTI is resolved
+	// through its accepted redemption when present.
+	var scope string
+	switch {
+	case strings.HasPrefix(id, "pipe/"):
 		spec, _, _, pipeErr := state.Pipe(ctx, id)
 		if pipeErr != nil {
 			return pipeErr
 		}
 		id = spec.PipeID
-		scope = spec.Scope.String()
+		if spec.Scope != nil {
+			scope = spec.Scope.String()
+		} else {
+			scope = spec.PipeID
+		}
+	case strings.HasPrefix(id, "pip_"):
+		scope = id
+	case typeName != "share.invite":
+		current, err := state.CurrentScope(ctx)
+		if err != nil {
+			return err
+		}
+		scope = current
+	default:
+		// share.invite without a pipe ref: only resolvable for accepted
+		// invites, which are exact (scope-less) and keyed by pipe.
+		pipeID, ok, err := state.RedemptionPipeForInvite(ctx, id)
+		if err != nil {
+			return fmt.Errorf("persistence_failed: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("invalid_input: invite %s was never accepted; nothing to revoke", id)
+		}
+		scope = pipeID
 	}
 	if _, membershipErr := state.Membership(ctx, scope); membershipErr == nil {
 		h, _, hostErr := appRuntime.OpenOverlayHost(ctx, state, fmt.Sprintf("revoke-%d", os.Getpid()))

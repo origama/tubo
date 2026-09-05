@@ -21,7 +21,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
 
-const SchemaVersion = 11
+const SchemaVersion = 12
 
 const maxScopeSyncLeaseTTL = 5 * time.Minute
 
@@ -284,6 +284,8 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS revocations(scope TEXT NOT NULL, subject_type TEXT NOT NULL, subject_jti TEXT NOT NULL, revoked_at TEXT NOT NULL, epoch INTEGER NOT NULL, PRIMARY KEY(scope,subject_type,subject_jti))`,
 		`CREATE TABLE IF NOT EXISTS invite_redemptions(jti TEXT NOT NULL, pipe_id TEXT NOT NULL, redeemed_at TEXT NOT NULL, session_id TEXT NOT NULL, client_public TEXT NOT NULL, PRIMARY KEY(jti,pipe_id))`,
 		`CREATE TABLE IF NOT EXISTS connect_leases(pipe_id TEXT PRIMARY KEY, scope TEXT NOT NULL, access_lease TEXT NOT NULL, refresh_lease TEXT NOT NULL, expires_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS remote_pipe_bindings(remote_pipe_id TEXT PRIMARY KEY, authority_public TEXT NOT NULL, owner_binding TEXT NOT NULL, locator TEXT NOT NULL, recipient_public TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS exact_lease_cache(remote_pipe_id TEXT PRIMARY KEY, access_lease TEXT NOT NULL, expires_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runs(primary_ref TEXT PRIMARY KEY, kind TEXT NOT NULL, pid INTEGER NOT NULL, process_identity TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'foreground', status TEXT NOT NULL, peer_id TEXT NOT NULL, address TEXT NOT NULL, started_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS supervisors(primary_ref TEXT PRIMARY KEY, manager TEXT NOT NULL, label TEXT NOT NULL UNIQUE, unit_path TEXT NOT NULL, installed_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, pipe_ref TEXT NOT NULL, initial_transport_path TEXT NOT NULL, started_at TEXT NOT NULL, bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0)`,
@@ -291,7 +293,6 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS runtime_stats(run_ref TEXT PRIMARY KEY REFERENCES runs(primary_ref) ON DELETE CASCADE, bytes_in INTEGER NOT NULL, bytes_out INTEGER NOT NULL, rate_in REAL NOT NULL, rate_out REAL NOT NULL, connected_peers INTEGER NOT NULL, open_connections INTEGER NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runtime_peers(run_ref TEXT NOT NULL REFERENCES runs(primary_ref) ON DELETE CASCADE, peer_id TEXT NOT NULL, addresses BLOB NOT NULL, last_seen TEXT NOT NULL, PRIMARY KEY(run_ref,peer_id))`,
 		`CREATE TABLE IF NOT EXISTS path_events(session_id TEXT NOT NULL, epoch INTEGER NOT NULL, from_path TEXT NOT NULL, to_path TEXT NOT NULL, reason TEXT NOT NULL, c2s_committed INTEGER NOT NULL, s2c_committed INTEGER NOT NULL, committed_at TEXT NOT NULL, PRIMARY KEY(session_id,epoch))`,
-		`CREATE TABLE IF NOT EXISTS exact_connections(remote_pipe_id TEXT PRIMARY KEY, locator TEXT NOT NULL, access_lease TEXT NOT NULL, expires_at TEXT NOT NULL, local_pipe_ref TEXT NOT NULL DEFAULT '')`,
 	}
 	if _, err := tx.ExecContext(ctx, statements[0]); err != nil {
 		return fmt.Errorf("schema: %w", err)
@@ -399,6 +400,23 @@ func (s *Store) migrate(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE scope_freshness SET source='',complete=0,snapshot_generation=0,snapshot_high_water=0,snapshot_digest=''`); err != nil {
 			return fmt.Errorf("schema 6 freshness provenance reset: %w", err)
 		}
+	}
+	// Schema 12 splits the old exact_connections row (remote pipe + locator +
+	// lease + local pipe ref) into explicitly separate concepts: durable
+	// consumer-side accepted remote-Pipe bindings (remote_pipe_bindings) and an
+	// ephemeral AccessLease cache (exact_lease_cache). The old row was coupled
+	// to a local ingress and made lease expiry destroy reachability knowledge;
+	// the durable binding carries only relationship/reachability state and
+	// survives lease expiry and local-Pipe removal. Old exact_connections rows
+	// are dropped: they carry no owner binding or recipient identity from which
+	// a verifiable durable binding could be reconstructed, so they fail closed.
+	// Renewal queries by the accepted recipient, so invite_redemptions gains an
+	// index on (pipe_id, client_public).
+	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS exact_connections`); err != nil {
+		return fmt.Errorf("schema 12 drop exact_connections: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_invite_redemptions_pipe_client ON invite_redemptions(pipe_id, client_public)`); err != nil {
+		return fmt.Errorf("schema 12 redemption index: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)`, SchemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
@@ -1722,6 +1740,42 @@ func (s *Store) RedemptionCount(ctx context.Context, jti, pipeID string) (int, e
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM invite_redemptions WHERE jti=? AND pipe_id=?`, jti, pipeID).Scan(&count)
 	return count, err
+}
+
+// AcceptedRedemption returns the originating invite JTI when an accepted
+// redemption exists for this recipient and pipe — the authority-side accepted
+// relationship that renewal queries. ok=false when the relationship never
+// existed; persistence errors fail closed.
+func (s *Store) AcceptedRedemption(ctx context.Context, pipeID, clientPublic string) (string, bool, error) {
+	if strings.TrimSpace(pipeID) == "" || strings.TrimSpace(clientPublic) == "" {
+		return "", false, errors.New("invalid accepted redemption lookup")
+	}
+	var jti string
+	err := s.db.QueryRowContext(ctx, `SELECT jti FROM invite_redemptions WHERE pipe_id=? AND client_public=? LIMIT 1`, pipeID, clientPublic).Scan(&jti)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return jti, true, nil
+}
+
+// RedemptionPipeForInvite resolves the pipe an invite JTI was accepted for, or
+// ok=false when it was never redeemed. Used by scope-less exact revocation.
+func (s *Store) RedemptionPipeForInvite(ctx context.Context, jti string) (string, bool, error) {
+	if strings.TrimSpace(jti) == "" {
+		return "", false, errors.New("invalid redemption lookup")
+	}
+	var pipeID string
+	err := s.db.QueryRowContext(ctx, `SELECT pipe_id FROM invite_redemptions WHERE jti=? LIMIT 1`, jti).Scan(&pipeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return pipeID, true, nil
 }
 
 func (s *Store) Revocations(ctx context.Context, scope string, subjectJTIs []string) ([]Revocation, error) {

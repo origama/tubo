@@ -103,20 +103,36 @@ the foreground until Ctrl-C. Re-attaching the same name reuses existing
 definitions. Share a ready Pipe with: tubo share pipe/<name>.`,
 	},
 	{
-		path:    []string{"connect"},
-		summary: "redeem an exact invite and run a local Pipe",
-		usage:   "tubo connect --token <invite> --local <host:port> [--name <name>] [-d] [--json]",
+		path:    []string{"accept"},
+		summary: "accept an exact invite and persist the durable access relationship",
+		usage:   "tubo accept --token <invite> [--json]",
 		flags: []flagSpec{
 			{name: "token", value: true, required: true, help: "exact invite produced by tubo share"},
+			{name: "json", help: "emit one JSON object on stdout"},
+		},
+		detail: `accept redeems a one-time exact invite and persists a durable remote-Pipe
+binding: the invite is consumed exactly once and is never needed again. It
+creates no local Pipe, no ingress, and starts no runtime. Connect an ingress
+later with: tubo connect --remote <pipe-id> --local 127.0.0.1:PORT.`,
+	},
+	{
+		path:    []string{"connect"},
+		summary: "redeem an exact invite (or reuse an accepted binding) and run a local Pipe",
+		usage:   "tubo connect (--token <invite>|--remote <pipe-id>) --local <host:port> [--name <name>] [-d] [--json]",
+		flags: []flagSpec{
+			{name: "token", value: true, help: "exact invite produced by tubo share (one-time bootstrap)"},
+			{name: "remote", value: true, help: "already-accepted remote Pipe ID; renews through the durable binding, no invite needed"},
 			{name: "local", value: true, required: true, help: "local listen address (host:port)"},
 			{name: "name", value: true, help: "friendly name for the local Pipe (default: deterministic name from the remote Pipe ID)"},
 			{name: "detach", short: "d", help: "run the Pipe detached; print readiness"},
 			{name: "json", help: "emit one JSON object on stdout"},
 		},
-		detail: `connect redeems a one-time exact invite, verifies the resulting Access
-Lease, defines a local ingress Pipe, and runs it. With -d the Pipe is started
-detached and the command returns once ready; without -d it runs in the
-foreground until Ctrl-C. Stop the local Pipe with: tubo stop pipe/<name>.`,
+		detail: `connect redeems a one-time exact invite (--token), or reuses an already
+accepted durable binding (--remote <pipe-id>; no invite needed and no
+re-redemption), verifies the resulting short-lived Access Lease, defines a
+local ingress Pipe, and runs it. With -d the Pipe is started detached and the
+command returns once ready; without -d it runs in the foreground until Ctrl-C.
+Stop the local Pipe with: tubo stop pipe/<name>.`,
 	},
 	{
 		path:    []string{"share"},
@@ -488,6 +504,7 @@ authority launch and recovery are provided by supervision:
 // tree so new commands cannot drift.
 var leafPaths = []string{
 	"attach",
+	"accept",
 	"connect",
 	"share",
 	"service create",

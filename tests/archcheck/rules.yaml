@@ -100,9 +100,9 @@ rules:
       - internal/reachability
     kind: transitive
 
-  # R6: engine connectivity-only (no store/discovery/authority/CLI/exactauthority/localkey/accesslease/openauth)
+  # R6: engine connectivity-only (no store/discovery/authority/CLI/exactauthority/localkey/accesslease/openauth/usecase)
   - id: R6
-    description: "Pipe Engine must not depend on store/discovery/authority/CLI/exactauthority/localkey/accesslease/openauth"
+    description: "Pipe Engine must not depend on store/discovery/authority/CLI/exactauthority/localkey/accesslease/openauth/usecase"
     type: forbidden-target
     targets: [internal/engine]
     forbid:
@@ -114,6 +114,7 @@ rules:
       - internal/localkey
       - internal/accesslease
       - internal/openauth
+      - internal/usecase
     kind: transitive
 
   # R7: openauth must be stdlib-only
@@ -216,3 +217,16 @@ semantic_checks:
       - PeerConnected
       - ReserveRelay
       - lastRenewed
+
+  # R17: L2 Pipe Engine must not reference accepted-binding / exact-renewal
+  # policy. The durable accepted relationship, lease cache, renewal, and
+  # authority/binding persistence are owned strictly outside L2; the engine
+  # opens a remote Pipe only through the injected neutral opener.
+  - rule: R17
+    description: "L2 Pipe Engine must not reference accepted-binding or exact-renewal policy"
+    path_glob: internal/engine/*.go
+    forbid_patterns:
+      - RemotePipeBinding
+      - AcceptedBinding
+      - ExactRenewal
+      - RenewAcceptedAccess
