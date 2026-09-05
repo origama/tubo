@@ -8,6 +8,21 @@
 2. Exact Pipe Authority and Scope Authority issue same exact-Pipe lease contract. Session/tunnel code does not branch by issuer topology.
 3. Discovery finds, Reachability connects, Authorization permits. No concern is evidence for another.
 4. Scope is optional coordination/security domain, never prerequisite for connectivity.
+5. One-time invite is bootstrap only: acceptance establishes a durable,
+   recipient-bound remote-Pipe binding; invite expiry never destroys the
+   accepted relationship, and the invite is never required again (renewal
+   proves possession by the accepted identity instead).
+6. AcceptedBinding != AccessLease: a persisted accepted binding is durable
+   relationship/reachability knowledge, never permission to open at L2; every
+   Pipe open continues to require a fresh short-lived AccessLease on the
+   receiving boundary.
+7. AcceptedBinding != local Pipe: the accepted relationship has no local
+   ingress/listen dependency and does not define an ingress; the same
+   accepted remote Pipe stays usable regardless of which future ingress is
+   attached to it.
+8. Every renewal/reissuance fails closed when applicable revocation state or
+   authorization epoch invalidates the relationship; a missing authoritative
+   accepted relationship never mints a lease.
 5. Public infrastructure provides reachability only, never ambient authorization.
 6. Runtime ownership is explicit: `NodeRuntime -> PipeRuntime(s) -> SessionRegistry -> Session(s)`. No package-global mutable runtime registry or process-global dispatch state.
 7. Core/use-case consumers depend on narrow persistence capabilities; persistence is adapter, not domain model.

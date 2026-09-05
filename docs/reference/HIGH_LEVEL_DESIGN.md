@@ -103,6 +103,24 @@ sequenceDiagram
 
 Invite bootstraps redemption. Lease authorizes remote open. Never substitute one for other.
 
+**Accepted binding (Journey A durable extension):** acceptance of a one-time
+exact invite persists a durable, recipient-bound remote-Pipe binding; the
+invite is bootstrap only and is never required again. Ongoing open reacquires
+a fresh short-lived AccessLease from the owner-bound Exact Authority via
+post-acceptance renewal (recipient possession proof against a fresh server
+challenge, accepted relationship, current revocation/epoch validity):
+
+```text
+Invite != AccessLease; AcceptedBinding != AccessLease; AcceptedBinding != local Pipe;
+AcceptedBinding does not define an ingress.
+```
+
+Renewal is never a long-lived/permanent bearer credential, and a persisted
+accepted binding is not itself permission to open at L2. A future UX may
+expose `accept`, `discovery`, and `attach <ingress> to <target>` as the user
+model; this task builds only the exact/invite foundation and does not yet
+implement that attach surface.
+
 ## 8. Infrastructure compositions
 
 | Composition | Uses | Does not require |

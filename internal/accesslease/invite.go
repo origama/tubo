@@ -73,8 +73,10 @@ type inviteSigning struct {
 // exact Pipe audience, composing the given owner-bonded binding. The invite
 // issuer must be the same dedicated Authority key the owner bound, and the
 // binding must be the owner's binding for the exact Pipe. lifetime must be
-// short (bounded by MaxTTL). The invite is recipient-UNBOUND by design.
-func NewExactInvite(private ed25519.PrivateKey, bindingOwnerBinding OwnerBinding, pipeID string, now time.Time, lifetime time.Duration) (ExactInvite, error) {
+// short (bounded by MaxTTL). accessEpoch is the authority's current
+// pipe-access authorization epoch; the invite is stale the moment the
+// authoritative epoch differs. The invite is recipient-UNBOUND by design.
+func NewExactInvite(private ed25519.PrivateKey, bindingOwnerBinding OwnerBinding, pipeID string, now time.Time, lifetime time.Duration, accessEpoch uint64) (ExactInvite, error) {
 	authority := private.Public().(ed25519.PublicKey)
 	bound, err := bindingOwnerBinding.VerifyOwnerAuthority(PublicString(authority))
 	if err != nil {
@@ -95,7 +97,7 @@ func NewExactInvite(private ed25519.PrivateKey, bindingOwnerBinding OwnerBinding
 		return ExactInvite{}, err
 	}
 	now = now.UTC()
-	invite := ExactInvite{Version: Version, Type: InviteType, AudiencePipeID: pipeID, Binding: bindingEncoded, JTI: jti, IssuedAt: now, NotBefore: now, ExpiresAt: now.Add(lifetime), OneTime: true}
+	invite := ExactInvite{Version: Version, Type: InviteType, AudiencePipeID: pipeID, Binding: bindingEncoded, JTI: jti, IssuedAt: now, NotBefore: now, ExpiresAt: now.Add(lifetime), AccessEpoch: accessEpoch, OneTime: true}
 	if err := invite.Sign(private); err != nil {
 		return ExactInvite{}, err
 	}

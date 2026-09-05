@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -139,5 +140,79 @@ func TestAuthorityRefreshRevocationQueryAndShareRedemption(t *testing.T) {
 	_, otherPrivate, _ := ed25519.GenerateKey(rand.Reader)
 	if got := h.process(ctx, authorityTestRequest(otherPrivate, share.Invite, "share_invite.redeem", record.PipeID)); got.OK {
 		t.Fatal("different client redeemed used invite")
+	}
+}
+
+// TestScopedInviteRevocationRejectedByAuthority proves real compatibility with
+// the existing scoped authority code: a `revoke invite` that resolves to the
+// scoped family persists subject_type=share.invite under the current Scope
+// (the exact resolution rule), and the authority's share_invite redemption
+// then rejects that invite.
+func TestScopedInviteRevocationRejectedByAuthority(t *testing.T) {
+	t.Setenv("TUBO_HOME", t.TempDir())
+	ctx := context.Background()
+	state, err := store.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	scope := domain.Scope{Cluster: "solar", Namespace: "default"}
+	authorityPublic, authorityPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientPublic, clientPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := signedAuthorityRecord(t, authorityPrivate, scope, authority.PublicString(clientPublic))
+	raw, err := record.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.PutAuthoritativeRecord(ctx, store.Record{Scope: scope.String(), PipeID: record.PipeID, Name: record.DisplayName, Payload: raw, ExpiresAt: record.ExpiresAt, Sequence: record.Sequence}); err != nil {
+		t.Fatal(err)
+	}
+	membership, err := authority.NewToken("membership.invite", scope, authority.PublicString(clientPublic), "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	membership.Role = "publisher"
+	if err := membership.Sign(authorityPrivate); err != nil {
+		t.Fatal(err)
+	}
+	membershipToken, _ := authority.Encode(membership)
+	h := &authorityHandler{state: state, scope: scope, private: authorityPrivate, public: authorityPublic}
+
+	// Issue a real scoped share invite.
+	shareReq := authorityTestRequest(clientPrivate, membershipToken, "share_invite.issue", record.PipeID)
+	shareReq.Record, _ = json.Marshal(map[string]string{"authority_address": "/ip4/127.0.0.1/tcp/1/p2p/authority"})
+	share := h.process(ctx, shareReq)
+	if !share.OK || share.Invite == "" {
+		t.Fatalf("share issue: %#v", share)
+	}
+	invite, _ := authority.Decode(share.Invite)
+
+	// Scoped redemption records kind='scoped', so the CLI resolution rule
+	// classifies this JTI as the SCOPED family: subject_type=share.invite in
+	// the current Scope. (Direct CLl assertion of that row lives in
+	// internal/cli/revoke_test.go; here we seed the same persisted row through
+	// the store the CLI writes.)
+	_, redeemerPriv, _ := ed25519.GenerateKey(rand.Reader)
+	redeemReq := authorityTestRequest(redeemerPriv, share.Invite, "share_invite.redeem", record.PipeID)
+	if got := h.process(ctx, redeemReq); !got.OK {
+		t.Fatalf("initial redeem: %#v", got)
+	}
+	if err := state.Revoke(ctx, scope.String(), "share.invite", invite.JTI, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// The very same redemption request is now rejected by the authority.
+	got := h.process(ctx, redeemReq)
+	if got.OK {
+		t.Fatal("scoped authority accepted a share.invite revoked through revoke invite")
+	}
+	if !strings.Contains(got.Error, "invite revoked") {
+		t.Fatalf("expected invite-revoked denial, got %#v", got)
 	}
 }

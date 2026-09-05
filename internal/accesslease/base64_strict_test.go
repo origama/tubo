@@ -59,7 +59,7 @@ func TestPublicKeyRejectsNoncanonical(t *testing.T) {
 func TestLeaseOuterRejectsNoncanonical(t *testing.T) {
 	priv := newKey(t)
 	subject := pubStr(priv)
-	lease, err := accesslease.NewAccessLease(priv, subject, "pip_exact_1", fixNow(), time.Minute)
+	lease, err := accesslease.NewAccessLease(priv, subject, "pip_exact_1", fixNow(), time.Minute, 0)
 	mustVerifyOK(t, err)
 	enc, err := accesslease.Encode(lease)
 	mustVerifyOK(t, err)
@@ -87,7 +87,7 @@ func TestLeaseOuterRejectsNoncanonical(t *testing.T) {
 func TestLeaseSignatureFieldRejectsNoncanonical(t *testing.T) {
 	priv := newKey(t)
 	subject := pubStr(priv)
-	lease, err := accesslease.NewAccessLease(priv, subject, "pip_exact_1", fixNow(), time.Minute)
+	lease, err := accesslease.NewAccessLease(priv, subject, "pip_exact_1", fixNow(), time.Minute, 0)
 	mustVerifyOK(t, err)
 	enc, _ := accesslease.Encode(lease)
 	tampered := mutateDoc(t, enc, func(d map[string]any) { d["signature"] = lease.Signature + "\r" })

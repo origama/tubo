@@ -15,6 +15,8 @@ const (
 	RecordsID           = "/tubo/records/2.0"
 	AuthorityID         = "/tubo/authority/2.0"
 	AuthoritySnapshotID = "/tubo/authority/2.1"
+	ExactRedemptionID   = "/tubo/exact-redemption/1"
+	ExactRenewalID      = "/tubo/exact-renewal/1"
 	MaxFrame            = 64 << 10
 )
 
@@ -163,6 +165,39 @@ type ExactRedemptionProof struct {
 // ExactRedemptionResponse is the final server response. On success it carries
 // the encoded AccessLease and expiry.
 type ExactRedemptionResponse struct {
+	OK          bool      `json:"ok"`
+	Error       string    `json:"error,omitempty"`
+	AccessLease string    `json:"access_lease,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitempty"`
+}
+
+// ExactRenewalRequest is the client's first message in the
+// /tubo/exact-renewal/1 protocol. It carries the requested Pipe, the accepted
+// recipient identity, and the verified owner-bound OwnerBinding the durable
+// relationship carries. The invite is never required again after acceptance;
+// the binding anchors issuer trust to the exact Pipe's owner-bound Authority.
+type ExactRenewalRequest struct {
+	PipeID          string `json:"pipe_id"`
+	RecipientPublic string `json:"recipient_public"`
+	OwnerBinding    string `json:"owner_binding"`
+}
+
+// ExactRenewalChallenge is the server's response to a renewal request. It
+// carries a random nonce challenge the accepted recipient must sign.
+type ExactRenewalChallenge struct {
+	Challenge string `json:"challenge"`
+}
+
+// ExactRenewalProof is the recipient's response to the renewal challenge.
+// The recipient identity is already bound by the request; only the fresh
+// challenge possession proof is returned.
+type ExactRenewalProof struct {
+	ChallengeProof string `json:"challenge_proof"`
+}
+
+// ExactRenewalResponse is the final renewal server response. On success it
+// carries a fresh short-lived AccessLease and its expiry.
+type ExactRenewalResponse struct {
 	OK          bool      `json:"ok"`
 	Error       string    `json:"error,omitempty"`
 	AccessLease string    `json:"access_lease,omitempty"`

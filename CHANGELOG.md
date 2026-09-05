@@ -11,6 +11,56 @@
 
 ### Added (A0)
 
+- `revoke invite <jti>` family resolution (PR #74 final regression): the CLI
+  now resolves each invite JTI deterministically before revoking. An invite
+  redeemed through the exact redemption path (kind
+  `'exact'` in the schema-14 `invite_redemptions` discriminator) revokes as
+  `exact.invite` under its resolved exact Pipe ID — including obsolete exact
+  invites whose accepted relationship was later replaced by a newer invite.
+  Every other invite (legacy scoped share.invite, or unknown) is revoked
+  through the pre-existing scoped path: `share.invite` in the current Scope.
+  A persistence error during resolution fails closed and never falls back to
+  the scoped family. E2E hardened: both obsolete-invite and current-invite
+  revoke commands must succeed (no `|| true` masking), with application
+  reachability as the primary evidence.
+
+- Review fixes (PR #74 blockers): the exact downstream open path now consumes
+  the injected neutral `openauth.AccessAcquirer` contract instead of importing
+  L4 (`internal/runtime/exact_access.go` is the sole composition adapter;
+  arch rules R19-R22 guard the execution files). The authoritative accepted
+  relationship is exactly one deterministic `accepted_exact_relationships`
+  row per `(pipe_id, recipient_public)` (backing invite JTI + accepted epoch),
+  committed atomically with one-time redemption
+  (`RedeemInviteAndAccept`). Pipe-access epochs now flow: invite minted at
+  current epoch, redemption requires equality, the accepted relationship and
+  every lease carry the accepted epoch, renewal compares
+  `current == accepted`, and `revoke pipe-access` advances the epoch so a
+  fresh share+accept re-authorizes after revocation (no permanent kill
+  switch); `revoke invite` uses the `exact.invite` subject type.
+
+- Durable accepted remote-Pipe binding + post-acceptance renewal (Journey A
+  durable lifecycle). The one-time exact invite is bootstrap only: acceptance
+  persists a durable, recipient-bound `RemotePipeBinding` (exact PipeID,
+  owner-bound Exact Authority identity, verified owner binding, verified
+  locator, accepted recipient reference; no local ingress, no AccessLease)
+  and caches the initial short-lived AccessLease ephemerally. Ongoing Pipe
+  opens reacquire fresh short-lived AccessLeases through
+  `AcquireAcceptedPipeAccess` (unexpired cached lease, else reachability +
+  `/tubo/exact-renewal/1` renewal with recipient possession proof under a
+  fresh server challenge + verified fresh lease). The invite is never
+  required again after acceptance (invite expiry never destroys the accepted
+  relationship). Schema 12 splits persistence: `remote_pipe_bindings` +
+  `exact_lease_cache` replace the old `exact_connections` row (dropped;
+  unreconstructable); `invite_redemptions` gains an index on
+  `(pipe_id, client_public)` as the authoritative accepted relationship for
+  renewal. `tubo accept --token` redeems once and persists the binding
+  (no Pipe/ingress/runtime); `tubo connect --remote <pipe-id>` reuses the
+  binding without an invite; `revoke pipe-access` works on scope-less exact
+  Pipes. `TUBO_EXACT_LEASE_TTL` (bounded to `MaxTTL`) allows operators/tests
+  to shorten the short-lived lease. Renewal fails closed on missing accepted
+  state, revocation, stale epoch, wrong subject/pipe, invalid proofs, and
+  authority errors; existing lease/session expiry fencing unchanged.
+
 - Relay-reservation maintenance moved to the L1 Reachability boundary (reachability reliability): new `internal/reachability.RelayReservation` owns initial relay connection and reservation acquisition, periodic Circuit Relay v2 reservation renewal, reconnect, reservation reacquisition after reconnect, failure surfacing, and recovery — encoding that relay connection liveness is not proof of reservation validity (a still-connected relay whose reservation has lapsed is renewed). Renewal is scheduled from the relay-provided reservation expiration minus a conservative safety margin (never an assumed relay TTL), so a shorter returned TTL moves renewal earlier and a minimum-delay floor prevents a pathological near-instant expiration from driving a tight loop. Both scoped and scope-less Journey A published Pipes consume the same L1 `Acquire`/`Serve` lifecycle; the runtime (`publishedPipeLifecycle`) only maps maintenance outcomes onto its existing degraded/ready Run status and holds no reservation timing or validity policy (arch guard R16). The scope-less Journey A path previously reacquired its reservation only on disconnect, so a connected-but-stale reservation could mint an exact invite with a circuit locator the relay refused (`NO_RESERVATION`); it now proactively renews. Initial readiness still requires a successful reservation (fail closed).
 
 - A0 final distributed proof + acceptance (Step 10B, issue #68): full clean distributed Journey-A zero-config exact-share proof executed on exact merged main `c031185c1cd45bf4e58fdbad16f64df2fd76999b` (PR #70 merge). Machines A=oripi, B=macb, R=relay.tubo.click (public, no PSK, pinned PeerID `12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME`): real HTTP small/sequential/7 MiB hash-verified traffic through REAL relay traversal (path=relayed both endpoints, byte symmetry 7341674/880, relay-side sockets under both source IPs), tampered-invite negative (`authorization_denied`, no Session), zero-Scope/discovery/membership, Journey-D stable PipeID across clean restart. Prerequisites: Step 10A production trust material (PR #66, merge `6dd60e1c7113da726b6c39567b72da454a919e3a`; embedded signed bundle, single-use root `tubo-bootstrap-root-2026-01`, expires 2027-02-23) and relay upgrade (PR #67, merge `277e4366de4feb58e473308b0967d9bea9164dab`; public no-PSK relay, same PeerID preserved, no re-signing). A0 exit criteria 1-12 marked COMPLETE in `docs/testing/ARCHITECTURE_ACCEPTANCE.md` and `docs/testing/ACCEPTANCE_MATRIX.md`; sanitized evidence summary `docs/testing/A0_STEP10B_EVIDENCE.md` (evidence root `/tmp/a0-10b-final/evidence`).

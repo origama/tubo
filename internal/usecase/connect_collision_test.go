@@ -25,6 +25,10 @@ func newCollisionHarness(t *testing.T, remoteName string) (UseCases, *memoryPipe
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
 	u.Reach = newFakeReachability()
 	u.Redemption = newFakeRedemptionService(secretsDir)
+	u.Renewal = newFakeRenewalService(secretsDir)
+	u.Bindings = newMemoryRemotePipeBindingRepo()
+	u.LeaseCache = newMemoryAccessLeaseCacheRepo()
+	u.ExactEpoch = newFakeExactEpochReader(0)
 
 	invite, err := attachAndShare(t, u, remoteName)
 	if err != nil {

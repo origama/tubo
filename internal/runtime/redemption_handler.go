@@ -22,14 +22,20 @@ import (
 // exactRedemptionHandler handles the /tubo/exact-redemption/1 protocol.
 // It receives only a Loader (read-only), never a LocalOwnerWorkflow.
 type exactRedemptionHandler struct {
-	state  *store.Store
-	pipeID string
+	state    *store.Store
+	pipeID   string
+	leaseTTL time.Duration
 }
 
 // newExactRedemptionHandler creates a handler for the given pipe's exact
-// redemption protocol.
-func newExactRedemptionHandler(state *store.Store, pipeID string) *exactRedemptionHandler {
-	return &exactRedemptionHandler{state: state, pipeID: pipeID}
+// redemption protocol. leaseTTL is the server-authoritative short-lived lease
+// lifetime (bounded to MaxTTL); callers may shorten it via the documented
+// TUBO_EXACT_LEASE_TTL facility.
+func newExactRedemptionHandler(state *store.Store, pipeID string, leaseTTL time.Duration) *exactRedemptionHandler {
+	if leaseTTL <= 0 || leaseTTL > accesslease.MaxTTL {
+		leaseTTL = accesslease.MaxTTL
+	}
+	return &exactRedemptionHandler{state: state, pipeID: pipeID, leaseTTL: leaseTTL}
 }
 
 // handle is the stream handler for /tubo/exact-redemption/1.
@@ -131,6 +137,7 @@ func (h *exactRedemptionHandler) handle(stream core.Stream) {
 		loader,
 		adapter,
 		adapter,
+		h.leaseTTL,
 	)
 	if redeemErr != nil {
 		_ = wire.WriteFrame(stream, wire.ExactRedemptionResponse{OK: false, Error: "redemption_failed"})

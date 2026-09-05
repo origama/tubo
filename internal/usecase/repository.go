@@ -26,22 +26,6 @@ type ServiceRepository interface {
 	Delete(ctx context.Context, ref domain.Ref) error
 }
 
-// ExactConnectionStateRepo is the narrow persistence port for Journey A exact
-// connection state. It stores the verified remote PipeID, locator/binding,
-// canonical AccessLease, and expiry. Expired material fails closed (returns
-// ErrNotFound). It is NOT a generic credential repository or a PipeSpec field.
-type ExactConnectionStateRepo interface {
-	// Get retrieves exact connection state for a remote PipeID.
-	// Returns domain.ErrNotFound when no state exists or the lease is expired.
-	Get(ctx context.Context, remotePipeID string) (domain.ExactConnectionState, error)
-
-	// Put stores or replaces exact connection state for a remote PipeID.
-	Put(ctx context.Context, state domain.ExactConnectionState) error
-
-	// Delete removes exact connection state for a remote PipeID.
-	Delete(ctx context.Context, remotePipeID string) error
-}
-
 // PipeRepository is the narrow persistence port for durable Pipe definitions.
 type PipeRepository interface {
 	// Upsert saves a PipeSpec with its owner key file path. created=true
@@ -58,4 +42,37 @@ type PipeRepository interface {
 	// Delete removes a PipeSpec by ref. Returns domain.ErrNotFound if the
 	// resource does not exist.
 	Delete(ctx context.Context, ref string) error
+}
+
+// RemotePipeBindingRepo is the narrow consumer-owned persistence port for the
+// durable accepted remote-Pipe binding. The binding is long-lived
+// relationship/reachability knowledge needed to reacquire exact access; it
+// never depends on a local ingress Pipe ref and never holds the AccessLease.
+// It is NOT a generic credential repository or a PipeSpec field.
+type RemotePipeBindingRepo interface {
+	// Get retrieves the durable binding for a remote PipeID. Returns
+	// domain.ErrNotFound when no accepted binding exists.
+	Get(ctx context.Context, remotePipeID string) (domain.RemotePipeBinding, error)
+
+	// Put stores or replaces the durable binding for a remote PipeID.
+	Put(ctx context.Context, b domain.RemotePipeBinding) error
+
+	// Delete removes the durable binding for a remote PipeID.
+	Delete(ctx context.Context, remotePipeID string) error
+}
+
+// AccessLeaseCacheRepo is the narrow consumer-owned persistence port for the
+// ephemeral short-lived AccessLease cache. The cache is runtime authorization
+// material only; it is never the source of truth for the accepted
+// relationship, and an expired cached lease simply causes reacquisition.
+type AccessLeaseCacheRepo interface {
+	// Get retrieves the cached lease for a remote PipeID. Returns
+	// domain.ErrNotFound when absent or expired (fail closed).
+	Get(ctx context.Context, remotePipeID string) (domain.AccessLeaseCache, error)
+
+	// Put stores or replaces the cached lease for a remote PipeID.
+	Put(ctx context.Context, c domain.AccessLeaseCache) error
+
+	// Delete removes the cached lease for a remote PipeID.
+	Delete(ctx context.Context, remotePipeID string) error
 }

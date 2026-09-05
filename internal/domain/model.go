@@ -169,18 +169,74 @@ func (p PipeSpec) IsPublished() bool {
 	return p.Ingress.Kind == IngressTubo && p.Visibility != VisibilityPrivate
 }
 
-// ExactConnectionState stores the transient authorization material needed to
-// open a remote Pipe via the exact (Scope-less) path. It is deliberately
-// separate from PipeSpec (durable) and from connect_leases (Scope-required).
-type ExactConnectionState struct {
-	// RemotePipeID is the PipeID of the remote Pipe (the invite audience).
+// RemotePipeBinding is the consumer-side durable record of a validly accepted
+// exact remote-Pipe access relationship (invite bootstrap -> accepted binding).
+// It is an L0 neutral value: it carries no libp2p, Store, runtime, CLI, or Scope
+// dependency and defines no network or persistence behavior.
+//
+// Invariants:
+//   - AcceptedBinding != AccessLease: the binding is durable relationship/
+//     reachability knowledge; it is never itself permission to open at L2.
+//   - AcceptedBinding != local Pipe: the binding has no local ingress/listen
+//     dependency; the same accepted remote Pipe stays usable regardless of
+//     which future ingress is attached to it.
+//   - AcceptedBinding != invite: the binding survives invite expiry; the invite
+//     is evidence used to establish the relationship once.
+//   - Renewal requires possession proof by the exact accepted recipient key.
+type RemotePipeBinding struct {
+	// RemotePipeID is the exact Pipe the recipient was accepted for.
 	RemotePipeID string `json:"remote_pipe_id"`
-	// Locator is the verified peer address from the invite's OwnerBinding.
+	// AuthorityPublic is the owner-bound Exact Authority public key (the
+	// invite issuer). It is the only issuer trusted for renewal of this Pipe.
+	AuthorityPublic string `json:"authority_public"`
+	// OwnerBinding is the canonical base64url-encoded owner-signed OwnerBinding
+	// verified at acceptance. It anchors issuer trust to the exact Pipe owner.
+	OwnerBinding string `json:"owner_binding"`
+	// Locator is the verified neutral renewal/redemption peer address from the
+	// accepted OwnerBinding.
 	Locator string `json:"locator"`
-	// AccessLease is the canonical base64url-encoded AccessLease.
-	AccessLease string `json:"access_lease"`
-	// ExpiresAt is the lease expiry; zero means no lease stored.
-	ExpiresAt time.Time `json:"expires_at"`
-	// LocalPipeRef is the ref of the local Pipe that targets this remote.
-	LocalPipeRef string `json:"local_pipe_ref"`
+	// RecipientPublic is the canonical public key of the accepted recipient
+	// identity. Renewal requires possession proof by this exact key.
+	RecipientPublic string `json:"recipient_public"`
+	// Source records how this relationship was established.
+	Source    string    `json:"source"`
+	CreatedAt time.Time `json:"created_at,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+// Validate performs structural bounds checks only. Cryptographic validation
+// (owner binding, recipient/authority keys) happens at acceptance and renewal
+// in L3/L4 where the credential primitives are available; this package is
+// stdlib-only by architecture rule R1.
+func (b RemotePipeBinding) Validate() error {
+	if !strings.HasPrefix(b.RemotePipeID, "pip_") || len(b.RemotePipeID) > 256 {
+		return fmt.Errorf("remote pipe binding invalid remote pipe id")
+	}
+	if b.AuthorityPublic == "" || len(b.AuthorityPublic) > 4096 {
+		return fmt.Errorf("remote pipe binding invalid authority public key")
+	}
+	if b.OwnerBinding == "" || len(b.OwnerBinding) > 48<<10 {
+		return fmt.Errorf("remote pipe binding invalid owner binding")
+	}
+	if b.Locator == "" || len(b.Locator) > 4096 {
+		return fmt.Errorf("remote pipe binding invalid locator")
+	}
+	if b.RecipientPublic == "" || len(b.RecipientPublic) > 4096 {
+		return fmt.Errorf("remote pipe binding invalid recipient public key")
+	}
+	if b.Source == "" || len(b.Source) > 64 {
+		return fmt.Errorf("remote pipe binding invalid source")
+	}
+	return nil
+}
+
+// AccessLeaseCache is the ephemeral consumer-side cache of the current
+// short-lived AccessLease for an accepted remote Pipe. It is cache/runtime
+// authorization material only, never the source of truth for the relationship:
+// an expired cached lease simply causes reacquisition through the durable
+// binding.
+type AccessLeaseCache struct {
+	RemotePipeID string    `json:"remote_pipe_id"`
+	AccessLease  string    `json:"access_lease"`
+	ExpiresAt    time.Time `json:"expires_at"`
 }

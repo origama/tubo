@@ -46,7 +46,7 @@ func authorizedOpenResult(sessionID string) wire.OpenResult {
 	return wire.OpenResult{OK: true, SessionID: sessionID, Protocol: "2.0"}
 }
 
-func RunPipe(ctx context.Context, state *store.Store, identifier string) error {
+func RunPipe(ctx context.Context, state *store.Store, identifier string, exactAccess openauth.AccessAcquirer) error {
 	spec, ownerKey, grant, err := state.Pipe(ctx, identifier)
 	if err != nil {
 		return err
@@ -56,7 +56,7 @@ func RunPipe(ctx context.Context, state *store.Store, identifier string) error {
 	case domain.IngressTubo:
 		return runPublishedPipe(ctx, state, spec, ownerKey, grant)
 	case domain.IngressLocal:
-		return runLocalPipe(ctx, state, spec)
+		return runLocalPipe(ctx, state, spec, exactAccess)
 	default:
 		return fmt.Errorf("unsupported runtime ingress %s", spec.Ingress.Kind)
 	}
@@ -334,7 +334,7 @@ type tunnelServer struct {
 	downstreamOpener engine.DownstreamOpener
 }
 
-func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec) error {
+func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec, exactAccess openauth.AccessAcquirer) error {
 	nodeRuntime := NewNodeRuntime(ctx)
 	defer nodeRuntime.Close()
 	pipeRuntime, err := nodeRuntime.NewPipeRuntime()
@@ -355,12 +355,16 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 	pipeEngine := newPipeEngine(state)
 
 	// Check if this is a Journey A exact connect path (Scope-less, no discovery).
-	// The target pipe ID is derived from the spec.Target.Name.
-	// This check must happen BEFORE ResolvePath because the target pipe
-	// (remote Pipe ID) is not stored locally; the exact connection state
-	// provides the authorization material directly.
-	if connState, connErr := state.GetExactConnectionState(ctx, spec.Target.Name); connErr == nil && connState.AccessLease != "" {
-		return runLocalPipeExact(ctx, state, spec, connState, nodeRuntime, pipeRuntime, pipeEngine)
+	// The target pipe ID is derived from the spec.Target.Name. A durable
+	// accepted remote-Pipe binding provides relationship + reachability state;
+	// the actual short-lived AccessLease is reacquired per open through the
+	// binding (a fresh short-lived AccessLease acquired per open), so an expired
+	// initial lease never
+	// blocks reconnection.
+	if _, bindErr := state.GetRemotePipeBinding(ctx, spec.Target.Name); bindErr == nil {
+		return runLocalPipeExact(ctx, state, spec, nodeRuntime, pipeRuntime, pipeEngine, exactAccess)
+	} else if !errors.Is(bindErr, domain.ErrNotFound) {
+		return fmt.Errorf("persistence_failed: remote pipe binding: %w", bindErr)
 	}
 
 	if _, err := pipeEngine.ResolvePath(spec.Ref, domain.DefaultMaxPipeHops); err != nil {
@@ -1040,7 +1044,10 @@ func runScopeLessPublishedPipe(
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
 
 	// Install the exact redemption handler.
-	h.SetStreamHandler(protocol.ID("/tubo/exact-redemption/1"), newExactRedemptionHandler(state, spec.PipeID).handle)
+	h.SetStreamHandler(protocol.ID(wire.ExactRedemptionID), newExactRedemptionHandler(state, spec.PipeID, exactLeaseTTL()).handle)
+
+	// Install the exact renewal handler (durable accepted-binding reissuance).
+	h.SetStreamHandler(protocol.ID(wire.ExactRenewalID), newExactRenewalHandler(state, spec.PipeID, exactLeaseTTL()).handle)
 
 	// Record the run.
 	run := store.Run{
@@ -1076,17 +1083,20 @@ func runScopeLessPublishedPipe(
 }
 
 // runLocalPipeExact runs the Journey A exact connect path for a local ingress
-// Pipe that targets a remote Pipe. It uses the exact connection state (no
-// discovery, no Scope, no membership, no PipeRecord) to open the remote
-// tunnel when a local connection arrives.
+// Pipe that targets a remote Pipe. The remote Pipe must have an accepted
+// durable binding (the one-time invite is never required again). Every local
+// connection acquires verified current/fresh short-lived access material
+// through the injected access acquirer (ephemeral lease cache or
+// post-acceptance renewal over the runtime's own host), then opens the remote
+// tunnel. No discovery, no Scope, no membership, no PipeRecord.
 func runLocalPipeExact(
 	ctx context.Context,
 	state *store.Store,
 	spec domain.PipeSpec,
-	connState domain.ExactConnectionState,
 	nodeRuntime *NodeRuntime,
 	pipeRuntime *PipeRuntime,
 	pipeEngine *engine.Engine,
+	exactAccess openauth.AccessAcquirer,
 ) error {
 	bandwidth := coremetrics.NewBandwidthCounter()
 	h, relayAddress, err := OpenOverlayHostWithReporter(ctx, state, strings.ReplaceAll(spec.Ref.String(), "/", "-"), bandwidth)
@@ -1130,9 +1140,15 @@ func runLocalPipeExact(
 		case <-ctx.Done():
 		}
 	}()
+	// The exact downstream open path consumes only the neutral injected
+	// openauth.AccessAcquirer (composed at the process composition root over
+	// the L4 accepted-binding use case). L2 never imports or constructs L4.
+	if exactAccess == nil {
+		return errors.New("runtime_unavailable: exact access acquirer is not injected")
+	}
 	// Use the exact downstream opener to establish the remote tunnel.
-	// Each local connection triggers a new tunnel open.
-	exactOpener := newExactDownstreamPipeOpener(state, h, pipeRuntime, spec.Target.Name)
+	// Each local connection triggers a new tunnel open with fresh access.
+	exactOpener := newExactDownstreamPipeOpener(exactAccess, state, h, spec.Target.Name)
 	for {
 		local, err := listener.Accept()
 		if err != nil {

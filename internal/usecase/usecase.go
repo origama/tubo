@@ -45,6 +45,11 @@ type UseCases struct {
 	// closed; static relay or run addresses cannot bypass live locator resolution.
 	OwnerLocator OwnerRedemptionLocator
 
+	// ExactEpoch reads the current pipe-access revocation epoch for an exact
+	// Pipe; ShareExact mints bindings/invites at it. nil fails closed (no
+	// invite without epoch knowledge).
+	ExactEpoch ExactAccessEpochReader
+
 	// RedemptionProtocol is the neutral redemption protocol id embedded in
 	// minted OwnerBindings (e.g. "/tubo/exact-redemption/1").
 	RedemptionProtocol string
@@ -52,6 +57,10 @@ type UseCases struct {
 	// Redemption performs exact-invite redemption over an acquired carrier.
 	// nil is allowed and produces an explicit redemption_unavailable error.
 	Redemption RedemptionService
+
+	// Renewal performs post-acceptance exact renewal over an acquired carrier.
+	// nil is allowed and produces an explicit renewal_unavailable error.
+	Renewal RenewalService
 
 	// Reach acquires a raw-duplex carrier toward an identified peer address.
 	// It never authorizes. nil is allowed and produces an explicit
@@ -63,11 +72,16 @@ type UseCases struct {
 	// PipeRuntime; 8A tests inject fakes.
 	Starter PipeStarter
 
-	// ExactConnections persists exact connection state (remote PipeID,
-	// verified locator, AccessLease, expiry) for Journey A detached-start
-	// consumption. nil is allowed for backward compatibility; ConnectExact
-	// falls back to no-persist when unset.
-	ExactConnections ExactConnectionStateRepo
+	// Bindings persists the durable accepted remote-Pipe binding (relationship
+	// + reachability knowledge; survives lease expiry and local-Pipe removal).
+	// nil is allowed for backward compatibility; AcceptExactInvite and
+	// AcquireAcceptedPipeAccess fail explicitly when a binding is needed.
+	Bindings RemotePipeBindingRepo
+
+	// LeaseCache persists the ephemeral current AccessLease cache. Expired
+	// cached material fails closed and simply causes reacquisition. nil is
+	// allowed; acquisition then never reuses a cached lease.
+	LeaseCache AccessLeaseCacheRepo
 }
 
 // New returns a UseCases value with the default wall clock. Callers must

@@ -37,6 +37,24 @@ This is not shared-host routing evidence. The A0 path performs no owner-bound st
 Non-claims: no phase advancement of resume itself (deferred post-A0 debt #32); no Carrier seam work (that is #28); no three-machine run required (mixed pre/post-quarantine peers deterministically degrade to the ordinary authorized non-resume tunnel; verified by negotiation/unit tests, not distributed).
 
 
+## Implemented evidence: durable accepted remote-Pipe binding (Journey A extension)
+
+`go test ./internal/exactauthority ./internal/store ./internal/usecase
+./internal/runtime -race` plus `tests/integration/journey-a-durable.sh`
+cover the durable accepted-binding lifecycle: one-time invite bootstrap
+(`AcceptExactInvite` -> durable `RemotePipeBinding`, no local Pipe/ingress),
+renewal/exit criteria runs (fresh short-lived AccessLease from the
+owner-bound Exact Authority via `/tubo/exact-renewal/1` recipient
+possession proof; invite expired, lease expired, consumer restart, owner
+restart), revocation denial (pipe-access epoch advance stops renewal and no
+new open), fail-closed negatives (no accepted binding, wrong subject/wrong
+pipe, invalid/replayed proofs, revocation-state errors, oversized/malformed
+frames), and architecture guards R6/R17 (engine never imports/names binding
+or renewal policy) with `store` adapters at the composition boundary. The
+invite is never a lease and is never required after acceptance; the
+accepted binding is not itself L2 permission, is not a local Pipe, and does
+not define an ingress.
+
 ## Implemented evidence: A0 issue #44 (L1 Reachability + signed bootstrap bundle)
 
 `go test ./internal/reachability/...`, `go test ./internal/runtime -run 'TestReachabilityBundleCarrierThroughSession|TestOpenOverlayHostZeroConfigFailsClosed'`, `go test -race ./internal/runtime ./internal/reachability/...`, and the deterministic architecture guard (`make architecture`) prove the L1 Reachability seam and the bounded signed bootstrap-bundle contract:

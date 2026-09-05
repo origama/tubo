@@ -76,3 +76,30 @@ type Authorization struct {
 type OpenAuthorizer interface {
 	AuthorizeOpen(ctx context.Context, req OpenRequest) (Authorization, error)
 }
+
+// AcquiredAccess is the neutral result of acquiring exact access material
+// for a remote Pipe open. It carries only what the L2 exact downstream open
+// path needs: the target Pipe, the bound reachability locator, the canonical
+// encoded short-lived AccessLease, and its expiry fence. It intentionally
+// carries no invite, binding, renewal, persistence, or L4 policy material;
+// the AccessLease stays the short-lived credential the receiving boundary
+// validates.
+type AcquiredAccess struct {
+	// PipeID is the exact Pipe the access material is for.
+	PipeID string
+	// Locator is the verified bound owner/authority endpoint address.
+	Locator string
+	// AccessLease is the canonical base64url-encoded short-lived AccessLease.
+	AccessLease string
+	// ExpiresAt is the lease's expiry; the opener must not open past it.
+	ExpiresAt time.Time
+}
+
+// AccessAcquirer is the injected neutral capability an L2 exact downstream
+// open path consumes to obtain verified current/fresh short-lived access
+// material for an already-accepted remote Pipe. Implementors live at L4 or at
+// the composition boundary (renewal/binding know-how); the L2 open path only
+// invokes this contract and never depends upward on L4.
+type AccessAcquirer interface {
+	AcquireAccess(ctx context.Context, remotePipeID string) (AcquiredAccess, error)
+}

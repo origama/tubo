@@ -27,6 +27,8 @@ type PipeRepositoryContract interface {
 // Compile-time checks: *Store-backed adapters satisfy the contracts.
 var _ ServiceRepositoryContract = (*ServiceRepoAdapter)(nil)
 var _ PipeRepositoryContract = (*PipeRepoAdapter)(nil)
+var _ RemotePipeBindingRepoContract = (*RemotePipeBindingAdapter)(nil)
+var _ AccessLeaseCacheRepoContract = (*AccessLeaseCacheAdapter)(nil)
 
 // ServiceRepoAdapter adapts *Store to the consumer-owned narrow Service
 // persistence contract (ServiceRepositoryContract; the same shape is the
@@ -87,37 +89,72 @@ func (a *PipeRepoAdapter) Delete(ctx context.Context, ref string) error {
 	return err
 }
 
-// ExactConnectionStateRepoContract is the consumer-owned narrow exact
-// connection state persistence contract (duplicated here so internal/store
+// RemotePipeBindingRepoContract is the consumer-owned narrow durable accepted
+// remote-Pipe binding persistence contract (duplicated here so internal/store
 // does not import internal/usecase).
-type ExactConnectionStateRepoContract interface {
-	Get(ctx context.Context, remotePipeID string) (domain.ExactConnectionState, error)
-	Put(ctx context.Context, state domain.ExactConnectionState) error
+type RemotePipeBindingRepoContract interface {
+	Get(ctx context.Context, remotePipeID string) (domain.RemotePipeBinding, error)
+	Put(ctx context.Context, b domain.RemotePipeBinding) error
 	Delete(ctx context.Context, remotePipeID string) error
 }
 
-// ExactConnectionStateAdapter adapts *Store to the consumer-owned narrow
-// exact connection state contract.
-type ExactConnectionStateAdapter struct {
+// AccessLeaseCacheRepoContract is the consumer-owned narrow ephemeral
+// AccessLease cache persistence contract (duplicated here so internal/store
+// does not import internal/usecase).
+type AccessLeaseCacheRepoContract interface {
+	Get(ctx context.Context, remotePipeID string) (domain.AccessLeaseCache, error)
+	Put(ctx context.Context, c domain.AccessLeaseCache) error
+	Delete(ctx context.Context, remotePipeID string) error
+}
+
+// RemotePipeBindingAdapter adapts *Store to the consumer-owned durable binding
+// contract.
+type RemotePipeBindingAdapter struct {
 	s *Store
 }
 
-// NewExactConnectionStateAdapter returns the adapter or nil when s is nil.
-func NewExactConnectionStateAdapter(s *Store) *ExactConnectionStateAdapter {
+// NewRemotePipeBindingAdapter returns the adapter or nil when s is nil.
+func NewRemotePipeBindingAdapter(s *Store) *RemotePipeBindingAdapter {
 	if s == nil {
 		return nil
 	}
-	return &ExactConnectionStateAdapter{s: s}
+	return &RemotePipeBindingAdapter{s: s}
 }
 
-func (a *ExactConnectionStateAdapter) Get(ctx context.Context, remotePipeID string) (domain.ExactConnectionState, error) {
-	return a.s.GetExactConnectionState(ctx, remotePipeID)
+func (a *RemotePipeBindingAdapter) Get(ctx context.Context, remotePipeID string) (domain.RemotePipeBinding, error) {
+	return a.s.GetRemotePipeBinding(ctx, remotePipeID)
 }
 
-func (a *ExactConnectionStateAdapter) Put(ctx context.Context, state domain.ExactConnectionState) error {
-	return a.s.PutExactConnectionState(ctx, state)
+func (a *RemotePipeBindingAdapter) Put(ctx context.Context, b domain.RemotePipeBinding) error {
+	return a.s.PutRemotePipeBinding(ctx, b)
 }
 
-func (a *ExactConnectionStateAdapter) Delete(ctx context.Context, remotePipeID string) error {
-	return a.s.DeleteExactConnectionState(ctx, remotePipeID)
+func (a *RemotePipeBindingAdapter) Delete(ctx context.Context, remotePipeID string) error {
+	return a.s.DeleteRemotePipeBinding(ctx, remotePipeID)
+}
+
+// AccessLeaseCacheAdapter adapts *Store to the consumer-owned ephemeral cache
+// contract.
+type AccessLeaseCacheAdapter struct {
+	s *Store
+}
+
+// NewAccessLeaseCacheAdapter returns the adapter or nil when s is nil.
+func NewAccessLeaseCacheAdapter(s *Store) *AccessLeaseCacheAdapter {
+	if s == nil {
+		return nil
+	}
+	return &AccessLeaseCacheAdapter{s: s}
+}
+
+func (a *AccessLeaseCacheAdapter) Get(ctx context.Context, remotePipeID string) (domain.AccessLeaseCache, error) {
+	return a.s.GetAccessLeaseCache(ctx, remotePipeID)
+}
+
+func (a *AccessLeaseCacheAdapter) Put(ctx context.Context, c domain.AccessLeaseCache) error {
+	return a.s.PutAccessLeaseCache(ctx, c)
+}
+
+func (a *AccessLeaseCacheAdapter) Delete(ctx context.Context, remotePipeID string) error {
+	return a.s.DeleteAccessLeaseCache(ctx, remotePipeID)
 }

@@ -13,7 +13,7 @@ import (
 func makeInvite(t *testing.T) (ed25519.PrivateKey, ed25519.PrivateKey, string, accesslease.ExactInvite) {
 	t.Helper()
 	owner, _, pid, auth, binding := makeOwner(t)
-	invite, err := accesslease.NewExactInvite(auth, binding, pid, fixNow(), time.Minute)
+	invite, err := accesslease.NewExactInvite(auth, binding, pid, fixNow(), time.Minute, 0)
 	mustVerifyOK(t, err)
 	return owner, auth, pid, invite
 }
@@ -84,17 +84,17 @@ func TestInviteWrongPipe(t *testing.T) {
 func TestInviteTimeFailures(t *testing.T) {
 	now := fixNow()
 	owner, _, pid, auth, binding := makeOwner(t)
-	expired, err := accesslease.NewExactInvite(auth, binding, pid, now.Add(-time.Hour), time.Minute)
+	expired, err := accesslease.NewExactInvite(auth, binding, pid, now.Add(-time.Hour), time.Minute, 0)
 	mustVerifyOK(t, err)
 	if err := expired.Verify(now, pid); err == nil {
 		t.Fatal("expired invite validated")
 	}
-	future, err := accesslease.NewExactInvite(auth, binding, pid, now.Add(24*time.Hour), time.Minute)
+	future, err := accesslease.NewExactInvite(auth, binding, pid, now.Add(24*time.Hour), time.Minute, 0)
 	mustVerifyOK(t, err)
 	if err = future.Verify(now, pid); err == nil {
 		t.Fatal("future-issued invite validated")
 	}
-	if _, err = accesslease.NewExactInvite(auth, binding, pid, now, time.Hour); err == nil {
+	if _, err = accesslease.NewExactInvite(auth, binding, pid, now, time.Hour, 0); err == nil {
 		t.Fatal("max-TTL invite minted")
 	}
 	_ = owner

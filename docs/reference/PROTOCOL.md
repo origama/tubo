@@ -2,7 +2,7 @@
 
 **Prototype reference contract:** This document describes wire behavior at `prototype-v2-final`. [`HIGH_LEVEL_DESIGN.md`](HIGH_LEVEL_DESIGN.md) is normative for future architecture. No current protocol ID, encoding, Scope coupling, or state/wire compatibility is automatically required for A0–A4. Retain bounded-decoder and authorization lessons unless explicitly superseded.
 
-Status: protocol 2.1 adds negotiated authority snapshot ordering for destructive `records.list` reconciliation. Protocol 2.0 implements authority-backed remote publication grants, record announcement/listing compatibility surface, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, and further negotiated extensions are pending. Authority 2.0 now supports bounded access/refresh lease exchange, revocation query, and one-time share invite issue/redemption.
+Status: protocol 2.1 adds negotiated authority snapshot ordering for destructive `records.list` reconciliation. Protocol 2.0 implements authority-backed remote publication grants, record announcement/listing compatibility surface, and authenticated raw-duplex tunnels. Remaining sync operations, forwarding, and further negotiated extensions are pending. Authority 2.0 now supports bounded access/refresh lease exchange, revocation query, and one-time share invite issue/redemption. Journey A adds the dedicated `/tubo/exact-redemption/1` (one-time invite bootstrap) and `/tubo/exact-renewal/1` (durable accepted-binding reissuance) exchange protocols served on the owner's scope-less published Pipe.
 
 Step 8A makes **no wire-format change**: the L4 use-case boundary (`internal/usecase`) and narrow persistence ports are wire-neutral; the exact-invite credential contract, tunnel handshake, and lease exchange are unchanged. Scope-less exact redemption serving and its wire path land with step 8B.
 
@@ -177,6 +177,71 @@ Request proof binds literal operation `records.list`. Authority reads records pl
 ## Version behavior
 
 A protocol major mismatch is rejected. Authority 2.1 snapshot consumers require that exact protocol ID; unavailable 2.1 is failure, not 2.0 fallback. Minor additions require explicit capability negotiation and bounded optional fields. See `VERSIONING.md`.
+
+## Exact renewal protocol (`/tubo/exact-renewal/1`)
+
+The durable accepted remote-Pipe binding model adds a dedicated
+post-acceptance renewal protocol. The original invite is **never required
+again after acceptance**: renewal reissues a fresh short-lived `AccessLease`
+from the owner-bound Exact Authority for the accepted recipient.
+
+```text
+client                              exact authority runtime
+  |--- ExactRenewalRequest ----------->|   pipe_id, recipient_public, owner_binding
+  |<-- ExactRenewalChallenge ----------|   fresh random challenge
+  |--- ExactRenewalProof ------------->|   challenge possession proof (renew purpose)
+  |<-- ExactRenewalResponse -----------|   fresh short-lived AccessLease / error
+```
+
+Server-side mandatory ordering (mirrors redemption's fail-closed discipline):
+
+1. bounded/canonical PipeID and recipient key;
+2. owner-bound `OwnerBinding` decode + owner-signature verify + exact-Pipe
+   match (the binding the durable relationship carries anchors issuer trust);
+3. `Loader` load of the EXISTING dedicated exact authority key only;
+4. binding authority key equals the loaded key;
+5. accepted relationship exists for exactly this recipient + Pipe — the ONE
+   authoritative current relationship `(pipe_id, recipient_public)`
+   (`accepted_exact_relationships`), resolved deterministically (never a LIMIT
+   guess over the one-time redemption history);
+6. revocation/epoch validity — the originating/current invite JTI is not
+   revoked AND the current pipe-access epoch equals the accepted
+   relationship's epoch; any read failure or mismatch denies issuance;
+7. fresh server challenge possession proof under the renew proof purpose;
+8. mint fresh short-lived lease under the bound issuer carrying the accepted
+   relationship's authorization epoch.
+
+The remote caller can never provision authority keys, create arbitrary
+accepted bindings, switch subject or Pipe, bypass revocation, or renew a
+relationship that never existed.
+
+**Epoch lifecycle.** The ExactInvite is minted at the current pipe-access
+epoch (ShareExact reads it via the L4 `ExactAccessEpochReader` port).
+Redemption requires `currentEpoch == invite.access_epoch` (fail closed: an
+invite minted before a revocation is stale, and a future-epoch invite is
+refused). The accepted relationship persists the accepted epoch; the initial
+and every renewed AccessLease carry it. A `revoke pipe-access` advances the
+epoch by one (monotonic): previous accepted relationships become stale and
+renewal is denied, while a fresh share+accept at the new epoch
+re-authorizes. A `revoke invite <jti>` revokes only the referenced invite's
+JTI under the `exact.invite` subject type (which redemption and renewal
+check); revoking an obsolete invite never affects a newer current
+relationship, and revoking the current one denies renewal. The L2 receiving
+boundary keeps enforcing `currentEpoch > lease.access_epoch` as a final
+stale-lease denial.
+
+Wire reuse: same stream discipline as
+`/tubo/exact-redemption/1`; frame bound `MaxFrame`; strict decoders. The
+`/tubo/exact-redemption/1`; frame bound `MaxFrame`; strict decoders. The
+initial redemption flow (steps 11-12 in the redemption section) now also
+atomically records the authoritative accepted relationship
+(`RedeemInviteAndAccept`: one-time redemption insert + relationship upsert in
+one transaction); a newer valid invite acceptance for the same Pipe+recipient
+replaces the current relationship, and an idempotent same-recipient retry
+never regresses it. The forwarded lease lifetime is the
+server-authoritative short TTL
+(`TUBO_EXACT_LEASE_TTL` bounds to `MaxTTL`, default `MaxTTL`). See
+`internal/exactauthority/renew.go` and `internal/runtime/renewal_handler.go`.
 
 ## Exact-Pipe Access Lease, Owner Binding, and Exact Invite (contract foundation, step 6B1a)
 

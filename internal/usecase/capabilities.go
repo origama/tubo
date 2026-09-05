@@ -31,11 +31,42 @@ type RedemptionService interface {
 	Redeem(ctx context.Context, carrier Carrier, invite accesslease.ExactInvite, recipientPublic string) (accesslease.AccessLease, error)
 }
 
+// RenewalRequest carries the post-acceptance renewal parameters. The original
+// invite is never required again: the recipient identity and the verified
+// owner-bound OwnerBinding the durable relationship carries are the proof
+// anchors.
+type RenewalRequest struct {
+	PipeID string
+	// RecipientPublic is the accepted recipient identity; renewal requires
+	// possession proof by this exact key.
+	RecipientPublic string
+	// OwnerBinding is the canonical encoded owner-signed OwnerBinding stored
+	// in the durable binding. It anchors issuer trust to the exact Pipe's
+	// owner-bound Exact Authority.
+	OwnerBinding string
+}
+
+// RenewalService performs post-acceptance exact renewal over an acquired
+// carrier and returns a fresh short-lived AccessLease. The wire client proves
+// recipient possession against a fresh server challenge; resending the
+// original invite is never used for renewal.
+type RenewalService interface {
+	Renew(ctx context.Context, carrier Carrier, req RenewalRequest) (accesslease.AccessLease, error)
+}
+
 // OwnerRedemptionLocator resolves the current reachable exact-redemption
 // locator for one running owner Pipe. It returns reachability metadata only;
 // successful resolution never authorizes a remote Pipe open.
 type OwnerRedemptionLocator interface {
 	LocateOwner(ctx context.Context, pipeRef domain.Ref, pipeID string) (string, error)
+}
+
+// ExactAccessEpochReader reads the current authoritative pipe-access
+// revocation epoch for an exact Pipe (0 when never revoked). ShareExact mints
+// invites at this epoch so redemption/renewal stay epoch-consistent; a
+// revocation advances the epoch and every earlier invite becomes stale.
+type ExactAccessEpochReader interface {
+	PipeAccessEpoch(ctx context.Context, pipeID string) (uint64, error)
 }
 
 // PipeStarter launches the runtime for a durable PipeSpec. 8B wires the real
@@ -83,8 +114,9 @@ type ShareExactResult struct {
 // ConnectExactInput carries the parameters for redeeming an exact invite and
 // creating a durable local ingress Pipe.
 type ConnectExactInput struct {
-	Invite      string // canonical base64url ExactInvite
-	LocalListen string // host:port for the local ingress
+	Invite       string // canonical base64url ExactInvite
+	RemotePipeID string // accepted remote Pipe ID; no invite needed (renewal)
+	LocalListen  string // host:port for the local ingress
 	// Name is an optional friendly name for the local Pipe. When empty, a
 	// deterministic name derived from the remote Pipe ID is used.
 	Name string
@@ -110,4 +142,31 @@ type StartPipeInput struct {
 type StartPipeResult struct {
 	PipeRef domain.Ref
 	Status  string
+}
+
+// AcceptExactInviteInput carries the encoded one-time ExactInvite to accept.
+type AcceptExactInviteInput struct {
+	Invite string
+}
+
+// AcceptExactInviteResult carries the accepted remote Pipe identity. The use
+// case persists the durable binding and caches the initial lease; it creates
+// no local Pipe, no ingress, and starts no runtime.
+type AcceptExactInviteResult struct {
+	RemotePipeID    string
+	RecipientPublic string
+	// LeaseExpiresAt is the initial short-lived lease's expiry; acceptable
+	// access is reacquired through the durable binding afterwards.
+	LeaseExpiresAt time.Time
+}
+
+// AcceptedPipeAccess is usable exact access material for an already accepted
+// remote Pipe: a verified current/fresh short-lived AccessLease plus the bound
+// authority identity and locator needed to open the Pipe. It never creates an
+// ingress and never mutates Pipe topology.
+type AcceptedPipeAccess struct {
+	RemotePipeID    string
+	Locator         string
+	AuthorityPublic string
+	AccessLease     accesslease.AccessLease
 }

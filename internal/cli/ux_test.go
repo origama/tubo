@@ -66,7 +66,7 @@ func TestParseEnforcesRequiredFlags(t *testing.T) {
 		want: "--name is required",
 	},
 		{
-			args: []string{"connect", "--local", "127.0.0.1:9"},
+			args: []string{"accept"},
 			want: "--token is required",
 		},
 		{
@@ -215,7 +215,7 @@ func TestHelpTopLevelSurface(t *testing.T) {
 	}
 	text := out.String()
 	for _, want := range []string{
-		"attach", "connect", "share", "get", "inspect", "start", "stop",
+		"attach", "accept", "connect", "share", "get", "inspect", "start", "stop",
 		"restart", "rm", "logs", "ps", "top", "watch", "scope", "peers",
 		"config", "supervise", "service", "pipe", "relay", "revoke", "keygen",
 		"version", "--quiet", "--log-level", "stdout carries the primary result",

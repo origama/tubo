@@ -47,6 +47,8 @@ An embedded database stores mutable metadata:
 services
 pipes
 pipe_bindings
+remote_pipe_bindings
+exact_lease_cache
 runs
 sessions
 peer_aliases
@@ -163,6 +165,31 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 - Schema 7 adds `scope_sync_leases` without changing cached records or authority snapshot metadata.
 - Schema 8 adds transactional `revocations`, one-time `invite_redemptions`, and encrypted-state lease cache rows. Older binaries reject schema 8. No downgrade migration exists; restore pre-upgrade backup before rollback.
 - Schema 9/10 adds `current_transport_path` to sessions and a `path_events` table tracking session transport path transitions with epoch, committed byte offsets, and reason. Older binaries reject schema 10. No downgrade migration exists.
+- Schema 12 (durable exact remote-Pipe binding): adds `remote_pipe_bindings` (durable accepted relationship: remote PipeID, owner-bound Exact Authority identity, verified owner binding, verified renewal/redemption locator, accepted recipient reference, source, timestamps; no local ingress and no AccessLease) and `exact_lease_cache` (ephemeral short-lived AccessLease cache that fails closed on expiry). The migration drops the old `exact_connections` table: those rows carried no owner binding or accepted recipient identity from which a verifiable durable binding could be reconstructed, so they fail closed (affected consumers must re-accept with a fresh invite). `invite_redemptions` gains an index on `(pipe_id, client_public)` for renewal-by-recipient queries. Older binaries reject schema 12. No downgrade migration exists; restore pre-upgrade backup before rollback.
+- Schema 14 (invite family discriminator): `invite_redemptions` gains a
+  `kind` column (`'exact'` for Journey A exact redemptions via
+  `RedeemInviteAndAccept`, `'scoped'` for legacy share.invite redemptions via
+  `RedeemInvite`; pre-14 rows default to `'scoped'`). This makes
+  `revoke invite <jti>` deterministic: `ResolveRevokeInvite` resolves an
+  exact-redeemed JTI (including obsolete ones whose accepted relationship was
+  later replaced) to its exact Pipe for `exact.invite` revocation, and
+  classifies everything else as the scoped family for `share.invite`
+  revocation in the current Scope. Persistence errors fail closed — the
+  command never falls back to scoped on a lookup failure.
+- Schema 13 (deterministic epoch-aware accepted relationship): adds
+  `accepted_exact_relationships` with `PRIMARY KEY(pipe_id,
+  recipient_public)` — exactly one current authoritative authorization
+  relationship (originating/current invite JTI, accepted pipe-access epoch,
+  accepted/updated times). `invite_redemptions` remains one-time
+  anti-replay history; a successful acceptance of a new valid invite for the
+  same Pipe+recipient atomically replaces the relationship row (explicit
+  re-authorization event), while an idempotent same-recipient retry never
+  regresses it and a different recipient fails closed. The migration backfills
+  one deterministic row per redeemed (pipe, client) pair from its latest
+  redemption at legacy epoch 0; a backfilled relationship is usable while the
+  current pipe-access epoch is still 0 and fails closed (stale) once any
+  revocation has advanced it. Older binaries reject schema 13. No downgrade
+  migration exists; restore pre-upgrade backup before rollback.
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.
 
@@ -173,6 +200,53 @@ Step 6B1b adds filesystem secret state only, not SQLite. Dedicated Exact Authori
 Step 6B2 adds SQLite-backed storage for exact authority revocation/epoch state and atomic invite redemption, accessed through narrow consumer-defined interfaces (`exactauthority.RevocationState` and `exactauthority.RedemptionStore`). The adapter `store.ExactAuthorityRevocationState` (in `internal/store`) translates between these interfaces and the existing store methods (`IsRevoked`, `RevocationEpoch`, `RedeemInvite`). The adapter lives in the store package so `internal/exactauthority` never imports `*store.Store`.
 
 `.RedeemInvite` implements the one-winner atomic redemption contract: the first call with a given invite JTI succeeds, subsequent calls with different subjects fail, and same-subject retries are idempotent. Redemption persists the winning client public key, session ID, and pipe ID atomically.
+
+## Durable accepted binding, authoritative relationship, and lease cache
+
+The consumer-side durable record is `remote_pipe_bindings` (relationship +
+reachability knowledge; no lease, no ingress). The owner/authority-side
+accepted relationship is `accepted_exact_relationships`: **exactly one**
+current row per `(pipe_id, recipient_public)` carrying the backing invite JTI
+and the accepted pipe-access epoch, resolved deterministically by
+`store.AcceptedRelationship` (never a LIMIT guess over redemption history).
+`invite_redemptions` is one-time anti-replay evidence only. `RedeemInviteAndAccept`
+commits the redemption insert and the relationship upsert atomically. Renewal
+compares the current pipe-access epoch with the accepted relationship epoch;
+a revocation advances the epoch, previous accepted relationships become
+stale, and a fresh share+accept at the new epoch re-authorizes.
+
+## Durable accepted binding and lease-cache persistence (schema 12)
+
+`remote_pipe_bindings` is the consumer-side durable record of a validly
+accepted exact remote-Pipe relationship. It holds only long-lived
+relationship/reachability information needed to reacquire access:
+
+```text
+RemotePipeID      exact Pipe accepted
+AuthorityPublic   owner-bound Exact Authority identity (invite issuer)
+OwnerBinding      verified owner-signed binding (anchors issuer trust)
+Locator           verified renewal/redemption peer address
+RecipientPublic   accepted recipient identity reference (possession proof key)
+Source            "invite"
+CreatedAt/UpdatedAt
+```
+
+It deliberately does **not** hold the AccessLease and does **not** reference a
+local ingress Pipe: the same accepted remote Pipe stays usable regardless of
+which future ingress is attached to it. `exact_lease_cache` holds the current
+short-lived AccessLease keyed by remote PipeID; expiry fails closed
+(`ErrNotFound`) and the row is deleted, so an expired cache simply causes
+reacquisition through the durable binding. The cache is never the source of
+truth for the relationship.
+
+The one-time `invite_redemptions` table is the authoritative owner/authority
+side of the accepted relationship: a row for `(pipe_id, client_public)` is
+the evidence that recipient X was validly accepted for Pipe P. Renewal
+(`exactauthority.RenewAcceptedAccess`) queries it through the narrow
+`exactauthority.AcceptedBindingStore` port (store adapter
+`store.ExactAuthorityRevocationState.AcceptedRedemption`), so there is no
+second competing source of authority. `AcceptedRedemption` fails closed on
+persistence errors, and a missing row never mints a lease.
 
 ## L4 consumer-owned persistence ports (step 8A)
 

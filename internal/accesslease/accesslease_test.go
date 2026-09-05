@@ -15,16 +15,16 @@ import (
 // verification; arbitrary strings are denied.
 func TestLeaseSubjectMustBeCanonicalPubKey(t *testing.T) {
 	auth := newKey(t)
-	if _, err := accesslease.NewAccessLease(auth, "not-a-public-key", "pip_example_1", fixNow(), time.Minute); err == nil {
+	if _, err := accesslease.NewAccessLease(auth, "not-a-public-key", "pip_example_1", fixNow(), time.Minute, 0); err == nil {
 		t.Fatal("construction accepted a non-public-key subject")
 	}
 	// a base64 string of the wrong decoded length is also rejected
-	if _, err := accesslease.NewAccessLease(auth, strings.Repeat("A", 20), "pip_example_1", fixNow(), time.Minute); err == nil {
+	if _, err := accesslease.NewAccessLease(auth, strings.Repeat("A", 20), "pip_example_1", fixNow(), time.Minute, 0); err == nil {
 		t.Fatal("construction accepted a wrong-length subject")
 	}
 	// Verify likewise rejects a non-canonical subject even when the signature
 	// would otherwise be valid.
-	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	mustVerifyOK(t, err)
 	enc, _ := accesslease.Encode(lease)
 	// replace the subject with an arbitrary (short) string that survives the
@@ -40,7 +40,7 @@ func TestLeaseSubjectMustBeCanonicalPubKey(t *testing.T) {
 // rejected during strict decode (before typed unmarshal), not only at Verify.
 func TestLeaseStrictDecodePerFieldBounds(t *testing.T) {
 	auth := newKey(t)
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	enc, _ := accesslease.Encode(lease)
 	// audience_pipe_id beyond MaxPipeIDLen
 	tampered := mutateDoc(t, enc, func(d map[string]any) {
@@ -56,7 +56,7 @@ func TestLeaseStrictDecodePerFieldBounds(t *testing.T) {
 
 func TestLeaseGoldenCanonicalBytesStable(t *testing.T) {
 	auth := newKey(t)
-	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_exact_1", fixNow(), time.Minute)
+	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_exact_1", fixNow(), time.Minute, 0)
 	mustVerifyOK(t, err)
 	enc, err := accesslease.Encode(lease)
 	mustVerifyOK(t, err)
@@ -74,7 +74,7 @@ func TestLeaseGoldenCanonicalBytesStable(t *testing.T) {
 
 func TestLeaseRoundTrip(t *testing.T) {
 	auth := newKey(t)
-	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	mustVerifyOK(t, err)
 	enc, err := accesslease.Encode(lease)
 	mustVerifyOK(t, err)
@@ -87,7 +87,7 @@ func TestLeaseRoundTrip(t *testing.T) {
 
 func TestLeaseVerifyOK(t *testing.T) {
 	auth := newKey(t)
-	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	mustVerifyOK(t, err)
 	err = lease.Verify(auth.Public().(ed25519.PublicKey), pubStr(auth), "pip_example_1", fixNow())
 	mustVerifyOK(t, err)
@@ -95,14 +95,14 @@ func TestLeaseVerifyOK(t *testing.T) {
 
 func TestLeaseWrongSubject(t *testing.T) {
 	auth := newKey(t)
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	err := lease.Verify(auth.Public().(ed25519.PublicKey), pubStr(newKey(t)), "pip_example_1", fixNow())
 	mustVerifyDeny(t, err)
 }
 
 func TestLeaseWrongPipeAudience(t *testing.T) {
 	auth := newKey(t)
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	err := lease.Verify(auth.Public().(ed25519.PublicKey), pubStr(auth), "pip_other", fixNow())
 	mustVerifyDeny(t, err)
 }
@@ -110,14 +110,14 @@ func TestLeaseWrongPipeAudience(t *testing.T) {
 func TestLeaseWrongIssuer(t *testing.T) {
 	auth := newKey(t)
 	impostor := newKey(t)
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	err := lease.Verify(impostor.Public().(ed25519.PublicKey), pubStr(auth), "pip_example_1", fixNow())
 	mustVerifyDeny(t, err)
 }
 
 func TestLeaseTamperedSignature(t *testing.T) {
 	auth := newKey(t)
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	enc, _ := accesslease.Encode(lease)
 	tampered := mutateDoc(t, enc, func(d map[string]any) { d["signature"] = strings.Repeat("A", 86) })
 	dec, err := accesslease.Decode(tampered)
@@ -129,7 +129,7 @@ func TestLeaseTamperedSignature(t *testing.T) {
 func TestLeaseExpired(t *testing.T) {
 	auth := newKey(t)
 	now := fixNow()
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", now.Add(-time.Hour), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", now.Add(-time.Hour), time.Minute, 0)
 	err := lease.Verify(auth.Public().(ed25519.PublicKey), pubStr(auth), "pip_example_1", now)
 	mustVerifyDeny(t, err)
 }
@@ -137,7 +137,7 @@ func TestLeaseExpired(t *testing.T) {
 func TestLeaseFutureIssued(t *testing.T) {
 	auth := newKey(t)
 	now := fixNow()
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", now.Add(24*time.Hour), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", now.Add(24*time.Hour), time.Minute, 0)
 	err := lease.Verify(auth.Public().(ed25519.PublicKey), pubStr(auth), "pip_example_1", now)
 	mustVerifyDeny(t, err)
 }
@@ -145,7 +145,7 @@ func TestLeaseFutureIssued(t *testing.T) {
 func TestLeaseNotYetValid(t *testing.T) {
 	auth := newKey(t)
 	now := fixNow()
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", now, time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", now, time.Minute, 0)
 	lease.NotBefore = now.Add(5 * time.Minute)
 	lease.Sign(auth)
 	err := lease.Verify(auth.Public().(ed25519.PublicKey), pubStr(auth), "pip_example_1", now)
@@ -154,13 +154,13 @@ func TestLeaseNotYetValid(t *testing.T) {
 
 func TestLeaseMaxTTLExceeded(t *testing.T) {
 	auth := newKey(t)
-	_, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Hour)
+	_, err := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Hour, 0)
 	mustVerifyDeny(t, err)
 }
 
 func TestLeaseStrictDecodeRejections(t *testing.T) {
 	auth := newKey(t)
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	enc, _ := accesslease.Encode(lease)
 
 	// unknown field
@@ -183,7 +183,7 @@ func TestLeaseStrictDecodeRejections(t *testing.T) {
 // endpoint, route, target, discovery, namespace, or metadata map.
 func TestLeaseNoScopeNoMetadata(t *testing.T) {
 	auth := newKey(t)
-	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute)
+	lease, _ := accesslease.NewAccessLease(auth, pubStr(auth), "pip_example_1", fixNow(), time.Minute, 0)
 	enc, _ := accesslease.Encode(lease)
 	for _, forbidden := range []string{`"scope"`, `"pipe_endpoint"`, `"role"`, `"namespace_key"`, `"authority_address"`, `"display_name_hint"`, `"metadata"`} {
 		if strings.Contains(string(rawJSON(t, enc)), forbidden) {

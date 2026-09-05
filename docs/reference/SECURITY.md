@@ -10,6 +10,45 @@ Reachability != discovery != authorization.
 Public infrastructure provides reachability, never ambient authorization.
 ```
 
+### Durable accepted remote-Pipe binding (schema 12, Journey A durable)
+
+The one-time invite is bootstrap only. Acceptance establishes a durable
+recipient-bound remote-Pipe relationship (the accepted binding), and every
+later Pipe open reacquires a fresh short-lived Access Lease through it:
+
+```text
+Invite != AccessLease
+AcceptedBinding != AccessLease
+AcceptedBinding != local Pipe
+AcceptedBinding does not define an ingress
+```
+
+- The accepted binding is cryptographically bound to the exact remote
+  PipeID, the accepted recipient identity, and the correct owner-bound Exact
+  Authority. Renewal (post-acceptance reissuance) requires recipient
+  possession proof by that same identity; there is no reusable unbound
+  bearer refresh token as the root of permanent access.
+- The actual Pipe open always uses a short-lived AccessLease at the L2
+  receiving boundary (unchanged). A persisted accepted binding is not itself
+  permission to open.
+- Invite expiry never destroys the accepted relationship: the invite is the
+  evidence used to establish the relationship once, not its lifetime clock
+  (intentionally different from the old share-invite-derived refresh-lease
+  behavior).
+- Every renewal fails closed on unavailable revocation state, invalid
+  signatures, subject mismatch, Pipe mismatch, missing authoritative
+  accepted state, or a stale authorization epoch. The authoritative accepted
+  relationship is exactly one current row per `(pipe_id, recipient_public)`
+  carrying the backing invite JTI and the accepted epoch; resolving it is
+  deterministic. The invite epochs, accepted relationship epoch, and every
+  AccessLease epoch are equal at acceptance; a pipe-access revocation
+  advances the epoch, previous accepted relationships become stale (renewal
+  denied), and a fresh share+accept at the new epoch re-authorizes — never a
+  permanent kill switch. Revoking an obsolete invite's JTI never affects a
+  newer current relationship; revoking the current one denies renewal. Live
+  sessions keep the existing short-lease/session expiry fencing, and the L2
+  receiving boundary keeps the final stale-epoch denial.
+
 Exact Pipe Authority and Scope Authority converge on same exact-Pipe lease. L2 receiving boundary invokes consumer-side/neutral open-authorization contract and fails closed on unsuccessful result; it opens no local target. L3 owns concrete signature/lease validation, issuer trust, revocation, stale-epoch, policy, and refresh implementation. L2 must not import concrete L3 authority/revocation implementations.
 
 ## Prototype reference statement

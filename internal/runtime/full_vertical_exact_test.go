@@ -62,7 +62,7 @@ func TestFullAuthorityVertical(t *testing.T) {
 	}
 
 	// 3. Owner issues invite.
-	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute)
+	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute, 0)
 	if err != nil {
 		t.Fatalf("NewExactInvite: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestFullAuthorityVertical(t *testing.T) {
 	// 5. Redeem invite using store adapter from internal/store.
 	adapter := store.NewExactAuthorityRevocationState(state, pipeID)
 	loader := exactauthority.Loader{KeyPath: keyPath, Binding: auth.Binding}
-	lease, err := exactauthority.RedeemExactInvite(ctx, now, encodedInvite, clientPub, challenge, proof, loader, adapter, adapter)
+	lease, err := exactauthority.RedeemExactInvite(ctx, now, encodedInvite, clientPub, challenge, proof, loader, adapter, adapter, 10*time.Minute)
 	if err != nil {
 		t.Fatalf("redeem: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRedemptionAtomicity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute)
+	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,14 +178,14 @@ func TestRedemptionAtomicity(t *testing.T) {
 	loader := exactauthority.Loader{KeyPath: keyPath, Binding: auth.Binding}
 
 	// First redemption by client1 succeeds.
-	_, err = exactauthority.RedeemExactInvite(ctx, now, encodedInvite, clientPub1, challenge, proof1, loader, adapter, adapter)
+	_, err = exactauthority.RedeemExactInvite(ctx, now, encodedInvite, clientPub1, challenge, proof1, loader, adapter, adapter, 10*time.Minute)
 	if err != nil {
 		t.Fatalf("first redeem by client1: %v", err)
 	}
 
 	// Second redemption by client2 fails (different subject).
 	proof2 := accesslease.SignProof(clientPriv2, accesslease.RedeemProofPurpose, invite.JTI, pipeID, challenge)
-	_, err = exactauthority.RedeemExactInvite(ctx, now, encodedInvite, clientPub2, challenge, proof2, loader, adapter, adapter)
+	_, err = exactauthority.RedeemExactInvite(ctx, now, encodedInvite, clientPub2, challenge, proof2, loader, adapter, adapter, 10*time.Minute)
 	if err == nil {
 		t.Fatal("second recipient must be denied")
 	}
