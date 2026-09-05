@@ -44,7 +44,7 @@ From owner runtime state (oripi, fresh home) plus share wiring (`owner_locator.g
 - Share gate: `LocateOwner` requires the ready/live owner Pipe runtime and equality of `run.Address` with `CircuitAddress(relay, ownerPeer)`; any failure fails closed `runtime_unavailable` before invite output (no invite, no authority provisioning).
 - Invite carries only the redemption locator binding; no local Service target, Scope, discovery, or application metadata inside the invite binding (`accesslease.NewExactInvite` with `RedemptionPeers=locator` only).
 - Invite (redacted): single canonical mint used for the entire proof; 10-minute exact TTL window; persisted only at `/tmp/a0-10b-final/invite-owner.txt` mode-0600; JTI/value redacted from all evidence.
-- Recipient-side redemption dials exactly this address (`ExactConnectionState.Locator` == redemption address from invite; verified on recipient).
+- Recipient-side redemption dials exactly this address (at 10B the field was `ExactConnectionState.Locator`; schema 12 renames the durable model to `RemotePipeBinding.Locator` — this row records the historical evidence only).
 
 ## REAL relay traversal evidence (step 14)
 

@@ -117,3 +117,47 @@ After real A0 boundaries exist, add lightweight deterministic architecture check
 - Is persistence consumed through narrow need-specific capability?
 - Did feature add independently justified primitive rather than shortcut?
 - Do unit/integration/E2E evidence and dependency checks cover change?
+## Durable accepted remote-Pipe binding (Journey A durable lifecycle)
+
+The one-time exact invite is bootstrap only. Acceptance establishes a durable
+recipient-bound remote-Pipe relationship, and every later Pipe open
+reacquires a fresh short-lived AccessLease through it:
+
+```text
+ExactInvite -> accept/redemption -> RemotePipeBinding (durable)
+RemotePipeBinding -> renewal -> fresh short-lived AccessLease -> L2 Pipe open
+owner revocation -> renewal denied -> no new authorized opens
+```
+
+Layer ownership (unchanged dependencies, new L3/L4 responsibility):
+
+- **L0** (`internal/domain`): neutral `RemotePipeBinding` and
+  `AccessLeaseCache` values — no libp2p, Store, runtime, CLI, or Scope
+  coupling; structural validation only.
+- **L1** (`node`/`reachability`): acquires carriers toward the bound
+  authority/owner endpoint; never decides whether an accepted binding is
+  authorized and never mints access.
+- **L2** (`engine`/`openauth`/`session`): receives a valid short-lived
+  AccessLease and opens/forwards the Pipe; the receiving boundary keeps
+  enforcing authorization through the neutral `openauth` seam. L2 does not
+  know about invites, bindings, or renewal (arch rules R6/R17).
+- **L3** (`exactauthority`): accepted-binding validation, renewal/reissuance
+  ordering (`RenewAcceptedAccess`), recipient binding, revocation/epoch
+  checks, short-lived lease minting under the owner-bound Exact Authority.
+  `RenewAcceptedAccess` requires a fresh server challenge, recipient
+  possession proof, an existing accepted relationship (authoritative
+  redemption state), and current revocation validity; it never reuses the
+  invite and never provisions keys.
+- **L4** (`usecase`): `AcceptExactInvite` (one-time bootstrap; persists the
+  durable binding + ephermal lease cache; creates no Pipe/ingress/runtime)
+  and `AcquireAcceptedPipeAccess` (binding -> cached unexpired lease when
+  safe, else reachability + renewal + local verification -> usable access;
+  never mutates Pipe topology). `ConnectExact` composes these with the legacy
+  local-ingress Pipe creation for CLI compatibility.
+- L5: no changes.
+
+Persistence ownership: consumer side splits durable relationship
+(`remote_pipe_bindings`) from ephemeral lease cache (`exact_lease_cache`);
+the owner/authority side treats `invite_redemptions` as the authoritative
+accepted relationship queried by Pipe + recipient. See STATE.md.
+

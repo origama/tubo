@@ -15,7 +15,8 @@ Tubo's CLI is organized into three command families plus infrastructure:
 | Command | Purpose |
 | --- | --- |
 | `tubo attach <target> --name <name>` | create/reuse a Service and its Pipe for a local endpoint, then run it |
-| `tubo connect --token <invite> --local <host:port>` | redeem an exact invite and run a local Pipe |
+| `tubo accept --token <invite>` | redeem a one-time invite once and persist the durable remote-Pipe binding (no Pipe/ingress created) |
+| `tubo connect (--token <invite>\|--remote <pipe-id>) --local <host:port>` | accept a token (bootstrap) or reuse an accepted binding (renewal), then run a local ingress Pipe |
 | `tubo share <pipe-ref>` | mint a one-time invite for an owned, running Pipe |
 
 **Generic resource operations** — apply to resource refs consistently:
@@ -167,13 +168,26 @@ $ tubo share pipe/origin
 eyJ2ZXJzaW9uIjoxLCJ0eXBlIjoicGlwZS5vcGVuLmludml0ZSI...
 ```
 
-Recipient:
+Recipient (two-step durable model):
 
 ```console
-$ tubo connect --token "$INVITE" --local 127.0.0.1:51234 --name west -d
+$ tubo accept --token "$INVITE"
+pip_3bgpjcjak67vx5xj3zw4wftpwztqdnn7
+$ tubo connect --remote pip_3bgpjcjak67vx5xj3zw4wftpwztqdnn7 --local 127.0.0.1:51234 --name west -d
 pipe/west ready (pid 7244)
 local listen: 127.0.0.1:51234
 ```
+
+`accept` redeems the one-time invite exactly once, persists the durable
+remote-Pipe binding (`AcceptedBinding != AccessLease`, `AcceptedBinding !=
+local Pipe`, `AcceptedBinding != invite`), caches the initial short-lived
+Access Lease, and creates no local Pipe, no ingress, and no runtime. After
+acceptance the invite is never needed again: `connect --remote <pipe-id>`
+reacquires a fresh short-lived Access Lease through the durable binding
+(post-acceptance renewal), including after lease expiry, after local
+restart, and after the owner runtime restarts. The original `connect
+--token <invite>` form remains supported as one-shot bootstrap + local Pipe
+creation and exercises the same accepted-binding foundation.
 
 `connect` accepts an optional friendly `--name`; without it the local Pipe
 uses the canonical deterministic name derived from the remote Pipe ID
@@ -295,12 +309,21 @@ sessions) without changing what human users see.
   derives one canonical exact-redemption circuit locator and confirms it
   matches runtime state. Missing/stopped/stale/mismatched state fails as
   `runtime_unavailable` before any invite output. Invites target the exact
-  `pipe_id`, are one-time (one successful lease redemption; idempotent only
-  for the same client key/JTI retry), and expire after 10 minutes.
-* `connect` – redeems the invite over an acquired carrier, verifies the
-  resulting short-lived Access Lease binds this recipient to the exact Pipe,
-  persists exact connection state for detached start, and runs the local
-  ingress Pipe. See “connect identity” below for reuse and rename rules.
+  `pipe_id`, are one-time (one successful redemption; idempotent only for
+  the same client key/JTI retry), and expire after 10 minutes.
+* `accept` – validates and redeems the one-time invite (bounded, fail
+  closed), provisions the canonical recipient identity key, persists the
+  durable remote-Pipe binding and caches the initial short-lived Access
+  Lease. It never creates a local Pipe, ingress, or runtime. A different
+  recipient can never consume an already-accepted invite; same-recipient
+  retry is deterministic.
+* `connect` – with `--token` it composes `accept` (durable binding) with the
+  legacy local-ingress Pipe creation; with `--remote <pipe-id>` it reuses the
+  accepted binding and reacquires verified access material (cached lease or
+  post-acceptance renewal), still requiring no invite. Once the local Pipe
+  exists, its detached runtime keeps reacquiring short-lived leases from the
+  binding after expiry or restart. See “connect identity” below for reuse
+  and rename rules.
 * `service create` / `pipe create` – durable definitions; the Pipe needs
   `start` (or `attach`/`connect -d`) to run. Recreating identical definitions
   reports `reused`; conflicts fail.
@@ -407,6 +430,12 @@ Mutation outputs:
 {"pipe_id":"pip_...","invite":"eyJ2ZXJzaW9uIjox...","expires_at":"2026-08-28T16:41:46.379485Z"}
 ```
 
+`accept --json`:
+
+```json
+{"remote_pipe_id":"pip_...","recipient_public":"...","lease_expires_at":"2026-08-28T16:41:46.379485Z"}
+```
+
 `attach -d --json` adds `"status":"ready"` and `"pid"` only when readiness is
 known; the non-detached JSON form carries no fabricated state.
 
@@ -418,7 +447,7 @@ The following historical spellings were resolved deliberately:
 | --- | --- | --- |
 | `describe` | `inspect` | one command for detailed views |
 | `get processes` / `get runs` | `ps` | one runtime overview |
-| `connect <pipe-name>` (legacy scope direct connect) | `connect --token <invite> --local <host:port>` | the A0 CLI connects through exact redemption only; the legacy scope-based direct connect was never rewired through L4 and is not part of the surface |
+| `connect <pipe-name>` (legacy scope direct connect) | `connect (--token <invite>\|--remote <pipe-id>) --local <host:port>` | the A0 CLI connects through exact redemption/accepted-binding renewal only; the legacy scope-based direct connect was never rewired through L4 and is not part of the surface |
 | `join overlay` (reachability) vs `scope join` (membership) | both retained | distinct concepts, distinct verbs |
 | `authority start` vs generic `start` | both retained | infrastructure verb; generic `start` stays Pipe-scoped |
 | `inspect peer/<id>` vs `peers alias` vs `get peers` | all three | inspect = one alias; peers alias = mutation; get peers = inventory |

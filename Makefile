@@ -26,6 +26,7 @@ contract:
 
 integration:
 	./tests/integration/private-http.sh
+	./tests/integration/journey-a-durable.sh
 
 hygiene:
 	./tests/verify-repo-hygiene.sh
