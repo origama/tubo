@@ -21,7 +21,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
 
-const SchemaVersion = 13
+const SchemaVersion = 14
 
 const maxScopeSyncLeaseTTL = 5 * time.Minute
 
@@ -282,7 +282,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS authority_snapshots(scope TEXT PRIMARY KEY, generation INTEGER NOT NULL, high_water INTEGER NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS scope_sync_leases(scope TEXT PRIMARY KEY, holder_ref TEXT NOT NULL, holder_process_identity TEXT NOT NULL, lease_token TEXT NOT NULL UNIQUE, acquired_at TEXT NOT NULL, renewed_at TEXT NOT NULL, expires_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS revocations(scope TEXT NOT NULL, subject_type TEXT NOT NULL, subject_jti TEXT NOT NULL, revoked_at TEXT NOT NULL, epoch INTEGER NOT NULL, PRIMARY KEY(scope,subject_type,subject_jti))`,
-		`CREATE TABLE IF NOT EXISTS invite_redemptions(jti TEXT NOT NULL, pipe_id TEXT NOT NULL, redeemed_at TEXT NOT NULL, session_id TEXT NOT NULL, client_public TEXT NOT NULL, PRIMARY KEY(jti,pipe_id))`,
+		`CREATE TABLE IF NOT EXISTS invite_redemptions(jti TEXT NOT NULL, pipe_id TEXT NOT NULL, redeemed_at TEXT NOT NULL, session_id TEXT NOT NULL, client_public TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'scoped', PRIMARY KEY(jti,pipe_id))`,
 		`CREATE TABLE IF NOT EXISTS connect_leases(pipe_id TEXT PRIMARY KEY, scope TEXT NOT NULL, access_lease TEXT NOT NULL, refresh_lease TEXT NOT NULL, expires_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS remote_pipe_bindings(remote_pipe_id TEXT PRIMARY KEY, authority_public TEXT NOT NULL, owner_binding TEXT NOT NULL, locator TEXT NOT NULL, recipient_public TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS exact_lease_cache(remote_pipe_id TEXT PRIMARY KEY, access_lease TEXT NOT NULL, expires_at TEXT NOT NULL)`,
@@ -434,6 +434,38 @@ func (s *Store) migrate(ctx context.Context) error {
 		  WHERE r2.pipe_id = r.pipe_id AND r2.client_public = r.client_public
 		  ORDER BY r2.redeemed_at DESC, r2.rowid DESC LIMIT 1)`); err != nil {
 		return fmt.Errorf("schema 13 accepted relationship backfill: %w", err)
+	}
+	// Schema 14: invite_redemptions gains a kind discriminator so revocation
+	// can deterministically classify a JTI as exact (Journey A, kind='exact')
+	// vs scoped (legacy share.invite, kind='scoped'). Pre-14 rows default to
+	// 'scoped' (no marker exists to distinguish them post-hoc); fresh exact
+	// redemptions always mark 'exact'.
+	redemptionColumns, err := tx.QueryContext(ctx, `PRAGMA table_info(invite_redemptions)`)
+	if err != nil {
+		return fmt.Errorf("schema invite_redemptions columns: %w", err)
+	}
+	hasKind := false
+	for redemptionColumns.Next() {
+		var cid int
+		var name, valueType string
+		var notNull int
+		var defaultValue any
+		var primaryKey int
+		if err := redemptionColumns.Scan(&cid, &name, &valueType, &notNull, &defaultValue, &primaryKey); err != nil {
+			_ = redemptionColumns.Close()
+			return fmt.Errorf("schema invite_redemptions columns: %w", err)
+		}
+		if name == "kind" {
+			hasKind = true
+		}
+	}
+	if err := redemptionColumns.Close(); err != nil {
+		return fmt.Errorf("schema invite_redemptions columns: %w", err)
+	}
+	if !hasKind {
+		if _, err := tx.ExecContext(ctx, `ALTER TABLE invite_redemptions ADD COLUMN kind TEXT NOT NULL DEFAULT 'scoped'`); err != nil {
+			return fmt.Errorf("schema 14 invite redemption kind: %w", err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)`, SchemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
@@ -1788,7 +1820,7 @@ func (s *Store) RedeemInviteAndAccept(ctx context.Context, jti, pipeID, sessionI
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO invite_redemptions(jti,pipe_id,redeemed_at,session_id,client_public) VALUES(?,?,?,?,?) ON CONFLICT(jti,pipe_id) DO NOTHING`, jti, pipeID, now.Format(time.RFC3339Nano), sessionID, clientPublic)
+	result, err := tx.ExecContext(ctx, `INSERT INTO invite_redemptions(jti,pipe_id,redeemed_at,session_id,client_public,kind) VALUES(?,?,?,?,?,'exact') ON CONFLICT(jti,pipe_id) DO NOTHING`, jti, pipeID, now.Format(time.RFC3339Nano), sessionID, clientPublic)
 	if err != nil {
 		return false, err
 	}
@@ -1859,6 +1891,45 @@ func (s *Store) RedemptionPipeForInvite(ctx context.Context, jti string) (string
 		return "", false, err
 	}
 	return pipeID, true, nil
+}
+
+// ExactRedemptionPipeForInvite resolves the exact Pipe an invite JTI was
+// accepted through the EXACT (Journey A) redemption path, or ok=false when
+// the JTI is not an exact-redeemed invite. Deterministic discriminator:
+// exact redemptions record kind='exact' (RedeemInviteAndAccept), scoped
+// share.invite redemptions record kind='scoped' (RedeemInvite) and never
+// resolve here — including OBSOLETE exact invites whose accepted relationship
+// was later replaced by a newer invite. Persistence errors fail closed.
+func (s *Store) ExactRedemptionPipeForInvite(ctx context.Context, jti string) (string, bool, error) {
+	if strings.TrimSpace(jti) == "" {
+		return "", false, errors.New("invalid exact redemption lookup")
+	}
+	var pipeID string
+	err := s.db.QueryRowContext(ctx, `SELECT pipe_id FROM invite_redemptions WHERE jti=? AND kind='exact' LIMIT 1`, jti).Scan(&pipeID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return pipeID, true, nil
+}
+
+// ResolveRevokeInvite deterministically classifies a `revoke invite <jti>`
+// into the EXACT invite family (scope = the exact Pipe; the caller revokes
+// subject_type exact.invite) or the SCOPED invite family (scope = current
+// Scope; the caller revokes subject_type share.invite). Persistence errors
+// fail closed: kind is "" and err is non-nil, and the caller must never fall
+// back to scoped on a lookup failure.
+func (s *Store) ResolveRevokeInvite(ctx context.Context, jti string) (kind, scope string, err error) {
+	pipeID, ok, err := s.ExactRedemptionPipeForInvite(ctx, jti)
+	if err != nil {
+		return "", "", err
+	}
+	if ok {
+		return "exact", pipeID, nil
+	}
+	return "scoped", "", nil
 }
 
 func (s *Store) Revocations(ctx context.Context, scope string, subjectJTIs []string) ([]Revocation, error) {

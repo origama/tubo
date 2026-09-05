@@ -166,6 +166,16 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
 - Schema 8 adds transactional `revocations`, one-time `invite_redemptions`, and encrypted-state lease cache rows. Older binaries reject schema 8. No downgrade migration exists; restore pre-upgrade backup before rollback.
 - Schema 9/10 adds `current_transport_path` to sessions and a `path_events` table tracking session transport path transitions with epoch, committed byte offsets, and reason. Older binaries reject schema 10. No downgrade migration exists.
 - Schema 12 (durable exact remote-Pipe binding): adds `remote_pipe_bindings` (durable accepted relationship: remote PipeID, owner-bound Exact Authority identity, verified owner binding, verified renewal/redemption locator, accepted recipient reference, source, timestamps; no local ingress and no AccessLease) and `exact_lease_cache` (ephemeral short-lived AccessLease cache that fails closed on expiry). The migration drops the old `exact_connections` table: those rows carried no owner binding or accepted recipient identity from which a verifiable durable binding could be reconstructed, so they fail closed (affected consumers must re-accept with a fresh invite). `invite_redemptions` gains an index on `(pipe_id, client_public)` for renewal-by-recipient queries. Older binaries reject schema 12. No downgrade migration exists; restore pre-upgrade backup before rollback.
+- Schema 14 (invite family discriminator): `invite_redemptions` gains a
+  `kind` column (`'exact'` for Journey A exact redemptions via
+  `RedeemInviteAndAccept`, `'scoped'` for legacy share.invite redemptions via
+  `RedeemInvite`; pre-14 rows default to `'scoped'`). This makes
+  `revoke invite <jti>` deterministic: `ResolveRevokeInvite` resolves an
+  exact-redeemed JTI (including obsolete ones whose accepted relationship was
+  later replaced) to its exact Pipe for `exact.invite` revocation, and
+  classifies everything else as the scoped family for `share.invite`
+  revocation in the current Scope. Persistence errors fail closed — the
+  command never falls back to scoped on a lookup failure.
 - Schema 13 (deterministic epoch-aware accepted relationship): adds
   `accepted_exact_relationships` with `PRIMARY KEY(pipe_id,
   recipient_public)` — exactly one current authoritative authorization

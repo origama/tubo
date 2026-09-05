@@ -11,6 +11,19 @@
 
 ### Added (A0)
 
+- `revoke invite <jti>` family resolution (PR #74 final regression): the CLI
+  now resolves each invite JTI deterministically before revoking. An invite
+  redeemed through the exact redemption path (kind
+  `'exact'` in the schema-14 `invite_redemptions` discriminator) revokes as
+  `exact.invite` under its resolved exact Pipe ID — including obsolete exact
+  invites whose accepted relationship was later replaced by a newer invite.
+  Every other invite (legacy scoped share.invite, or unknown) is revoked
+  through the pre-existing scoped path: `share.invite` in the current Scope.
+  A persistence error during resolution fails closed and never falls back to
+  the scoped family. E2E hardened: both obsolete-invite and current-invite
+  revoke commands must succeed (no `|| true` masking), with application
+  reachability as the primary evidence.
+
 - Review fixes (PR #74 blockers): the exact downstream open path now consumes
   the injected neutral `openauth.AccessAcquirer` contract instead of importing
   L4 (`internal/runtime/exact_access.go` is the sole composition adapter;

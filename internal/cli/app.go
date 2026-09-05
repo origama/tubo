@@ -920,55 +920,63 @@ func (a App) revoke(ctx context.Context, state *store.Store, f flags) error {
 	if rawType != "invite" && rawType != "session" && rawType != "pipe-access" && rawType != "pipe-publish" {
 		return fmt.Errorf("invalid_input: revoke type must be invite, session, pipe-access, or pipe-publish")
 	}
-	// Journey A exact invites revoke under subject type "exact.invite" (the
-	// key redemption/renewal check); the legacy scoped "share.invite" is
-	// retained for membership-backed authorities.
-	typeName := rawType
-	if rawType == "invite" {
-		typeName = "exact.invite"
-	}
-	// Scope resolution. Scope-less exact Pipes (Journey A) revoke under a
-	// scope equal to the exact Pipe ID, matching the store adapter used by the
-	// ExactOpenAuthorizer and the renewal handler. An invited JTI is resolved
-	// through its accepted redemption when present.
-	var scope string
-	switch {
-	case strings.HasPrefix(id, "pipe/"):
-		spec, _, _, pipeErr := state.Pipe(ctx, id)
-		if pipeErr != nil {
-			return pipeErr
+
+	// Family resolution. Only `revoke invite <jti>` disambiguates between the
+	// EXACT (Journey A) and SCOPED (legacy share.invite) invite families, and
+	// it does so deterministically from persisted evidence: if the JTI was
+	// redeemed through the exact redemption path (kind='exact') it revokes as
+	// subject_type=exact.invite under the resolved exact Pipe ID; otherwise it
+	// preserves the legacy scoped behavior (subject_type=share.invite in the
+	// current Scope). A persistence error during resolution fails closed and
+	// never falls back to the scoped family.
+	typeName, scope := rawType, ""
+	epoch := uint64(1)
+	switch rawType {
+	case "invite":
+		kind, exactScope, resolveErr := state.ResolveRevokeInvite(ctx, id)
+		if resolveErr != nil {
+			return fmt.Errorf("persistence_failed: exact invite resolution: %w", resolveErr)
 		}
-		id = spec.PipeID
-		if spec.Scope != nil {
-			scope = spec.Scope.String()
+		if kind == "exact" {
+			typeName = "exact.invite"
+			scope = exactScope
 		} else {
-			scope = spec.PipeID
+			typeName = "share.invite"
+			current, curErr := state.CurrentScope(ctx)
+			if curErr != nil {
+				return curErr
+			}
+			scope = current
 		}
-	case strings.HasPrefix(id, "pip_"):
-		scope = id
-	case rawType != "invite":
-		current, err := state.CurrentScope(ctx)
-		if err != nil {
-			return err
-		}
-		scope = current
 	default:
-		// invite without a pipe ref: only resolvable for accepted invites,
-		// which are exact (scope-less) and keyed by pipe.
-		pipeID, ok, err := state.RedemptionPipeForInvite(ctx, id)
-		if err != nil {
-			return fmt.Errorf("persistence_failed: %w", err)
+		// pipe ref / pipe id / current-scope resolution for pipe-access,
+		// pipe-publish, and session.
+		switch {
+		case strings.HasPrefix(id, "pipe/"):
+			spec, _, _, pipeErr := state.Pipe(ctx, id)
+			if pipeErr != nil {
+				return pipeErr
+			}
+			id = spec.PipeID
+			if spec.Scope != nil {
+				scope = spec.Scope.String()
+			} else {
+				scope = spec.PipeID
+			}
+		case strings.HasPrefix(id, "pip_"):
+			scope = id
+		default:
+			current, err := state.CurrentScope(ctx)
+			if err != nil {
+				return err
+			}
+			scope = current
 		}
-		if !ok {
-			return fmt.Errorf("invalid_input: invite %s was never accepted; nothing to revoke", id)
-		}
-		scope = pipeID
 	}
 	// A pipe-access (or pipe-publish) revocation advances the authoritative
 	// epoch by one so the current accepted relationship becomes stale and a
 	// fresh share+accept at the new epoch re-authorizes (never a permanent
 	// kill switch). The epoch is monotonic: it can never move backwards.
-	epoch := uint64(1)
 	if typeName == "pipe-access" || typeName == "pipe-publish" {
 		current, curErr := state.RevocationEpoch(ctx, scope, typeName, id)
 		if curErr != nil {

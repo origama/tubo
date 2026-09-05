@@ -247,14 +247,22 @@ JTI3="$(invite_field "$INVITE3" jti)"
 if [[ -z "$JTI2" || -z "$JTI3" || "$JTI2" == "$JTI3" ]]; then echo "FAIL: invite JTIs" >&2; exit 1; fi
 # Revoke the OBSOLETE invite (the one replaced by INVITE3): the current
 # relationship is backed by INVITE3, so renewal must keep working after the
-# cached lease fence.
-env TUBO_HOME="$HOST_A" "$T" revoke invite "$JTI2" --json >/dev/null 2>&1 || true
+# cached lease fence. The revoke command must succeed (no || true masking).
+if ! env TUBO_HOME="$HOST_A" "$T" revoke invite "$JTI2" --json >"$WORK/revoke-old.err" 2>&1; then
+  echo "FAIL: revoke obsolete invite failed" >&2
+  cat "$WORK/revoke-old.err" >&2
+  exit 1
+fi
 sleep 4
 if ! probe; then sleep 3; fi
 if ! probe; then echo "FAIL: obsolete-invite revocation must not break renewal" >&2; exit 1; fi
 # Revoke the CURRENT invite (JTI3): renewal must be denied once the cached
-# lease expires, so the endpoint becomes unreachable.
-env TUBO_HOME="$HOST_A" "$T" revoke invite "$JTI3" --json >/dev/null 2>&1 || true
+# lease expires, so the endpoint becomes unreachable. The revoke must succeed.
+if ! env TUBO_HOME="$HOST_A" "$T" revoke invite "$JTI3" --json >"$WORK/revoke-current.err" 2>&1; then
+  echo "FAIL: revoke current invite failed" >&2
+  cat "$WORK/revoke-current.err" >&2
+  exit 1
+fi
 sleep 5   # cross the 3s lease fence with margin
 if probe; then
   echo "FAIL: current-invite revocation did not deny renewal (endpoint still reachable)" >&2

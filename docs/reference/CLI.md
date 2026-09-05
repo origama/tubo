@@ -53,7 +53,7 @@ Tubo's CLI is organized into three command families plus infrastructure:
 | `tubo join overlay --relay <multiaddr> --swarm-key <file>` | configure overlay reachability |
 | `tubo relay --listen <addr> --public-addr <addr>` | run a relay in the foreground |
 | `tubo authority start <cluster> --scope <scope>` | run a Scope authority in the foreground |
-| `tubo revoke <type> <id>` | revoke invites, sessions, access or publish grants (pipe-access revocation advances the exact epoch: a fresh share+accept at the new epoch re-authorizes) |
+| `tubo revoke <type> <id>` | revoke invites, sessions, access or publish grants. `revoke invite <jti>` resolves the invite family deterministically: an invite redeemed through the exact path revokes as `exact.invite` under its exact Pipe ID (obsolete exact invites included); any other invite revokes as the legacy scoped `share.invite` in the current Scope. `pipe-access` revocation advances the exact epoch: a fresh share+accept at the new epoch re-authorizes |
 | `tubo keygen swarm --out <file>` | generate a swarm key |
 | `tubo version` | version information |
 

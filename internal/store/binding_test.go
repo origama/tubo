@@ -291,3 +291,85 @@ func TestOpenMigratesSchema11ExactConnectionsToBindingSplit(t *testing.T) {
 		t.Fatalf("post-migration binding read: %v", err)
 	}
 }
+
+func TestStoreExactVsScopedInviteRedemptionKind(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUBO_HOME", home)
+	ctx := context.Background()
+	state, err := Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	now := time.Now().UTC()
+
+	// Exact redemption (Journey A) marks kind='exact'.
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_exact_a", "pip_exact", "ses_1", "b_client_one", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	// A second exact invite for the same pipe+recipient replaces the
+	// relationship, but its redemption row stays marked exact.
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_exact_b", "pip_exact", "ses_2", "b_client_one", 0, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// Scoped share-invite redemption marks kind='scoped'.
+	if _, err := state.RedeemInvite(ctx, "jti_scoped", "pip_scoped", "ses_3", "b_client_one"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deterministic resolution: exact invites (including the OBSOLETE one that
+	// no longer backs the relationship) resolve to their exact Pipe; the
+	// scoped invite never resolves as exact.
+	for _, jti := range []string{"jti_exact_a", "jti_exact_b"} {
+		pipeID, ok, err := state.ExactRedemptionPipeForInvite(ctx, jti)
+		if err != nil || !ok || pipeID != "pip_exact" {
+			t.Fatalf("exact invite %s must resolve: %q ok=%v %v", jti, pipeID, ok, err)
+		}
+		kind, scope, err := state.ResolveRevokeInvite(ctx, jti)
+		if err != nil || kind != "exact" || scope != "pip_exact" {
+			t.Fatalf("exact invite %s revoke resolution: %q %q %v", jti, kind, scope, err)
+		}
+	}
+	pipeID, ok, err := state.ExactRedemptionPipeForInvite(ctx, "jti_scoped")
+	if err != nil || ok {
+		t.Fatalf("scoped invite must not resolve as exact: %q %v %v", pipeID, ok, err)
+	}
+	kind, _, err := state.ResolveRevokeInvite(ctx, "jti_scoped")
+	if err != nil || kind != "scoped" {
+		t.Fatalf("scoped invite revoke resolution: %q %v", kind, err)
+	}
+	// Unknown invite resolves scoped (caller supplies the current Scope).
+	kind, _, err = state.ResolveRevokeInvite(ctx, "jti_unknown")
+	if err != nil || kind != "scoped" {
+		t.Fatalf("unknown invite revoke resolution: %q %v", kind, err)
+	}
+}
+
+func TestStoreExactInviteResolutionPersistenceErrorFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUBO_HOME", home)
+	ctx := context.Background()
+	state, err := Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	now := time.Now().UTC()
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_fail", "pip_f", "ses_1", "b_client_one", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	// Make the evidence unavailable: a dropped table makes the resolution
+	// query itself fail. The seam must report an error (fail closed), never a
+	// silent "scoped" fallback.
+	if _, err := state.db.Exec(`DROP TABLE invite_redemptions`); err != nil {
+		t.Fatal(err)
+	}
+	pipeID, ok, err := state.ExactRedemptionPipeForInvite(ctx, "jti_fail")
+	if err == nil {
+		t.Fatalf("dropped-table lookup must fail closed: pipe=%q ok=%v", pipeID, ok)
+	}
+	kind, scope, err := state.ResolveRevokeInvite(ctx, "jti_fail")
+	if err == nil || kind != "" || scope != "" {
+		t.Fatalf("ResolveRevokeInvite must fail closed on persistence error: kind=%q scope=%q %v", kind, scope, err)
+	}
+}
