@@ -160,4 +160,3 @@ Persistence ownership: consumer side splits durable relationship
 (`remote_pipe_bindings`) from ephemeral lease cache (`exact_lease_cache`);
 the owner/authority side treats `invite_redemptions` as the authoritative
 accepted relationship queried by Pipe + recipient. See STATE.md.
-
