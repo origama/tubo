@@ -191,3 +191,47 @@ func TestLeaseNoScopeNoMetadata(t *testing.T) {
 		}
 	}
 }
+
+// TestLeaseNotBeforeSkewTolerance proves the bounded clock-skew semantic:
+// a lease minted by an issuer whose clock is up to MaxClockSkew ahead verifies
+// locally, but strict expiry (ExpiresAt) is never extended by skew.
+func TestLeaseNotBeforeSkewTolerance(t *testing.T) {
+	auth := newKey(t)
+	subject := pubStr(auth)
+	issuerNow := fixNow() // issuer clock; client clock is skewed behind
+
+	// Client clock 25s behind issuer: NotBefore = issuerNow is 25s in the
+	// client's future, inside MaxClockSkew (30s) -> valid.
+	clientBack := issuerNow
+	lease, _ := accesslease.NewAccessLease(auth, subject, "pip_example_1", issuerNow.Add(25*time.Second), time.Minute, 0)
+	err := lease.Verify(auth.Public().(ed25519.PublicKey), subject, "pip_example_1", clientBack)
+	mustVerifyOK(t, err)
+
+	// Boundary sanity at the exact skew edges:
+	// +5s and +29s inside tolerance verify; +31s (outside MaxClockSkew) rejects
+	// with "not yet valid".
+	lease5, _ := accesslease.NewAccessLease(auth, subject, "pip_example_1", fixNow(), time.Minute, 0)
+	lease5.NotBefore = fixNow().Add(5 * time.Second)
+	lease5.Sign(auth)
+	err = lease5.Verify(auth.Public().(ed25519.PublicKey), subject, "pip_example_1", fixNow())
+	mustVerifyOK(t, err)
+
+	lease29, _ := accesslease.NewAccessLease(auth, subject, "pip_example_1", fixNow(), time.Minute, 0)
+	lease29.NotBefore = fixNow().Add(29 * time.Second)
+	lease29.Sign(auth)
+	err = lease29.Verify(auth.Public().(ed25519.PublicKey), subject, "pip_example_1", fixNow())
+	mustVerifyOK(t, err)
+
+	lease31, _ := accesslease.NewAccessLease(auth, subject, "pip_example_1", fixNow(), time.Minute, 0)
+	lease31.NotBefore = fixNow().Add(31 * time.Second)
+	lease31.Sign(auth)
+	err = lease31.Verify(auth.Public().(ed25519.PublicKey), subject, "pip_example_1", fixNow())
+	mustVerifyDeny(t, err)
+
+	// Expiry stays STRICT even inside the skew window: 5s past expiry fails.
+	leaseExp, _ := accesslease.NewAccessLease(auth, subject, "pip_example_1", fixNow(), time.Minute, 0)
+	leaseExp.ExpiresAt = fixNow().Add(-5 * time.Second)
+	leaseExp.Sign(auth)
+	err = leaseExp.Verify(auth.Public().(ed25519.PublicKey), subject, "pip_example_1", fixNow())
+	mustVerifyDeny(t, err)
+}

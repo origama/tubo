@@ -123,3 +123,49 @@ func TestInviteComposesOwnerBinding(t *testing.T) {
 	// we only assert the invariant field is presence and owned-pipe binding).
 	_ = pid
 }
+
+// TestInviteNotBeforeSkewTolerance mirrors the lease skew semantic: an invite
+// issuer within MaxClockSkew ahead is usable (same guard as IssuedAt), and
+// strict expiry is never extended by skew.
+func TestInviteNotBeforeSkewTolerance(t *testing.T) {
+	now := fixNow()
+	owner, _, pid, auth, binding := makeOwner(t)
+	_ = owner
+
+	// Issuer clock 25s ahead of the verifier: IssuedAt and NotBefore both sit
+	// inside the 30s skew window -> the invite verifies.
+	invite, err := accesslease.NewExactInvite(auth, binding, pid, now.Add(25*time.Second), time.Minute, 0)
+	mustVerifyOK(t, err)
+	if err := invite.Verify(now, pid); err != nil {
+		t.Fatalf("invite within clock skew must verify: %v", err)
+	}
+
+	// Edges: +5s and +29s NotBefore verify; +31s rejects "not yet valid".
+	at5, _ := accesslease.NewExactInvite(auth, binding, pid, now, time.Minute, 0)
+	at5.NotBefore = now.Add(5 * time.Second)
+	at5.Sign(auth)
+	if err := at5.Verify(now, pid); err != nil {
+		t.Fatalf("invite +5s NotBefore must verify: %v", err)
+	}
+	at29, _ := accesslease.NewExactInvite(auth, binding, pid, now, time.Minute, 0)
+	at29.NotBefore = now.Add(29 * time.Second)
+	at29.Sign(auth)
+	if err := at29.Verify(now, pid); err != nil {
+		t.Fatalf("invite +29s NotBefore must verify: %v", err)
+	}
+	at31, _ := accesslease.NewExactInvite(auth, binding, pid, now, time.Minute, 0)
+	at31.NotBefore = now.Add(31 * time.Second)
+	at31.Sign(auth)
+	if err := at31.Verify(now, pid); err == nil {
+		t.Fatal("invite +31s NotBefore must be denied")
+	}
+
+	// Expiry stays STRICT: 5s past expiry fails even though the issuer clock
+	// skew window would otherwise mask it.
+	expInvite, _ := accesslease.NewExactInvite(auth, binding, pid, now.Add(-time.Hour), time.Minute, 0)
+	expInvite.ExpiresAt = now.Add(-5 * time.Second)
+	expInvite.Sign(auth)
+	if err := expInvite.Verify(now, pid); err == nil {
+		t.Fatal("invite expired by 5s must be denied despite skew")
+	}
+}

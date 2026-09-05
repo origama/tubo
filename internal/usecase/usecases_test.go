@@ -906,3 +906,39 @@ func TestMultipleInvitesSameRecipientDeterministic(t *testing.T) {
 		t.Fatalf("acquired access mismatch: %#v", access)
 	}
 }
+
+// TestSkewedIssuerClockStillAcquiresAccess is the short deterministic E2E
+// for the bounded clock-skew fix: the issuer (redemption/renewal fake) mints
+// credentials with a clock 25s AHEAD of the consumer. Issues within
+// MaxClockSkew (30s) must verify and produce usable access; the whole
+// accept -> acquire path completes end-to-end (in-process, no sleeps).
+func TestSkewedIssuerClockStillAcquiresAccess(t *testing.T) {
+	f := newExactFixture(t)
+	ctx := context.Background()
+	t0 := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	f.pinClock(t0)
+	pipeID, invite := f.makeShare(t)
+
+	// Now the issuer's clock runs 25s ahead of the consumer during ALL
+	// credential minting (redemption lease + renewal lease).
+	skewed := t0.Add(25 * time.Second)
+	f.pinClock(skewed)
+	f.u.Now = fixedClock(t0) // consumer verification clock stays at t0
+
+	// Accept: redemption mints a lease with IssuedAt/NotBefore = t0+25s;
+	// local Verify runs at t0 and must accept it under the 30s skew fence.
+	accepted, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite})
+	if err != nil {
+		t.Fatalf("accept with skewed issuer: %v", err)
+	}
+	// Acquire from cache: the cached lease verifies at t0 despite NotBefore
+	// being 25s in the "future".
+	access, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID)
+	if err != nil {
+		t.Fatalf("acquire with skewed issuer: %v", err)
+	}
+	if access.RemotePipeID != pipeID || !access.AccessLease.ExpiresAt.After(t0) {
+		t.Fatalf("acquired access invalid: %#v", access)
+	}
+	_ = accepted
+}

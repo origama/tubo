@@ -169,7 +169,12 @@ func (i ExactInvite) Verify(now time.Time, pipeID string) error {
 	if i.IssuedAt.After(now.Add(MaxClockSkew)) {
 		return errors.New("accesslease: invite issued too far in future")
 	}
-	if i.NotBefore.After(now) {
+	// NotBefore gets the SAME bounded clock-skew tolerance as IssuedAt:
+	// an issuer within MaxClockSkew ahead that passes the IssuedAt guard
+	// must also pass this one, so the credential is not simultaneously
+	// "sync enough to issue" and "too early to use". ExpiresAt remains
+	// STRICT: skew never extends validity past expiry.
+	if i.NotBefore.After(now.Add(MaxClockSkew)) {
 		return errors.New("accesslease: invite not yet valid")
 	}
 	if !i.ExpiresAt.After(now) {
