@@ -21,7 +21,7 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/domain"
 )
 
-const SchemaVersion = 12
+const SchemaVersion = 13
 
 const maxScopeSyncLeaseTTL = 5 * time.Minute
 
@@ -286,6 +286,7 @@ func (s *Store) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS connect_leases(pipe_id TEXT PRIMARY KEY, scope TEXT NOT NULL, access_lease TEXT NOT NULL, refresh_lease TEXT NOT NULL, expires_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS remote_pipe_bindings(remote_pipe_id TEXT PRIMARY KEY, authority_public TEXT NOT NULL, owner_binding TEXT NOT NULL, locator TEXT NOT NULL, recipient_public TEXT NOT NULL, source TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS exact_lease_cache(remote_pipe_id TEXT PRIMARY KEY, access_lease TEXT NOT NULL, expires_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS accepted_exact_relationships(pipe_id TEXT NOT NULL, recipient_public TEXT NOT NULL, invite_jti TEXT NOT NULL, access_epoch INTEGER NOT NULL, accepted_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(pipe_id, recipient_public))`,
 		`CREATE TABLE IF NOT EXISTS runs(primary_ref TEXT PRIMARY KEY, kind TEXT NOT NULL, pid INTEGER NOT NULL, process_identity TEXT NOT NULL, source TEXT NOT NULL DEFAULT 'foreground', status TEXT NOT NULL, peer_id TEXT NOT NULL, address TEXT NOT NULL, started_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS supervisors(primary_ref TEXT PRIMARY KEY, manager TEXT NOT NULL, label TEXT NOT NULL UNIQUE, unit_path TEXT NOT NULL, installed_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY, pipe_ref TEXT NOT NULL, initial_transport_path TEXT NOT NULL, started_at TEXT NOT NULL, bytes_in INTEGER NOT NULL DEFAULT 0, bytes_out INTEGER NOT NULL DEFAULT 0)`,
@@ -417,6 +418,22 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	if _, err := tx.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_invite_redemptions_pipe_client ON invite_redemptions(pipe_id, client_public)`); err != nil {
 		return fmt.Errorf("schema 12 redemption index: %w", err)
+	}
+	// Schema 13 makes the accepted relationship explicitly deterministic and
+	// epoch-aware. accepted_exact_relationships is the single authoritative
+	// current relationship per (pipe_id, recipient_public); invite_redemptions
+	// remains one-time anti-replay history. Deterministic backfill for schema
+	// 12 state: every redeemed (pipe, client) pair gets one relationship row
+	// from its LATEST redemption (redeemed_at desc, row id tie-break) at the
+	// legacy epoch 0. A relationship is thus immediately usable when the
+	// current pipe-access epoch is still 0, and fails closed (stale) once any
+	// revocation has advanced it.
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO accepted_exact_relationships(pipe_id, recipient_public, invite_jti, access_epoch, accepted_at, updated_at)
+		 SELECT pipe_id, client_public, jti, 0, redeemed_at, redeemed_at FROM invite_redemptions r
+		 WHERE r.rowid = (SELECT r2.rowid FROM invite_redemptions r2
+		  WHERE r2.pipe_id = r.pipe_id AND r2.client_public = r.client_public
+		  ORDER BY r2.redeemed_at DESC, r2.rowid DESC LIMIT 1)`); err != nil {
+		return fmt.Errorf("schema 13 accepted relationship backfill: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version,applied_at) VALUES(?,?)`, SchemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return err
@@ -1742,23 +1759,89 @@ func (s *Store) RedemptionCount(ctx context.Context, jti, pipeID string) (int, e
 	return count, err
 }
 
-// AcceptedRedemption returns the originating invite JTI when an accepted
-// redemption exists for this recipient and pipe — the authority-side accepted
-// relationship that renewal queries. ok=false when the relationship never
+// RedeemInviteAndAccept consumes a one-time invite atomically with the
+// authoritative accepted relationship for (pipe_id, client_public).
+//
+// Model explicitly separates the two concerns:
+//   - invite_redemptions: one-time redemption history / anti-replay evidence
+//     (PK invite identity); every invite redeemed exactly once.
+//   - accepted_exact_relationships: exactly one current authoritative
+//     authorization relationship per (pipe_id, recipient_public), carrying
+//     the originating/current invite JTI and the accepted pipe-access epoch.
+//
+// A first redemption inserts the redemption row AND upserts the relationship
+// (a new valid invite for the same Pipe+recipient is an explicit
+// re-authorization event that replaces the current relationship). An
+// idempotent same-recipient retry of an already-redeemed invite does not
+// regress the relationship (a newer invite may have advanced it) and reports
+// ok=true so the caller may mint a lease; a different recipient fails closed.
+func (s *Store) RedeemInviteAndAccept(ctx context.Context, jti, pipeID, sessionID, clientPublic string, accessEpoch uint64, now time.Time) (bool, error) {
+	if strings.TrimSpace(jti) == "" || strings.TrimSpace(pipeID) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(clientPublic) == "" {
+		return false, errors.New("invalid invite redemption")
+	}
+	now = now.UTC()
+	tx, err := s.beginWriteTx(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO invite_redemptions(jti,pipe_id,redeemed_at,session_id,client_public) VALUES(?,?,?,?,?) ON CONFLICT(jti,pipe_id) DO NOTHING`, jti, pipeID, now.Format(time.RFC3339Nano), sessionID, clientPublic)
+	if err != nil {
+		return false, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	switch affected {
+	case 1:
+		// First redemption: (re-)accept the authoritative relationship.
+		if _, err := tx.ExecContext(ctx, `INSERT INTO accepted_exact_relationships(pipe_id, recipient_public, invite_jti, access_epoch, accepted_at, updated_at) VALUES(?,?,?,?,?,?)
+			 ON CONFLICT(pipe_id, recipient_public) DO UPDATE SET invite_jti=excluded.invite_jti, access_epoch=excluded.access_epoch, updated_at=excluded.updated_at`, pipeID, clientPublic, jti, accessEpoch, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+			return false, err
+		}
+		return true, tx.Commit()
+	case 0:
+		// Already redeemed: idempotent only for the same recipient. The
+		// relationship is intentionally NOT rewritten (a newer invite may
+		// have advanced it); the caller may still mint a lease if the epoch
+		// checks passed, because the relationship already covers this pipe.
+		var client string
+		if err := tx.QueryRowContext(ctx, `SELECT client_public FROM invite_redemptions WHERE jti=? AND pipe_id=?`, jti, pipeID).Scan(&client); err != nil {
+			return false, err
+		}
+		if client != clientPublic {
+			return false, ErrInviteRedeemed
+		}
+		return true, tx.Commit()
+	default:
+		return false, fmt.Errorf("unexpected invite redemption rows affected: %d", affected)
+	}
+}
+
+// AcceptedRelationship returns the current authoritative accepted
+// relationship for this recipient and Pipe: the backing invite JTI and the
+// accepted pipe-access epoch. There is exactly one row per
+// (pipe_id, recipient_public), so resolution is deterministic — never a LIMIT
+// guess over the redemption history. ok=false when the relationship never
 // existed; persistence errors fail closed.
-func (s *Store) AcceptedRedemption(ctx context.Context, pipeID, clientPublic string) (string, bool, error) {
+func (s *Store) AcceptedRelationship(ctx context.Context, pipeID, clientPublic string) (string, uint64, bool, error) {
 	if strings.TrimSpace(pipeID) == "" || strings.TrimSpace(clientPublic) == "" {
-		return "", false, errors.New("invalid accepted redemption lookup")
+		return "", 0, false, errors.New("invalid accepted relationship lookup")
 	}
 	var jti string
-	err := s.db.QueryRowContext(ctx, `SELECT jti FROM invite_redemptions WHERE pipe_id=? AND client_public=? LIMIT 1`, pipeID, clientPublic).Scan(&jti)
+	var accessEpoch uint64
+	err := s.db.QueryRowContext(ctx, `SELECT invite_jti, access_epoch FROM accepted_exact_relationships WHERE pipe_id=? AND recipient_public=?`, pipeID, clientPublic).Scan(&jti, &accessEpoch)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", 0, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
-	return jti, true, nil
+	return jti, accessEpoch, true, nil
 }
 
 // RedemptionPipeForInvite resolves the pipe an invite JTI was accepted for, or

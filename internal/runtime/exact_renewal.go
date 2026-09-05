@@ -1,6 +1,7 @@
-// Package runtime owns the Journey A exact renewal client and host-reusing
-// carrier acquirer. These are adapters that wire the usecase-level interfaces
-// to the concrete libp2p/renewal protocol at the composition root.
+// Package runtime owns the Journey A exact renewal client and the exact lease
+// TTL facility. The renewal client is an adapter that wires the usecase-level
+// RenewalService interface to the concrete libp2p/renewal protocol at the
+// composition root.
 package runtime
 
 import (
@@ -12,13 +13,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/libp2p/go-libp2p/core/host"
-	core "github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/protocol"
-
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/localkey"
-	"github.com/origama/tubo-rebuilt/internal/node"
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 	"github.com/origama/tubo-rebuilt/internal/usecase"
 )
@@ -106,36 +102,6 @@ func (s *ExactRenewalClient) Renew(ctx context.Context, carrier usecase.Carrier,
 	}
 	runtimeInfof("exact lease renewed pipe=%s jti=%s expires=%s", req.PipeID, lease.JTI, lease.ExpiresAt.Format(time.RFC3339))
 	return lease, nil
-}
-
-// hostCarrierAcquirer dials a peer over an already-open libp2p host and opens
-// the configured protocol stream. It lets the detached runtime reuse its own
-// host's relay reachability for renewal instead of opening a second host.
-type hostCarrierAcquirer struct {
-	h       host.Host
-	protoID protocol.ID
-}
-
-// newHostCarrierAcquirer creates a reachability acquirer over the existing
-// host. Close is a no-op: the host is owned by the caller.
-func newHostCarrierAcquirer(h host.Host, protoID protocol.ID) *hostCarrierAcquirer {
-	return &hostCarrierAcquirer{h: h, protoID: protoID}
-}
-
-// Acquire implements usecase.ReachabilityAcquirer.
-func (a *hostCarrierAcquirer) Acquire(ctx context.Context, address string) (usecase.Carrier, error) {
-	setup, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	remotePeerID, err := node.DialPeer(setup, a.h, address)
-	if err != nil {
-		return nil, fmt.Errorf("host_reachability: dial: %w", err)
-	}
-	stream, err := a.h.NewStream(core.WithAllowLimitedConn(setup, "tubo exact renewal"), remotePeerID, a.protoID)
-	if err != nil {
-		return nil, fmt.Errorf("host_reachability: new stream: %w", err)
-	}
-	_ = stream.SetDeadline(time.Now().Add(10 * time.Second))
-	return node.WrapStream(stream), nil
 }
 
 // exactLeaseTTL returns the configured short-lived exact AccessLease lifetime

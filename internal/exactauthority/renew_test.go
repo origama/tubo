@@ -38,22 +38,31 @@ func (s *fakeRevocationState) revokeInvite(jti string) {
 	s.revokedJTIs["exact.invite/"+jti] = true
 }
 
-// fakeAcceptedStore seeds the authority-side accepted relationship.
+// fakeAcceptedStore seeds the authority-side accepted relationship. Exactly
+// one current authoritative relationship per (pipe, recipient): the
+// deterministic AcceptedBindingStore contract.
 type fakeAcceptedStore struct {
 	accepted map[string]string // pipeID+"/"+clientPublic -> jti
+	epochs   map[string]uint64 // pipeID+"/"+clientPublic -> accepted epoch
 	err      error
 }
 
-func (s *fakeAcceptedStore) AcceptedRedemption(_ context.Context, pipeID, clientPublic string) (string, bool, error) {
+func (s *fakeAcceptedStore) AcceptedRelationship(_ context.Context, pipeID, clientPublic string) (string, uint64, bool, error) {
 	if s.err != nil {
-		return "", false, s.err
+		return "", 0, false, s.err
 	}
-	jti, ok := s.accepted[pipeID+"/"+clientPublic]
-	return jti, ok, nil
+	key := pipeID+"/"+clientPublic
+	jti, ok := s.accepted[key]
+	if !ok {
+		return "", 0, false, nil
+	}
+	return jti, s.epochs[key], true, nil
 }
 
-func (s *fakeAcceptedStore) accept(pipeID, clientPublic, jti string) {
-	s.accepted[pipeID+"/"+clientPublic] = jti
+func (s *fakeAcceptedStore) accept(pipeID, clientPublic, jti string, epoch uint64) {
+	key := pipeID+"/"+clientPublic
+	s.accepted[key] = jti
+	s.epochs[key] = epoch
 }
 
 // renewalFixture provisions an owner + dedicated Exact Authority, mints an
@@ -100,8 +109,8 @@ func newRenewalFixture(t *testing.T) *renewalFixture {
 	_, clientOne, _ := ed25519.GenerateKey(rand.Reader)
 	_, clientTwo, _ := ed25519.GenerateKey(rand.Reader)
 	clientOnePublic := accesslease.PublicString(clientOne.Public().(ed25519.PublicKey))
-	accepted := &fakeAcceptedStore{accepted: make(map[string]string)}
-	accepted.accept(pipeID, clientOnePublic, "jti_accepted")
+	accepted := &fakeAcceptedStore{accepted: make(map[string]string), epochs: make(map[string]uint64)}
+	accepted.accept(pipeID, clientOnePublic, "jti_accepted", 0)
 	return &renewalFixture{
 		pipeID:          pipeID,
 		auth:            auth,
@@ -170,7 +179,7 @@ func TestRenewAcceptedAccessWithoutAcceptedBindingFails(t *testing.T) {
 	now := time.Now().UTC()
 	challenge, _ := accesslease.RandomChallenge()
 	proof := accesslease.SignProof(f.clientOne, accesslease.RenewProofPurpose, f.pipeID, challenge)
-	empty := &fakeAcceptedStore{accepted: make(map[string]string)}
+	empty := &fakeAcceptedStore{accepted: make(map[string]string), epochs: make(map[string]uint64)}
 	if _, err := renewHelper(f, ctx, now, f.pipeID, f.clientOnePublic, f.encodedBinding, challenge, proof, f.loader, f.state, empty, 10*time.Minute); err == nil {
 		t.Fatal("renewal without accepted binding must fail")
 	}

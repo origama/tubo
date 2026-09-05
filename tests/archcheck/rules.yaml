@@ -162,6 +162,23 @@ file_guards:
       - "github.com/libp2p/go-libp2p/core/protocol"
       - "github.com/origama/tubo-rebuilt/internal/store"
 
+  # R19: the L2 exact downstream open path must never import the L4 usecase
+  # package. The neutral openauth.AccessAcquirer is injected from the
+  # composition root instead (internal/runtime/exact_access.go).
+  - rule: R19
+    description: "L2 exact downstream open must not import L4 usecase"
+    path: internal/runtime/exact_downstream.go
+    forbidden_imports:
+      - "github.com/origama/tubo-rebuilt/internal/usecase"
+
+  # R20: the L2 local exact pipe runtime must not import the L4 usecase
+  # package and must not construct or reference L4 exact access policy.
+  - rule: R20
+    description: "L2 local exact pipe runtime must not import L4 usecase"
+    path: internal/runtime/pipe.go
+    forbidden_imports:
+      - "github.com/origama/tubo-rebuilt/internal/usecase"
+
 # Semantic pattern checks (source-level scans)
 semantic_checks:
   # R11: no global dispatch symbols in runtime
@@ -230,3 +247,24 @@ semantic_checks:
       - AcceptedBinding
       - ExactRenewal
       - RenewAcceptedAccess
+
+  # R21: the L2 exact-open execution files must not reference L4 exact access
+  # symbols (UseCases, acquire use case, accepted-binding value types). This
+  # guards the boundary beyond plain imports so the violation cannot return
+  # through renamed imports or expressions.
+  - rule: R21
+    description: "L2 exact-open files must not reference L4 accepted-binding/renewal policy"
+    path_glob: internal/runtime/pipe.go
+    forbid_patterns:
+      - usecase.
+      - UseCases
+      - AcquireAcceptedPipeAccess
+      - AcceptedPipeAccess
+  - rule: R22
+    description: "L2 exact downstream open must not reference L4 accepted-binding/renewal policy"
+    path_glob: internal/runtime/exact_downstream.go
+    forbid_patterns:
+      - usecase.
+      - UseCases
+      - AcquireAcceptedPipeAccess
+      - AcceptedPipeAccess

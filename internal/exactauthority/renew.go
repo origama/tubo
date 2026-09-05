@@ -32,7 +32,8 @@ import (
 //  6. Revocation: originating invite JTI not revoked; pipe-access epoch not
 //     advanced (any pipe-access revocation invalidates further issuance)
 //  7. Fresh server challenge possession proof verify (renew purpose)
-//  8. Mint fresh short-lived AccessLease under the bound issuer
+//  8. Mint fresh short-lived AccessLease under the bound issuer at the
+//     accepted relationship's authorization epoch
 //
 // Steps 2-7 produce zero mutations. The remote caller can never provision
 // authority keys, create arbitrary accepted bindings, switch subject or Pipe,
@@ -92,8 +93,13 @@ func RenewAcceptedAccess(
 		return zero, errors.New("exactauthority: renewing binding authority mismatch")
 	}
 
-	// Step 5: the accepted relationship must exist for this exact recipient+pipe.
-	jti, acceptedOK, err := accepted.AcceptedRedemption(ctx, pipeID, recipientPublic)
+	// Step 5: the accepted relationship must exist for this exact
+	// recipient+pipe. There is exactly one authoritative current relationship
+	// per (pipe_id, recipient_public): renewal resolves it deterministically.
+	// A successful acceptance of a newer invite for the same Pipe+recipient
+	// replaces it (explicit re-authorization event); redemption history rows
+	// are one-time anti-replay evidence only.
+	jti, acceptedEpoch, acceptedOK, err := accepted.AcceptedRelationship(ctx, pipeID, recipientPublic)
 	if err != nil {
 		return zero, errors.New("exactauthority: renewal accepted state unavailable")
 	}
@@ -114,10 +120,13 @@ func RenewAcceptedAccess(
 		if epochErr != nil {
 			return zero, errors.New("exactauthority: renewal epoch state unavailable")
 		}
-		// Any pipe-access revocation (epoch advanced past issuance baseline
-		// zero) invalidates further lease issuance; a lease minted here would
-		// be denied by the L2 authorizer's stale-epoch check.
-		if currentEpoch > 0 {
+		// The authoritative authorization epoch is the accepted relationship's
+		// epoch. After a pipe-access revocation the epoch advances and this
+		// accepted epoch becomes stale, so renewal is denied until the
+		// recipient re-accepts a fresh invite minted at the new epoch. A
+		// future (greater) current epoch can never occur (monotonic epochs,
+		// fail closed), so equality is the correct fence.
+		if currentEpoch != acceptedEpoch {
 			return zero, errors.New("exactauthority: renewal epoch stale")
 		}
 	}
@@ -136,6 +145,7 @@ func RenewAcceptedAccess(
 		return zero, errors.New("exactauthority: invalid renewal possession proof")
 	}
 
-	// Step 8: mint a fresh short-lived lease under the bound issuer.
-	return NewAccessLeaseForReissuance(auth, recipientPublic, pipeID, now, leaseLifetime)
+	// Step 8: mint a fresh short-lived lease under the bound issuer, carrying
+	// the accepted relationship's authorization epoch.
+	return NewAccessLeaseForReissuance(auth, recipientPublic, pipeID, now, leaseLifetime, acceptedEpoch)
 }

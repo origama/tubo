@@ -61,6 +61,14 @@ type OwnerRedemptionLocator interface {
 	LocateOwner(ctx context.Context, pipeRef domain.Ref, pipeID string) (string, error)
 }
 
+// ExactAccessEpochReader reads the current authoritative pipe-access
+// revocation epoch for an exact Pipe (0 when never revoked). ShareExact mints
+// invites at this epoch so redemption/renewal stay epoch-consistent; a
+// revocation advances the epoch and every earlier invite becomes stale.
+type ExactAccessEpochReader interface {
+	PipeAccessEpoch(ctx context.Context, pipeID string) (uint64, error)
+}
+
 // PipeStarter launches the runtime for a durable PipeSpec. 8B wires the real
 // PipeRuntime; 8A tests inject fakes. The durable definition is never
 // modified by starting or stopping.

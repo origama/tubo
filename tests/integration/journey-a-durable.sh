@@ -188,5 +188,81 @@ if ! grep -q 'server denied\|renewal_failed\|authorization' "$HOST_B/logs/"*.log
 fi
 echo "OK: revocation denied renewal; no new Pipe open; endpoint unreachable"
 
+# ---- invite JTI helper: decode base64url JSON and print a field ----
+invite_field() {
+  python3 - "$1" "$2" <<'PYINV'
+import base64, json, sys
+raw = sys.argv[1]
+raw += "=" * (-len(raw) % 4)
+try:
+    value = json.loads(base64.urlsafe_b64decode(raw))
+    print(value.get(sys.argv[2], ""))
+except Exception:
+    print("")
+PYINV
+}
+
+echo "=== 9. post-revocation re-authorization: fresh invite at new epoch restores access ==="
+# Host A shares the SAME Pipe again: the fresh invite is minted at the NEW
+# pipe-access epoch (1), so it is valid even though the previous one is stale.
+SHARE2_JSON="$(env TUBO_HOME="$HOST_A" "$T" share pipe/origin --json --quiet 2>/dev/null)"
+INVITE2="$(printf '%s' "$SHARE2_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["invite"])')"
+if [[ -z "$INVITE2" ]]; then echo "FAIL: second share" >&2; exit 1; fi
+# Re-accept on Host B: same recipient identity and same durable remote Pipe.
+ACCEPT2_JSON="$(env TUBO_HOME="$HOST_B" "$T" accept --token "$INVITE2" --json 2>"$WORK/accept2.err")"
+ACCEPTED2="$(printf '%s' "$ACCEPT2_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["remote_pipe_id"])')"
+if [[ "$ACCEPTED2" != "$PIPE_ID" ]]; then echo "FAIL: re-accepted pipe $ACCEPTED2 != $PIPE_ID" >&2; exit 1; fi
+# Wait past the previous 3s lease fence: the new-epoch accepted relationship
+# re-authorizes and the tunnel reopens (renewal, no original invite).
+sleep 4
+renewed=false
+for _ in $(seq 1 40); do
+  if probe; then renewed=true; break; fi
+  sleep 0.4
+done
+if ! $renewed; then echo "FAIL: access not restored after fresh share+accept" >&2; cat "$HOST_B/logs/"*.log 2>/dev/null | tail -20 >&2; exit 1; fi
+# Expire that fresh lease and prove renewal at the new epoch still works.
+sleep 4
+RENEW2_BEFORE="$(grep -c 'exact lease renewed' "$HOST_B/logs/"*.log 2>/dev/null || true)"
+if ! probe; then echo "FAIL: traffic after new-epoch lease expiry" >&2; cat "$HOST_B/logs/"*.log 2>/dev/null | tail -10 >&2; exit 1; fi
+RENEW2_AFTER="$(grep -c 'exact lease renewed' "$HOST_B/logs/"*.log 2>/dev/null || true)"
+if [[ "$RENEW2_AFTER" -le "$RENEW2_BEFORE" ]]; then
+  echo "FAIL: no renewal observed at the new epoch: before=$RENEW2_BEFORE after=$RENEW2_AFTER" >&2
+  exit 1
+fi
+echo "OK: re-authorization works - same pipe id, fresh epoch, renewal at new epoch"
+
+echo "=== 10. multi-invite determinism: obsolete invite revocation vs current ==="
+# Host A shares AGAIN: invite3. The newest accepted invite becomes the
+# authoritative current relationship (deterministic per pipe+recipient).
+SHARE3_JSON="$(env TUBO_HOME="$HOST_A" "$T" share pipe/origin --json --quiet 2>/dev/null)"
+INVITE3="$(printf '%s' "$SHARE3_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["invite"])')"
+if env TUBO_HOME="$HOST_B" "$T" accept --token "$INVITE3" --json >/dev/null 2>"$WORK/accept3.err"; then
+  echo "OK: third invite accepted by the same recipient"
+else
+  echo "FAIL: third invite accept" >&2; exit 1
+fi
+JTI2="$(invite_field "$INVITE2" jti)"
+JTI3="$(invite_field "$INVITE3" jti)"
+if [[ -z "$JTI2" || -z "$JTI3" || "$JTI2" == "$JTI3" ]]; then echo "FAIL: invite JTIs" >&2; exit 1; fi
+# Revoke the OBSOLETE invite (the one replaced by INVITE3): the current
+# relationship is backed by INVITE3, so renewal must keep working after the
+# cached lease fence.
+env TUBO_HOME="$HOST_A" "$T" revoke invite "$JTI2" --json >/dev/null 2>&1 || true
+sleep 4
+if ! probe; then sleep 3; fi
+if ! probe; then echo "FAIL: obsolete-invite revocation must not break renewal" >&2; exit 1; fi
+# Revoke the CURRENT invite (JTI3): renewal must be denied once the cached
+# lease expires, so the endpoint becomes unreachable.
+env TUBO_HOME="$HOST_A" "$T" revoke invite "$JTI3" --json >/dev/null 2>&1 || true
+sleep 5   # cross the 3s lease fence with margin
+if probe; then
+  echo "FAIL: current-invite revocation did not deny renewal (endpoint still reachable)" >&2
+  exit 1
+fi
+echo "OK: obsolete invite revocation harmless; current invite revocation denies renewal"
+
+echo ""
+echo "[integration] Journey A durable binding PASS (expiry + restart + owner restart + revoke + re-authorize + multi-invite determinism)"
 echo ""
 echo "[integration] Journey A durable binding PASS (lease expiry + restart + owner restart + revocation)"

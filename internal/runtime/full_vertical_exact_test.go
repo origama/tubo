@@ -62,7 +62,7 @@ func TestFullAuthorityVertical(t *testing.T) {
 	}
 
 	// 3. Owner issues invite.
-	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute)
+	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute, 0)
 	if err != nil {
 		t.Fatalf("NewExactInvite: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestRedemptionAtomicity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute)
+	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

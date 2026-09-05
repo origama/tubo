@@ -351,7 +351,7 @@ func (s *fakeRedemptionService) Redeem(_ context.Context, _ Carrier, invite acce
 	if err != nil {
 		return accesslease.AccessLease{}, err
 	}
-	lease, err := accesslease.NewAccessLease(authPrivate, recipientPublic, invite.AudiencePipeID, now().UTC(), 10*time.Minute)
+	lease, err := accesslease.NewAccessLease(authPrivate, recipientPublic, invite.AudiencePipeID, now().UTC(), 10*time.Minute, invite.AccessEpoch)
 	if err != nil {
 		return accesslease.AccessLease{}, err
 	}
@@ -370,6 +370,7 @@ type fakeRenewalService struct {
 	calls      map[string]int
 	leaseTTL   time.Duration
 	now        func() time.Time
+	epoch      uint64
 	// subjectOverride, when non-empty, mints leases for a different subject
 	// than requested (tests the local verification fail-closed path).
 	subjectOverride string
@@ -422,7 +423,7 @@ func (s *fakeRenewalService) Renew(_ context.Context, _ Carrier, req RenewalRequ
 	if err != nil {
 		return accesslease.AccessLease{}, err
 	}
-	return accesslease.NewAccessLease(authPrivate, subject, req.PipeID, now().UTC(), ttl)
+	return accesslease.NewAccessLease(authPrivate, subject, req.PipeID, now().UTC(), ttl, s.epoch)
 }
 
 // ---- Fake pipe starter ----
@@ -479,4 +480,26 @@ type testTB interface {
 	Fatal(args ...any)
 	Fatalf(format string, args ...any)
 	Helper()
+}
+
+// fakeExactEpochReader drives the pipe-access epoch ShareExact mints at.
+type fakeExactEpochReader struct {
+	mu    sync.Mutex
+	epoch uint64
+}
+
+func newFakeExactEpochReader(epoch uint64) *fakeExactEpochReader {
+	return &fakeExactEpochReader{epoch: epoch}
+}
+
+func (r *fakeExactEpochReader) setEpoch(epoch uint64) {
+	r.mu.Lock()
+	r.epoch = epoch
+	r.mu.Unlock()
+}
+
+func (r *fakeExactEpochReader) PipeAccessEpoch(_ context.Context, _ string) (uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.epoch, nil
 }

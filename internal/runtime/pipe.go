@@ -31,7 +31,6 @@ import (
 	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 	"github.com/origama/tubo-rebuilt/internal/reachability"
 	"github.com/origama/tubo-rebuilt/internal/store"
-	"github.com/origama/tubo-rebuilt/internal/usecase"
 )
 
 // baseSessionCapabilities is the only capability set advertised on the A0
@@ -47,7 +46,7 @@ func authorizedOpenResult(sessionID string) wire.OpenResult {
 	return wire.OpenResult{OK: true, SessionID: sessionID, Protocol: "2.0"}
 }
 
-func RunPipe(ctx context.Context, state *store.Store, identifier string) error {
+func RunPipe(ctx context.Context, state *store.Store, identifier string, exactAccess openauth.AccessAcquirer) error {
 	spec, ownerKey, grant, err := state.Pipe(ctx, identifier)
 	if err != nil {
 		return err
@@ -57,7 +56,7 @@ func RunPipe(ctx context.Context, state *store.Store, identifier string) error {
 	case domain.IngressTubo:
 		return runPublishedPipe(ctx, state, spec, ownerKey, grant)
 	case domain.IngressLocal:
-		return runLocalPipe(ctx, state, spec)
+		return runLocalPipe(ctx, state, spec, exactAccess)
 	default:
 		return fmt.Errorf("unsupported runtime ingress %s", spec.Ingress.Kind)
 	}
@@ -335,7 +334,7 @@ type tunnelServer struct {
 	downstreamOpener engine.DownstreamOpener
 }
 
-func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec) error {
+func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec, exactAccess openauth.AccessAcquirer) error {
 	nodeRuntime := NewNodeRuntime(ctx)
 	defer nodeRuntime.Close()
 	pipeRuntime, err := nodeRuntime.NewPipeRuntime()
@@ -359,10 +358,11 @@ func runLocalPipe(ctx context.Context, state *store.Store, spec domain.PipeSpec)
 	// The target pipe ID is derived from the spec.Target.Name. A durable
 	// accepted remote-Pipe binding provides relationship + reachability state;
 	// the actual short-lived AccessLease is reacquired per open through the
-	// binding (AcquireAcceptedPipeAccess), so an expired initial lease never
+	// binding (a fresh short-lived AccessLease acquired per open), so an expired
+	// initial lease never
 	// blocks reconnection.
 	if _, bindErr := state.GetRemotePipeBinding(ctx, spec.Target.Name); bindErr == nil {
-		return runLocalPipeExact(ctx, state, spec, nodeRuntime, pipeRuntime, pipeEngine)
+		return runLocalPipeExact(ctx, state, spec, nodeRuntime, pipeRuntime, pipeEngine, exactAccess)
 	} else if !errors.Is(bindErr, domain.ErrNotFound) {
 		return fmt.Errorf("persistence_failed: remote pipe binding: %w", bindErr)
 	}
@@ -1086,7 +1086,7 @@ func runScopeLessPublishedPipe(
 // Pipe that targets a remote Pipe. The remote Pipe must have an accepted
 // durable binding (the one-time invite is never required again). Every local
 // connection acquires verified current/fresh short-lived access material
-// through the L4 AcquireAcceptedPipeAccess use case (ephemeral lease cache or
+// through the injected access acquirer (ephemeral lease cache or
 // post-acceptance renewal over the runtime's own host), then opens the remote
 // tunnel. No discovery, no Scope, no membership, no PipeRecord.
 func runLocalPipeExact(
@@ -1096,6 +1096,7 @@ func runLocalPipeExact(
 	nodeRuntime *NodeRuntime,
 	pipeRuntime *PipeRuntime,
 	pipeEngine *engine.Engine,
+	exactAccess openauth.AccessAcquirer,
 ) error {
 	bandwidth := coremetrics.NewBandwidthCounter()
 	h, relayAddress, err := OpenOverlayHostWithReporter(ctx, state, strings.ReplaceAll(spec.Ref.String(), "/", "-"), bandwidth)
@@ -1139,24 +1140,15 @@ func runLocalPipeExact(
 		case <-ctx.Done():
 		}
 	}()
-	// Compose the L4 acquisition use case with narrow store adapters and the
-	// renewal client. Reachability reuses this runtime's own host so no second
-	// libp2p host is opened for renewal.
-	uc := usecase.New(
-		store.NewServiceRepoAdapter(state),
-		store.NewPipeRepoAdapter(state),
-	)
-	uc.Secrets = state.SecretPath()
-	uc.Bindings = store.NewRemotePipeBindingAdapter(state)
-	uc.LeaseCache = store.NewAccessLeaseCacheAdapter(state)
-	uc.Renewal = NewExactRenewalClient(state.SecretPath())
-	uc.Reach = newHostCarrierAcquirer(h, protocol.ID(wire.ExactRenewalID))
-	acquire := func(openCtx context.Context) (usecase.AcceptedPipeAccess, error) {
-		return uc.AcquireAcceptedPipeAccess(openCtx, spec.Target.Name)
+	// The exact downstream open path consumes only the neutral injected
+	// openauth.AccessAcquirer (composed at the process composition root over
+	// the L4 accepted-binding use case). L2 never imports or constructs L4.
+	if exactAccess == nil {
+		return errors.New("runtime_unavailable: exact access acquirer is not injected")
 	}
 	// Use the exact downstream opener to establish the remote tunnel.
 	// Each local connection triggers a new tunnel open with fresh access.
-	exactOpener := newExactDownstreamPipeOpener(state, h, spec.Target.Name, acquire)
+	exactOpener := newExactDownstreamPipeOpener(exactAccess, state, h, spec.Target.Name)
 	for {
 		local, err := listener.Accept()
 		if err != nil {

@@ -51,7 +51,7 @@ func newTestAuthorizerAndLease(t *testing.T, now time.Time) (*ExactOpenAuthorize
 	authPub := authPriv.Public().(ed25519.PublicKey)
 	clientPub := accesslease.PublicString(clientPriv.Public().(ed25519.PublicKey))
 
-	lease, err := accesslease.NewAccessLease(authPriv, clientPub, testPipeID, now, 5*time.Minute)
+	lease, err := accesslease.NewAccessLease(authPriv, clientPub, testPipeID, now, 5*time.Minute, 0)
 	if err != nil {
 		t.Fatalf("NewAccessLease: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestExactOpenAuthorizerFailsClosedForInvalidLease(t *testing.T) {
 	proof := accesslease.SignProof(clientPriv, accesslease.OpenProofPurpose, challenge, testPipeID)
 
 	genSignedLease := func(lifetime time.Duration) string {
-		lease, _ := accesslease.NewAccessLease(authPriv, clientPub, testPipeID, now, lifetime)
+		lease, _ := accesslease.NewAccessLease(authPriv, clientPub, testPipeID, now, lifetime, 0)
 		enc, _ := accesslease.Encode(lease)
 		return enc
 	}
@@ -237,7 +237,7 @@ func TestExactOpenAuthorizerNoRevocationState(t *testing.T) {
 	authPub := authPriv.Public().(ed25519.PublicKey)
 	clientPub := accesslease.PublicString(clientPriv.Public().(ed25519.PublicKey))
 
-	lease, err := accesslease.NewAccessLease(authPriv, clientPub, testPipeID, now, 5*time.Minute)
+	lease, err := accesslease.NewAccessLease(authPriv, clientPub, testPipeID, now, 5*time.Minute, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,26 +274,26 @@ func mustNonCanonicalLease() string {
 	_, authPriv, _ := ed25519.GenerateKey(rand.Reader)
 	_, clientPriv, _ := ed25519.GenerateKey(rand.Reader) //nolint:govet
 	_ = clientPriv
-	lease, _ := accesslease.NewAccessLease(authPriv, "testsub", testPipeID, time.Now().UTC(), 5*time.Minute)
+	lease, _ := accesslease.NewAccessLease(authPriv, "testsub", testPipeID, time.Now().UTC(), 5*time.Minute, 0)
 	enc, _ := accesslease.Encode(lease)
 	return enc + "="
 }
 
 func mustWrongIssuerLease(clientPub string) string {
 	_, otherPriv, _ := ed25519.GenerateKey(rand.Reader)
-	lease, _ := accesslease.NewAccessLease(otherPriv, clientPub, testPipeID, time.Now().UTC(), 5*time.Minute)
+	lease, _ := accesslease.NewAccessLease(otherPriv, clientPub, testPipeID, time.Now().UTC(), 5*time.Minute, 0)
 	enc, _ := accesslease.Encode(lease)
 	return enc
 }
 
 func mustWrongSubjectLease(authPriv ed25519.PrivateKey) string {
-	lease, _ := accesslease.NewAccessLease(authPriv, "wrong-subject", testPipeID, time.Now().UTC(), 5*time.Minute)
+	lease, _ := accesslease.NewAccessLease(authPriv, "wrong-subject", testPipeID, time.Now().UTC(), 5*time.Minute, 0)
 	enc, _ := accesslease.Encode(lease)
 	return enc
 }
 
 func mustWrongPipeLease(authPriv ed25519.PrivateKey, clientPub string) string {
-	lease, _ := accesslease.NewAccessLease(authPriv, clientPub, "pip_wrong", time.Now().UTC(), 5*time.Minute)
+	lease, _ := accesslease.NewAccessLease(authPriv, clientPub, "pip_wrong", time.Now().UTC(), 5*time.Minute, 0)
 	enc, _ := accesslease.Encode(lease)
 	return enc
 }

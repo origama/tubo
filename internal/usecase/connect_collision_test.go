@@ -28,6 +28,7 @@ func newCollisionHarness(t *testing.T, remoteName string) (UseCases, *memoryPipe
 	u.Renewal = newFakeRenewalService(secretsDir)
 	u.Bindings = newMemoryRemotePipeBindingRepo()
 	u.LeaseCache = newMemoryAccessLeaseCacheRepo()
+	u.ExactEpoch = newFakeExactEpochReader(0)
 
 	invite, err := attachAndShare(t, u, remoteName)
 	if err != nil {

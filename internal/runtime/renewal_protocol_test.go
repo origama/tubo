@@ -120,7 +120,7 @@ func TestExactRedemptionThenRenewalOverRealFraming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, f.pipeID, time.Now().UTC(), 10*time.Minute)
+	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, f.pipeID, time.Now().UTC(), 10*time.Minute, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,9 +144,9 @@ func TestExactRedemptionThenRenewalOverRealFraming(t *testing.T) {
 	}
 	// The authority-side accepted relationship was persisted.
 	adapter := store.NewExactAuthorityRevocationState(state, f.pipeID)
-	jti, ok, err := adapter.AcceptedRedemption(ctx, f.pipeID, f.recipientPublic)
-	if err != nil || !ok || jti == "" {
-		t.Fatalf("accepted relationship not persisted after redemption: %q %v %v", jti, ok, err)
+	jti, epoch, ok, err := adapter.AcceptedRelationship(ctx, f.pipeID, f.recipientPublic)
+	if err != nil || !ok || jti == "" || epoch != 0 {
+		t.Fatalf("accepted relationship not persisted after redemption: %q ep=%d %v %v", jti, epoch, ok, err)
 	}
 
 	// ---- Phase 2: renewal over a fresh real framed stream (no invite) ----
@@ -290,7 +290,7 @@ func TestExactRenewalNegativeProtocolCases(t *testing.T) {
 
 	// Establish the accepted relationship first.
 	adapter := store.NewExactAuthorityRevocationState(state, f.pipeID)
-	if _, err := adapter.RedeemInvite(ctx, "jti_neg", f.pipeID, "ses_neg", f.recipientPublic); err != nil {
+	if _, err := adapter.RedeemInviteAndAccept(ctx, "jti_neg", f.pipeID, "ses_neg", f.recipientPublic, 0, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -446,7 +446,7 @@ func TestExactRenewalConcurrentMints(t *testing.T) {
 	}
 	defer state.Close()
 	adapter := store.NewExactAuthorityRevocationState(state, f.pipeID)
-	if _, err := adapter.RedeemInvite(ctx, "jti_concurrent", f.pipeID, "ses_conc", f.recipientPublic); err != nil {
+	if _, err := adapter.RedeemInviteAndAccept(ctx, "jti_concurrent", f.pipeID, "ses_conc", f.recipientPublic, 0, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	auth, err := f.loader.Load()
@@ -490,5 +490,216 @@ func TestExactRenewalConcurrentMints(t *testing.T) {
 		if ret[i] != nil {
 			t.Fatalf("concurrent renewal %d: %v", i, ret[i])
 		}
+	}
+}
+
+// redeemInviteOverWire runs one full redemption exchange over a real framed
+// stream and returns the decoded lease (or fails the test).
+func redeemInviteOverWire(t *testing.T, state *store.Store, f *renewalServerFixture, encodedInvite string) accesslease.AccessLease {
+	t.Helper()
+	server, client := net.Pipe()
+	done := make(chan bool, 1)
+	go func() {
+		newExactRedemptionHandler(state, f.pipeID, f.ttl).handle(&fakeStream{conn: server})
+		done <- true
+	}()
+	rc := NewExactRedemptionClient(f.secretsDir)
+	invite, err := accesslease.DecodeInvite(encodedInvite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lease, err := rc.Redeem(context.Background(), &connCarrier{conn: client}, invite, f.recipientPublic)
+	<-done
+	_ = client.Close()
+	if err != nil {
+		t.Fatalf("redemption: %v", err)
+	}
+	return lease
+}
+
+// renewOverWire runs one full renewal exchange and returns the fresh lease.
+func renewOverWire(t *testing.T, f *renewalServerFixture, state *store.Store, binding string) accesslease.AccessLease {
+	t.Helper()
+	server, client := net.Pipe()
+	done := make(chan bool, 1)
+	go func() {
+		newExactRenewalHandler(state, f.pipeID, f.ttl).handle(&fakeStream{conn: server})
+		done <- true
+	}()
+	rc := NewExactRenewalClient(f.secretsDir)
+	lease, err := rc.Renew(context.Background(), &connCarrier{conn: client}, usecase.RenewalRequest{
+		PipeID:          f.pipeID,
+		RecipientPublic: f.recipientPublic,
+		OwnerBinding:    binding,
+	})
+	<-done
+	_ = client.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return lease
+}
+
+// TestExactPostRevokeReauthorizationProtocol is the full epoch lifecycle at the
+// protocol boundary: accept at epoch 0 -> revoke (epoch 1) -> old renewal
+// denied -> fresh invite minted at epoch 1 -> re-accept -> renewal at epoch 1
+// succeeds and every lease carries the accepted epoch.
+func TestExactPostRevokeReauthorizationProtocol(t *testing.T) {
+	f := newRenewalServerFixture(t)
+	ctx := context.Background()
+	state, err := store.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	auth, err := f.loader.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := encodedBindingFor(auth.Binding)
+
+	// Invite at epoch 0 (never revoked so far); accept works.
+	invite0, err := accesslease.NewExactInvite(auth.Private, auth.Binding, f.pipeID, time.Now().UTC(), 10*time.Minute, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded0, _ := accesslease.EncodeInvite(invite0)
+	lease0 := redeemInviteOverWire(t, state, f, encoded0)
+	if lease0.AccessEpoch != 0 || lease0.Subject != f.recipientPublic {
+		t.Fatalf("epoch-0 lease mismatch: %#v", lease0)
+	}
+
+	// Revoke pipe-access: epoch advances 0 -> 1.
+	if err := state.Revoke(ctx, f.pipeID, "pipe-access", f.pipeID, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// Old accepted relationship (epoch 0) can no longer renew.
+	server, client := net.Pipe()
+	done := make(chan bool, 1)
+	go func() {
+		newExactRenewalHandler(state, f.pipeID, f.ttl).handle(&fakeStream{conn: server})
+		done <- true
+	}()
+	rc := NewExactRenewalClient(f.secretsDir)
+	_, renewErr := rc.Renew(context.Background(), &connCarrier{conn: client}, usecase.RenewalRequest{
+		PipeID:          f.pipeID,
+		RecipientPublic: f.recipientPublic,
+		OwnerBinding:    binding,
+	})
+	<-done
+	_ = client.Close()
+	if renewErr == nil {
+		t.Fatal("pre-revocation accepted relationship must not renew after epoch advance")
+	}
+
+	// A fresh invite minted at the NEW epoch re-authorizes deterministically.
+	invite1, err := accesslease.NewExactInvite(auth.Private, auth.Binding, f.pipeID, time.Now().UTC(), 10*time.Minute, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded1, _ := accesslease.EncodeInvite(invite1)
+	lease1 := redeemInviteOverWire(t, state, f, encoded1)
+	if lease1.AccessEpoch != 1 {
+		t.Fatalf("re-accepted lease must carry new epoch, got %d", lease1.AccessEpoch)
+	}
+	adapter := store.NewExactAuthorityRevocationState(state, f.pipeID)
+	jti, epoch, ok, err := adapter.AcceptedRelationship(ctx, f.pipeID, f.recipientPublic)
+	if err != nil || !ok || epoch != 1 {
+		t.Fatalf("relationship epoch not advanced: %q ep=%d ok=%v %v", jti, epoch, ok, err)
+	}
+
+	// Renewal at the new epoch works and the lease carries epoch 1.
+	renewed := renewOverWire(t, f, state, binding)
+	if renewed.AccessEpoch != 1 || renewed.JTI == lease1.JTI {
+		t.Fatalf("post-revoke renewal lease must be fresh at epoch 1: %#v", renewed)
+	}
+}
+
+// TestExactMultipleInvitesDeterministicProtocol proves the authoritative
+// relationship is deterministic when the same recipient accepts several
+// invites for the same Pipe: the NEWEST accepted invite becomes current;
+// revoking an obsolete older invite does not invalidate renewal, while
+// revoking the current invite does.
+func TestExactMultipleInvitesDeterministicProtocol(t *testing.T) {
+	f := newRenewalServerFixture(t)
+	ctx := context.Background()
+	state, err := store.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	auth, err := f.loader.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding := encodedBindingFor(auth.Binding)
+
+	mint := func(tag string) string {
+		invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, f.pipeID, time.Now().UTC(), 10*time.Minute, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded, _ := accesslease.EncodeInvite(invite)
+		return encoded
+	}
+	inviteA := mint("A")
+	inviteB := mint("B")
+
+	_ = redeemInviteOverWire(t, state, f, inviteA)
+	leaseB := redeemInviteOverWire(t, state, f, inviteB)
+	if leaseB.JTI == "" {
+		t.Fatal("second invite redemption failed")
+	}
+
+	// The authoritative relationship resolves to the newest accepted invite.
+	// Invite B's JTI is opaque here; revoke the OLD invite (A) and prove
+	// renewal still works (B is current), then revoke the current invite and
+	// prove renewal fails.
+	var a accesslease.ExactInvite
+	var b accesslease.ExactInvite
+	if aDec, err := accesslease.DecodeInvite(inviteA); err != nil {
+		t.Fatal(err)
+	} else {
+		a = aDec
+	}
+	if bDec, err := accesslease.DecodeInvite(inviteB); err != nil {
+		t.Fatal(err)
+	} else {
+		b = bDec
+	}
+	if a.JTI == b.JTI {
+		t.Fatal("test invites must differ")
+	}
+	// Sanity: redemption history holds both one-time rows.
+	if n, _ := state.RedemptionCount(ctx, a.JTI, f.pipeID); n != 1 {
+		t.Fatalf("invite A history: %d", n)
+	}
+	// Revoking the OBSOLETE invite must not affect renewal (B is current).
+	if err := state.Revoke(ctx, f.pipeID, "exact.invite", a.JTI, 1); err != nil {
+		t.Fatal(err)
+	}
+	_ = renewOverWire(t, f, state, binding)
+
+	// Revoking the CURRENT invite invalidates renewal.
+	if err := state.Revoke(ctx, f.pipeID, "exact.invite", b.JTI, 1); err != nil {
+		t.Fatal(err)
+	}
+	server, client := net.Pipe()
+	done := make(chan bool, 1)
+	go func() {
+		newExactRenewalHandler(state, f.pipeID, f.ttl).handle(&fakeStream{conn: server})
+		done <- true
+	}()
+	rc := NewExactRenewalClient(f.secretsDir)
+	_, renewErr := rc.Renew(context.Background(), &connCarrier{conn: client}, usecase.RenewalRequest{
+		PipeID:          f.pipeID,
+		RecipientPublic: f.recipientPublic,
+		OwnerBinding:    binding,
+	})
+	<-done
+	_ = client.Close()
+	if renewErr == nil {
+		t.Fatal("renewal must fail once the CURRENT invite is revoked")
 	}
 }

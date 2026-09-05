@@ -118,7 +118,11 @@ func RedeemExactInvite(
 		return zero, errors.New("exactauthority: invalid challenge proof in redemption")
 	}
 
-	// Steps 6B: Check revocation and epoch before mutation.
+	// Steps 6B: Check revocation and epoch before mutation. An invite is
+	// acceptable only while the authoritative pipe-access epoch equals the
+	// epoch the invite was minted at: a revoked (advanced) epoch makes every
+	// earlier invite stale, and a valid invite minted at a future epoch is
+	// equally refused (fail closed, epoch rollback protection).
 	if state != nil {
 		revoked, revErr := state.IsRevoked(ctx, invite.JTI, "exact.invite")
 		if revErr != nil {
@@ -131,22 +135,24 @@ func RedeemExactInvite(
 		if epochErr != nil {
 			return zero, errors.New("exactauthority: epoch state unavailable")
 		}
-		if currentEpoch > invite.AccessEpoch {
+		if currentEpoch != invite.AccessEpoch {
 			return zero, errors.New("exactauthority: invite epoch stale")
 		}
 	}
 
-	// Step 10: ONLY NOW atomic redemption mutation.
+	// Step 10: ONLY NOW atomic redemption mutation + authoritative accepted
+	// relationship write. The accepted relationship records the invite epoch;
+	// later renewals are authorized against exactly that epoch.
 	sessionID, err := accesslease.NewSessionID()
 	if err != nil {
 		return zero, err
 	}
 	if redemption != nil {
-		winner, redeemErr := redemption.RedeemInvite(ctx, invite.JTI, invite.AudiencePipeID, sessionID, recipientPublic)
+		ok, redeemErr := redemption.RedeemInviteAndAccept(ctx, invite.JTI, invite.AudiencePipeID, sessionID, recipientPublic, invite.AccessEpoch, now)
 		if redeemErr != nil {
 			return zero, errors.New("exactauthority: redemption persistence failed")
 		}
-		if !winner {
+		if !ok {
 			return zero, errors.New("exactauthority: invite already redeemed by another")
 		}
 	}
@@ -171,6 +177,7 @@ func RedeemExactInvite(
 		invite.AudiencePipeID,
 		now,
 		leaseLifetime,
+		invite.AccessEpoch,
 	)
 	if err != nil {
 		return zero, err
@@ -182,18 +189,19 @@ func RedeemExactInvite(
 // randomChallenge is re-exported for clarity.
 func randomChallenge() (string, error) { return accesslease.RandomChallenge() }
 
-// NewAccessLeaseForReissuance creates a fresh lease for an already-redeemed
-// invite (same-subject retry) when the original redeem succeeded for the same
-// caller. This is the idempotent retry path.
+// NewAccessLeaseForReissuance creates a fresh lease for an accepted
+// relationship, minted at the accepted pipe-access epoch. It is used by the
+// initial redemption retry path and by post-acceptance renewal.
 func NewAccessLeaseForReissuance(
 	auth Authority,
 	recipientPublic string,
 	pipeID string,
 	now time.Time,
 	leaseLifetime time.Duration,
+	accessEpoch uint64,
 ) (accesslease.AccessLease, error) {
 	if leaseLifetime <= 0 || leaseLifetime > accesslease.MaxTTL {
 		leaseLifetime = accesslease.MaxTTL
 	}
-	return accesslease.NewAccessLease(auth.Private, recipientPublic, pipeID, now, leaseLifetime)
+	return accesslease.NewAccessLease(auth.Private, recipientPublic, pipeID, now, leaseLifetime, accessEpoch)
 }

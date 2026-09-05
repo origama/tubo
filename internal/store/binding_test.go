@@ -111,7 +111,7 @@ func TestStoreAccessLeaseCacheExpiryFailsClosedAndKeepsBinding(t *testing.T) {
 	}
 }
 
-func TestStoreAcceptedRedemptionLookupAndIndexedQuery(t *testing.T) {
+func TestStoreAcceptedRelationshipDeterministic(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TUBO_HOME", home)
 	ctx := context.Background()
@@ -120,27 +120,125 @@ func TestStoreAcceptedRedemptionLookupAndIndexedQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer state.Close()
-	if _, err := state.RedeemInvite(ctx, "jti_one", "pip_r", "ses_1", "b_client_one"); err != nil {
+	now := time.Now().UTC()
+	// Two different invites accepted by the SAME recipient for the SAME pipe:
+	// the one-time redemption history keeps both rows (anti-replay), while the
+	// authoritative current relationship is exactly one row that resolves to
+	// the newest accepted invite deterministically.
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_first", "pip_r", "ses_1", "b_client_one", 0, now); err != nil {
 		t.Fatal(err)
 	}
-	jti, ok, err := state.AcceptedRedemption(ctx, "pip_r", "b_client_one")
-	if err != nil || !ok || jti != "jti_one" {
-		t.Fatalf("accepted redemption lookup: %q %v %v", jti, ok, err)
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_second", "pip_r", "ses_2", "b_client_one", 0, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
 	}
-	// Different recipient for the same pipe: no relationship.
-	_, ok, _ = state.AcceptedRedemption(ctx, "pip_r", "b_client_two")
-	if ok {
-		t.Fatal("non-accepted recipient must not resolve")
+	if n, err := state.RedemptionCount(ctx, "jti_first", "pip_r"); err != nil || n != 1 {
+		t.Fatalf("redemption history rows: %d %v", n, err)
+	}
+	jti, epoch, ok, err := state.AcceptedRelationship(ctx, "pip_r", "b_client_one")
+	if err != nil || !ok || jti != "jti_second" || epoch != 0 {
+		t.Fatalf("authoritative relationship: %q ep=%d ok=%v %v", jti, epoch, ok, err)
+	}
+	// Different recipient for the same pipe: independent relationship.
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_other", "pip_r", "ses_3", "b_client_two", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	jti, _, ok, _ = state.AcceptedRelationship(ctx, "pip_r", "b_client_two")
+	if !ok || jti != "jti_other" {
+		t.Fatalf("independent recipient relationship: %q %v", jti, ok)
 	}
 	// Different pipe: no relationship.
-	_, ok, _ = state.AcceptedRedemption(ctx, "pip_other", "b_client_one")
+	_, _, ok, _ = state.AcceptedRelationship(ctx, "pip_other", "b_client_one")
 	if ok {
 		t.Fatal("non-accepted pipe must not resolve")
 	}
 	// Invite pipe resolution for scope-less revocation.
-	pipeID, ok, err := state.RedemptionPipeForInvite(ctx, "jti_one")
+	pipeID, ok, err := state.RedemptionPipeForInvite(ctx, "jti_first")
 	if err != nil || !ok || pipeID != "pip_r" {
 		t.Fatalf("redemption pipe lookup: %q %v %v", pipeID, ok, err)
+	}
+}
+
+func TestStoreAcceptedRelationshipEpochAdvancesWithReaccept(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUBO_HOME", home)
+	ctx := context.Background()
+	state, err := Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	now := time.Now().UTC()
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_epoch0", "pip_e", "ses_1", "b_client_one", 0, now); err != nil {
+		t.Fatal(err)
+	}
+	// Post-revocation state: epoch advanced to 1; a fresh invite at epoch 1 is
+	// accepted and REPLACES the authoritative relationship.
+	if err := state.Revoke(ctx, "pip_e", "pipe-access", "pip_e", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_epoch1", "pip_e", "ses_2", "b_client_one", 1, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	jti, epoch, ok, err := state.AcceptedRelationship(ctx, "pip_e", "b_client_one")
+	if err != nil || !ok || jti != "jti_epoch1" || epoch != 1 {
+		t.Fatalf("relationship after re-accept: %q ep=%d ok=%v %v", jti, epoch, ok, err)
+	}
+	// Redemption history preserved (both one-time rows).
+	if n, _ := state.RedemptionCount(ctx, "jti_epoch0", "pip_e"); n != 1 {
+		t.Fatalf("old redemption history lost")
+	}
+}
+
+func TestStoreRedeemInviteAndAcceptOneWinnerAndIdempotentRetry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUBO_HOME", home)
+	ctx := context.Background()
+	state, err := Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	now := time.Now().UTC()
+	ok, err := state.RedeemInviteAndAccept(ctx, "jti_win", "pip_w", "ses_1", "b_client_one", 0, now)
+	if err != nil || !ok {
+		t.Fatalf("first redemption: %v %v", ok, err)
+	}
+	// Idempotent same-recipient retry: ok=true, relationship not regressed.
+	ok, err = state.RedeemInviteAndAccept(ctx, "jti_win", "pip_w", "ses_2", "b_client_one", 0, now)
+	if err != nil || !ok {
+		t.Fatalf("idempotent retry: %v %v", ok, err)
+	}
+	jti, _, relOK, _ := state.AcceptedRelationship(ctx, "pip_w", "b_client_one")
+	if !relOK || jti != "jti_win" {
+		t.Fatalf("relationship after retry: %q %v", jti, relOK)
+	}
+	// A different recipient can never consume the same invite.
+	_, err = state.RedeemInviteAndAccept(ctx, "jti_win", "pip_w", "ses_3", "b_client_two", 0, now)
+	if !errors.Is(err, ErrInviteRedeemed) {
+		t.Fatalf("different recipient must fail closed: %v", err)
+	}
+}
+
+func TestStoreAcceptedRelationshipSurvivesReopen(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TUBO_HOME", home)
+	ctx := context.Background()
+	state, err := Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.RedeemInviteAndAccept(ctx, "jti_persist", "pip_p", "ses_1", "b_client_one", 0, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	_ = state.Close()
+	state2, err := Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state2.Close()
+	jti, _, ok, err := state2.AcceptedRelationship(ctx, "pip_p", "b_client_one")
+	if err != nil || !ok || jti != "jti_persist" {
+		t.Fatalf("relationship must survive restart: %q ok=%v %v", jti, ok, err)
 	}
 }
 

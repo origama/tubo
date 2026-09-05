@@ -116,6 +116,7 @@ func TestCase9_ShareExactProvisionsKeyOnce(t *testing.T) {
 	u.Now = fixedClock(now)
 	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	u.ExactEpoch = newFakeExactEpochReader(0)
 
 	attachResult, err := u.Attach(ctx, AttachInput{Name: "sharetest", Target: "http://127.0.0.1:8080"})
 	if err != nil {
@@ -220,6 +221,7 @@ func TestShareExactEmbedsExactLocatorAndTamperingFails(t *testing.T) {
 	u := New(services, pipes)
 	u.Secrets = t.TempDir()
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	u.ExactEpoch = newFakeExactEpochReader(0)
 	locatorCapability := &fakeOwnerLocator{address: locator}
 	u.OwnerLocator = locatorCapability
 	attached, err := u.Attach(ctx, AttachInput{Name: "canonical-locator", Target: "http://127.0.0.1:8080"})
@@ -289,6 +291,7 @@ func TestCase10_ShareExactNegative(t *testing.T) {
 	u.Now = fixedClock(now)
 	u.OwnerLocator = &fakeOwnerLocator{address: "relay.tubo.click:4001"}
 	u.RedemptionProtocol = "/tubo/exact-redemption/1"
+	u.ExactEpoch = newFakeExactEpochReader(0)
 
 	// a) Share non-existent pipe -> not_found.
 	_, err := u.ShareExact(ctx, ShareExactInput{PipeRef: "pipe/nonexistent"})
@@ -350,6 +353,7 @@ func TestCase11_ConnectExactNoScopeNoDiscovery(t *testing.T) {
 	u.Renewal = newFakeRenewalService(secretsDir)
 	u.Bindings = newMemoryRemotePipeBindingRepo()
 	u.LeaseCache = newMemoryAccessLeaseCacheRepo()
+	u.ExactEpoch = newFakeExactEpochReader(0)
 
 	// Step 1: Attach (creates owned pipe and provisions owner key).
 	attachResult, err := u.Attach(ctx, AttachInput{Name: "connectexact", Target: "http://127.0.0.1:8080"})
@@ -412,6 +416,7 @@ type exactFixture struct {
 	leaseCache *memoryAccessLeaseCacheRepo
 	redemption *fakeRedemptionService
 	renewal    *fakeRenewalService
+	epoch      *fakeExactEpochReader
 	u          UseCases
 	secrets    string
 }
@@ -425,6 +430,7 @@ func newExactFixture(t *testing.T) *exactFixture {
 	secrets := t.TempDir()
 	redemption := newFakeRedemptionService(secrets)
 	renewal := newFakeRenewalService(secrets)
+	epoch := newFakeExactEpochReader(0)
 	u := New(services, pipes)
 	u.Secrets = secrets
 	u.OwnerLocator = &fakeOwnerLocator{address: "/dns4/relay.test/tcp/4001/p2p/12D3KooWM2hGwzrJYGyjUwtzrzLZuPWAmjiG8JeNM5YYJNPeHLME/p2p-circuit/p2p/12D3KooWRJCtSj2fWsnyHYdpcmQoHwDzVzr39VmFrRwmJrwwW57G"}
@@ -434,9 +440,10 @@ func newExactFixture(t *testing.T) *exactFixture {
 	u.Reach = newFakeReachability()
 	u.Bindings = bindings
 	u.LeaseCache = leaseCache
+	u.ExactEpoch = epoch
 	return &exactFixture{
 		services: services, pipes: pipes, bindings: bindings, leaseCache: leaseCache,
-		redemption: redemption, renewal: renewal, u: u, secrets: secrets,
+		redemption: redemption, renewal: renewal, epoch: epoch, u: u, secrets: secrets,
 	}
 }
 
@@ -774,5 +781,128 @@ func TestRenewalAfterInviteExpirySucceeds(t *testing.T) {
 	f.pinClock(t0.Add(20 * time.Minute))
 	if _, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID); err != nil {
 		t.Fatalf("renewal after invite expiry: %v", err)
+	}
+}
+
+// TestShareExactMintsInviteAtCurrentEpoch proves ShareExact reads the current
+// authoritative pipe-access epoch and mints the owner binding + invite at it,
+// so post-revocation shares re-authorize instead of staying stale.
+func TestShareExactMintsInviteAtCurrentEpoch(t *testing.T) {
+	f := newExactFixture(t)
+	ctx := context.Background()
+	f.epoch.setEpoch(1) // a pipe-access revocation already advanced the epoch
+	att, err := f.u.Attach(ctx, AttachInput{Name: "ep", Target: "http://127.0.0.1:8080"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	share, err := f.u.ShareExact(ctx, ShareExactInput{PipeRef: att.PipeRef.String()})
+	if err != nil {
+		t.Fatalf("share at epoch 1: %v", err)
+	}
+	invite, err := accesslease.DecodeInvite(share.Invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if invite.AccessEpoch != 1 {
+		t.Fatalf("invite must carry current epoch 1, got %d", invite.AccessEpoch)
+	}
+	// The invited binding epoch matches too (provenance).
+	binding, err := accesslease.DecodeOwnerBinding(invite.Binding)
+	if err != nil || binding.Epoch != 1 {
+		t.Fatalf("owner binding epoch mismatch: %v", err)
+	}
+}
+
+// TestPostRevokeReauthorization is the full use-case epoch lifecycle: accept
+// at epoch 0 -> epoch advances to 1 -> renewal denied -> fresh share+accept at
+// epoch 1 -> acquisition and renewal work again (no kill switch).
+func TestPostRevokeReauthorization(t *testing.T) {
+	f := newExactFixture(t)
+	ctx := context.Background()
+	t0 := time.Date(2025, 3, 1, 0, 0, 0, 0, time.UTC)
+	f.pinClock(t0)
+	pipeID, invite := f.makeShare(t)
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: invite}); err != nil {
+		t.Fatal(err)
+	}
+	// Revoke -> epoch advances to 1; the accepted relationship (epoch 0) is
+	// stale and the authority denies renewal (the L4 layer surfaces the
+	// server-side denial; the fake stands in for the L3 epoch check).
+	f.epoch.setEpoch(1)
+	if err := f.leaseCache.Delete(ctx, pipeID); err != nil {
+		t.Fatal(err)
+	}
+	f.renewal.fail(errors.New("exact_renewal: server denied: renewal_failed"))
+	if _, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID); err == nil {
+		t.Fatal("stale accepted relationship must not renew after revocation")
+	}
+	f.renewal.fail(nil)
+	// A fresh share after the revoke mints an invite at epoch 1 and a new
+	// accept replaces the authoritative relationship.
+	f.epoch.setEpoch(1)
+	att, _, _ := f.pipes.Get(ctx, "pipe/origin")
+	share2, err := f.u.ShareExact(ctx, ShareExactInput{PipeRef: att.Ref.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite2, _ := accesslease.DecodeInvite(share2.Invite)
+	if invite2.AccessEpoch != 1 {
+		t.Fatalf("post-revoke invite epoch: %d", invite2.AccessEpoch)
+	}
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: share2.Invite}); err != nil {
+		t.Fatalf("re-accept after revocation: %v", err)
+	}
+	// Acquisition works again through the fresh relationship.
+	f.renewal.setTTL(10 * time.Minute)
+	cached, _ := f.leaseCache.Get(ctx, pipeID)
+	_ = cached
+	if err := f.leaseCache.Delete(ctx, pipeID); err != nil {
+		t.Fatal(err)
+	}
+	f.renewal.epoch = 1
+	access, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID)
+	if err != nil {
+		t.Fatalf("acquire after re-authorization: %v", err)
+	}
+	if access.AccessLease.AccessEpoch != 1 {
+		t.Fatalf("re-acquired lease must carry new epoch, got %d", access.AccessLease.AccessEpoch)
+	}
+}
+
+// TestMultipleInvitesSameRecipientDeterministic proves accepting a second
+// invite for the same Pipe+recipient replaces the current relationship while
+// the redemption history stays intact and the binding remains a single row
+// with the identical recipient identity.
+func TestMultipleInvitesSameRecipientDeterministic(t *testing.T) {
+	f := newExactFixture(t)
+	ctx := context.Background()
+	pipeID, inviteA := f.makeShare(t)
+	if _, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: inviteA}); err != nil {
+		t.Fatal(err)
+	}
+	// Second independent share + accept by the same recipient.
+	shareB, err := f.u.ShareExact(ctx, ShareExactInput{PipeRef: "pipe/origin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shareB.PipeID != pipeID {
+		t.Fatalf("same pipe expected")
+	}
+	second, err := f.u.AcceptExactInvite(ctx, AcceptExactInviteInput{Invite: shareB.Invite})
+	if err != nil {
+		t.Fatalf("second accept: %v", err)
+	}
+	b, _ := f.bindings.Get(ctx, pipeID)
+	if b.RecipientPublic != second.RecipientPublic || len(f.bindings.items) != 1 {
+		t.Fatalf("binding must be one row with the same recipient: %d rows", len(f.bindings.items))
+	}
+	// Acquisition still works: the deterministic current relationship returns
+	// usable access material.
+	access, err := f.u.AcquireAcceptedPipeAccess(ctx, pipeID)
+	if err != nil {
+		t.Fatalf("acquire after second invite: %v", err)
+	}
+	if access.RemotePipeID != pipeID || access.AccessLease.AudiencePipeID != pipeID {
+		t.Fatalf("acquired access mismatch: %#v", access)
 	}
 }

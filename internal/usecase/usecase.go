@@ -45,6 +45,11 @@ type UseCases struct {
 	// closed; static relay or run addresses cannot bypass live locator resolution.
 	OwnerLocator OwnerRedemptionLocator
 
+	// ExactEpoch reads the current pipe-access revocation epoch for an exact
+	// Pipe; ShareExact mints bindings/invites at it. nil fails closed (no
+	// invite without epoch knowledge).
+	ExactEpoch ExactAccessEpochReader
+
 	// RedemptionProtocol is the neutral redemption protocol id embedded in
 	// minted OwnerBindings (e.g. "/tubo/exact-redemption/1").
 	RedemptionProtocol string

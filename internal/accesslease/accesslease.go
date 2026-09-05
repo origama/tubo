@@ -81,8 +81,10 @@ type accessLeaseSigning struct {
 // NewAccessLease builds a fresh exact-Pipe Access Lease for subject and
 // pipe the issuer controls. subject MUST be the canonical base64url Ed25519
 // public key of the recipient; arbitrary strings are rejected. lifetime must
-// be positive and bounded by MaxTTL; Now is forced to UTC.
-func NewAccessLease(private ed25519.PrivateKey, subject, pipeID string, now time.Time, lifetime time.Duration) (AccessLease, error) {
+// be positive and bounded by MaxTTL; accessEpoch is the issuing authority's
+// observed pipe-access authorization epoch for this exact Pipe; Now is forced
+// to UTC.
+func NewAccessLease(private ed25519.PrivateKey, subject, pipeID string, now time.Time, lifetime time.Duration, accessEpoch uint64) (AccessLease, error) {
 	if !validString(subject) || !validString(pipeID) || len(pipeID) > MaxPipeIDLen {
 		return AccessLease{}, errors.New("accesslease: invalid subject or pipe")
 	}
@@ -97,7 +99,7 @@ func NewAccessLease(private ed25519.PrivateKey, subject, pipeID string, now time
 		return AccessLease{}, err
 	}
 	now = now.UTC()
-	lease := AccessLease{Version: Version, Type: AccessLeaseType, Subject: subject, AudiencePipeID: pipeID, JTI: jti, IssuedAt: now, NotBefore: now, ExpiresAt: now.Add(lifetime)}
+	lease := AccessLease{Version: Version, Type: AccessLeaseType, Subject: subject, AudiencePipeID: pipeID, JTI: jti, IssuedAt: now, NotBefore: now, ExpiresAt: now.Add(lifetime), AccessEpoch: accessEpoch}
 	if err := lease.Sign(private); err != nil {
 		return AccessLease{}, err
 	}

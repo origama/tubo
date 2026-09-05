@@ -44,11 +44,11 @@ func TestCrossDomainSigning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lease, err := NewAccessLease(auth, subject, pid, cdFixNow(), time.Minute)
+	lease, err := NewAccessLease(auth, subject, pid, cdFixNow(), time.Minute, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	invite, err := NewExactInvite(auth, binding, pid, cdFixNow(), time.Minute)
+	invite, err := NewExactInvite(auth, binding, pid, cdFixNow(), time.Minute, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
