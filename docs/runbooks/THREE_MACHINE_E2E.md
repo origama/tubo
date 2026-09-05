@@ -135,6 +135,50 @@ Inspect paths before cleanup. Never replace run ID with glob. Default exit and t
 
 Set `KEEP_WORK=1` only for an inspected debugging run. Finalization still redacts retained artifacts, but skips cleanup and preserves exact run-specific local and remote roots, including secret-bearing state, under owner-only `0700` roots. Run exact-ID `clean` after inspection; default remains cleanup.
 
+## Durable exact-renewal campaign (operator deployment)
+
+The isolated harness above never touches the installed Tubo. There is one
+**operator** scenario that intentionally does: an operator campaign that
+proves the Journey-A exact connection keeps working past the initial
+short-lived AccessLease through the durable accepted binding
+(`/tubo/exact-renewal/1`), on the fixed three-machine topology. Because it
+replaces the installed binary and stops the previously installed service
+units it is NOT the default scenario and requires explicit operator
+acknowledgement. The manual campaign (executed 2026-09-05, evidence in
+`docs/testing/THREE_MACHINE_DURABLE_RENEWAL_2026-09-05.md`) is:
+
+1. **Clean old versions on all three hosts** — stop/disable the previous
+   product's systemd units on `tuborelay`, kill stale `tubo` processes,
+   remove old binaries (`/usr/local/bin/tubo` on the remotes,
+   `~/.local/bin/tubo` on macb) and old state dirs.
+2. **Install the current binary** from this checkout on all three hosts
+   (Linux/amd64 for `tuborelay`+`oripi`, Darwin/arm64 for macb).
+3. **Swarm key + relay**: generate one `swarm.key`, deploy to all hosts,
+   start `tubo relay` on `tuborelay` (transport-only, Circuit Relay v2),
+   record `inspect relay/default` for the peer ID.
+4. **Owner side** (`oripi`): `join overlay`, run an HTTP fixture,
+   `attach http://… --name origin -d`, `share pipe/origin` → one-time
+   invite.
+5. **Client side** (macb): `join overlay`, `accept --token <invite>`
+   (durable binding persisted; initial short-lived AccessLease), then
+   `connect --remote <pipe-id> --local 127.0.0.1:PORT -d` — no further
+   invite.
+6. **Renewal proof**: probe the local listener; let the real lease boundary
+   (default MaxTTL 10 minutes) elapse at least twice while conserving the
+   run; each crossing must keep probes succeeding, the runtime log must show
+   `info exact lease renewed pipe=… expires=…` lines, and the ephemeral
+   `exact_lease_cache` fencing must advance (expired lease → fresh lease).
+   Owner state must show exactly one `invite_redemptions` row and one
+   `accepted_exact_relationships` row (one-time bootstrap, no re-invite).
+
+Expected outcomes (recorded run, 2026-09-05): 7/7 probes OK across two full
+10-minute lease expirations; renewal leases issued at 14:09:53Z and
+14:20:06Z; zero probe failures; connectivity did not expire after the
+initial ten minutes.
+
+Post-campaign cleanup is operator-defined (see the evidence doc); the
+installed current binary remains in place.
+
 ## Mandatory scenarios
 
 The full release gate eventually includes:
