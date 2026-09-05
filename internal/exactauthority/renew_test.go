@@ -59,14 +59,14 @@ func (s *fakeAcceptedStore) accept(pipeID, clientPublic, jti string) {
 // renewalFixture provisions an owner + dedicated Exact Authority, mints an
 // invite, and seeds an accepted relationship for client one.
 type renewalFixture struct {
-	pipeID     string
-	auth       Authority
-	loader     Loader
-	encodedBinding string
-	accepted   *fakeAcceptedStore
-	state      *fakeRevocationState
-	clientOne  ed25519.PrivateKey
-	clientTwo  ed25519.PrivateKey
+	pipeID          string
+	auth            Authority
+	loader          Loader
+	encodedBinding  string
+	accepted        *fakeAcceptedStore
+	state           *fakeRevocationState
+	clientOne       ed25519.PrivateKey
+	clientTwo       ed25519.PrivateKey
 	clientOnePublic string
 }
 
@@ -103,14 +103,14 @@ func newRenewalFixture(t *testing.T) *renewalFixture {
 	accepted := &fakeAcceptedStore{accepted: make(map[string]string)}
 	accepted.accept(pipeID, clientOnePublic, "jti_accepted")
 	return &renewalFixture{
-		pipeID:     pipeID,
-		auth:       auth,
-		loader:     Loader{KeyPath: keyPath, Binding: auth.Binding},
-		encodedBinding: binding,
-		accepted:   accepted,
-		state:      &fakeRevocationState{revokedJTIs: make(map[string]bool)},
-		clientOne:  clientOne,
-		clientTwo:  clientTwo,
+		pipeID:          pipeID,
+		auth:            auth,
+		loader:          Loader{KeyPath: keyPath, Binding: auth.Binding},
+		encodedBinding:  binding,
+		accepted:        accepted,
+		state:           &fakeRevocationState{revokedJTIs: make(map[string]bool)},
+		clientOne:       clientOne,
+		clientTwo:       clientTwo,
 		clientOnePublic: clientOnePublic,
 	}
 }

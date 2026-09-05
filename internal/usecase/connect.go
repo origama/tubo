@@ -82,9 +82,9 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 	// through the shared accepted-binding lifecycle. No competing exact
 	// authorization implementation exists.
 	var (
-		targetPipeID    string
-		recipientPublic string
-		recipientRef    domain.Ref
+		targetPipeID     string
+		recipientPublic  string
+		recipientRef     domain.Ref
 		recipientKeyFile string
 	)
 	if in.Invite != "" {

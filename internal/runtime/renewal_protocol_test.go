@@ -25,9 +25,9 @@ import (
 	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/exactauthority"
 	"github.com/origama/tubo-rebuilt/internal/localkey"
+	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 	"github.com/origama/tubo-rebuilt/internal/store"
 	"github.com/origama/tubo-rebuilt/internal/usecase"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
 )
 
 // connCarrier adapts a net.Conn to the L4 usecase.Carrier contract.
@@ -42,13 +42,13 @@ func (c *connCarrier) Close() error                { return c.conn.Close() }
 // renewalServerFixture provisions the owner/authority + accepted recipient key
 // on a real store-backed TUBO_HOME and exposes both handlers.
 type renewalServerFixture struct {
-	home       string
-	pipeID     string
-	loader     exactauthority.Loader
-	secretsDir string
+	home             string
+	pipeID           string
+	loader           exactauthority.Loader
+	secretsDir       string
 	recipientPrivate ed25519.PrivateKey
-	recipientPublic string
-	ttl        time.Duration
+	recipientPublic  string
+	ttl              time.Duration
 }
 
 func newRenewalServerFixture(t *testing.T) *renewalServerFixture {
@@ -88,13 +88,13 @@ func newRenewalServerFixture(t *testing.T) *renewalServerFixture {
 		t.Fatal(err)
 	}
 	return &renewalServerFixture{
-		home:       state.Home(),
-		pipeID:     pipeID,
-		loader:     exactauthority.Loader{KeyPath: keyPath, Binding: auth.Binding},
-		secretsDir: secretsDir,
+		home:             state.Home(),
+		pipeID:           pipeID,
+		loader:           exactauthority.Loader{KeyPath: keyPath, Binding: auth.Binding},
+		secretsDir:       secretsDir,
 		recipientPrivate: recipientPrivate,
-		recipientPublic: accesslease.PublicString(recipientPrivate.Public().(ed25519.PublicKey)),
-		ttl:        10 * time.Minute,
+		recipientPublic:  accesslease.PublicString(recipientPrivate.Public().(ed25519.PublicKey)),
+		ttl:              10 * time.Minute,
 	}
 }
 

@@ -106,9 +106,9 @@ type ShareExactResult struct {
 // ConnectExactInput carries the parameters for redeeming an exact invite and
 // creating a durable local ingress Pipe.
 type ConnectExactInput struct {
-	Invite      string // canonical base64url ExactInvite
+	Invite       string // canonical base64url ExactInvite
 	RemotePipeID string // accepted remote Pipe ID; no invite needed (renewal)
-	LocalListen string // host:port for the local ingress
+	LocalListen  string // host:port for the local ingress
 	// Name is an optional friendly name for the local Pipe. When empty, a
 	// deterministic name derived from the remote Pipe ID is used.
 	Name string
@@ -145,7 +145,7 @@ type AcceptExactInviteInput struct {
 // case persists the durable binding and caches the initial lease; it creates
 // no local Pipe, no ingress, and starts no runtime.
 type AcceptExactInviteResult struct {
-	RemotePipeID  string
+	RemotePipeID    string
 	RecipientPublic string
 	// LeaseExpiresAt is the initial short-lived lease's expiry; acceptable
 	// access is reacquired through the durable binding afterwards.
@@ -157,8 +157,8 @@ type AcceptExactInviteResult struct {
 // authority identity and locator needed to open the Pipe. It never creates an
 // ingress and never mutates Pipe topology.
 type AcceptedPipeAccess struct {
-	RemotePipeID  string
-	Locator       string
+	RemotePipeID    string
+	Locator         string
 	AuthorityPublic string
-	AccessLease   accesslease.AccessLease
+	AccessLease     accesslease.AccessLease
 }

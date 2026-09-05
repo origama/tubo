@@ -112,7 +112,7 @@ func (s *ExactRenewalClient) Renew(ctx context.Context, carrier usecase.Carrier,
 // the configured protocol stream. It lets the detached runtime reuse its own
 // host's relay reachability for renewal instead of opening a second host.
 type hostCarrierAcquirer struct {
-	h      host.Host
+	h       host.Host
 	protoID protocol.ID
 }
 

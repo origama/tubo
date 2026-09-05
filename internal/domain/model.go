@@ -199,7 +199,7 @@ type RemotePipeBinding struct {
 	// identity. Renewal requires possession proof by this exact key.
 	RecipientPublic string `json:"recipient_public"`
 	// Source records how this relationship was established.
-	Source string `json:"source"`
+	Source    string    `json:"source"`
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitempty"`
 }

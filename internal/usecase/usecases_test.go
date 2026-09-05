@@ -399,8 +399,6 @@ func TestCase11_ConnectExactNoScopeNoDiscovery(t *testing.T) {
 	// the crafted path above used only the invite plus injected reachability.
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Durable exact remote-Pipe binding lifecycle tests (schema 12)
 // ---------------------------------------------------------------------------

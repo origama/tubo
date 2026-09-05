@@ -193,4 +193,3 @@ func TestOpenMigratesSchema11ExactConnectionsToBindingSplit(t *testing.T) {
 		t.Fatalf("post-migration binding read: %v", err)
 	}
 }
-

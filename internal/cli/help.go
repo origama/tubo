@@ -15,7 +15,7 @@ func (a App) helpTop() {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, "Usage: tubo <command> [args]")
 	fmt.Fprintln(out)
-	printTopGroup(out, "Workflows:", []string{"attach", "connect", "share"})
+	printTopGroup(out, "Workflows:", []string{"accept", "attach", "connect", "share"})
 	printTopGroup(out, "Resource operations:", []string{"get", "inspect", "start", "stop", "restart", "rm", "logs", "ps", "top", "watch", "doctor"})
 	printTopGroup(out, "Resources:", []string{"service", "pipe", "scope", "peers", "config", "supervise"})
 	printTopGroup(out, "Infrastructure:", []string{"join", "relay", "authority", "revoke", "keygen", "version"})

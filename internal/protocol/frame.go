@@ -177,7 +177,7 @@ type ExactRedemptionResponse struct {
 // relationship carries. The invite is never required again after acceptance;
 // the binding anchors issuer trust to the exact Pipe's owner-bound Authority.
 type ExactRenewalRequest struct {
-	PipeID         string `json:"pipe_id"`
+	PipeID          string `json:"pipe_id"`
 	RecipientPublic string `json:"recipient_public"`
 	OwnerBinding    string `json:"owner_binding"`
 }

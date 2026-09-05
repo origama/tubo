@@ -534,10 +534,10 @@ func (a App) connect(ctx context.Context, state *store.Store, f flags) error {
 	a.UseCases.Reach = reach
 
 	result, err := a.UseCases.ConnectExact(ctx, usecase.ConnectExactInput{
-		Invite:      token,
+		Invite:       token,
 		RemotePipeID: remote,
-		LocalListen: f.values["local"],
-		Name:        f.values["name"],
+		LocalListen:  f.values["local"],
+		Name:         f.values["name"],
 	})
 	if err != nil {
 		return err
