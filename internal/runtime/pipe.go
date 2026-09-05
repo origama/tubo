@@ -1174,6 +1174,13 @@ func runLocalPipeExact(
 			session := store.Session{ID: sessionID, PipeRef: spec.Ref.String(), InitialTransportPath: "relayed", CurrentTransportPath: "relayed", StartedAt: time.Now().UTC()}
 			_ = state.PutSession(context.Background(), session)
 			runtimeInfof("session opened pipe=%s session=%s path=relayed", spec.Ref, sessionID)
+			// The open path mirrors the scoped client: a successful authorized
+			// session is real recovery evidence and must move the run back to
+			// ready (a transient failure that set degraded earlier never keeps
+			// the status stuck after connectivity is restored).
+			if setRunStatus(state, spec.Ref.String(), "ready") {
+				runtimeInfof("recovered %s through successful session", spec.Ref)
+			}
 			sp, sessionErr := pipeRuntime.NewSession(sessionConfig{
 				SessionID:    sessionID,
 				PipeID:       spec.PipeID,
