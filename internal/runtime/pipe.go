@@ -244,6 +244,15 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 		downstreamOpener: newDownstreamPipeOpener(state, h, pipeRuntime),
 	}
 	h.SetStreamHandler(protocol.ID(wire.TunnelID), handler.handle)
+	// Exact sharing is a per-Pipe product capability, independent of optional
+	// Scope topology: an exact invite bypasses discovery and redeems directly
+	// at the Pipe authority. The general (scoped or published) pipe daemon must
+	// therefore serve redemption and renewal exactly like the Journey A exact
+	// daemon — otherwise a share on such a Pipe would mint invites that can
+	// never be redeemed (protocols not supported). Handlers fail closed
+	// without a provisioned exact authority key.
+	h.SetStreamHandler(protocol.ID(wire.ExactRedemptionID), newExactRedemptionHandler(state, spec.PipeID, exactLeaseTTL()).handle)
+	h.SetStreamHandler(protocol.ID(wire.ExactRenewalID), newExactRenewalHandler(state, spec.PipeID, exactLeaseTTL()).handle)
 	run := store.Run{PrimaryRef: spec.Ref.String(), Kind: "pipe", PID: os.Getpid(), Source: RunSource(), Status: "ready", PeerID: h.ID().String(), Address: address, StartedAt: time.Now().UTC()}
 	if err := state.PutRun(ctx, run); err != nil {
 		return err
