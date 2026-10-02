@@ -25,7 +25,28 @@ Every remote Pipe open requires verified short-lived Access Lease. Pipe ID, rout
 
 Pre-A0 implementation is permanently preserved as **prototype reference baseline**: [`prototype-v2-final`](docs/implementation/PROTOTYPE_BASELINE.md), commit `637c3859051103c844a042dac04c40b7ce0627e1`. Code, tests, and docs at tag preserve prototype behavior, security learning, and failure modes. Main progressively diverges during A0 and later phases; prototype internals are not target architecture or compatibility constraint.
 
-Architecture-driven **A0 — Layered Architecture Foundation** has begun. First implemented slice establishes pure L0 Service/Pipe validation and dependency guard; remaining A0 runtime, authorization, reachability, persistence, and use-case work is tracked in GitHub issues.
+Architecture-driven **A0 — Layered Architecture Foundation** is complete (epic #18): the exact minimal sharing path — attach a local Service, share it as an exact invite, accept on a clean installation, connect through a short-lived Access Lease with renewal and revocation — is implemented end to end on the target architecture, with Journey A durable remote-Pipe binding including invite expiry, owner/consumer restarts, revocation, and re-authorization proven by scenario tests (`make verify-local`). Supported-path correctness fixes continue on main (issue #76); A1 (Scope Authority and deferred-capability reintroduction) is tracked in the roadmap and issues.
+
+## Minimal use case (exact sharing)
+
+Owner machine (service is local and stays local):
+
+```bash
+tubo attach http://127.0.0.1:8080 --name origin      # define local Service
+tubo start pipe/origin                                  # run the Pipe (zero-config reachability via public relay)
+tubo share pipe/origin                               # prints a one-time exact invite
+```
+
+Consumer machine (clean Tubo installation):
+
+```bash
+tubo connect --token "$INVITE" --local 127.0.0.1:9001   # redeem invite, run local ingress
+curl http://127.0.0.1:9001/                             # authorized encrypted connectivity
+```
+
+The invite is redeemed exactly once and becomes a durable accepted binding; later `tubo connect --remote <pipe-id>` reuses it, renewing short-lived Access Leases per open. `tubo revoke pipe-access pipe/origin` on the owner immediately fences old authorizations; a fresh share re-authorizes. `tubo revoke invite <jti-or-full-token>` fences a not-yet-redeemed invite.
+
+See [CLI reference](docs/reference/CLI.md).
 
 ## Start here
 

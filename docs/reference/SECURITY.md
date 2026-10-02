@@ -35,6 +35,14 @@ AcceptedBinding does not define an ingress
   evidence used to establish the relationship once, not its lifetime clock
   (intentionally different from the old share-invite-derived refresh-lease
   behavior).
+- The revocation state, accepted-relationship store, and redemption store are
+  MANDATORY security dependencies (#76): constructing the exact open
+  authorizer without revocation state fails closed, and redemption/renewal
+  reject missing revocation or persistence dependencies before any
+  verification. There is no revocation-free configuration. An unredeemed
+  exact invite can be fenced pre-redemption by revoking its JTI (the CLI
+  accepts the full invite token); the redemption boundary checks exactly that
+  row.
 - Every renewal fails closed on unavailable revocation state, invalid
   signatures, subject mismatch, Pipe mismatch, missing authoritative
   accepted state, or a stale authorization epoch. The authoritative accepted

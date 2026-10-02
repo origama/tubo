@@ -53,7 +53,7 @@ Tubo's CLI is organized into three command families plus infrastructure:
 | `tubo join overlay --relay <multiaddr> --swarm-key <file>` | configure overlay reachability |
 | `tubo relay --listen <addr> --public-addr <addr>` | run a relay in the foreground |
 | `tubo authority start <cluster> --scope <scope>` | run a Scope authority in the foreground |
-| `tubo revoke <type> <id>` | revoke invites, sessions, access or publish grants. `revoke invite <jti>` resolves the invite family deterministically: an invite redeemed through the exact path revokes as `exact.invite` under its exact Pipe ID (obsolete exact invites included); any other invite revokes as the legacy scoped `share.invite` in the current Scope. `pipe-access` revocation advances the exact epoch: a fresh share+accept at the new epoch re-authorizes |
+| `tubo revoke <type> <id>` | revoke invites, sessions, access or publish grants. `revoke invite` accepts a JTI or the full exact invite token and resolves the invite family deterministically: an invite redeemed through the exact path revokes as `exact.invite` under its exact Pipe ID (obsolete exact invites included), and a full token argument revokes the still-UNREDEEMED exact invite by its decoded JTI and Pipe audience; any other invite revokes as the legacy scoped `share.invite` in the current Scope. `pipe-access` revocation advances the exact epoch: a fresh share+accept at the new epoch re-authorizes |
 | `tubo keygen swarm --out <file>` | generate a swarm key |
 | `tubo version` | version information |
 
@@ -196,7 +196,9 @@ across reconnects. The recipient identity key (and therefore the derived
 local Pipe ID) is canonical per remote Pipe ID, never per name. Reconnects
 to the same remote therefore resolve one durable local Pipe definition, and
 an existing definition is reusable only when every relevant durable semantic
-matches the request:
+matches the request. All conflict checks run BEFORE the one-time invite is
+redeemed (#76): a rejected `connect --token` never consumes the bootstrap
+credential, never dials, and never writes a durable binding.
 
 * same name, same remote, same local listener — compatible reuse;
 * reconnect without `--name` on the same local listener — the existing

@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+### Minimal exact-sharing readiness fixes (#76)
+
+- Store schema-13 accepted-relationship backfill is version-gated to a
+  one-time legacy upgrade: scoped redemptions are never promoted to accepted
+  exact relationships on reopen.
+- Revocation/accepted-relationship dependencies are mandatory and fail closed:
+  the exact open authorizer cannot be constructed without revocation state;
+  redemption and renewal reject missing revocation or persistence state.
+- `revoke invite` accepts the full exact invite token so the owner can fence
+  an unredeemed exact invite before redemption.
+- `connect --token` performs all local conflict checks before consuming the
+  one-time invite: a conflicting connect no longer burns the bootstrap
+  credential.
+- The tunnel receive path uses the owning run's lifecycle context
+  (cancellable at shutdown) and host identity creation is atomic and
+  concurrency-safe; a corrupt identity key fails closed instead of silently
+  rotating the host identity.
+
 ### Corrected minimal-path verification (#76)
 
 - Architecture checks now inspect actual Go dependency edges, including third-party dependencies. Missing guarded packages/files fail closed; regex guards scan production code without comments. Real-module negative tests prevent vacuous PASS results. Earlier A0 package-edge PASS evidence is superseded by the corrected checker.

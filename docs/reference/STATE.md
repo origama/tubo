@@ -190,6 +190,11 @@ Any failure after spawn kills and waits for the owned child, removes/resolves th
   current pipe-access epoch is still 0 and fails closed (stale) once any
   revocation has advanced it. Older binaries reject schema 13. No downgrade
   migration exists; restore pre-upgrade backup before rollback.
+  - #76 correction: the schema-13 backfill is a ONE-TIME legacy upgrade
+    (runs only for databases at schema < 13). It never re-runs on later
+    Store.Open calls: scoped (`kind='scoped'`) redemptions written after
+    schema 14 are one-time anti-replay history only and are never promoted
+    to accepted exact relationships by a reopen.
 - This repository has no migration requirement from previous Tubo formats.
 - Import/export is an explicit product feature, not compatibility fallback.
 
