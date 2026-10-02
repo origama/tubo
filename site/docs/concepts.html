@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Core Concepts — Tubo Docs</title>
+  <meta name="description" content="Services, Pipes, Sessions, Identities, Invites, and Access Leases — the Tubo trust and connectivity model.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html" class="active">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Core Concepts</h1>
+    <p class="doc-lead">Tubo is a secure peer-to-peer connectivity and collaboration platform built from a small set of composable primitives.</p>
+
+    <div class="mermaid-wrap"><div class="mermaid">
+flowchart LR
+    subgraph Owner machine
+      S["Service (local HTTP/TCP/Unix)"] --> P["Pipe"]
+      P -.->|"tubo share"| I["Exact Invite (one-time)"]
+    end
+    subgraph Recipient machine
+      C["tubo connect --local"] --> B["Durable accepted binding"]
+    end
+    I -->|"redeem once"| B
+    B -->|"renew per open"| L["Access Lease (minutes)"]
+    L -->|"authorizes every remote open"| P
+    </div></div>
+
+    <h2>The canonical model</h2>
+    <table class="compare-table" style="min-width:100%">
+      <thead><tr><th>Primitive</th><th>What it is</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Service</strong></td><td>A local application endpoint: HTTP, TCP, or Unix socket. Local, never automatically public or discoverable.</td></tr>
+        <tr><td><strong>Pipe</strong></td><td>A stable directed connectivity resource: <code>Ingress → Pipe → Target</code>. A Pipe target is exactly one Service or one other Pipe — Pipe-to-Pipe composition is fundamental.</td></tr>
+        <tr><td><strong>Session</strong></td><td>A concrete active traversal. Owns byte flow and continuity for one connection.</td></tr>
+        <tr><td><strong>Identity</strong></td><td>A stable cryptographic participant / resource-owner identity (Ed25519).</td></tr>
+        <tr><td><strong>Scope</strong></td><td>An optional collaboration/security domain. Never a prerequisite for connectivity.</td></tr>
+        <tr><td><strong>Invite</strong></td><td>The exact bootstrap/redemption credential. One-time, short-lived, owner-signed, bound to one Pipe.</td></tr>
+        <tr><td><strong>Access Lease</strong></td><td>Short-lived authorization to open one exact remote Pipe. Every remote open requires one.</td></tr>
+        <tr><td><strong>Descriptor</strong></td><td>Higher-level discoverable metadata referencing Pipes (e.g. agent cards) — future work.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>The authorization rule</h2>
+    <div class="note">
+      <strong>Every remote Pipe open requires a short-lived, cryptographically verifiable Access Lease.</strong>
+      No Access Lease means no remote Pipe open. Pipe ID, endpoint, relay route, invite, or membership alone
+      are <em>insufficient</em> — the receiving boundary fails closed on invalid signature, wrong subject,
+      wrong Pipe audience, expiry, revocation, stale authorization epoch, or unavailable revocation state.
+    </div>
+
+    <h2>Exact Pipe Authority</h2>
+    <p>
+      Each Pipe has a dedicated authority key, bound to the Pipe owner by a signed owner binding.
+      The authority is the only issuer of Access Leases for that Pipe: it validates invite redemption
+      and possession proofs, records the accepted relationship, checks revocation and the current
+      authorization epoch, and mints short-lived leases — at redemption, and per-open afterwards through renewal.
+    </p>
+
+    <h2>Durable accepted binding</h2>
+    <p>
+      Redeeming an invite establishes a durable accepted relationship between one Pipe and one recipient identity.
+      It survives invite expiry, lease expiry, and restarts on both sides: reconnects and renewals derive fresh
+      short-lived Access Leases from the binding without a new invite. A fresh invite for the same Pipe+recipient
+      replaces the relationship (explicit re-authorization); revocation fences it until re-acceptance.
+    </p>
+
+    <h2>Separation of concerns</h2>
+    <ul>
+      <li><strong>Discovery</strong> finds a resource. <strong>Connectivity</strong> reaches it. <strong>Authorization</strong> decides you may open it. They are always separate.</li>
+      <li>An exact invite <strong>bypasses discovery entirely</strong> — nothing about a shared Pipe is listed anywhere.</li>
+      <li>Relays, bootstrap providers, and caches provide <strong>reachability only</strong> — never ambient authorization.</li>
+      <li>Optional Scopes add coordination domains; connectivity never depends on Scope topology.</li>
+    </ul>
+
+    <h2>Growth path</h2>
+    <p>
+      The same primitives grow into scoped collaboration, signed Pipe discovery, private infrastructure,
+      persistent connectivity, gateways, catalogs, MCP, A2A, and agent discovery. Tubo is not primarily a
+      VPN, reverse proxy, service mesh, or centralized tunnel broker — those are compositions over Pipes.
+    </p>
+
+</main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>Secure P2P connectivity for local services. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. All rights reserved.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

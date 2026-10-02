@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+## [v0.13.0] — first architecture-driven release
+
+
+Complete reimplementation of Tubo on the layered target architecture (A0
+groundwork through Journey A exact sharing, plus the minimal-readiness
+corrections of #75/#76/#77). Same product idea, new protocol (2.1) and state
+schema — incompatible with 0.12.x and earlier.
+
+### Exact sharing (minimal use case)
+
+- attach → share → accept/connect with one-time exact invites, durable
+  accepted bindings, short-lived Access Leases (per-open renewal), and
+  revocation (invite / pipe-access / session) with advancing authorization
+  epochs.
+- Dedicated Exact Pipe Authority per Pipe; owner-bound; receiving boundary
+  fails closed on any invalid or unavailable authorization state.
+- Zero-config sharing via an embedded, signed public bootstrap bundle; or
+  self-hosted transport-only relay + PSK overlay via `join overlay`.
+
+### Readiness fixes included
+
+
 ### Minimal exact-sharing readiness fixes (#76)
 
 - The general (scoped/published) pipe daemon now serves the exact redemption

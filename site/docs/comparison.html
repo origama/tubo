@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Comparison — Tubo Docs</title>
+  <meta name="description" content="Balanced comparison of Tubo with ngrok, Tailscale, Cloudflare Tunnel, and frp.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html" class="active">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Comparison</h1>
+    <p class="doc-lead">
+      Tubo is a self-hostable libp2p tunnel for trusted peers and named private services.
+      This page compares it with other tools without turning the comparison into a scoreboard.
+    </p>
+
+    <h2>Tubo positioning</h2>
+    <p>
+      Tubo is for private named services, not just private networks. It is designed for HTTP APIs,
+      raw TCP/TLS endpoints, local AI tools, and agent-facing services across NAT without depending
+      on a managed SaaS control plane.
+    </p>
+    <p>
+      If you self-host the relays, you keep the control plane in your own environment. Like any
+      relay-based system, transport metadata such as source IPs and timing can still be visible to
+      relay operators.
+    </p>
+
+    <div class="note" style="margin:16px 0 24px">
+      <strong>Short version:</strong> Tubo is for private named services, not just private networks.
+    </div>
+
+    <h2>Comparison table</h2>
+    <div style="overflow-x:auto;margin:12px 0 24px">
+      <table class="compare-table" style="font-size:.875rem">
+        <thead>
+          <tr>
+            <th>Tool</th>
+            <th>Primary model</th>
+            <th>Where it shines</th>
+            <th>How Tubo differs</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Tubo</strong></td>
+            <td>Private service tunnel + signed service discovery</td>
+            <td>Trusted-peer access to named HTTP/TCP services, local AI tools, and agent-facing endpoints</td>
+            <td>Pipe-first, exact-invite bootstrapped, self-hostable, and built around cryptographic authorization</td>
+          </tr>
+          <tr>
+            <td><strong>ngrok</strong></td>
+            <td>Managed public ingress</td>
+            <td>Fast public URLs, webhooks, demos, and polished SaaS UX</td>
+            <td>Tubo is private-first and does not require a vendor SaaS control plane</td>
+          </tr>
+          <tr>
+            <td><strong>Tailscale</strong></td>
+            <td>Device mesh VPN</td>
+            <td>Private networking between devices, ACLs, subnet routing, SSH</td>
+            <td>Tubo publishes named services instead of placing whole devices into a VPN-style mesh</td>
+          </tr>
+          <tr>
+            <td><strong>Cloudflare Tunnel</strong></td>
+            <td>Managed edge tunnel</td>
+            <td>Public hostname routing, CDN/WAF, and Access integration</td>
+            <td>Tubo is self-hosted and peer-oriented rather than edge-vendor-oriented</td>
+          </tr>
+          <tr>
+            <td><strong>frp</strong></td>
+            <td>General-purpose reverse proxy</td>
+            <td>Mature TCP/UDP/HTTP/HTTPS tunneling and operational knobs</td>
+            <td>Tubo adds signed discovery and service identity; frp is broader and already offers P2P modes</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>When Tubo is a good fit</h2>
+    <ul>
+      <li>You want to share a named service, not an entire machine.</li>
+      <li>You want trusted-peer access to local HTTP or TCP/TLS endpoints.</li>
+      <li>Service identity, discovery, and revocation matter.</li>
+      <li>You want a self-hostable alternative without mandatory SaaS.</li>
+      <li>You want a small tool for labs, edge nodes, local AI services, and agent-to-agent experiments.</li>
+    </ul>
+
+    <h2>When another tool may be better</h2>
+    <ul>
+      <li><strong>ngrok</strong> — when you need a public URL immediately.</li>
+      <li><strong>Tailscale</strong> — when you want a full device mesh VPN.</li>
+      <li><strong>Cloudflare Tunnel</strong> — when you want Cloudflare edge features and Access.</li>
+      <li><strong>frp</strong> — when you need broad TCP/UDP tunneling today.</li>
+      <li><strong>WireGuard</strong> — when you want a minimal VPN and manage peers directly.</li>
+    </ul>
+
+    <h2>Honest trade-offs</h2>
+    <p>
+      Tubo is still focused on HTTP and raw TCP/TLS service publishing. It is not trying to replace
+      every tunnel or every VPN.
+    </p>
+    <p>Current gaps include:</p>
+    <ul>
+      <li>generic UDP;</li>
+      <li>advanced edge routing;</li>
+      <li>built-in WAF/CDN;</li>
+      <li>mature dashboard and traffic policy layers;</li>
+      <li>the full breadth of long-lived general-purpose reverse-proxy ecosystems.</li>
+    </ul>
+
+    <h2>Bottom line</h2>
+    <p>
+      If your problem is “I want to publish a private, named service to trusted peers across NAT,”
+      Tubo is a good fit.
+    </p>
+    <p>
+      If your problem is “I need a public ingress product” or “I want a device mesh VPN,” another
+      tool may fit better.
+    </p>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>P2P API tunnels for services behind NAT. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. All rights reserved.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

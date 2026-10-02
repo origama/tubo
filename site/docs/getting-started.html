@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Getting Started — Tubo Docs</title>
+  <meta name="description" content="Install Tubo, attach a local service, and share it with a one-time exact invite in under 5 minutes.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html" class="active">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Getting Started</h1>
+    <p class="doc-lead">Install Tubo on two machines, attach a local service, and share it with a one-time exact invite — the minimal Tubo flow, end to end.</p>
+
+    <div class="note">
+      <strong>The minimal flow:</strong>
+      <code>local service → tubo attach → exact invite → clean Tubo installation → short-lived Access Lease → authorized encrypted connectivity</code>
+    </div>
+
+    <h2>1. Install</h2>
+    <p>The easiest way to install Tubo is the one-line installer:</p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> <span style="color:#86efac">-fsSL</span> https://www.tubo.click/install.sh | sh</pre>
+    </div>
+    <p>By default this upgrades a writable existing <code>tubo</code> on <code>PATH</code>; otherwise it installs to <code>~/.local/bin</code>. If you use the default location, make sure that directory is on your <code>PATH</code>.</p>
+
+    <p><strong>Build from source:</strong></p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">git clone</span> https://github.com/origama/tubo.git
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">cd</span> tubo <span style="color:#6b7280">&amp;&amp;</span> <span style="color:#a5f3fc">go build</span> <span style="color:#86efac">-o</span> tubo ./cmd/tubo</pre>
+    </div>
+
+    <p>Verify the installation:</p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo version</span>
+<span style="color:#86efac">tubo v0.13.0 (protocol 2.1, commit …, built …)</span></pre>
+    </div>
+
+    <h2>2. Attach your service (owner machine)</h2>
+    <p>
+      Run <code>tubo attach</code> next to any HTTP service, raw TCP/TLS service, or Unix socket.
+      It defines the Service and its Pipe, then runs the Pipe. With <code>-d</code> the Pipe runs detached:
+    </p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6b7280"># Attach an HTTP service running on 127.0.0.1:8080</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo attach</span> <span style="color:#fde68a">http://127.0.0.1:8080</span> <span style="color:#86efac">--name</span> <span style="color:#fde68a">myapi</span> <span style="color:#86efac">-d</span>
+
+<span style="color:#86efac">service/myapi created</span>
+<span style="color:#86efac">pipe/myapi created</span>
+<span style="color:#86efac">pipe/myapi ready (pid 12345)</span></pre>
+    </div>
+    <p>
+      The service stays local: it is never automatically public or discoverable.
+      Reachability comes from an embedded, verified public bootstrap bundle — or from
+      your own relay via <code>tubo join overlay</code> (see <a href="private-swarm.html">Private Swarms</a>).
+    </p>
+
+    <h2>3. Share a one-time exact invite</h2>
+    <p>
+      <code>tubo share</code> provisions a dedicated Exact Pipe Authority key for the Pipe
+      and mints a single-use, owner-signed invite bound to exactly that Pipe:
+    </p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo share</span> <span style="color:#fde68a">pipe/myapi</span>
+
+<span style="color:#c4b5fd">sharing pipe/myapi</span>
+<span style="color:#c4b5fd">one-time invite; expires in 10m0s</span>
+<span style="color:#fde68a">eyJ0eXAiOiJK...   </span><span style="color:#6b7280"># the invite (stdout carries exactly this)</span>
+<span style="color:#c4b5fd">recipient runs: tubo accept --token &lt;invite&gt;  (redeems once)</span>
+<span style="color:#c4b5fd">then, anytime:  tubo connect --remote pip_... --local 127.0.0.1:PORT</span></pre>
+    </div>
+    <div class="note">
+      <strong>Exact invite:</strong> single-use, short-lived, bound to one Pipe ID and one owner.
+      Redemption requires the recipient to prove possession of their identity key with a
+      challenge-response. The invite is <em>never</em> an Access Lease — it only bootstraps one.
+    </div>
+
+    <h2>4. Connect from another machine (recipient)</h2>
+    <p>On a clean Tubo installation, redeem the invite and get a local endpoint:</p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo connect</span> <span style="color:#86efac">--token</span> <span style="color:#fde68a">&lt;invite&gt;</span> <span style="color:#86efac">--local</span> <span style="color:#fde68a">127.0.0.1:9000</span> <span style="color:#86efac">-d</span>
+
+<span style="color:#86efac">✓ Tunnel ready</span>
+<span style="color:#c4b5fd">  local       http://127.0.0.1:9000</span>
+<span style="color:#c4b5fd">  target     myapi  (pip_...)</span>
+<span style="color:#c4b5fd">  path        relayed via relay.tubo.click</span>
+
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">curl</span> http://127.0.0.1:9000/healthz
+<span style="color:#86efac">OK</span></pre>
+    </div>
+    <p>
+      The invite is redeemed exactly once and becomes a <strong>durable accepted binding</strong>.
+      Later, <code>tubo connect --remote pip_... --local 127.0.0.1:9000</code> reuses it — no new invite needed.
+      Every remote open is authorized by a short-lived Access Lease that is renewed per open;
+      leases expiring does not break connectivity.
+    </p>
+
+    <h2>5. Revoke and re-authorize</h2>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6b7280"># Fence a not-yet-redeemed invite (JTI or full token)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke</span> <span style="color:#fde68a">invite</span> <span style="color:#fde68a">&lt;token-or-jti&gt;</span>
+
+<span style="color:#6b7280"># Fence ALL access to the Pipe; a fresh share re-authorizes at the new epoch</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke</span> <span style="color:#fde68a">pipe-access</span> <span style="color:#fde68a">pipe/myapi</span></pre>
+    </div>
+
+    <h2>6. Manage runs</h2>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6b7280"># List runs on this machine</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo ps</span>
+
+<span style="color:#6b7280"># Follow logs</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo logs</span> pipe/myapi
+
+<span style="color:#6b7280"># Stop and remove</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo stop</span> pipe/myapi
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo rm</span> pipe/myapi</pre>
+    </div>
+
+    <h2>Next steps</h2>
+    <ul>
+      <li><a href="concepts.html">Core Concepts</a> — Services, Pipes, Sessions, Invites, Access Leases, and trust</li>
+      <li><a href="access-control.html">Access Control</a> — redemption, leases, revocation, epochs</li>
+      <li><a href="private-swarm.html">Private Swarms</a> — run your own relay and private overlay</li>
+      <li><a href="cli-reference.html">CLI Reference</a> — every command and flag</li>
+    </ul>
+  </main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>Secure P2P connectivity for local services. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. All rights reserved.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

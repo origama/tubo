@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Access Control — Tubo Docs</title>
+  <meta name="description" content="One-time exact invites, durable accepted bindings, short-lived Access Leases, and revocation epochs.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html" class="active">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Access Control</h1>
+    <p class="doc-lead">Exact invites bootstrap access; short-lived Access Leases authorize every open; revocation fences access at advancing epochs.</p>
+
+    <h2>Life of an authorization</h2>
+    <div class="mermaid-wrap"><div class="mermaid">
+flowchart TD
+    Share["tubo share pipe/x<br/>(provisions Exact Authority)"] --> Invite["one-time invite (10 min TTL)"]
+    Invite -->|redeem once + possession proof| Accept["accepted relationship<br/>(durable binding, epoch N)"]
+    Accept -->|renewal per open| Lease["Access Lease (minutes, epoch N)"]
+    Lease -->|receiving-boundary verify| Open["Pipe open → Session"]
+    Revoke["tubo revoke pipe-access"] -.->|epoch N → N+1| Accept
+    Revoke -.-> Lease
+    </div></div>
+
+    <h2>What each credential can and cannot do</h2>
+    <table class="compare-table" style="min-width:100%">
+      <thead><tr><th>Credential</th><th>Lifetime</th><th>Can</th><th>Cannot</th></tr></thead>
+      <tbody>
+        <tr><td>Exact invite</td><td>10 minutes, one use</td><td>bootstrap one accepted relationship</td><td>open a Pipe, renew, outlive redemption</td></tr>
+        <tr><td>Accepted binding</td><td>until revoked</td><td>renew short leases per open; survive restarts</td><td>authorize anything by itself</td></tr>
+        <tr><td>Access Lease</td><td>minutes</td><td>authorize one Pipe open for one subject</td><td>be replayed, swapped across Pipes or subjects, outlive expiry</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Revocation</h2>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6b7280"># An invite that was never redeemed (JTI or the full token)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke</span> invite <span style="color:#fde68a">&lt;token&gt;</span>          <span style="color:#6b7280"># fenced at the redemption boundary</span>
+
+<span style="color:#6b7280"># An already-accepted invite (its Pipe is resolved from redemption evidence)</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke</span> invite <span style="color:#fde68a">&lt;jti&gt;</span>
+
+<span style="color:#6b7280"># All access to a Pipe: advances the authorization epoch</span>
+<span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo revoke</span> pipe-access pipe/myapi</pre>
+    </div>
+    <ul>
+      <li><code>pipe-access</code> revocation advances the epoch: accepted relationships and outstanding leases become stale immediately; a fresh <code>share</code> + <code>connect</code> re-authorizes at the new epoch.</li>
+      <li>Revocation checks happen before any target dial and fail closed on unavailable state.</li>
+      <li>A revoked-not-yet-redeemed invite never burns: redemption denies with zero state mutation.</li>
+    </ul>
+
+    <h2>Determinism</h2>
+    <p>
+      Exactly one authoritative accepted relationship exists per (Pipe, recipient). A newer invite for the
+      same pair replaces it; the same recipient retrying never regresses it; a different recipient fails closed.
+      Obsolete invite revocations are harmless; revoking the current invite's JTI fences renewal.
+    </p>
+
+</main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>Secure P2P connectivity for local services. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. All rights reserved.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Security Model — Tubo Docs</title>
+  <meta name="description" content="Exact Pipe Authority, one-time invites, short-lived Access Leases, revocation epochs, and fail-closed boundaries.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html" class="active">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Security Model</h1>
+    <p class="doc-lead">Authorization is cryptographic, short-lived, revocable, and fails closed. Transport is end-to-end encrypted; infrastructure provides reachability, never trust.</p>
+
+    <h2>Non-negotiable rules</h2>
+    <ul>
+      <li><strong>Every remote Pipe open requires a short-lived, verifiable Access Lease.</strong> No lease, no open.</li>
+      <li><strong>An invite is never an Access Lease.</strong> Invites bootstrap a relationship exactly once; leases authorize every open.</li>
+      <li><strong>Connectivity depends on authorization, not topology.</strong> Scope membership or relay reachability alone grants nothing.</li>
+      <li><strong>Receiving boundary fails closed</strong> on invalid signature, wrong subject, wrong Pipe audience, expiry, revocation, stale authorization epoch, or unavailable revocation state.</li>
+    </ul>
+
+    <h2>Exact Pipe Authority</h2>
+    <p>
+      Each Pipe's dedicated authority key is bound to the owner by an Ed25519 owner binding embedded in every
+      invite. The owner key and the authority key are distinct and neither can substitute for the other.
+      Remote redemption sees only a read-only key loader — a remote peer can never provision authority
+      material, switch subject or Pipe, or renew a relationship that never existed.
+    </p>
+
+    <h2>One-time redemption</h2>
+    <p>
+      An invite is single-use: the first successful redemption atomically records the accepted relationship
+      and the anti-replay history; every later attempt with the same invite fails. Redemption requires a
+      fresh challenge-response possession proof from the recipient's identity key. Invites can also be
+      revoked <em>before</em> redemption (<code>tubo revoke invite &lt;token&gt;</code>) — the redemption
+      boundary checks exactly that revocation row.
+    </p>
+
+    <h2>Short-lived leases and epochs</h2>
+    <p>
+      Access Leases live for minutes. The authority mints the first lease at redemption and fresh ones per open
+      through the durable binding. Each lease carries the authorization epoch at which it was issued:
+      a <code>pipe-access</code> revocation advances the epoch, making every earlier lease and accepted
+      relationship stale immediately. A fresh share+accept at the new epoch re-authorizes — revocation is
+      never a permanent kill switch for the owner.
+    </p>
+
+    <h2>Fail-closed dependencies</h2>
+    <p>
+      Revocation state, accepted-relationship state, and redemption persistence are <strong>mandatory</strong>:
+      the open authorizer cannot even be constructed without revocation state, and redemption/renewal reject
+      missing dependencies before any verification work. Unavailable state denies; it never allows.
+    </p>
+
+    <h2>Transport</h2>
+    <ul>
+      <li>libp2p Noise-encrypted streams end to end; relays and caches never see plaintext and never authorize.</li>
+      <li>After an authorized handshake, raw duplex bytes flow — no per-frame decode on the data plane, bound decoders on the control plane.</li>
+      <li>Fresh challenge nonces on every open prevent replay; leases and sessions are bound to subject, Pipe audience, and epoch.</li>
+    </ul>
+
+    <h2>Host and identity hygiene</h2>
+    <ul>
+      <li>Host identity files are created atomically under exclusive locks — concurrent processes converge on one identity; a corrupt identity key fails closed instead of silently rotating.</li>
+      <li>Zero-config sharing trusts only an embedded, signed public bootstrap bundle with a pinned root and expiry — never a hardcoded provider path.</li>
+      <li>Local services are never automatically public or discoverable.</li>
+    </ul>
+
+    <h2>Non-goals</h2>
+    <ul>
+      <li>Tubo is not an anonymous network: relays see participant network identities.</li>
+      <li>Session resume/migration is deferred (tracked, not shipped).</li>
+      <li>Runtime trust-root rotation for the public bootstrap is future work; the current signed bundle is single-use by design.</li>
+    </ul>
+
+</main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>Secure P2P connectivity for local services. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. All rights reserved.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

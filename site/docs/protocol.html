@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Wire Protocol — Tubo Docs</title>
+  <meta name="description" content="tunnel 2.0 handshake, exact redemption and renewal, and the canonical Access Lease format.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html" class="active">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Wire Protocol</h1>
+    <p class="doc-lead">Authenticated handshake, then raw duplex bytes. Version 2.1 runs over three libp2p stream protocols.</p>
+
+    <h2>Protocols</h2>
+    <table class="compare-table" style="min-width:100%">
+      <thead><tr><th>Protocol ID</th><th>Purpose</th><th>Caller</th></tr></thead>
+      <tbody>
+        <tr><td><code>/tubo/tunnel/2.0</code></td><td>Open a remote Pipe and stream bytes</td><td>Consumer runtime</td></tr>
+        <tr><td><code>/tubo/exact-redemption/1</code></td><td>Redeem a one-time exact invite</td><td>Recipient</td></tr>
+        <tr><td><code>/tubo/exact-renewal/1</code></td><td>Renew a short-lived Access Lease from the durable binding</td><td>Consumer runtime</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Tunnel open (2.0)</h2>
+    <p>Bounded JSON frames, then raw duplex bytes after OpenOK:</p>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre>consumer                          owner (receiving boundary)
+   |--- ClientHello ----------------->|   version=2.0, client identity
+   |<-- ServerHello ------------------|   pipe_id, fresh challenge, capabilities
+   |--- OpenPipe -------------------->|   pipe_id, access_lease, challenge_proof,
+   |                                 |   hop_limit, visited_pipe_ids
+   |        [ receiving boundary: decode lease, verify signature, subject,
+   |          audience, expiry, revocation, epoch; then resolve target and
+   |          dial exactly once — no lease, no dial ]
+   |<-- OpenOK ----------------------|   session_id
+   |========= raw duplex bytes =======|</pre>
+    </div>
+    <ul>
+      <li>Leases are size-bounded; frames are decoded with fixed limits before allocation.</li>
+      <li>Hop limits and visited-Pipe-ID loop detection are enforced before any target resolution.</li>
+      <li>The authorization timer transfers to the Session: lease expiry terminates the session, closing carrier and target.</li>
+    </ul>
+
+    <h2>Exact redemption (1)</h2>
+    <p>
+      The recipient presents the encoded exact invite plus a possession proof for a server-generated
+      challenge. The authority verifies the invite's owner binding, signature, one-time flag, time window,
+      revocation row, and authorization epoch — then atomically records redemption + accepted relationship
+      and returns a short-lived Access Lease capped to the invite's remaining lifetime.
+    </p>
+
+    <h2>Exact renewal (1)</h2>
+    <p>
+      Post-acceptance, the consumer presents the durable binding, the Pipe ID, and a fresh possession proof.
+      The authority resolves the accepted relationship deterministically, re-checks revocation and epoch
+      equality, and mints a fresh short lease. Renewal is the reason access outlives every bootstrap
+      credential without ever becoming long-lived.
+    </p>
+
+    <h2>Access Lease (canonical)</h2>
+    <p>A compact signed value binding: <em>issuer</em> (Exact Pipe Authority), <em>subject</em> (recipient identity),
+    <em>audience</em> (exact Pipe ID), <em>JTI</em>, <em>issued/not-before/expires-at</em> (minutes, strict expiry with
+    bounded clock-skew tolerance on not-before), and <em>authorization epoch</em>.</p>
+
+    <h2>Versioning</h2>
+    <p>Protocol 2.1. Incompatible changes bump the protocol ID; capability negotiation is optional-intersection — removing a capability on both sides degrades deterministically to the ordinary supported path.</p>
+
+</main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>Secure P2P connectivity for local services. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. All rights reserved.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>

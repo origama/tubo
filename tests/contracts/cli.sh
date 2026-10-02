@@ -108,7 +108,7 @@ expected_protocol="$(tr -d '[:space:]' <"$ROOT_DIR/PROTOCOL_VERSION")"
 python3 - "$WORK_DIR/version.json" "$WORK_DIR/service.json" "$WORK_DIR/pipe-1.json" "$WORK_DIR/pipe-2.json" "$expected_protocol" <<'PY'
 import json, sys
 version, service, first, second = [json.load(open(path, encoding="utf-8")) for path in sys.argv[1:5]]
-assert version["product_version"] == "0.1.0-dev", version
+assert version["product_version"] == "0.13.0", version
 assert version["protocol_version"] == sys.argv[5] == "2.1", version
 assert service == {"ref": "service/echo", "status": "created"}, service
 assert first["id"] == second["id"], (first, second)

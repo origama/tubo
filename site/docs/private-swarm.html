@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Private Swarms — Tubo Docs</title>
+  <meta name="description" content="Run a private PSK overlay with your own relay: keygen, relay, join overlay.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a href="../index.html" class="nav-logo">
+      <span class="logo-icon"><svg viewBox="0 0 16 16"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+      tubo
+    </a>
+    <div class="nav-links" id="navLinks">
+      <a href="../index.html#features">Features</a>
+      <a href="index.html" class="active">Docs</a>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+    </div>
+    <button class="nav-burger" onclick="document.getElementById('navLinks').classList.toggle('open')">
+      <span></span><span></span><span></span>
+    </button>
+  </div>
+</nav>
+
+<div class="docs-layout">
+  <aside class="docs-sidebar">
+    <nav>
+      <div class="sidebar-section">Get started</div>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Core Concepts</a>
+      <div class="sidebar-section">Guides</div>
+      <a href="private-swarm.html" class="active">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="deployment.html">Deployment</a>
+      <div class="sidebar-section">Reference</div>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="security.html">Security Model</a>
+      <a href="protocol.html">Wire Protocol</a>
+      <a href="comparison.html">Comparison</a>
+    </nav>
+  </aside>
+
+  <main class="docs-content">
+    <h1>Private Swarms</h1>
+    <p class="doc-lead">Run your own relay and an isolated PSK overlay instead of the default public bootstrap.</p>
+
+    <div class="note">
+      <strong>Note:</strong> a swarm key protects <em>network membership</em> (reachability). It never
+      authorizes Pipe access — every open still requires a signed Access Lease. Treat swarm keys as secrets;
+      rotate by generating a new key and rejoining all nodes.
+    </div>
+
+    <h2>1. Generate a swarm key</h2>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo keygen swarm</span> <span style="color:#86efac">--out</span> <span style="color:#fde68a">swarm.key</span></pre>
+    </div>
+
+    <h2>2. Run a transport-only relay</h2>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo relay</span> <span style="color:#86efac">--listen</span> <span style="color:#fde68a">/ip4/0.0.0.0/tcp/4001</span> \
+    <span style="color:#86efac">--public-addr</span> <span style="color:#fde68a">/ip4/1.2.3.4/tcp/4001</span> \
+    <span style="color:#86efac">--swarm-key</span> <span style="color:#fde68a">./swarm.key</span>
+<span style="color:#c4b5fd">relay address: /ip4/1.2.3.4/tcp/4001/p2p/12D3Koo...</span></pre>
+    </div>
+    <p>Open TCP 4001 in the host and cloud firewalls. The relay forwards bytes and assists NAT traversal — it never authorizes.</p>
+
+    <h2>3. Join nodes to the overlay</h2>
+    <div class="code-block" style="margin:16px 0 24px">
+      <pre><span style="color:#6366f1">$</span> <span style="color:#a5f3fc">tubo join overlay</span> <span style="color:#86efac">--relay</span> <span style="color:#fde68a">/ip4/1.2.3.4/tcp/4001/p2p/12D3Koo...</span> <span style="color:#86efac">--swarm-key</span> <span style="color:#fde68a">./swarm.key</span></pre>
+    </div>
+
+    <h2>4. Attach, share, connect</h2>
+    <p>Exactly the <a href="getting-started.html">standard flow</a> — invites, redemption, and Access Leases are unchanged; only reachability differs.</p>
+
+    <h2>Zero-config alternative</h2>
+    <p>
+      Without <code>join overlay</code>, Tubo uses the embedded, signed public bootstrap bundle
+      (<code>relay.tubo.click</code>, pinned PeerID, verified Ed25519 signature, expiry-bounded).
+      No configuration, no Scope, no discovery, and no user-configured authority are required.
+    </p>
+
+</main>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="../index.html" class="nav-logo" style="color:#fff">
+        <span class="logo-icon"><svg viewBox="0 0 16 16" style="fill:#fff;width:16px;height:16px"><path d="M8 1L1 5v6l7 4 7-4V5L8 1zm0 2.2l4.5 2.6-4.5 2.6L3.5 5.8 8 3.2zM2.5 7.1l5 2.9v4.5L2.5 11.6V7.1zm6 7.4V9.9l5-2.8v4.5l-5 2.9z"/></svg></span>
+        tubo
+      </a>
+      <p>Secure P2P connectivity for local services. Private, encrypted, self-hosted.</p>
+    </div>
+    <div class="footer-col">
+      <h4>Docs</h4>
+      <a href="getting-started.html">Getting Started</a>
+      <a href="concepts.html">Concepts</a>
+      <a href="cli-reference.html">CLI Reference</a>
+      <a href="deployment.html">Deployment</a>
+    </div>
+    <div class="footer-col">
+      <h4>Learn</h4>
+      <a href="private-swarm.html">Private Swarms</a>
+      <a href="access-control.html">Access Control</a>
+      <a href="comparison.html">Comparison</a>
+      <a href="security.html">Security Model</a>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <a href="https://github.com/origama/tubo" target="_blank" rel="noopener">GitHub</a>
+      <a href="https://github.com/origama/tubo/releases" target="_blank" rel="noopener">Releases</a>
+      <a href="https://github.com/origama/tubo/issues" target="_blank" rel="noopener">Issues</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    <span>© 2026 Origama. All rights reserved.</span>
+    <span>Built on <a href="https://libp2p.io" target="_blank" rel="noopener">libp2p</a></span>
+  </div>
+</footer>
+</body>
+</html>
