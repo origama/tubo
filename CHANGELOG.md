@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Corrected minimal-path verification (#76)
+
+- Architecture checks now inspect actual Go dependency edges, including third-party dependencies. Missing guarded packages/files fail closed; regex guards scan production code without comments. Real-module negative tests prevent vacuous PASS results. Earlier A0 package-edge PASS evidence is superseded by the corrected checker.
+
 ### Removed (A0)
 
 - Session-resume surface removed from the A0 path (issue #39): `/tubo/tunnel-resume/2.1`, the `session-resume-v1` capability, resume/control stream roles, continuous ACK/retention/replay window, planned-switch barrier, abrupt carrier recovery with detached grace, `ResumeOffer`, and the memory-only `resume_secret`. A0 sessions are raw full-duplex authorized `/tubo/tunnel/2.0`; carrier failure terminates the session and a new authorized connection is required.

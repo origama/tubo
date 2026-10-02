@@ -5,10 +5,16 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
+	"go/format"
+	"go/parser"
+	"go/token"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -25,44 +31,63 @@ type Violation struct {
 	Path        string // transitive path summary
 }
 
-// ComputeRealGraph runs go list -deps for every internal package.
+// ComputeRealGraph reads actual direct imports and the stdlib classification
+// from Go. moduleRoot is a filesystem directory, never an import prefix.
+// Third-party dependencies must remain visible to stdlib-only checks.
 func ComputeRealGraph(moduleRoot string, allPackages []string) (DepGraph, error) {
-	graph := make(DepGraph)
-	for _, pkg := range allPackages {
-		if !strings.HasPrefix(pkg, moduleRoot+"/internal/") && pkg != moduleRoot+"/internal" {
-			continue
-		}
-		deps, err := listDeps(pkg, moduleRoot)
-		if err != nil {
-			return nil, fmt.Errorf("listing deps for %s: %w", pkg, err)
-		}
-		// Filter to non-stdlib deps (those in module)
-		var filtered []string
-		for _, d := range deps {
-			if strings.HasPrefix(d, moduleRoot+"/") {
-				filtered = append(filtered, d)
-			}
-		}
-		graph[pkg] = filtered
+	if len(allPackages) == 0 {
+		return nil, fmt.Errorf("no packages selected for dependency checks")
 	}
-	return graph, nil
-}
-
-// listDeps runs go list -deps for a single package.
-func listDeps(pkg, moduleRoot string) ([]string, error) {
-	cmd := exec.Command("go", "list", "-deps", "-f", "{{.ImportPath}}", pkg)
+	args := append([]string{"list", "-deps", "-json"}, allPackages...)
+	cmd := exec.Command("go", args...)
 	cmd.Dir = moduleRoot
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("go list -deps %s: %w", pkg, err)
+		return nil, fmt.Errorf("go list -deps: %w", err)
 	}
-	lines := strings.TrimSpace(stdout.String())
-	if lines == "" {
-		return []string{}, nil
+	type listedPackage struct {
+		ImportPath string
+		Imports    []string
+		Standard   bool
 	}
-	return strings.Split(lines, "\n"), nil
+	packages := map[string]listedPackage{}
+	decoder := json.NewDecoder(&stdout)
+	for {
+		var pkg listedPackage
+		if err := decoder.Decode(&pkg); err == io.EOF {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("decode dependency graph: %w", err)
+		}
+		packages[pkg.ImportPath] = pkg
+	}
+	graph := make(DepGraph)
+	for name, pkg := range packages {
+		if pkg.Standard {
+			continue
+		}
+		graph[name] = nil
+		for _, dep := range pkg.Imports {
+			if dep == "C" { // cgo pseudo-import, not a Go package
+				continue
+			}
+			info, ok := packages[dep]
+			if !ok {
+				return nil, fmt.Errorf("unresolved dependency %s -> %s", name, dep)
+			}
+			if !info.Standard {
+				graph[name] = append(graph[name], dep)
+			}
+		}
+	}
+	for _, pkg := range allPackages {
+		if _, ok := graph[pkg]; !ok {
+			return nil, fmt.Errorf("missing selected package %s", pkg)
+		}
+	}
+	return graph, nil
 }
 
 // CheckGraph checks the computed dependency graph against all rules.
@@ -99,9 +124,8 @@ func CheckGraph(graph DepGraph, rules []RuleConfig, zones ZonesConfig, modulePre
 			}
 			switch rule.Type {
 			case "stdlib-only":
-				// Check transitive deps are all non-module
-				// Allow deps that are also stdlib-only targets (same pure-core zone)
-				for _, dep := range deps {
+				// Allow other protected pure packages, but inspect their closure too.
+				for _, dep := range dependencyClosure(source, graph) {
 					if stdlibOnlyTargets[dep] {
 						continue
 					}
@@ -131,6 +155,25 @@ func CheckGraph(graph DepGraph, rules []RuleConfig, zones ZonesConfig, modulePre
 	}
 
 	return violations
+}
+
+func dependencyClosure(source string, graph DepGraph) []string {
+	seen := map[string]bool{source: true}
+	var result []string
+	var visit func(string)
+	visit = func(pkg string) {
+		for _, dep := range graph[pkg] {
+			if seen[dep] {
+				continue
+			}
+			seen[dep] = true
+			result = append(result, dep)
+			visit(dep)
+		}
+	}
+	visit(source)
+	sort.Strings(result)
+	return result
 }
 
 func buildPkgToZone(zones ZonesConfig) map[string]string {
@@ -280,14 +323,30 @@ func CheckSemantic(moduleRoot string, checks []SemanticCheckConfig) []Violation 
 			})
 			continue
 		}
+		productionFiles := 0
 		for _, match := range matches {
-			data, err := os.ReadFile(match)
-			if err != nil {
+			if strings.HasSuffix(match, "_test.go") {
 				continue
 			}
-			content := string(data)
+			productionFiles++
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, match, nil, 0) // omit comments
+			if err != nil {
+				violations = append(violations, Violation{RuleID: sc.Rule, Source: match, Path: err.Error()})
+				continue
+			}
+			var code bytes.Buffer
+			if err := format.Node(&code, fset, file); err != nil {
+				violations = append(violations, Violation{RuleID: sc.Rule, Source: match, Path: err.Error()})
+				continue
+			}
 			for _, pattern := range sc.ForbidPatterns {
-				if strings.Contains(content, pattern) {
+				re, err := regexp.Compile(pattern)
+				if err != nil {
+					violations = append(violations, Violation{RuleID: sc.Rule, Source: match, Path: "invalid pattern: " + pattern})
+					continue
+				}
+				if re.Match(code.Bytes()) {
 					violations = append(violations, Violation{
 						RuleID:      sc.Rule,
 						Source:      match,
@@ -297,6 +356,9 @@ func CheckSemantic(moduleRoot string, checks []SemanticCheckConfig) []Violation 
 					})
 				}
 			}
+		}
+		if productionFiles == 0 {
+			violations = append(violations, Violation{RuleID: sc.Rule, Source: sc.PathGlob, Path: "no production files matched"})
 		}
 	}
 	return violations
@@ -394,10 +456,12 @@ func RealRun() ([]Violation, error) {
 		return nil, err
 	}
 
-	// Add empty dep entries for packages that had no result (may not be keyed)
-	for _, pkg := range allPkgs {
-		if _, ok := graph[pkg]; !ok {
-			graph[pkg] = nil
+	// An absent protected package is a broken check, not a passing boundary.
+	for _, rule := range rf.Rules {
+		for _, target := range rule.Targets {
+			if _, ok := graph[resolvePkg(target, modulePath)]; !ok {
+				return nil, fmt.Errorf("rule %s: missing protected package %s", rule.ID, target)
+			}
 		}
 	}
 

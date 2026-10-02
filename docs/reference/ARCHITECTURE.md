@@ -104,9 +104,11 @@ This foundation is separate from encrypted gossip, peer sync, and discovery-key 
 
 A0 establishes contracts before moving feature behavior: pure L0 values, explicit runtime ownership, Carrier/Session seam, real Reachability seam, Pipe Engine, receiving-boundary open-authorization contract, minimal real public bootstrap foundation, narrow persistence capabilities, and L4 use-case composition. It also establishes durable Service/Pipe definition distinct from transient runtime/Session state. First functional proof is zero-config exact share, but A0 also requires dependency and ownership evidence.
 
-## Enforcement plan
+## Dependency enforcement (#76 correction)
 
-After real A0 boundaries exist, add lightweight deterministic architecture check using `go list -deps` and explicit allowed/forbidden internal edges. Keep rule source small and reviewed. Do not introduce heavyweight architecture framework or brittle package-layout check in preparation phase.
+`tests/archcheck` reads `go list -deps -json` from the repository directory and builds real direct-import edges using Go's `Standard` classification. Internal and third-party dependency closures are checked; filesystem paths are never compared with import paths. Missing selected/protected packages fail closed. Production-file guards exclude tests and comments, evaluate regular expressions, and fail on empty selections.
+
+The original Step 9 checker accidentally computed an empty real graph. Historical green runs did not prove package edges. #76 adds real temporary-module negative tests (internal and third-party edges), non-empty runtime graph assertions, and source-selection/regex regressions. Existing mixed-package file guards remain transitional: passing them does not establish a package-wide L2 boundary.
 
 ## Review checklist
 
