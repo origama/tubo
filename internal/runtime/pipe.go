@@ -234,6 +234,7 @@ func runPublishedPipe(ctx context.Context, state *store.Store, spec domain.PipeS
 	// which denies all incoming opens.
 	exactAuthorizer := loadExactAuthorizer(state, spec.PipeID)
 	handler := &tunnelServer{
+		ctx:              ctx,
 		state:            state,
 		spec:             spec,
 		service:          service,
@@ -324,6 +325,10 @@ func transferSessionAuthorizationTimer(timer *time.Timer, expiresAt time.Time, s
 }
 
 type tunnelServer struct {
+	// ctx carries the owning run's lifecycle: authorization checks, engine
+	// forwarding, and session bookkeeping must become cancellable when the
+	// daemon stops instead of outliving it on a detached context.
+	ctx              context.Context
 	state            *store.Store
 	spec             domain.PipeSpec
 	service          domain.ServiceSpec
@@ -1033,6 +1038,7 @@ func runScopeLessPublishedPipe(
 
 	// Install the tunnel handler.
 	handler := &tunnelServer{
+		ctx:              ctx,
 		state:            state,
 		spec:             spec,
 		service:          service,
