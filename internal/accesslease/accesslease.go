@@ -169,7 +169,12 @@ func (l AccessLease) Verify(public ed25519.PublicKey, subject, pipeID string, no
 	if l.IssuedAt.After(now.Add(MaxClockSkew)) {
 		return errors.New("accesslease: issued too far in future")
 	}
-	if l.NotBefore.After(now) {
+	// NotBefore gets the SAME bounded clock-skew tolerance as IssuedAt:
+	// a mildly ahead issuer (≤ MaxClockSkew) that can pass the IssuedAt
+	// guard must also pass this one; otherwise one check accepts the
+	// issuer's clock and the next rejects the same credential. ExpiresAt
+	// remains STRICT: skew never extends validity past expiry.
+	if l.NotBefore.After(now.Add(MaxClockSkew)) {
 		return errors.New("accesslease: not yet valid")
 	}
 	if !l.ExpiresAt.After(now) {
