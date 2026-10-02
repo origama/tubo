@@ -199,9 +199,9 @@ Each criterion row carries implementation PR/merge SHA, test evidence, architect
 
 Evidence root: `/tmp/a0-10b-final/evidence` (manifest.txt, 37 files with sha256). No criterion redefinition: criteria text is the ROADMAP A0 exit-criteria list verbatim.
 
-## Dependency-check plan
+## Dependency-check correction (#76)
 
-A0 Step 9 implemented the plan: a small deterministic Go program (`tests/archcheck/`) runs `go list -deps` for each protected package and checks every resolved non-stdlib dependency against declarative YAML rules. It tests semantic boundaries, remains deterministic, and avoids dependency on exact file layout. No heavyweight framework.
+Historical Step 9 package-edge evidence was invalid: a filesystem/import-prefix mix-up produced an empty graph. The corrected checker consumes `go list -deps -json`, preserves third-party imports, checks real direct and transitive edges, rejects missing protected packages, and fails closed on empty source selections. `real_graph_test.go` proves non-empty runtime edges and forbidden internal/third-party dependencies using actual temporary Go modules, plus semantic regex and comment behavior. Criterion 11 must be evaluated with this corrected checker; earlier PASS logs alone are not evidence. Mixed runtime packages remain protected only at their explicitly listed file seams.
 
 ## Shared safety expectations
 

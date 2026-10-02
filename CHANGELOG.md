@@ -4,6 +4,33 @@
 
 ## [Unreleased]
 
+### Minimal exact-sharing readiness fixes (#76)
+
+- The general (scoped/published) pipe daemon now serves the exact redemption
+  and renewal protocols like the Journey A daemon: an exact invite minted by
+  share on a scoped Pipe is redeemable end to end. Previously such invites
+  failed with `protocols not supported` at redemption. Proven by isolated
+  three-machine run `20261002T103152Z-18042`.
+- Store schema-13 accepted-relationship backfill is version-gated to a
+  one-time legacy upgrade: scoped redemptions are never promoted to accepted
+  exact relationships on reopen.
+- Revocation/accepted-relationship dependencies are mandatory and fail closed:
+  the exact open authorizer cannot be constructed without revocation state;
+  redemption and renewal reject missing revocation or persistence state.
+- `revoke invite` accepts the full exact invite token so the owner can fence
+  an unredeemed exact invite before redemption.
+- `connect --token` performs all local conflict checks before consuming the
+  one-time invite: a conflicting connect no longer burns the bootstrap
+  credential.
+- The tunnel receive path uses the owning run's lifecycle context
+  (cancellable at shutdown) and host identity creation is atomic and
+  concurrency-safe; a corrupt identity key fails closed instead of silently
+  rotating the host identity.
+
+### Corrected minimal-path verification (#76)
+
+- Architecture checks now inspect actual Go dependency edges, including third-party dependencies. Missing guarded packages/files fail closed; regex guards scan production code without comments. Real-module negative tests prevent vacuous PASS results. Earlier A0 package-edge PASS evidence is superseded by the corrected checker.
+
 ### Removed (A0)
 
 - Session-resume surface removed from the A0 path (issue #39): `/tubo/tunnel-resume/2.1`, the `session-resume-v1` capability, resume/control stream roles, continuous ACK/retention/replay window, planned-switch barrier, abrupt carrier recovery with detached grace, `ResumeOffer`, and the memory-only `resume_secret`. A0 sessions are raw full-duplex authorized `/tubo/tunnel/2.0`; carrier failure terminates the session and a new authorized connection is required.

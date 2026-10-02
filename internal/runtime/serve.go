@@ -44,6 +44,17 @@ func pipeScopeString(pipe domain.PipeSpec) string {
 // preserved.
 var errTargetUnreachable = errors.New("target_unreachable: local target unavailable")
 
+// opCtx returns the owning run's lifecycle context for authorization checks,
+// engine forwarding, and session bookkeeping. Direct test constructions
+// without a ctx fall back to Background; production wiring always carries the
+// daemon lifecycle so shutdown cancels in-flight serve work.
+func (s *tunnelServer) opCtx() context.Context {
+	if s.ctx == nil {
+		return context.Background()
+	}
+	return s.ctx
+}
+
 func (s *tunnelServer) handle(stream core.Stream) {
 	if err := s.serve(stream); err != nil {
 		if errors.Is(err, errInitialCarrierTransferred) {
@@ -94,7 +105,7 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	}
 
 	now := time.Now().UTC()
-	auth, err := s.authorizeOpenOnly(context.Background(), hello.ClientPublic, challenge, open, now)
+	auth, err := s.authorizeOpenOnly(s.opCtx(), hello.ClientPublic, challenge, open, now)
 	if err != nil {
 		return s.openError(stream, "authorization_denied", authorizationMessage(err))
 	}
@@ -119,7 +130,7 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 			return s.openError(stream, "hop_limit_exceeded", "logical hop limit exceeded")
 		}
 
-		result, fwdErr := s.engine.Forward(context.Background(), s.spec, pipeState, s.downstreamOpener)
+		result, fwdErr := s.engine.Forward(s.opCtx(), s.spec, pipeState, s.downstreamOpener)
 		if fwdErr != nil {
 			return s.openError(stream, "target_unreachable", "pipe target unavailable")
 		}
@@ -165,7 +176,7 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	if err != nil {
 		return err
 	}
-	allowed, err := s.sessionAllowed(context.Background(), sessionID)
+	allowed, err := s.sessionAllowed(s.opCtx(), sessionID)
 	if err != nil || !allowed {
 		return s.openError(stream, "authorization_denied", "session revoked")
 	}
@@ -175,7 +186,7 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 	}
 	_ = stream.SetDeadline(time.Time{})
 
-	s.recordSession(context.Background(), sessionID, 0, 0)
+	s.recordSession(s.opCtx(), sessionID, 0, 0)
 	runtimeInfof("session opened pipe=%s session=%s path=relayed", s.spec.Ref, sessionID)
 
 	// Re-grounded data plane: an owner-bound Session owns the Carrier and the
@@ -216,7 +227,7 @@ func (s *tunnelServer) serve(stream core.Stream) error {
 
 	sp.runServerSession()
 	in, out := sp.ByteCounts()
-	s.recordSession(context.Background(), sessionID, in, out)
+	s.recordSession(s.opCtx(), sessionID, in, out)
 	runtimeInfof("session closed pipe=%s session=%s rx=%d tx=%d", s.spec.Ref, sessionID, in, out)
 	// Session exclusively owns terminal action after active installation.
 	return errInitialCarrierTransferred

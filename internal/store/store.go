@@ -420,20 +420,27 @@ func (s *Store) migrate(ctx context.Context) error {
 		return fmt.Errorf("schema 12 redemption index: %w", err)
 	}
 	// Schema 13 makes the accepted relationship explicitly deterministic and
-	// epoch-aware. accepted_exact_relationships is the single authoritative
-	// current relationship per (pipe_id, recipient_public); invite_redemptions
-	// remains one-time anti-replay history. Deterministic backfill for schema
-	// 12 state: every redeemed (pipe, client) pair gets one relationship row
-	// from its LATEST redemption (redeemed_at desc, row id tie-break) at the
-	// legacy epoch 0. A relationship is thus immediately usable when the
-	// current pipe-access epoch is still 0, and fails closed (stale) once any
-	// revocation has advanced it.
-	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO accepted_exact_relationships(pipe_id, recipient_public, invite_jti, access_epoch, accepted_at, updated_at)
-		 SELECT pipe_id, client_public, jti, 0, redeemed_at, redeemed_at FROM invite_redemptions r
-		 WHERE r.rowid = (SELECT r2.rowid FROM invite_redemptions r2
-		  WHERE r2.pipe_id = r.pipe_id AND r2.client_public = r.client_public
-		  ORDER BY r2.redeemed_at DESC, r2.rowid DESC LIMIT 1)`); err != nil {
-		return fmt.Errorf("schema 13 accepted relationship backfill: %w", err)
+	// epoch-aware. This backfill is a ONE-TIME legacy upgrade (databases created
+	// before schema 13 cannot distinguish exact from scoped redemptions after
+	// the fact). It must never re-run on later opens: scoped redemptions written
+	// after schema 14 carry kind='scoped' and must stay anti-replay history
+	// only, never promoted to an accepted exact relationship.
+	if currentSchema > 0 && currentSchema < 13 {
+		// accepted_exact_relationships is the single authoritative
+		// current relationship per (pipe_id, recipient_public); invite_redemptions
+		// remains one-time anti-replay history. Deterministic backfill for schema
+		// 12 state: every redeemed (pipe, client) pair gets one relationship row
+		// from its LATEST redemption (redeemed_at desc, row id tie-break) at the
+		// legacy epoch 0. A relationship is thus immediately usable when the
+		// current pipe-access epoch is still 0, and fails closed (stale) once any
+		// revocation has advanced it.
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO accepted_exact_relationships(pipe_id, recipient_public, invite_jti, access_epoch, accepted_at, updated_at)
+			 SELECT pipe_id, client_public, jti, 0, redeemed_at, redeemed_at FROM invite_redemptions r
+			 WHERE r.rowid = (SELECT r2.rowid FROM invite_redemptions r2
+			  WHERE r2.pipe_id = r.pipe_id AND r2.client_public = r.client_public
+			  ORDER BY r2.redeemed_at DESC, r2.rowid DESC LIMIT 1)`); err != nil {
+			return fmt.Errorf("schema 13 accepted relationship backfill: %w", err)
+		}
 	}
 	// Schema 14: invite_redemptions gains a kind discriminator so revocation
 	// can deterministically classify a JTI as exact (Journey A, kind='exact')

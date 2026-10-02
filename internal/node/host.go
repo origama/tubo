@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	libp2p "github.com/libp2p/go-libp2p"
@@ -77,7 +78,45 @@ func Open(ctx context.Context, options Options) (host.Host, error) {
 
 func loadOrCreateIdentity(path string) (crypto.PrivKey, error) {
 	if data, err := os.ReadFile(path); err == nil {
-		return crypto.UnmarshalPrivateKey(data)
+		key, keyErr := crypto.UnmarshalPrivateKey(data)
+		if keyErr != nil {
+			// A corrupt key file fails closed. Silently regenerating here would
+			// rotate this host's durable identity (new peer ID, lost binding
+			// trust) while appearing to succeed.
+			return nil, fmt.Errorf("identity key %s is corrupt; refusing to regenerate: %w", path, keyErr)
+		}
+		return key, nil
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	// Two concurrent processes (daemon + CLI) may both observe a missing
+	// identity. Serialize creation with an exclusive lock so exactly one
+	// generates and publishes the key; the loser loads the winner's identity
+	// instead of silently forking host identity. The lock file is harmless
+	// debris (0 bytes, 0600) if a holder crashes mid-section.
+	lockPath := path + ".lock"
+	lock, lockErr := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o600)
+	if lockErr != nil {
+		return nil, fmt.Errorf("identity lock %s: %w", lockPath, lockErr)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return nil, fmt.Errorf("identity lock %s: %w", lockPath, err)
+	}
+	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
+	// Re-check under the lock: the winner may have published while we waited.
+	if data, err := os.ReadFile(path); err == nil {
+		key, keyErr := crypto.UnmarshalPrivateKey(data)
+		if keyErr != nil {
+			return nil, fmt.Errorf("identity key %s is corrupt; refusing to regenerate: %w", path, keyErr)
+		}
+		return key, nil
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -89,13 +128,29 @@ func loadOrCreateIdentity(path string) (crypto.PrivKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	// Atomic publish: a fully written temp file renamed into place can never
+	// leave a truncated key behind for a concurrent reader or a crash.
+	tmp, tmpErr := os.CreateTemp(filepath.Dir(path), ".identity-*")
+	if tmpErr != nil {
+		return nil, tmpErr
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
 		return nil, err
 	}
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+	if err := tmp.Chmod(0o600); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
 		return nil, err
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return nil, err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
 		return nil, err
 	}
 	return key, nil

@@ -196,15 +196,27 @@ semantic_checks:
     path_glob: internal/openauth/*.go
     forbid_patterns:
       - 'Scope.*json:"scope'
-      - map[string]any
+      - 'map\[string\]any'
 
   # Accesslease/localkey/exactauthority must not carry Scope or arbitrary metadata map
   - rule: R13
     description: "pure L3 packages must not carry Scope or map[string]any"
-    path_glob: internal/(accesslease|localkey|exactauthority)/*.go
+    path_glob: internal/accesslease/*.go
     forbid_patterns:
       - 'Scope.*json:"scope'
-      - map[string]any
+      - 'map\[string\]any'
+  - rule: R13b
+    description: "localkey must not carry Scope or arbitrary metadata"
+    path_glob: internal/localkey/*.go
+    forbid_patterns:
+      - 'Scope.*json:"scope'
+      - 'map\[string\]any'
+  - rule: R13c
+    description: "exactauthority must not carry Scope or arbitrary metadata"
+    path_glob: internal/exactauthority/*.go
+    forbid_patterns:
+      - 'Scope.*json:"scope'
+      - 'map\[string\]any'
 
   # Usecase must not expose *store.Store
   - rule: R14

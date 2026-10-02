@@ -99,7 +99,10 @@ func TestFullAuthorityVertical(t *testing.T) {
 	authPub := auth.Private.Public().(ed25519.PublicKey)
 	openChallenge := "open-challenge"
 	openProof := accesslease.SignProof(clientPriv, accesslease.OpenProofPurpose, openChallenge, pipeID)
-	authorizer := NewExactOpenAuthorizer(authPub, pipeID, adapter)
+	authorizer, authErr := NewExactOpenAuthorizer(authPub, pipeID, adapter)
+	if authErr != nil {
+		t.Fatal(authErr)
+	}
 	authResult, err := authorizer.AuthorizeOpen(ctx, openauth.OpenRequest{
 		PipeID:         pipeID,
 		ClientPublic:   clientPub,
@@ -207,7 +210,11 @@ func TestScopeTokenCannotAuthorizeExactRemoteOpen(t *testing.T) {
 	authPub := authPriv.Public().(ed25519.PublicKey)
 	clientPub := accesslease.PublicString(clientPriv.Public().(ed25519.PublicKey))
 
-	auth := NewExactOpenAuthorizer(authPub, testPipeID, nil)
+	revState := &fakeRevocation{revoked: map[string]bool{}, epochs: map[string]uint64{}}
+	auth, authErr := NewExactOpenAuthorizer(authPub, testPipeID, revState)
+	if authErr != nil {
+		t.Fatal(authErr)
+	}
 	challenge := "challenge"
 	proof := accesslease.SignProof(clientPriv, accesslease.OpenProofPurpose, challenge, testPipeID)
 
@@ -224,5 +231,65 @@ func TestScopeTokenCannotAuthorizeExactRemoteOpen(t *testing.T) {
 	}
 	if _, err := auth.AuthorizeOpen(context.Background(), req); err == nil {
 		t.Fatal("prototype token accepted as AccessLease")
+	}
+}
+
+// TestRevokedUnredeemedInviteDeniesRedemption: an exact invite revoked by the
+// owner BEFORE redemption (the revoke-by-token path writes subject_type
+// exact.invite under the exact Pipe) must be denied at the redemption
+// boundary with zero state mutation: no lease, no accepted relationship.
+func TestRevokedUnredeemedInviteDeniesRedemption(t *testing.T) {
+	t.Setenv("TUBO_HOME", t.TempDir())
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	state, err := store.Open(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer state.Close()
+	_, ownerPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pipeID := accesslease.PipeIDFromOwner(ownerPriv.Public().(ed25519.PublicKey))
+	secretsDir := state.SecretPath("exact-authorities-test")
+	keyPath, keyPathErr := exactauthority.KeyPath(secretsDir, pipeID)
+	if keyPathErr != nil {
+		t.Fatal(keyPathErr)
+	}
+	auth, err := exactauthority.LocalOwnerWorkflow{KeyPath: keyPath, PipeID: pipeID, Epoch: 1}.Provision(ownerPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invite, err := accesslease.NewExactInvite(auth.Private, auth.Binding, pipeID, now, 10*time.Minute, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedInvite, err := accesslease.EncodeInvite(invite)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Owner revokes the still-unredeemed invite JTI before any redemption.
+	if err := state.Revoke(ctx, pipeID, "exact.invite", invite.JTI, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	_, clientPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientPub := accesslease.PublicString(clientPriv.Public().(ed25519.PublicKey))
+	challenge, _ := accesslease.RandomChallenge()
+	proof := accesslease.SignProof(clientPriv, accesslease.RedeemProofPurpose, invite.JTI, pipeID, challenge)
+	adapter := store.NewExactAuthorityRevocationState(state, pipeID)
+	loader := exactauthority.Loader{KeyPath: keyPath, Binding: auth.Binding}
+
+	if _, err := exactauthority.RedeemExactInvite(ctx, now, encodedInvite, clientPub, challenge, proof, loader, adapter, adapter, 10*time.Minute); err == nil {
+		t.Fatal("revoked unredeemed invite was redeemed")
+	}
+	if _, _, ok, relErr := adapter.AcceptedRelationship(ctx, pipeID, clientPub); relErr != nil || ok {
+		t.Fatalf("denied redemption must not create accepted relationship: ok=%v %v", ok, relErr)
 	}
 }

@@ -34,9 +34,15 @@ type ExactOpenAuthorizer struct {
 }
 
 // NewExactOpenAuthorizer creates an ExactOpenAuthorizer that trusts the
-// given exact authority public key for the given pipe audience.
-func NewExactOpenAuthorizer(leasePublic ed25519.PublicKey, pipeID string, state exactauthority.RevocationState) *ExactOpenAuthorizer {
-	return &ExactOpenAuthorizer{leasePublic: leasePublic, pipeID: pipeID, state: state}
+// given exact authority public key for the given pipe audience. Revocation
+// state is a MANDATORY security dependency: without it a minted lease could
+// never be revoked or fenced by the authorization epoch. Missing dependency
+// fails closed at construction; there is no revocation-free configuration.
+func NewExactOpenAuthorizer(leasePublic ed25519.PublicKey, pipeID string, state exactauthority.RevocationState) (*ExactOpenAuthorizer, error) {
+	if state == nil {
+		return nil, errors.New("exact open authorizer requires revocation state")
+	}
+	return &ExactOpenAuthorizer{leasePublic: leasePublic, pipeID: pipeID, state: state}, nil
 }
 
 // LazyExactAuthorizer is a lazy wrapper that loads the exact authority key
@@ -68,8 +74,10 @@ func (a *LazyExactAuthorizer) AuthorizeOpen(ctx context.Context, req openauth.Op
 			if loadErr == nil {
 				adapter := store.NewExactAuthorityRevocationState(a.state, a.pipeID)
 				pub := private.Public().(ed25519.PublicKey)
-				a.auth = NewExactOpenAuthorizer(pub, a.pipeID, adapter)
-				a.loaded = true
+				if auth, authErr := NewExactOpenAuthorizer(pub, a.pipeID, adapter); authErr == nil {
+					a.auth = auth
+					a.loaded = true
+				}
 			}
 		}
 	}
@@ -110,8 +118,9 @@ func (a *ExactOpenAuthorizer) AuthorizeOpen(ctx context.Context, req openauth.Op
 		return zero, errors.New("authorization denied")
 	}
 
-	// Revocation checks.
-	if a.state != nil {
+	// Revocation checks: the revocation state is mandatory (the constructor
+	// fails closed without it); an unavailable state denies.
+	{
 		revoked, revErr := a.state.IsRevoked(ctx, lease.JTI, "access-lease")
 		if revErr != nil {
 			return zero, errors.New("authorization denied")

@@ -53,6 +53,14 @@ func RenewAcceptedAccess(
 ) (accesslease.AccessLease, error) {
 	var zero accesslease.AccessLease
 
+	// Required security dependencies. Revocation state and the accepted-
+	// binding store are mandatory: there is no revocation-free renewal and
+	// no renewal without authoritative accepted-relationship evidence.
+	// Missing dependency fails closed before any verification work.
+	if state == nil || accepted == nil {
+		return zero, errors.New("exactauthority: renewal requires revocation and accepted-binding state")
+	}
+
 	// Step 1: bounded canonical PipeID and recipient key.
 	if pipeID == "" || len(pipeID) > accesslease.MaxPipeIDLen {
 		return zero, errors.New("exactauthority: renewing invalid pipe id")
@@ -108,7 +116,7 @@ func RenewAcceptedAccess(
 	}
 
 	// Step 6: revocation/epoch validity fails closed.
-	if state != nil {
+	{
 		revoked, revErr := state.IsRevoked(ctx, jti, "exact.invite")
 		if revErr != nil {
 			return zero, errors.New("exactauthority: renewal revocation state unavailable")

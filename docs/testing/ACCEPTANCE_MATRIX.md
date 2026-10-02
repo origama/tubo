@@ -137,3 +137,8 @@ Before the first usable release and every security/transport release:
 9. periodic-sync local election: split authority/publisher homes, two same-home contenders, exact crash/no-pre-expiry takeover, relay outage/recovery, and cached-only convergence (`tests/e2e/three-machine/scenarios/periodic-sync.sh`).
 
 A checked-in scenario is not 3M completion. Required 3M evidence is a retained exact run ID and `generated/e2e-three-machine/<run-id>/artifacts/report.json` with `result: pass`.
+
+### Current isolated three-machine evidence
+
+- `private-http` PASS, run `20261002T103152Z-18042` (`generated/e2e-three-machine/20261002T103152Z-18042/artifacts/report.json`), on `fix/minimal-exact-readiness` (#76): relay transport on isolated port, member discovery + viewer connect denial, exact-invite connect preset on a scoped origin Pipe (this run exposed and proved the fix that the general pipe daemon must serve `/tubo/exact-redemption/1` and `/tubo/exact-renewal/1`), HTTP request fidelity, rebuilt process-ontology assertion, isolated-state cleanup. An earlier failing run (`20261002T102630Z-9495`, `pipe_unreachable: protocols not supported`) is retained as the failure record that motivated the fix.
+- Durable exact-renewal operator campaign (2026-09-05): see [`THREE_MACHINE_DURABLE_RENEWAL_2026-09-05.md`](THREE_MACHINE_DURABLE_RENEWAL_2026-09-05.md). Its relay identity predates the current checkout; do not cite it as current-relay evidence without a rerun.

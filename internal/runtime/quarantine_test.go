@@ -63,8 +63,8 @@ func TestProductionTunnelAdapterHasNoResumeSurface(t *testing.T) {
 	// protocol ID is never registered, so libp2p resets any unsolicited
 	// /tubo/tunnel-resume/2.1 stream.
 	count := strings.Count(strings.ToLower(raw), "setstreamhandler")
-	if count != 4 {
-		t.Fatalf("expected exactly 4 SetStreamHandler calls (scoped tunnel + scope-less tunnel + redemption + renewal), got %d", count)
+	if count != 6 {
+		t.Fatalf("expected exactly 6 SetStreamHandler calls (tunnel + redemption + renewal on both the general and exact pipe daemon paths), got %d", count)
 	}
 	if !strings.Contains(strings.ToLower(raw), "wire.tunnelid") {
 		t.Fatalf("production adapter did not register the authorized tunnel handler")

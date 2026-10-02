@@ -50,6 +50,14 @@ func RedeemExactInvite(
 ) (accesslease.AccessLease, error) {
 	var zero accesslease.AccessLease
 
+	// Required security dependencies. Revocation state and the atomic
+	// redemption store are mandatory: there is no revocation-free or
+	// persistence-free redemption configuration. Missing dependency fails
+	// closed before any decode or verification work.
+	if state == nil || redemption == nil {
+		return zero, errors.New("exactauthority: redemption requires revocation and redemption state")
+	}
+
 	// Step 2: Decode the invite.
 	invite, err := accesslease.DecodeInvite(encodedInvite)
 	if err != nil {
@@ -123,7 +131,7 @@ func RedeemExactInvite(
 	// epoch the invite was minted at: a revoked (advanced) epoch makes every
 	// earlier invite stale, and a valid invite minted at a future epoch is
 	// equally refused (fail closed, epoch rollback protection).
-	if state != nil {
+	{
 		revoked, revErr := state.IsRevoked(ctx, invite.JTI, "exact.invite")
 		if revErr != nil {
 			return zero, errors.New("exactauthority: revocation state unavailable")
@@ -147,7 +155,7 @@ func RedeemExactInvite(
 	if err != nil {
 		return zero, err
 	}
-	if redemption != nil {
+	{
 		ok, redeemErr := redemption.RedeemInviteAndAccept(ctx, invite.JTI, invite.AudiencePipeID, sessionID, recipientPublic, invite.AccessEpoch, now)
 		if redeemErr != nil {
 			return zero, errors.New("exactauthority: redemption persistence failed")

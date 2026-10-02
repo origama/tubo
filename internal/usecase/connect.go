@@ -78,35 +78,35 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 		return ConnectExactResult{}, errors.New("persistence_unavailable: durable binding repository is not wired")
 	}
 
-	// Establish target Pipe, recipient identity, and verified access material
-	// through the shared accepted-binding lifecycle. No competing exact
-	// authorization implementation exists.
+	// Resolve the target Pipe and the recipient identity. The recipient
+	// identity is deterministic per remote Pipe (connect-<pipe>.key), so both
+	// branches resolve it LOCALLY: no network dial, no lease acquisition, and
+	// — critically — no consumption of the one-time invite. Verified access
+	// material is established only after every local conflict check has
+	// passed, so a failing connect never burns the bootstrap credential.
 	var (
 		targetPipeID     string
 		recipientPublic  string
 		recipientRef     domain.Ref
 		recipientKeyFile string
+		invite           accesslease.ExactInvite
 	)
 	if in.Invite != "" {
-		invite, err := accesslease.DecodeInvite(in.Invite)
+		decoded, err := accesslease.DecodeInvite(in.Invite)
 		if err != nil {
 			return ConnectExactResult{}, authorizationDenied(fmt.Errorf("invalid exact invite: %w", err))
 		}
-		if err := invite.Verify(u.now(), invite.AudiencePipeID); err != nil {
+		if err := decoded.Verify(u.now(), decoded.AudiencePipeID); err != nil {
 			return ConnectExactResult{}, authorizationDenied(err)
 		}
-		accepted, err := u.acceptExactInvite(ctx, invite)
-		if err != nil {
-			return ConnectExactResult{}, err
-		}
-		targetPipeID = invite.AudiencePipeID
-		recipientPublic = accepted.recipientPublic
+		invite = decoded
+		targetPipeID = decoded.AudiencePipeID
 		recipientKeyFile = filepath.Join(u.Secrets, "pipes", "connect-"+targetPipeID+".key")
-		ref, refErr := recipientRefFor(targetPipeID, in.Name)
-		if refErr != nil {
-			return ConnectExactResult{}, fmt.Errorf("invalid_input: %w", refErr)
+		recipient, keyErr := localkey.Provision(recipientKeyFile)
+		if keyErr != nil {
+			return ConnectExactResult{}, persistenceError("recipient identity key", keyErr)
 		}
-		recipientRef = ref
+		recipientPublic = accesslease.PublicString(recipient.Public().(ed25519.PublicKey))
 	} else {
 		// Remote path: the accepted relationship already exists on this
 		// consumer. The recipient key must already be the accepted identity;
@@ -119,27 +119,12 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 			return ConnectExactResult{}, authorizationDenied(fmt.Errorf("no accepted recipient identity for %s", targetPipeID))
 		}
 		recipientPublic = accesslease.PublicString(recipient.Public().(ed25519.PublicKey))
-		binding, bindingErr := u.Bindings.Get(ctx, targetPipeID)
-		if bindingErr != nil {
-			if errors.Is(bindingErr, domain.ErrNotFound) {
-				return ConnectExactResult{}, authorizationDenied(fmt.Errorf("no accepted binding for %s; redeem the invite first with 'tubo accept --token <invite>'", targetPipeID))
-			}
-			return ConnectExactResult{}, persistenceError("accepted remote pipe binding", bindingErr)
-		}
-		if binding.RecipientPublic != recipientPublic {
-			return ConnectExactResult{}, authorizationDenied(fmt.Errorf("recipient identity does not match accepted binding for %s", targetPipeID))
-		}
-		access, err := u.AcquireAcceptedPipeAccess(ctx, targetPipeID)
-		if err != nil {
-			return ConnectExactResult{}, err
-		}
-		_ = access // verified and cached; the runtime opener reacquires per open
-		ref, refErr := recipientRefFor(targetPipeID, in.Name)
-		if refErr != nil {
-			return ConnectExactResult{}, fmt.Errorf("invalid_input: %w", refErr)
-		}
-		recipientRef = ref
 	}
+	ref, refErr := recipientRefFor(targetPipeID, in.Name)
+	if refErr != nil {
+		return ConnectExactResult{}, fmt.Errorf("invalid_input: %w", refErr)
+	}
+	recipientRef = ref
 
 	now := u.now()
 	spec := domain.PipeSpec{
@@ -208,6 +193,32 @@ func (u UseCases) ConnectExact(ctx context.Context, in ConnectExactInput) (Conne
 		}
 	default:
 		return ConnectExactResult{}, persistenceError("pipe", errRef)
+	}
+	// Verified access material comes AFTER all local validation. For the
+	// invite path this is where the one-time redemption finally happens; the
+	// deterministic recipient key guarantees the identity used above is the
+	// one redeemed here. For the remote path the durable binding and its
+	// accepted relationship are verified and a fresh lease acquired.
+	if in.Invite != "" {
+		if _, err := u.acceptExactInvite(ctx, invite); err != nil {
+			return ConnectExactResult{}, err
+		}
+	} else {
+		binding, bindingErr := u.Bindings.Get(ctx, targetPipeID)
+		if bindingErr != nil {
+			if errors.Is(bindingErr, domain.ErrNotFound) {
+				return ConnectExactResult{}, authorizationDenied(fmt.Errorf("no accepted binding for %s; redeem the invite first with 'tubo accept --token <invite>'", targetPipeID))
+			}
+			return ConnectExactResult{}, persistenceError("accepted remote pipe binding", bindingErr)
+		}
+		if binding.RecipientPublic != recipientPublic {
+			return ConnectExactResult{}, authorizationDenied(fmt.Errorf("recipient identity does not match accepted binding for %s", targetPipeID))
+		}
+		access, accessErr := u.AcquireAcceptedPipeAccess(ctx, targetPipeID)
+		if accessErr != nil {
+			return ConnectExactResult{}, accessErr
+		}
+		_ = access // verified and cached; the runtime opener reacquires per open
 	}
 	if !noUpsert {
 		if _, err := u.Pipes.Upsert(ctx, spec, recipientKeyFile); err != nil {
