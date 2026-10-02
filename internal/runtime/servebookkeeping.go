@@ -13,7 +13,7 @@ import (
 	"encoding/base32"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/store"
 )
 
 // randomSessionID mints a fresh, unguessable session identifier for the

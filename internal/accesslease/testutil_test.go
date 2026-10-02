@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo/internal/accesslease"
 )
 
 func fixNow() time.Time {

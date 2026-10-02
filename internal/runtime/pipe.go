@@ -22,15 +22,15 @@ import (
 	core "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/discovery"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/engine"
-	"github.com/origama/tubo-rebuilt/internal/node"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/reachability"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/discovery"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/engine"
+	"github.com/origama/tubo/internal/node"
+	"github.com/origama/tubo/internal/openauth"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/reachability"
+	"github.com/origama/tubo/internal/store"
 )
 
 // baseSessionCapabilities is the only capability set advertised on the A0

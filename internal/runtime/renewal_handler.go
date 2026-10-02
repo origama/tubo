@@ -16,10 +16,10 @@ import (
 
 	core "github.com/libp2p/go-libp2p/core/network"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/exactauthority"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/store"
 )
 
 // exactRenewalHandler handles /tubo/exact-renewal/1 for one exact Pipe.

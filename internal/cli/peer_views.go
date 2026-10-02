@@ -10,7 +10,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/store"
 )
 
 type peerView struct {

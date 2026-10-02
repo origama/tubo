@@ -11,11 +11,11 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/exactauthority"
+	"github.com/origama/tubo/internal/localkey"
+	"github.com/origama/tubo/internal/openauth"
+	"github.com/origama/tubo/internal/store"
 )
 
 // ExactOpenAuthorizer is the concrete L3 open-authorizer behind the neutral

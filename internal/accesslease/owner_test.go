@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo/internal/accesslease"
 )
 
 func mutateOwner(t *testing.T, enc string, fn func(map[string]any)) string {

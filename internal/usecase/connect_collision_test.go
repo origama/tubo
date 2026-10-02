@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // newCollisionHarness builds a UseCases with in-memory repos and fakes, plus

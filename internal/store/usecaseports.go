@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // ServiceRepositoryContract is the consumer-owned narrow Service persistence

@@ -11,7 +11,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo/internal/accesslease"
 )
 
 // RedeemExactInvite implements the mandatory ordering for remote exact-invite

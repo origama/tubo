@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // StartPipe loads a durable PipeSpec and delegates runtime launch to the

@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/reachability"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/reachability"
+	"github.com/origama/tubo/internal/store"
 )
 
 // TestRevokeUnredeemedExactInviteByToken: an unredeemed exact invite has no

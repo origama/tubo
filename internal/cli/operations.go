@@ -19,9 +19,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 	"gopkg.in/yaml.v3"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	appRuntime "github.com/origama/tubo-rebuilt/internal/runtime"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/domain"
+	appRuntime "github.com/origama/tubo/internal/runtime"
+	"github.com/origama/tubo/internal/store"
 )
 
 // extractGlobalFlags consumes the global flags anywhere in the argument list

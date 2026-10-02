@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // Attach creates a durable Service definition and a Scope-less owned Pipe

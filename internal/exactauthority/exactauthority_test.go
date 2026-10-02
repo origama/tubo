@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/exactauthority"
 )
 
 func TestExactAuthorityFirstProvisionReload(t *testing.T) {

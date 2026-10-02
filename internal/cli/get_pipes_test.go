@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/discovery"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	appRuntime "github.com/origama/tubo-rebuilt/internal/runtime"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/discovery"
+	"github.com/origama/tubo/internal/domain"
+	wire "github.com/origama/tubo/internal/protocol"
+	appRuntime "github.com/origama/tubo/internal/runtime"
+	"github.com/origama/tubo/internal/store"
 )
 
 func openPipeViewState(t *testing.T) (*store.Store, context.Context) {

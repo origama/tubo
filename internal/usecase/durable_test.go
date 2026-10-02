@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // verifyNoRuntimeFields asserts that a durable PipeSpec carries no transient

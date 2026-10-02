@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo/internal/accesslease"
 )
 
 func makeInvite(t *testing.T) (ed25519.PrivateKey, ed25519.PrivateKey, string, accesslease.ExactInvite) {

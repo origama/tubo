@@ -14,9 +14,9 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	"github.com/origama/tubo-rebuilt/internal/usecase"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/openauth"
+	"github.com/origama/tubo/internal/usecase"
 )
 
 // useCaseAccessAcquirer wraps the L4 AcquireAcceptedPipeAccess use case

@@ -21,11 +21,11 @@ import (
 
 	core "github.com/libp2p/go-libp2p/core/network"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/engine"
-	"github.com/origama/tubo-rebuilt/internal/node"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/engine"
+	"github.com/origama/tubo/internal/node"
+	"github.com/origama/tubo/internal/openauth"
+	wire "github.com/origama/tubo/internal/protocol"
 )
 
 // pipeScopeString renders the pipe's optional Scope as a stable string or ""

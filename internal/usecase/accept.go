@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/localkey"
 )
 
 // AcceptExactInvite is the one-time bootstrap of the durable exact remote-Pipe

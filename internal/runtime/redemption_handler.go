@@ -12,11 +12,11 @@ import (
 
 	core "github.com/libp2p/go-libp2p/core/network"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/exactauthority"
+	"github.com/origama/tubo/internal/localkey"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/store"
 )
 
 // exactRedemptionHandler handles the /tubo/exact-redemption/1 protocol.

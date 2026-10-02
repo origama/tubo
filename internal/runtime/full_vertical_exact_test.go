@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/exactauthority"
+	"github.com/origama/tubo/internal/openauth"
+	"github.com/origama/tubo/internal/store"
 )
 
 // TestFullAuthorityVertical exercises the complete step 6B2 authorization

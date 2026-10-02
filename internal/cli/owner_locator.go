@@ -8,10 +8,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/node"
-	"github.com/origama/tubo-rebuilt/internal/reachability"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/node"
+	"github.com/origama/tubo/internal/reachability"
+	"github.com/origama/tubo/internal/store"
 )
 
 type ownerRedemptionLocator struct {

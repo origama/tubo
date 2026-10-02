@@ -18,14 +18,14 @@ import (
 	core "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/engine"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
-	"github.com/origama/tubo-rebuilt/internal/node"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/engine"
+	"github.com/origama/tubo/internal/localkey"
+	"github.com/origama/tubo/internal/node"
+	"github.com/origama/tubo/internal/openauth"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/store"
 )
 
 // newExactDownstreamPipeOpener creates a DownstreamOpener that opens a remote

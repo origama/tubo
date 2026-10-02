@@ -23,7 +23,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/origama/tubo-rebuilt/internal/node"
+	"github.com/origama/tubo/internal/node"
 )
 
 const (

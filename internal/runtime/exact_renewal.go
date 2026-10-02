@@ -13,10 +13,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/usecase"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/localkey"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/usecase"
 )
 
 // Compile-time check: the renewal client satisfies the usecase port.

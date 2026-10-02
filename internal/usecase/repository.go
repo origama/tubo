@@ -3,7 +3,7 @@ package usecase
 import (
 	"context"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // ServiceRepository is the narrow persistence port for durable Service

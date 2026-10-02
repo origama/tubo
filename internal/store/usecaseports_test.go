@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/usecase"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/usecase"
 )
 
 // Compile-time bridge: the store adapters satisfy the consumer-owned usecase ports.

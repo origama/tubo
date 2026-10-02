@@ -16,12 +16,12 @@ import (
 	core "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
-	"github.com/origama/tubo-rebuilt/internal/node"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/store"
-	"github.com/origama/tubo-rebuilt/internal/usecase"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/localkey"
+	"github.com/origama/tubo/internal/node"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/store"
+	"github.com/origama/tubo/internal/usecase"
 )
 
 // Compile-time check: these adapters satisfy the usecase interfaces.

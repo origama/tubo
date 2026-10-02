@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/openauth"
+	wire "github.com/origama/tubo/internal/protocol"
 )
 
 // fakeOpenAuthorizer is a deterministic in-memory OpenAuthorizer used to prove

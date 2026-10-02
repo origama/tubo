@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )

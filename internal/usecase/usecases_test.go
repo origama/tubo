@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/localkey"
 )
 
 // Case 7: Attach creates Service then Pipe (all-or-nothing order).

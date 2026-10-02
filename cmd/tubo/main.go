@@ -7,7 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/origama/tubo-rebuilt/internal/cli"
+	"github.com/origama/tubo/internal/cli"
 )
 
 var (

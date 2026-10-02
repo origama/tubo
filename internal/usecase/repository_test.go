@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // Cases 1-6: Narrow persistence ports via in-memory fakes.

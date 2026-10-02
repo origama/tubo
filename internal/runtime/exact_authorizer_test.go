@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/exactauthority"
+	"github.com/origama/tubo/internal/openauth"
 )
 
 type fakeRevocation struct {

@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/localkey"
 )
 
 // exactConnectConflict decides whether an existing local Pipe definition can

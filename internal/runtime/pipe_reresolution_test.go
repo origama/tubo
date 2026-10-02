@@ -15,11 +15,11 @@ import (
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/discovery"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/discovery"
+	"github.com/origama/tubo/internal/domain"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/store"
 )
 
 func remoteRecord(sequence uint64, peer, address string) discovery.PipeRecord {

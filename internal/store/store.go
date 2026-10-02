@@ -18,7 +18,7 @@ import (
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 const SchemaVersion = 14

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/openauth"
+	"github.com/origama/tubo/internal/store"
 )
 
 const scopeAuthPipe = "pip_scope"

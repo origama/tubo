@@ -11,7 +11,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo/internal/accesslease"
 )
 
 // RenewAcceptedAccess implements the mandatory ordering for post-acceptance

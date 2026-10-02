@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/store"
 )
 
 func TestFetchRecordsWithOptionsForceBypassesOnlyRetryCooldown(t *testing.T) {

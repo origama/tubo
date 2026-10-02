@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/localkey"
 )
 
 const (

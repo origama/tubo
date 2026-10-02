@@ -16,9 +16,9 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
 
-	"github.com/origama/tubo-rebuilt/internal/reachability"
-	"github.com/origama/tubo-rebuilt/internal/reachability/bundle"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/reachability"
+	"github.com/origama/tubo/internal/reachability/bundle"
+	"github.com/origama/tubo/internal/store"
 )
 
 const echoProto = protocol.ID("/tubo/test/reachability/1")

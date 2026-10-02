@@ -5,8 +5,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/store"
 )
 
 // inspectPipeView is the structured view of one local Pipe: the --json form

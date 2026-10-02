@@ -7,8 +7,8 @@ import (
 
 	coremetrics "github.com/libp2p/go-libp2p/core/metrics"
 
-	"github.com/origama/tubo-rebuilt/internal/node"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/node"
+	"github.com/origama/tubo/internal/store"
 )
 
 func RunRelay(ctx context.Context, state *store.Store, listen, publicAddress, swarmKey string) error {

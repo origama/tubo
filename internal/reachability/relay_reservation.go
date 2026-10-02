@@ -10,7 +10,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/origama/tubo-rebuilt/internal/node"
+	"github.com/origama/tubo/internal/node"
 )
 
 // ErrReservationTooShort is returned when a relay-provided reservation

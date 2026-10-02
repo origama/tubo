@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // Carrier is the minimal raw full-duplex byte transport consumed by L4 use

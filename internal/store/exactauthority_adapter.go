@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo/internal/accesslease"
 )
 
 // ExactAuthorityRevocationState adapts a *Store to the exactauthority.RevocationState,

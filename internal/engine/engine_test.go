@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/node"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/node"
 )
 
 // ---------------------------------------------------------------------------

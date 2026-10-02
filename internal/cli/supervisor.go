@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/store"
 )
 
 type launchdPlan struct {

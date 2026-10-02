@@ -7,8 +7,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 
-	"github.com/origama/tubo-rebuilt/internal/node"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/node"
+	"github.com/origama/tubo/internal/store"
 )
 
 func setRunStatus(state *store.Store, ref, status string) bool {

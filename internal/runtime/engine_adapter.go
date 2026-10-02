@@ -7,10 +7,10 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/engine"
-	"github.com/origama/tubo-rebuilt/internal/node"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/engine"
+	"github.com/origama/tubo/internal/node"
+	"github.com/origama/tubo/internal/store"
 )
 
 // newPipeEngine creates an Engine wired to the given Store for resolution.

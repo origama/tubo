@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/exactauthority"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/exactauthority"
+	"github.com/origama/tubo/internal/localkey"
 )
 
 // ShareExact loads an owned Pipe, proves ownership, provisions-or-loads the

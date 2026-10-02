@@ -6,9 +6,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/openauth"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/openauth"
+	"github.com/origama/tubo/internal/store"
 )
 
 // scopeTokenOpenAuthorizer is QUARANTINED as of step 6B2 (issue #49/#49).

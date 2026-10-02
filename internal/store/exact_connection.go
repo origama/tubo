@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 // GetRemotePipeBinding retrieves the durable accepted binding for a remote

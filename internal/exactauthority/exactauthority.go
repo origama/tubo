@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/localkey"
 )
 
 // Authority is the loaded owner-local Exact Authority key plus the verified

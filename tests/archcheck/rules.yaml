@@ -147,9 +147,9 @@ file_guards:
     description: "receiving boundary must not import concrete authority/store/discovery"
     path: internal/runtime/serve.go
     forbidden_imports:
-      - "github.com/origama/tubo-rebuilt/internal/authority"
-      - "github.com/origama/tubo-rebuilt/internal/store"
-      - "github.com/origama/tubo-rebuilt/internal/discovery"
+      - "github.com/origama/tubo/internal/authority"
+      - "github.com/origama/tubo/internal/store"
+      - "github.com/origama/tubo/internal/discovery"
 
   # R10: session.go must not import libp2p host/network/peer/protocol or store
   - rule: R10
@@ -160,7 +160,7 @@ file_guards:
       - "github.com/libp2p/go-libp2p/core/network"
       - "github.com/libp2p/go-libp2p/core/peer"
       - "github.com/libp2p/go-libp2p/core/protocol"
-      - "github.com/origama/tubo-rebuilt/internal/store"
+      - "github.com/origama/tubo/internal/store"
 
   # R19: the L2 exact downstream open path must never import the L4 usecase
   # package. The neutral openauth.AccessAcquirer is injected from the
@@ -169,7 +169,7 @@ file_guards:
     description: "L2 exact downstream open must not import L4 usecase"
     path: internal/runtime/exact_downstream.go
     forbidden_imports:
-      - "github.com/origama/tubo-rebuilt/internal/usecase"
+      - "github.com/origama/tubo/internal/usecase"
 
   # R20: the L2 local exact pipe runtime must not import the L4 usecase
   # package and must not construct or reference L4 exact access policy.
@@ -177,7 +177,7 @@ file_guards:
     description: "L2 local exact pipe runtime must not import L4 usecase"
     path: internal/runtime/pipe.go
     forbidden_imports:
-      - "github.com/origama/tubo-rebuilt/internal/usecase"
+      - "github.com/origama/tubo/internal/usecase"
 
 # Semantic pattern checks (source-level scans)
 semantic_checks:

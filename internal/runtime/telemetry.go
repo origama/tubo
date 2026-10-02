@@ -8,7 +8,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	coremetrics "github.com/libp2p/go-libp2p/core/metrics"
 
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/store"
 )
 
 const maxObservedRuntimePeers = 4096

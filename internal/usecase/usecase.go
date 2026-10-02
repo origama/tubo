@@ -9,9 +9,9 @@ import (
 	"crypto/ed25519"
 	"path/filepath"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/localkey"
+	"github.com/origama/tubo/internal/accesslease"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/localkey"
 )
 
 // DefaultInviteTTL is the lifetime of an exact invite minted by ShareExact.

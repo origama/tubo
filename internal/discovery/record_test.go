@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/domain"
 )
 
 func TestRecordVerifiesAndNeverContainsServiceTarget(t *testing.T) {

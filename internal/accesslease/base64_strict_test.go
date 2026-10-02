@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo/internal/accesslease"
 )
 
 // TestPublicKeyRejectsNonCanonical proves PublicFromString fails closed on

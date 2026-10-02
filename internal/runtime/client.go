@@ -18,13 +18,13 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/discovery"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	"github.com/origama/tubo-rebuilt/internal/node"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/reachability"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/discovery"
+	"github.com/origama/tubo/internal/domain"
+	"github.com/origama/tubo/internal/node"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/reachability"
+	"github.com/origama/tubo/internal/store"
 )
 
 func OpenOverlayHost(ctx context.Context, state *store.Store, keyName string) (host.Host, string, error) {

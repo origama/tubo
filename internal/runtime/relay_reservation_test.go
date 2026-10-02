@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/store"
 )
 
 // mustPutRun persists a run row and returns a pointer to a fresh in-memory

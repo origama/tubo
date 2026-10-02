@@ -91,7 +91,7 @@ func ComputeRealGraph(moduleRoot string, allPackages []string) (DepGraph, error)
 }
 
 // CheckGraph checks the computed dependency graph against all rules.
-// modulePrefix is the module path (e.g., "github.com/origama/tubo-rebuilt");
+// modulePrefix is the module path (e.g., "github.com/origama/tubo");
 // if non-empty, short rule paths like "internal/engine" are expanded to full paths.
 func CheckGraph(graph DepGraph, rules []RuleConfig, zones ZonesConfig, modulePrefix string) []Violation {
 	var violations []Violation

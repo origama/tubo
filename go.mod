@@ -1,4 +1,4 @@
-module github.com/origama/tubo-rebuilt
+module github.com/origama/tubo
 
 go 1.24.6
 

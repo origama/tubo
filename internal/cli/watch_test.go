@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/discovery"
-	"github.com/origama/tubo-rebuilt/internal/domain"
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/discovery"
+	"github.com/origama/tubo/internal/domain"
+	wire "github.com/origama/tubo/internal/protocol"
+	"github.com/origama/tubo/internal/store"
 )
 
 func putWatchRecord(t *testing.T, ctx context.Context, state *store.Store, scopeRaw, name string, member bool) string {

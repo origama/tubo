@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/accesslease"
+	"github.com/origama/tubo/internal/accesslease"
 )
 
 // fakeRevocationState drives revocation/epoch/persistence fail-closed paths.

@@ -13,7 +13,7 @@ import (
 	core "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/protocol"
 
-	wire "github.com/origama/tubo-rebuilt/internal/protocol"
+	wire "github.com/origama/tubo/internal/protocol"
 )
 
 // ownershipTestStream is a minimal in-process core.Stream for #27 ownership

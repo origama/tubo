@@ -24,8 +24,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	ma "github.com/multiformats/go-multiaddr"
 
-	"github.com/origama/tubo-rebuilt/internal/node"
-	"github.com/origama/tubo-rebuilt/internal/reachability/bundle"
+	"github.com/origama/tubo/internal/node"
+	"github.com/origama/tubo/internal/reachability/bundle"
 )
 
 // ErrNoBootstrapBundle is the deterministic fail-closed outcome of a zero-config

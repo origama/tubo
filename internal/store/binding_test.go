@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/domain"
 )
 
 func testBinding(remotePipeID string) domain.RemotePipeBinding {

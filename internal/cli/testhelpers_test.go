@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/origama/tubo-rebuilt/internal/store"
+	"github.com/origama/tubo/internal/store"
 )
 
 // runCommandForTest resolves and dispatches a full command line against an

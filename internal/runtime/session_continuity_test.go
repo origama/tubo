@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/node"
+	"github.com/origama/tubo/internal/node"
 )
 
 // byteQueue is one direction of a full-duplex pipe with clean half-close: a

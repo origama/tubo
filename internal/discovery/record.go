@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/origama/tubo-rebuilt/internal/authority"
-	"github.com/origama/tubo-rebuilt/internal/domain"
+	"github.com/origama/tubo/internal/authority"
+	"github.com/origama/tubo/internal/domain"
 )
 
 const MaxRecordSize = 64 << 10
