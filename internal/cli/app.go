@@ -19,6 +19,7 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/protocol"
 
+	"github.com/origama/tubo-rebuilt/internal/accesslease"
 	"github.com/origama/tubo-rebuilt/internal/authority"
 	"github.com/origama/tubo-rebuilt/internal/domain"
 	"github.com/origama/tubo-rebuilt/internal/openauth"
@@ -933,6 +934,18 @@ func (a App) revoke(ctx context.Context, state *store.Store, f flags) error {
 	epoch := uint64(1)
 	switch rawType {
 	case "invite":
+		// An UNREDEEMED exact invite has no redemption evidence yet, but the
+		// owner holds the invite credential itself. Accept the full exact
+		// invite token as the id: canonical decode yields its JTI and exact
+		// Pipe audience, so the revocation is written exactly where the
+		// redemption path checks it (subject_type=exact.invite under the exact
+		// Pipe). Redeemed JTIs keep resolving from persisted evidence below.
+		if invite, decodeErr := accesslease.DecodeInvite(id); decodeErr == nil && invite.OneTime {
+			typeName = "exact.invite"
+			scope = invite.AudiencePipeID
+			id = invite.JTI
+			break
+		}
 		kind, exactScope, resolveErr := state.ResolveRevokeInvite(ctx, id)
 		if resolveErr != nil {
 			return fmt.Errorf("persistence_failed: exact invite resolution: %w", resolveErr)

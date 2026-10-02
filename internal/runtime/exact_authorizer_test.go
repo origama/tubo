@@ -64,7 +64,10 @@ func newTestAuthorizerAndLease(t *testing.T, now time.Time) (*ExactOpenAuthorize
 		revoked: map[string]bool{},
 		epochs:  map[string]uint64{},
 	}
-	auth := NewExactOpenAuthorizer(authPub, testPipeID, state)
+	auth, err := NewExactOpenAuthorizer(authPub, testPipeID, state)
+	if err != nil {
+		t.Fatal(err)
+	}
 	return auth, clientPriv, enc, authPriv
 }
 
@@ -246,11 +249,24 @@ func TestExactOpenAuthorizerNoRevocationState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Authorizer with nil state (no revocation checks).
-	auth := NewExactOpenAuthorizer(authPub, testPipeID, nil)
+	// Revocation state is a mandatory security dependency: construction
+	// without it must fail closed. There is no revocation-free configuration
+	// in which a valid lease authorizes an open.
+	if auth, err := NewExactOpenAuthorizer(authPub, testPipeID, nil); err == nil {
+		t.Fatal("authorizer constructed without revocation state")
+		_ = auth
+	} else {
+		t.Logf("nil state correctly rejected: %v", err)
+	}
+	// And the corresponding denial path: even a fully valid lease can never
+	// authorize when no revocation-fenced authorizer exists to check it.
+	state := &fakeRevocation{revoked: map[string]bool{}, epochs: map[string]uint64{}}
+	auth, authErr := NewExactOpenAuthorizer(authPub, testPipeID, state)
+	if authErr != nil {
+		t.Fatal(authErr)
+	}
 	challenge := "test-challenge"
 	proof := accesslease.SignProof(clientPriv, accesslease.OpenProofPurpose, challenge, testPipeID)
-
 	req := openauth.OpenRequest{
 		PipeID:         testPipeID,
 		ClientPublic:   clientPub,
@@ -261,7 +277,7 @@ func TestExactOpenAuthorizerNoRevocationState(t *testing.T) {
 	}
 	result, err := auth.AuthorizeOpen(context.Background(), req)
 	if err != nil {
-		t.Fatalf("authorization with no revocation state failed: %v", err)
+		t.Fatalf("authorization with revocation state failed: %v", err)
 	}
 	if result.PipeID != testPipeID {
 		t.Fatal("unexpected result")
