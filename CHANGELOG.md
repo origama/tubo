@@ -6,6 +6,11 @@
 
 ### Minimal exact-sharing readiness fixes (#76)
 
+- The general (scoped/published) pipe daemon now serves the exact redemption
+  and renewal protocols like the Journey A daemon: an exact invite minted by
+  share on a scoped Pipe is redeemable end to end. Previously such invites
+  failed with `protocols not supported` at redemption. Proven by isolated
+  three-machine run `20261002T103152Z-18042`.
 - Store schema-13 accepted-relationship backfill is version-gated to a
   one-time legacy upgrade: scoped redemptions are never promoted to accepted
   exact relationships on reopen.
